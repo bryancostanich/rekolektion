@@ -4,6 +4,8 @@ Open-source SRAM generator for the SkyWater SKY130 130nm process.
 
 Produces optimized 6T SRAM macros targeting **50,000–150,000 bits/mm²** — a 10–30x density improvement over OpenRAM's ~6,000 bits/mm² on the same process.
 
+![3D visualization of a 6T SRAM bitcell on SKY130](Sample_3D_Viz.jpg)
+
 ## What It Does
 
 **Input**: Target size (words × bits), port width, column mux ratio, SKY130 DRC rules.

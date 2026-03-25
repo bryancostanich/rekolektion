@@ -496,12 +496,29 @@ def create_bitcell(
     # This means cross-coupling routes ACROSS the cell horizontally.
 
     # --- Q net: left drains → right gates (pads on right outer edge) ---
-    # Horizontal li1 from left NMOS internal node to right gate stack.
-    # The gate stack vertical li1 runs at pdr_pad X. Route to its inner edge.
-    q_route_y = int_cy
+    # Q route goes from left internal node (nl_cx) to right gate stack (pdr_pad).
+    # PROBLEM: the QB internal node contact is at nr_cx, same Y level.
+    # SOLUTION: route Q above/below the QB contact with a jog.
+    #   Segment 1: left contact → up to jog Y (above QB contact pad)
+    #   Segment 2: horizontal at jog Y, past the QB contact
+    #   Segment 3: down to right gate stack
+    q_jog_y = _snap(int_cy + li_pad_h / 2 + R.LI1_MIN_SPACING + li_w / 2)
+
+    # Segment 1: vertical from left contact up to jog level
     _rect(cell, L.LI1.as_tuple,
-          g["nl_cx"] - li_w / 2, q_route_y - li_w / 2,
-          pdr_pad[0] + li_w / 2, q_route_y + li_w / 2)
+          g["nl_cx"] - li_w / 2, int_cy - li_w / 2,
+          g["nl_cx"] + li_w / 2, q_jog_y + li_w / 2)
+
+    # Segment 2: horizontal at jog Y, from left contact X to right gate stack X
+    _rect(cell, L.LI1.as_tuple,
+          g["nl_cx"] - li_w / 2, q_jog_y - li_w / 2,
+          pdr_pad[0] - li_w / 2, q_jog_y + li_w / 2)
+
+    # Segment 3: vertical from jog level down to right gate stack
+    _rect(cell, L.LI1.as_tuple,
+          pdr_pad[0] - li_w / 2, q_jog_y - li_w / 2,
+          pdr_pad[0] + li_w / 2, q_jog_y + li_w / 2)
+    # (The gate stack vertical li1 already connects from pdr_pad down)
 
     # Vertical li1: left drain to left PU drain (Q node vertical)
     _rect(cell, L.LI1.as_tuple,
@@ -514,20 +531,23 @@ def create_bitcell(
           pdr_pad[0] + li_w / 2, pur_pad[1] + li_w / 2)
 
     # --- QB net: right drains → left gates (pads on left outer edge) ---
-    # QB route must fit between Q route and PG gate, with li1 spacing from both
-    qb_route_y = _snap(int_cy + li_w + R.LI1_MIN_SPACING)
-    # Clamp: don't let it overlap with PG gate zone
-    pg_clearance = g["pg_gate_bot"] - li_w / 2 - 0.02  # stay below PG
-    if qb_route_y > pg_clearance:
-        qb_route_y = _snap(pg_clearance)
-    # Extend right drain contact up to route Y
+    # Route QB HORIZONTALLY through the N-P gap (between NMOS and PMOS)
+    # to avoid crowding with Q route in the NMOS inter-gate zone.
+    np_gap_cy = _snap((g["nmos_diff_top"] + g["pmos_diff_bot"]) / 2.0)
+
+    # Vertical li1: right NMOS drain up through N-P gap to QB route level
     _rect(cell, L.LI1.as_tuple,
           g["nr_cx"] - li_w / 2, int_cy - li_w / 2,
-          g["nr_cx"] + li_w / 2, qb_route_y + li_w / 2)
-    # Horizontal li1 from right drain across to left gate pad
+          g["nr_cx"] + li_w / 2, np_gap_cy + li_w / 2)
+
+    # Horizontal li1 across the N-P gap from right drain to left gate stack.
+    # Stop at the left gate stack vertical li1 (same net, they connect).
     _rect(cell, L.LI1.as_tuple,
-          pdl_pad[0] - li_w / 2, qb_route_y - li_w / 2,
-          g["nr_cx"] + li_w / 2, qb_route_y + li_w / 2)
+          pdl_pad[0] + li_w / 2, np_gap_cy - li_w / 2,
+          g["nr_cx"] + li_w / 2, np_gap_cy + li_w / 2)
+
+    # Vertical li1: left gate stack down from N-P gap to connect
+    # (the gate stack li1 already runs from pdl_pad to pul_pad below)
 
     # Vertical li1: right drain to right PU drain (QB node vertical)
     _rect(cell, L.LI1.as_tuple,

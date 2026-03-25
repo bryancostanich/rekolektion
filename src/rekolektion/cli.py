@@ -7,6 +7,42 @@ import sys
 from pathlib import Path
 
 
+def _cmd_macro(args: argparse.Namespace) -> None:
+    """Generate a complete SRAM macro."""
+    from rekolektion.macro.assembler import generate_sram_macro
+    from rekolektion.macro.outputs import generate_spice, generate_verilog
+
+    output = Path(args.output)
+    print(
+        f"Generating SRAM macro: {args.words} words x {args.bits} bits, "
+        f"mux ratio {args.mux}"
+    )
+
+    lib, params = generate_sram_macro(
+        words=args.words,
+        bits=args.bits,
+        mux_ratio=args.mux,
+        output_path=output,
+    )
+
+    print(f"Array: {params.rows} rows x {params.cols} columns")
+    print(f"Address bits: {params.num_addr_bits} ({params.num_row_bits} row + {params.num_col_bits} col)")
+    print(f"Macro dimensions: {params.macro_width:.3f} x {params.macro_height:.3f} um")
+    print(f"GDS written to {output}")
+
+    # Generate behavioral models alongside the GDS
+    stem = output.stem
+    out_dir = output.parent
+
+    if args.spice:
+        sp_path = generate_spice(params, out_dir / f"{stem}.sp")
+        print(f"SPICE model written to {sp_path}")
+
+    if args.verilog:
+        v_path = generate_verilog(params, out_dir / f"{stem}.v")
+        print(f"Verilog model written to {v_path}")
+
+
 def _cmd_array(args: argparse.Namespace) -> None:
     """Generate a tiled bitcell array."""
     from rekolektion.array.tiler import tile_array
@@ -59,6 +95,18 @@ def main(argv: list[str] | None = None) -> None:
         description="SRAM generator for SKY130",
     )
     sub = parser.add_subparsers(dest="command")
+
+    # --- macro subcommand ---
+    p_macro = sub.add_parser("macro", help="Generate a complete SRAM macro")
+    p_macro.add_argument("--words", type=int, required=True, help="Number of words (memory depth)")
+    p_macro.add_argument("--bits", type=int, required=True, help="Word width (data bits)")
+    p_macro.add_argument("--mux", type=int, default=1, choices=[1, 2, 4, 8], help="Column mux ratio (default: 1)")
+    p_macro.add_argument("-o", "--output", required=True, help="Output GDS path")
+    p_macro.add_argument("--spice", action="store_true", default=True, help="Generate SPICE model (default: True)")
+    p_macro.add_argument("--no-spice", action="store_false", dest="spice", help="Skip SPICE model generation")
+    p_macro.add_argument("--verilog", action="store_true", default=True, help="Generate Verilog model (default: True)")
+    p_macro.add_argument("--no-verilog", action="store_false", dest="verilog", help="Skip Verilog model generation")
+    p_macro.set_defaults(func=_cmd_macro)
 
     # --- array subcommand ---
     p_array = sub.add_parser("array", help="Generate a tiled bitcell array")

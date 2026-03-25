@@ -53,8 +53,8 @@ GATE_LENGTH = 0.15  # All gates (μm)
 # Cell geometry computed from design rules
 # ---------------------------------------------------------------------------
 
-def _snap(val: float, grid: float = 0.01) -> float:
-    """Snap a coordinate to Magic's internal grid (10nm for SKY130)."""
+def _snap(val: float, grid: float = 0.005) -> float:
+    """Snap a coordinate to Magic's internal grid (5nm for SKY130)."""
     return round(val / grid) * grid
 
 
@@ -73,7 +73,10 @@ def _compute_cell_geometry(
     # --- DRC constants ---
     diff_ext = 0.27        # Diff extension past gate for contact landing
                            # = gate-to-licon(0.055) + licon(0.17) + diff-encl(0.04)
-    inter_gate = 0.29      # Gap between PD and PG gates (for internal node contact)
+    # Inter-gate gap must fit: licon contact + gate-to-licon spacing on both sides
+    # AND account for wider poly pads (pad_width_y > gate_l → extends in Y)
+    pad_extra_y = (R.LICON_SIZE + 2 * R.LICON_POLY_ENCLOSURE_OTHER - gate_l) / 2.0
+    inter_gate = max(0.29, R.POLY_MIN_SPACING + 2 * pad_extra_y)  # ensure poly.2 clean
                            # = gate-to-licon(0.055) + licon(0.17) + licon-to-gate(0.055)
     poly_endcap = R.POLY_MIN_EXTENSION_PAST_DIFF  # 0.13
     nwell_to_ndiff = 0.34  # diff/tap.9
@@ -86,7 +89,9 @@ def _compute_cell_geometry(
     # licon needs poly enclosure: 0.08 (one dir) + 0.05 (other dir)
     # Pad width (Y dir): licon(0.17) + 2×0.05 = 0.27 (symmetric about gate center)
     # Pad length (X dir): licon(0.17) + 0.08 + 0.05 = 0.30
-    g["pad_width_y"] = R.LICON_SIZE + 2 * R.LICON_POLY_ENCLOSURE  # 0.27
+    # licon.8a: poly must enclose licon by 0.08 in at least one direction
+    # Use 0.08 on both sides of Y for safety (0.17 + 0.08 + 0.08 = 0.33)
+    g["pad_width_y"] = R.LICON_SIZE + 2 * R.LICON_POLY_ENCLOSURE_OTHER  # 0.17+0.08+0.08 = 0.33
     # Pad length in X: licon + asymmetric enclosure (0.05 inner + 0.08 outer)
     g["pad_length_x"] = R.LICON_POLY_ENCLOSURE + R.LICON_SIZE + R.LICON_POLY_ENCLOSURE_OTHER  # 0.05+0.17+0.08=0.30
     # But the gate poly already extends poly_endcap (0.13) past diff, which
@@ -97,7 +102,9 @@ def _compute_cell_geometry(
 
     # VSS rail
     g["vss_bot"] = 0.00
-    g["vss_top"] = 0.20  # Wide rail for met1 area rule + mcon
+    # Rail must enclose mcon (0.17) by ≥ 0.03 on each side → min 0.23 tall
+    # Also meets met1 area rule (0.083 μm²) with width > 0.36
+    g["vss_top"] = 0.23
 
     # NMOS diffusion
     g["nmos_diff_bot"] = 0.06  # Overlaps with VSS zone for source contact sharing
@@ -126,8 +133,9 @@ def _compute_cell_geometry(
     g["pu_drain_y"] = (g["pmos_diff_bot"] + g["pu_gate_bot"]) / 2.0
 
     # VDD rail
+    # VDD rail: same height as VSS (0.23) to enclose mcon properly
     g["vdd_bot"] = g["pmos_diff_top"] - 0.06  # Overlap with PU source zone
-    g["vdd_top"] = g["pmos_diff_top"] + 0.14
+    g["vdd_top"] = g["vdd_bot"] + 0.23
 
     # Cell height
     g["cell_h"] = g["vdd_top"]
@@ -140,7 +148,9 @@ def _compute_cell_geometry(
     # licon center at diff_edge + 0.19 + licon/2 from diff edge.
     # Pad outer edge = licon center + licon/2 + enclosure(0.08)
     poly_contact_to_diff = 0.19  # licon.14: min licon-to-diff
-    g["margin"] = poly_contact_to_diff + R.LICON_SIZE + R.LICON_POLY_ENCLOSURE_OTHER + 0.02
+    # Use the larger PMOS spacing (0.235) to size the margin
+    pmos_contact_to_diff = 0.235  # licon.9 + psdm.5a
+    g["margin"] = pmos_contact_to_diff + R.LICON_SIZE + R.LICON_POLY_ENCLOSURE_OTHER + 0.02
     g["diff_l_x0"] = g["margin"]                   # left diff left edge
     g["diff_l_x1"] = g["diff_l_x0"] + nmos_diff_w  # left diff right edge
 
@@ -317,7 +327,7 @@ def create_bitcell(
     # ===================================================================
 
     pad_w_y = g["pad_width_y"]  # pad height in Y (wider than gate)
-    pad_half_y = pad_w_y / 2.0
+    pad_half_y = _snap(pad_w_y / 2.0)
 
     # licon.14: poly contact (licon on poly) to diffusion spacing = 0.19
     licon_to_diff = 0.19
@@ -325,14 +335,18 @@ def create_bitcell(
     encl_inner = R.LICON_POLY_ENCLOSURE       # 0.05 (toward diff)
     encl_outer = R.LICON_POLY_ENCLOSURE_OTHER  # 0.08 (away from diff)
 
-    def _gate_with_pad(diff_x0, diff_x1, gate_bot, gate_top, pad_side):
+    def _gate_with_pad(diff_x0, diff_x1, gate_bot, gate_top, pad_side,
+                       contact_spacing=None):
         """Draw a gate poly crossing diff, with a contact pad on one side.
 
-        The licon is placed at minimum licon.14 spacing from diff edge.
-        The poly pad wraps around the licon with proper enclosure.
+        The licon is placed at minimum spacing from diff edge.
+        contact_spacing: override licon-to-diff distance (default 0.19,
+                        use 0.235 for PMOS per licon.9 + psdm.5a).
         Returns (pad_cx, pad_cy) = center of the licon on the pad.
         """
-        gate_cy = (gate_bot + gate_top) / 2.0
+        if contact_spacing is None:
+            contact_spacing = licon_to_diff
+        gate_cy = _snap((gate_bot + gate_top) / 2.0)
 
         # Gate poly (crossing diff, with endcap)
         _rect(cell, L.POLY.as_tuple,
@@ -341,7 +355,7 @@ def create_bitcell(
 
         if pad_side == "right":
             # Licon center X: diff right edge + spacing + half licon
-            licon_cx = _snap(diff_x1 + licon_to_diff + licon_sz / 2.0)
+            licon_cx = _snap(diff_x1 + contact_spacing + licon_sz / 2.0)
             # Pad extends from encl_inner before licon to encl_outer after
             pad_x0 = licon_cx - licon_sz / 2.0 - encl_inner
             pad_x1 = licon_cx + licon_sz / 2.0 + encl_outer
@@ -355,7 +369,7 @@ def create_bitcell(
                   pad_x1, gate_cy + pad_half_y)
             return (licon_cx, gate_cy)
         else:  # left
-            licon_cx = _snap(diff_x0 - licon_to_diff - licon_sz / 2.0)
+            licon_cx = _snap(diff_x0 - contact_spacing - licon_sz / 2.0)
             pad_x0 = licon_cx - licon_sz / 2.0 - encl_outer
             pad_x1 = licon_cx + licon_sz / 2.0 + encl_inner
             # Continuous poly from pad through gate endcap
@@ -372,13 +386,15 @@ def create_bitcell(
     pdl_pad = _gate_with_pad(g["diff_l_x0"], g["diff_l_x1"],
                               g["pd_gate_bot"], g["pd_gate_top"], "left")
     pul_pad = _gate_with_pad(g["pdiff_l_x0"], g["pdiff_l_x1"],
-                              g["pu_gate_bot"], g["pu_gate_top"], "left")
+                              g["pu_gate_bot"], g["pu_gate_top"], "left",
+                              contact_spacing=0.235)
 
     # --- Right inverter gates (PD-R + PU-R) — pads face RIGHT (outward) ---
     pdr_pad = _gate_with_pad(g["diff_r_x0"], g["diff_r_x1"],
                               g["pd_gate_bot"], g["pd_gate_top"], "right")
     pur_pad = _gate_with_pad(g["pdiff_r_x0"], g["pdiff_r_x1"],
-                              g["pu_gate_bot"], g["pu_gate_top"], "right")
+                              g["pu_gate_bot"], g["pu_gate_top"], "right",
+                              contact_spacing=0.235)
 
     # --- PG gates (word line) — no pads, WL connects through center ---
     _gate_with_pad(g["diff_l_x0"], g["diff_l_x1"],
@@ -387,7 +403,7 @@ def create_bitcell(
                    g["pg_gate_bot"], g["pg_gate_top"], "right")
 
     # Word line connection: poly strip connecting PG-L pad to PG-R pad
-    wl_cy = (g["pg_gate_bot"] + g["pg_gate_top"]) / 2.0
+    wl_cy = _snap((g["pg_gate_bot"] + g["pg_gate_top"]) / 2.0)
     _rect(cell, L.POLY.as_tuple,
           g["diff_l_x1"] + poly_ext, wl_cy - gate_l / 2.0,
           g["diff_r_x0"] - poly_ext, wl_cy + gate_l / 2.0)
@@ -402,7 +418,7 @@ def create_bitcell(
     li_pad_w = max(li_w, li_min_area / li_pad_h)  # ensure area rule
 
     # --- VSS source contacts (PD source, bottom of NMOS diff) ---
-    vss_cy = g["nmos_diff_bot"] + 0.04 + licon_sz / 2.0
+    vss_cy = _snap(g["nmos_diff_bot"] + 0.04 + licon_sz / 2.0)
     for cx in (g["nl_cx"], g["nr_cx"]):
         _contact(cell, cx, vss_cy, L.LICON1.as_tuple, licon_sz)
         _li_pad(cell, cx, vss_cy, li_pad_w, li_pad_h)
@@ -414,19 +430,19 @@ def create_bitcell(
         _li_pad(cell, cx, int_cy, li_pad_w, li_pad_h)
 
     # --- BL/BLB contacts (PG drain, top of NMOS diff) ---
-    bl_cy = g["nmos_diff_top"] - 0.04 - licon_sz / 2.0
+    bl_cy = _snap(g["nmos_diff_top"] - 0.04 - licon_sz / 2.0)
     for cx in (g["nl_cx"], g["nr_cx"]):
         _contact(cell, cx, bl_cy, L.LICON1.as_tuple, licon_sz)
         _li_pad(cell, cx, bl_cy, li_pad_w, li_pad_h)
 
     # --- PU drain contacts (internal node, bottom of PMOS diff) ---
-    pu_drain_cy = g["pmos_diff_bot"] + 0.04 + licon_sz / 2.0
+    pu_drain_cy = _snap(g["pmos_diff_bot"] + 0.04 + licon_sz / 2.0)
     for cx in (g["pl_cx"], g["pr_cx"]):
         _contact(cell, cx, pu_drain_cy, L.LICON1.as_tuple, licon_sz)
         _li_pad(cell, cx, pu_drain_cy, li_pad_w, li_pad_h)
 
     # --- VDD source contacts (PU source, top of PMOS diff) ---
-    vdd_cy = g["pmos_diff_top"] - 0.04 - licon_sz / 2.0
+    vdd_cy = _snap(g["pmos_diff_top"] - 0.04 - licon_sz / 2.0)
     for cx in (g["pl_cx"], g["pr_cx"]):
         _contact(cell, cx, vdd_cy, L.LICON1.as_tuple, licon_sz)
         _li_pad(cell, cx, vdd_cy, li_pad_w, li_pad_h)
@@ -484,7 +500,12 @@ def create_bitcell(
           pdr_pad[0] + li_w / 2, pur_pad[1] + li_w / 2)
 
     # --- QB net: right drains → left gates (pads on left outer edge) ---
-    qb_route_y = int_cy + li_w + R.LI1_MIN_SPACING
+    # QB route must fit between Q route and PG gate, with li1 spacing from both
+    qb_route_y = _snap(int_cy + li_w + R.LI1_MIN_SPACING)
+    # Clamp: don't let it overlap with PG gate zone
+    pg_clearance = g["pg_gate_bot"] - li_w / 2 - 0.02  # stay below PG
+    if qb_route_y > pg_clearance:
+        qb_route_y = _snap(pg_clearance)
     # Extend right drain contact up to route Y
     _rect(cell, L.LI1.as_tuple,
           g["nr_cx"] - li_w / 2, int_cy - li_w / 2,
@@ -520,7 +541,8 @@ def create_bitcell(
         _rect(cell, L.LI1.as_tuple,
               cx - li_w / 2, g["vss_bot"],
               cx + li_w / 2, vss_cy + licon_sz / 2 + li_encl)
-        _contact(cell, cx, g["vss_bot"] + mcon_sz / 2 + 0.03,
+        # Center mcon in rail with ≥ 0.03 enclosure on all sides
+        _contact(cell, cx, _snap((g["vss_bot"] + g["vss_top"]) / 2.0),
                  L.MCON.as_tuple, mcon_sz)
 
     for cx in (g["pl_cx"], g["pr_cx"]):
@@ -528,7 +550,7 @@ def create_bitcell(
         _rect(cell, L.LI1.as_tuple,
               cx - li_w / 2, vdd_cy - licon_sz / 2 - li_encl,
               cx + li_w / 2, g["vdd_top"])
-        _contact(cell, cx, g["vdd_top"] - mcon_sz / 2 - 0.03,
+        _contact(cell, cx, _snap((g["vdd_bot"] + g["vdd_top"]) / 2.0),
                  L.MCON.as_tuple, mcon_sz)
 
     # ===================================================================
@@ -546,33 +568,10 @@ def create_bitcell(
     # ===================================================================
     # SUBSTRATE / WELL TAPS
     # ===================================================================
-    # Tap minimum area: 0.07011 μm² → need at least sqrt(0.07011) ≈ 0.265 on a side
-    tap_w = 0.27  # Slightly above minimum to ensure area rule
-    tap_h = 0.27
-
-    # P-sub tap (NMOS region → VSS) — must be OUTSIDE nwell, below nwell_bot
-    # Place in the VSS rail zone, well away from nwell
-    psub_tap_cy = (g["vss_bot"] + g["vss_top"]) / 2.0
-    _rect(cell, L.TAP.as_tuple,
-          mid_x - tap_w / 2, psub_tap_cy - tap_h / 2,
-          mid_x + tap_w / 2, psub_tap_cy + tap_h / 2)
-    _rect(cell, L.NSDM.as_tuple,
-          mid_x - tap_w / 2 - nsdm_enc, psub_tap_cy - tap_h / 2 - nsdm_enc,
-          mid_x + tap_w / 2 + nsdm_enc, psub_tap_cy + tap_h / 2 + nsdm_enc)
-    _contact(cell, mid_x, psub_tap_cy, L.LICON1.as_tuple, licon_sz)
-    _li_pad(cell, mid_x, psub_tap_cy, li_w + 2 * li_encl, li_w + 2 * li_encl)
-
-    # N-well tap (PMOS region → VDD) — must be INSIDE nwell
-    # Place in VDD rail zone, well inside nwell (nwell_bot + 0.18 enclosure min)
-    nw_tap_cy = (g["vdd_bot"] + g["vdd_top"]) / 2.0
-    _rect(cell, L.TAP.as_tuple,
-          mid_x - tap_w / 2, nw_tap_cy - tap_h / 2,
-          mid_x + tap_w / 2, nw_tap_cy + tap_h / 2)
-    _rect(cell, L.PSDM.as_tuple,
-          mid_x - tap_w / 2 - psdm_enc, nw_tap_cy - tap_h / 2 - psdm_enc,
-          mid_x + tap_w / 2 + psdm_enc, nw_tap_cy + tap_h / 2 + psdm_enc)
-    _contact(cell, mid_x, nw_tap_cy, L.LICON1.as_tuple, licon_sz)
-    _li_pad(cell, mid_x, nw_tap_cy, li_w + 2 * li_encl, li_w + 2 * li_encl)
+    # Well/substrate taps are NOT placed in the bitcell itself.
+    # In SRAM arrays, taps are provided by dedicated tap rows inserted
+    # every 10-20 bitcell rows (standard practice to maximize density).
+    # The array generator (Phase 2) will handle tap row insertion.
 
     # ===================================================================
     # CELL BOUNDARY + LABELS
@@ -602,7 +601,7 @@ def generate_bitcell(
     """Generate the 6T bitcell and write to GDS (and optionally SPICE)."""
     cell = create_bitcell(pd_w=pd_w, pg_w=pg_w, pu_w=pu_w)
 
-    lib = gdstk.Library(name="rekolektion_sram", unit=1e-6, precision=1e-9)
+    lib = gdstk.Library(name="rekolektion_sram", unit=1e-6, precision=5e-9)
     lib.add(cell)
 
     out = Path(output_path)

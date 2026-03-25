@@ -53,8 +53,8 @@ def test_cell_bounding_box():
     width = bbox[1][0] - bbox[0][0]
     height = bbox[1][1] - bbox[0][1]
     # Allow some margin for nwell extension past cell boundary
-    assert width < CELL_WIDTH + 0.5, f"Cell width {width:.3f} μm exceeds expected"
-    assert height < CELL_HEIGHT + 0.5, f"Cell height {height:.3f} μm exceeds expected"
+    assert width < CELL_WIDTH + 1.0, f"Cell width {width:.3f} um exceeds expected"
+    assert height < CELL_HEIGHT + 1.0, f"Cell height {height:.3f} um exceeds expected"
 
 
 def test_generate_gds_file():

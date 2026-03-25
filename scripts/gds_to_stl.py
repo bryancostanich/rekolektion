@@ -55,6 +55,9 @@ SKIP_LAYERS = {(93, 44), (94, 20), (235, 4)}
 def polygon_to_triangles(vertices: np.ndarray) -> np.ndarray:
     """Triangulate a 2D polygon using constrained Delaunay triangulation.
 
+    Handles triangles (3 vertices), quads (4), and complex polygons (5+).
+    Removes duplicate/near-duplicate vertices that cause degenerate triangulations.
+
     Args:
         vertices: Nx2 array of polygon vertices.
 
@@ -65,16 +68,47 @@ def polygon_to_triangles(vertices: np.ndarray) -> np.ndarray:
     if n < 3:
         return np.array([], dtype=int).reshape(0, 3)
 
-    # Build segments connecting consecutive vertices
-    segments = np.array([[i, (i + 1) % n] for i in range(n)])
+    # Already a triangle — no triangulation needed
+    if n == 3:
+        return np.array([[0, 1, 2]])
 
-    tri_input = {"vertices": vertices, "segments": segments}
+    # Quad — split into two triangles (most common case)
+    if n == 4:
+        return np.array([[0, 1, 2], [0, 2, 3]])
+
+    # Remove near-duplicate vertices (within 1nm) that cause degenerate triangulations
+    clean_verts = [vertices[0]]
+    clean_indices = [0]
+    for i in range(1, n):
+        dist = np.sqrt(np.sum((vertices[i] - clean_verts[-1]) ** 2))
+        if dist > 0.001:  # 1nm threshold
+            clean_verts.append(vertices[i])
+            clean_indices.append(i)
+
+    clean_verts = np.array(clean_verts)
+    nc = len(clean_verts)
+
+    if nc < 3:
+        return np.array([], dtype=int).reshape(0, 3)
+    if nc == 3:
+        return np.array([[clean_indices[0], clean_indices[1], clean_indices[2]]])
+
+    # Build segments connecting consecutive vertices
+    segments = np.array([[i, (i + 1) % nc] for i in range(nc)])
+
+    tri_input = {"vertices": clean_verts, "segments": segments}
     try:
         tri_output = triangle.triangulate(tri_input, "p")
-        return tri_output.get("triangles", np.array([], dtype=int).reshape(0, 3))
+        tris = tri_output.get("triangles", np.array([], dtype=int).reshape(0, 3))
+        # Map back to original indices
+        if len(tris) > 0:
+            mapped = np.array([[clean_indices[t[0]], clean_indices[t[1]], clean_indices[t[2]]] for t in tris])
+            return mapped
+        return tris
     except Exception:
-        # Fallback: simple fan triangulation
-        return np.array([[0, i, i + 1] for i in range(1, n - 1)])
+        # Fallback: simple fan triangulation using cleaned indices
+        return np.array([[clean_indices[0], clean_indices[i], clean_indices[i + 1]]
+                        for i in range(1, nc - 1)])
 
 
 def extrude_polygon(vertices_2d: np.ndarray, z_bot: float, z_top: float) -> np.ndarray:

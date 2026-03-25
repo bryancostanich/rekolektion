@@ -53,13 +53,18 @@ GATE_LENGTH = 0.15  # All gates (μm)
 # Cell geometry computed from design rules
 # ---------------------------------------------------------------------------
 
+def _snap(val: float, grid: float = 0.01) -> float:
+    """Snap a coordinate to Magic's internal grid (10nm for SKY130)."""
+    return round(val / grid) * grid
+
+
 def _compute_cell_geometry(
     pd_w: float = PD_WIDTH, pg_w: float = PG_WIDTH,
     pu_w: float = PU_WIDTH, gate_l: float = GATE_LENGTH,
 ) -> dict:
     """Compute all cell coordinates from design rules and transistor sizing.
 
-    Returns a dict of named coordinates. All values in μm.
+    Returns a dict of named coordinates. All values in μm, snapped to 5nm grid.
     Y = 0 at cell bottom, X = 0 at cell left.
     """
     R = RULES
@@ -130,8 +135,12 @@ def _compute_cell_geometry(
     # --- X coordinates (left half — right half is mirror) ---
 
     # Diff strips
-    # Margin must accommodate the outer poly pads (pad extends past diff outer edge)
-    g["margin"] = poly_endcap + g["pad_extra_x"] + 0.02
+    # Margin: licon.14 spacing (0.19) from diff to licon center edge,
+    # then licon half + outer poly enclosure.
+    # licon center at diff_edge + 0.19 + licon/2 from diff edge.
+    # Pad outer edge = licon center + licon/2 + enclosure(0.08)
+    poly_contact_to_diff = 0.19  # licon.14: min licon-to-diff
+    g["margin"] = poly_contact_to_diff + R.LICON_SIZE + R.LICON_POLY_ENCLOSURE_OTHER + 0.02
     g["diff_l_x0"] = g["margin"]                   # left diff left edge
     g["diff_l_x1"] = g["diff_l_x0"] + nmos_diff_w  # left diff right edge
 
@@ -147,9 +156,9 @@ def _compute_cell_geometry(
     # But the li1 wires don't need to fit between pads — they route at different
     # Y levels. Only the WL poly and cross-coupling li1 need to fit.
     # Minimum: just enough for the WL poly to span + li1 at other Y levels.
-    # Gate poly pads go on the OUTER side of each diff (away from center).
-    # This minimizes center gap — only WL poly endcaps + small margin needed.
-    # Cross-coupling routes via li1 around the outside.
+    # Gate pads are on outer edges, so center gap only needs WL poly endcaps.
+    # The WL poly crosses the gap as a continuous strip.
+    # PD/PU gates have endcaps extending into the gap too → need poly spacing.
     center_gap = 2 * poly_endcap + R.POLY_MIN_SPACING  # 0.13+0.21+0.13 = 0.47
 
     g["diff_r_x0"] = g["diff_l_x1"] + center_gap
@@ -180,6 +189,11 @@ def _compute_cell_geometry(
     # Right gates: pad on RIGHT side of right diff (facing outward, mirror)
     g["rpad_x0"] = g["diff_r_x1"]
     g["rpad_x1"] = g["diff_r_x1"] + total_protrusion_x
+
+    # Snap ALL coordinates to the manufacturing grid
+    for key in g:
+        if isinstance(g[key], float):
+            g[key] = _snap(g[key])
 
     return g
 
@@ -305,38 +319,54 @@ def create_bitcell(
     pad_w_y = g["pad_width_y"]  # pad height in Y (wider than gate)
     pad_half_y = pad_w_y / 2.0
 
+    # licon.14: poly contact (licon on poly) to diffusion spacing = 0.19
+    licon_to_diff = 0.19
+    # Poly enclosures around licon on pad
+    encl_inner = R.LICON_POLY_ENCLOSURE       # 0.05 (toward diff)
+    encl_outer = R.LICON_POLY_ENCLOSURE_OTHER  # 0.08 (away from diff)
+
     def _gate_with_pad(diff_x0, diff_x1, gate_bot, gate_top, pad_side):
         """Draw a gate poly crossing diff, with a contact pad on one side.
 
-        pad_side: 'right' = pad on right of diff, 'left' = pad on left.
-        Returns (pad_cx, pad_cy) = center of the contact pad.
+        The licon is placed at minimum licon.14 spacing from diff edge.
+        The poly pad wraps around the licon with proper enclosure.
+        Returns (pad_cx, pad_cy) = center of the licon on the pad.
         """
         gate_cy = (gate_bot + gate_top) / 2.0
 
-        # Gate poly (crossing diff)
+        # Gate poly (crossing diff, with endcap)
         _rect(cell, L.POLY.as_tuple,
               diff_x0 - poly_ext, gate_bot,
               diff_x1 + poly_ext, gate_top)
 
-        # Contact landing pad (wider section outside diff)
-        # The gate poly already has endcap extending poly_ext past diff.
-        # The pad widens the poly at the endcap AND extends it by pad_extra.
-        total_ext = poly_ext + g["pad_extra_x"]
         if pad_side == "right":
-            pad_x0 = diff_x1 + poly_ext  # start where endcap ends
-            pad_x1 = diff_x1 + total_ext
-            # Widen the poly endcap region to pad width
+            # Licon center X: diff right edge + spacing + half licon
+            licon_cx = _snap(diff_x1 + licon_to_diff + licon_sz / 2.0)
+            # Pad extends from encl_inner before licon to encl_outer after
+            pad_x0 = licon_cx - licon_sz / 2.0 - encl_inner
+            pad_x1 = licon_cx + licon_sz / 2.0 + encl_outer
+            # Continuous poly from gate endcap through pad
             _rect(cell, L.POLY.as_tuple,
-                  diff_x1, gate_cy - pad_half_y,
-                  pad_x1, gate_cy + pad_half_y)
-            return ((diff_x1 + poly_ext + pad_x1) / 2.0, gate_cy)
-        else:  # left
-            pad_x0 = diff_x0 - total_ext
-            pad_x1 = diff_x0 - poly_ext
+                  diff_x1 + poly_ext, gate_bot,
+                  pad_x1, gate_top)
+            # Wider pad section
             _rect(cell, L.POLY.as_tuple,
                   pad_x0, gate_cy - pad_half_y,
-                  diff_x0, gate_cy + pad_half_y)
-            return ((pad_x0 + diff_x0 - poly_ext) / 2.0, gate_cy)
+                  pad_x1, gate_cy + pad_half_y)
+            return (licon_cx, gate_cy)
+        else:  # left
+            licon_cx = _snap(diff_x0 - licon_to_diff - licon_sz / 2.0)
+            pad_x0 = licon_cx - licon_sz / 2.0 - encl_outer
+            pad_x1 = licon_cx + licon_sz / 2.0 + encl_inner
+            # Continuous poly from pad through gate endcap
+            _rect(cell, L.POLY.as_tuple,
+                  pad_x0, gate_bot,
+                  diff_x0 - poly_ext, gate_top)
+            # Wider pad section
+            _rect(cell, L.POLY.as_tuple,
+                  pad_x0, gate_cy - pad_half_y,
+                  pad_x1, gate_cy + pad_half_y)
+            return (licon_cx, gate_cy)
 
     # --- Left inverter gates (PD-L + PU-L) — pads face LEFT (outward) ---
     pdl_pad = _gate_with_pad(g["diff_l_x0"], g["diff_l_x1"],
@@ -366,37 +396,40 @@ def create_bitcell(
     # CONTACTS ON DIFFUSION (licon) + LI1 pads
     # ===================================================================
 
-    li_pad_h = licon_sz + 2 * li_encl  # li1 height around licon
+    # LI1 minimum area: 0.0561 μm². Minimum pad: 0.17 × 0.33 = 0.0561
+    li_min_area = 0.0561
+    li_pad_h = max(licon_sz + 2 * li_encl, li_min_area / li_w)  # ensure area rule
+    li_pad_w = max(li_w, li_min_area / li_pad_h)  # ensure area rule
 
     # --- VSS source contacts (PD source, bottom of NMOS diff) ---
     vss_cy = g["nmos_diff_bot"] + 0.04 + licon_sz / 2.0
     for cx in (g["nl_cx"], g["nr_cx"]):
         _contact(cell, cx, vss_cy, L.LICON1.as_tuple, licon_sz)
-        _li_pad(cell, cx, vss_cy, li_w, li_pad_h)
+        _li_pad(cell, cx, vss_cy, li_pad_w, li_pad_h)
 
     # --- Internal node contacts (between PD and PG, on NMOS diff) ---
     int_cy = g["int_node_y"]
     for cx in (g["nl_cx"], g["nr_cx"]):
         _contact(cell, cx, int_cy, L.LICON1.as_tuple, licon_sz)
-        _li_pad(cell, cx, int_cy, li_w, li_pad_h)
+        _li_pad(cell, cx, int_cy, li_pad_w, li_pad_h)
 
     # --- BL/BLB contacts (PG drain, top of NMOS diff) ---
     bl_cy = g["nmos_diff_top"] - 0.04 - licon_sz / 2.0
     for cx in (g["nl_cx"], g["nr_cx"]):
         _contact(cell, cx, bl_cy, L.LICON1.as_tuple, licon_sz)
-        _li_pad(cell, cx, bl_cy, li_w, li_pad_h)
+        _li_pad(cell, cx, bl_cy, li_pad_w, li_pad_h)
 
     # --- PU drain contacts (internal node, bottom of PMOS diff) ---
     pu_drain_cy = g["pmos_diff_bot"] + 0.04 + licon_sz / 2.0
     for cx in (g["pl_cx"], g["pr_cx"]):
         _contact(cell, cx, pu_drain_cy, L.LICON1.as_tuple, licon_sz)
-        _li_pad(cell, cx, pu_drain_cy, li_w, li_pad_h)
+        _li_pad(cell, cx, pu_drain_cy, li_pad_w, li_pad_h)
 
     # --- VDD source contacts (PU source, top of PMOS diff) ---
     vdd_cy = g["pmos_diff_top"] - 0.04 - licon_sz / 2.0
     for cx in (g["pl_cx"], g["pr_cx"]):
         _contact(cell, cx, vdd_cy, L.LICON1.as_tuple, licon_sz)
-        _li_pad(cell, cx, vdd_cy, li_w, li_pad_h)
+        _li_pad(cell, cx, vdd_cy, li_pad_w, li_pad_h)
 
     # ===================================================================
     # GATE POLY CONTACTS (licon on poly pads) + LI1 pads
@@ -501,38 +534,45 @@ def create_bitcell(
     # ===================================================================
     # MET1 BIT LINE CONTACTS (BL, BLB) + MCON
     # ===================================================================
+    # Met1 minimum area: 0.083 μm². Need ~0.29 × 0.29 or 0.23 × 0.36
+    met1_bl_w = max(met1_w * 2, mcon_sz + 2 * R.MET1_ENCLOSURE_OF_MCON_OTHER)  # width
+    met1_bl_h = max(0.083 / met1_bl_w, mcon_sz + 2 * R.MET1_ENCLOSURE_OF_MCON)  # height
     for cx in (g["nl_cx"], g["nr_cx"]):
         _contact(cell, cx, bl_cy, L.MCON.as_tuple, mcon_sz)
         _rect(cell, L.MET1.as_tuple,
-              cx - met1_w, bl_cy - mcon_sz / 2 - 0.06,
-              cx + met1_w, bl_cy + mcon_sz / 2 + 0.06)
+              cx - met1_bl_w / 2, bl_cy - met1_bl_h / 2,
+              cx + met1_bl_w / 2, bl_cy + met1_bl_h / 2)
 
     # ===================================================================
     # SUBSTRATE / WELL TAPS
     # ===================================================================
-    tap_w = R.TAP_MIN_WIDTH  # 0.26
+    # Tap minimum area: 0.07011 μm² → need at least sqrt(0.07011) ≈ 0.265 on a side
+    tap_w = 0.27  # Slightly above minimum to ensure area rule
+    tap_h = 0.27
 
-    # P-sub tap (NMOS region → VSS)
-    psub_tap_cy = g["vss_bot"] + 0.05 + tap_w / 2.0
+    # P-sub tap (NMOS region → VSS) — must be OUTSIDE nwell, below nwell_bot
+    # Place in the VSS rail zone, well away from nwell
+    psub_tap_cy = (g["vss_bot"] + g["vss_top"]) / 2.0
     _rect(cell, L.TAP.as_tuple,
-          mid_x - tap_w / 2, psub_tap_cy - tap_w / 2,
-          mid_x + tap_w / 2, psub_tap_cy + tap_w / 2)
+          mid_x - tap_w / 2, psub_tap_cy - tap_h / 2,
+          mid_x + tap_w / 2, psub_tap_cy + tap_h / 2)
     _rect(cell, L.NSDM.as_tuple,
-          mid_x - tap_w / 2 - nsdm_enc, psub_tap_cy - tap_w / 2 - nsdm_enc,
-          mid_x + tap_w / 2 + nsdm_enc, psub_tap_cy + tap_w / 2 + nsdm_enc)
+          mid_x - tap_w / 2 - nsdm_enc, psub_tap_cy - tap_h / 2 - nsdm_enc,
+          mid_x + tap_w / 2 + nsdm_enc, psub_tap_cy + tap_h / 2 + nsdm_enc)
     _contact(cell, mid_x, psub_tap_cy, L.LICON1.as_tuple, licon_sz)
-    _li_pad(cell, mid_x, psub_tap_cy, li_w, li_w)
+    _li_pad(cell, mid_x, psub_tap_cy, li_w + 2 * li_encl, li_w + 2 * li_encl)
 
-    # N-well tap (PMOS region → VDD)
-    nw_tap_cy = g["vdd_top"] - 0.05 - tap_w / 2.0
+    # N-well tap (PMOS region → VDD) — must be INSIDE nwell
+    # Place in VDD rail zone, well inside nwell (nwell_bot + 0.18 enclosure min)
+    nw_tap_cy = (g["vdd_bot"] + g["vdd_top"]) / 2.0
     _rect(cell, L.TAP.as_tuple,
-          mid_x - tap_w / 2, nw_tap_cy - tap_w / 2,
-          mid_x + tap_w / 2, nw_tap_cy + tap_w / 2)
+          mid_x - tap_w / 2, nw_tap_cy - tap_h / 2,
+          mid_x + tap_w / 2, nw_tap_cy + tap_h / 2)
     _rect(cell, L.PSDM.as_tuple,
-          mid_x - tap_w / 2 - psdm_enc, nw_tap_cy - tap_w / 2 - psdm_enc,
-          mid_x + tap_w / 2 + psdm_enc, nw_tap_cy + tap_w / 2 + psdm_enc)
+          mid_x - tap_w / 2 - psdm_enc, nw_tap_cy - tap_h / 2 - psdm_enc,
+          mid_x + tap_w / 2 + psdm_enc, nw_tap_cy + tap_h / 2 + psdm_enc)
     _contact(cell, mid_x, nw_tap_cy, L.LICON1.as_tuple, licon_sz)
-    _li_pad(cell, mid_x, nw_tap_cy, li_w, li_w)
+    _li_pad(cell, mid_x, nw_tap_cy, li_w + 2 * li_encl, li_w + 2 * li_encl)
 
     # ===================================================================
     # CELL BOUNDARY + LABELS

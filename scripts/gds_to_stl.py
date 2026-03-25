@@ -700,8 +700,8 @@ def export_glb_in_situ(
     gltf_meshes, materials, nodes = [], [], []
 
     # Text label sizing — tiny engraved labels
-    pixel_size = 0.015 * scale   # each font pixel (very small)
-    text_depth = 0.01 * scale    # extrusion depth
+    pixel_size = 0.010 * scale   # each font pixel
+    text_depth = 0.007 * scale   # extrusion depth
     text_x = -margin + 0.1 * scale  # start X for labels
     text_z = -margin              # front face Z
 

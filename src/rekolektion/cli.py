@@ -31,6 +31,8 @@ def _cmd_array(args: argparse.Namespace) -> None:
         num_rows=args.rows,
         num_cols=args.cols,
         output_path=output,
+        with_dummy=args.with_dummy,
+        strap_interval=args.strap_interval,
     )
 
     # Report results.
@@ -69,6 +71,19 @@ def main(argv: list[str] | None = None) -> None:
     p_array.add_argument("--rows", type=int, required=True, help="Number of rows (word lines)")
     p_array.add_argument("--cols", type=int, required=True, help="Number of columns (bit-line pairs)")
     p_array.add_argument("-o", "--output", required=True, help="Output GDS path")
+    p_array.add_argument(
+        "--with-dummy",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Add dummy cell border (default: True)",
+    )
+    p_array.add_argument(
+        "--strap-interval",
+        type=int,
+        default=16,
+        metavar="N",
+        help="Insert WL strap every N columns (0 = none, default: 16)",
+    )
     p_array.set_defaults(func=_cmd_array)
 
     args = parser.parse_args(argv)

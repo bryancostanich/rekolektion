@@ -24,7 +24,10 @@ Layout Topology (cross-section, bottom to top):
 
 Key Design Decisions:
     - Separate poly gates per transistor (no continuous poly → no bends)
-    - Poly widens to contact landing pads outside diff (for gate connections)
+    - PD/PU poly widens to contact landing pads outside diff (for gate connections)
+    - PG gates have no contact pads (WL contacted at row ends in array)
+    - Reduced inter-gate gap: only PD pad extends toward PG (not both)
+    - Tight outer margin: pad outer edge at cell boundary (no buffer)
     - Left half built first, right half is mirror → perfect symmetry
     - Cross-coupling via li1 through center gap
     - All min-size transistors (PD=PG=PU W=0.42, L=0.15) for density
@@ -73,11 +76,12 @@ def _compute_cell_geometry(
     # --- DRC constants ---
     diff_ext = 0.27        # Diff extension past gate for contact landing
                            # = gate-to-licon(0.055) + licon(0.17) + diff-encl(0.04)
-    # Inter-gate gap must fit: licon contact + gate-to-licon spacing on both sides
-    # AND account for wider poly pads (pad_width_y > gate_l → extends in Y)
+    # Inter-gate gap: PG has no contact pad (WL contacted at row ends),
+    # so only PD pad extends into the gap. PD pad extends pad_extra_y
+    # above PD gate center toward PG gate.
     pad_extra_y = (R.LICON_SIZE + 2 * R.LICON_POLY_ENCLOSURE_OTHER - gate_l) / 2.0
-    inter_gate = max(0.29, R.POLY_MIN_SPACING + 2 * pad_extra_y)  # ensure poly.2 clean
-                           # = gate-to-licon(0.055) + licon(0.17) + licon-to-gate(0.055)
+    # Need poly.2 from PD pad top edge to PG gate bottom edge
+    inter_gate = max(0.29, R.POLY_MIN_SPACING + pad_extra_y)  # 0.21 + 0.09 = 0.30
     poly_endcap = R.POLY_MIN_EXTENSION_PAST_DIFF  # 0.13
     nwell_to_ndiff = 0.34  # diff/tap.9
     nwell_encl_pdiff = R.DIFF_MIN_ENCLOSURE_BY_NWELL  # 0.18
@@ -156,7 +160,7 @@ def _compute_cell_geometry(
     poly_contact_to_diff = 0.19  # licon.14: min licon-to-diff
     # Use the larger PMOS spacing (0.235) to size the margin
     pmos_contact_to_diff = 0.235  # licon.9 + psdm.5a
-    g["margin"] = pmos_contact_to_diff + R.LICON_SIZE + R.LICON_POLY_ENCLOSURE_OTHER + 0.02
+    g["margin"] = pmos_contact_to_diff + R.LICON_SIZE + R.LICON_POLY_ENCLOSURE_OTHER  # no buffer
     g["diff_l_x0"] = g["margin"]                   # left diff left edge
     g["diff_l_x1"] = g["diff_l_x0"] + nmos_diff_w  # left diff right edge
 
@@ -402,13 +406,17 @@ def create_bitcell(
                               g["pu_gate_bot"], g["pu_gate_top"], "right",
                               contact_spacing=0.235)
 
-    # --- PG gates (word line) — no pads, WL connects through center ---
-    _gate_with_pad(g["diff_l_x0"], g["diff_l_x1"],
-                   g["pg_gate_bot"], g["pg_gate_top"], "left")
-    _gate_with_pad(g["diff_r_x0"], g["diff_r_x1"],
-                   g["pg_gate_bot"], g["pg_gate_top"], "right")
+    # --- PG gates (word line) — no contact pads (WL contacted at row ends) ---
+    # PG-L gate: just crosses diff with endcaps
+    _rect(cell, L.POLY.as_tuple,
+          g["diff_l_x0"] - poly_ext, g["pg_gate_bot"],
+          g["diff_l_x1"] + poly_ext, g["pg_gate_top"])
+    # PG-R gate
+    _rect(cell, L.POLY.as_tuple,
+          g["diff_r_x0"] - poly_ext, g["pg_gate_bot"],
+          g["diff_r_x1"] + poly_ext, g["pg_gate_top"])
 
-    # Word line connection: poly strip connecting PG-L pad to PG-R pad
+    # Word line connection: poly strip connecting PG-L to PG-R through center gap
     wl_cy = _snap((g["pg_gate_bot"] + g["pg_gate_top"]) / 2.0)
     _rect(cell, L.POLY.as_tuple,
           g["diff_l_x1"] + poly_ext, wl_cy - gate_l / 2.0,

@@ -119,3 +119,81 @@ class TestArrayTiler:
                 break
         assert array_cell is not None
         assert len(array_cell.references) == 1
+
+
+# ---------------------------------------------------------------------------
+# Array with support cells
+# ---------------------------------------------------------------------------
+
+class TestArrayWithSupportCells:
+
+    def test_array_with_dummy_cells(self, foundry_cell: BitcellInfo):
+        """Verify dummy border is added around the array."""
+        lib_plain = tile_array(foundry_cell, num_rows=4, num_cols=4, with_dummy=False)
+        lib_dummy = tile_array(foundry_cell, num_rows=4, num_cols=4, with_dummy=True)
+
+        plain_cell = None
+        dummy_cell = None
+        for c in lib_plain.cells:
+            if "array" in c.name:
+                plain_cell = c
+                break
+        for c in lib_dummy.cells:
+            if "array" in c.name:
+                dummy_cell = c
+                break
+
+        assert plain_cell is not None
+        assert dummy_cell is not None
+
+        # The dummy version should have more references (dummy border +
+        # colend + rowend + corner cells).
+        assert len(dummy_cell.references) > len(plain_cell.references)
+
+        # The dummy version should also be physically larger.
+        bb_plain = plain_cell.bounding_box()
+        bb_dummy = dummy_cell.bounding_box()
+        assert bb_plain is not None
+        assert bb_dummy is not None
+
+        plain_w = bb_plain[1][0] - bb_plain[0][0]
+        dummy_w = bb_dummy[1][0] - bb_dummy[0][0]
+        assert dummy_w > plain_w
+
+    def test_array_dimensions_with_straps(self, foundry_cell: BitcellInfo):
+        """Verify that strap columns make the array wider."""
+        lib_plain = tile_array(
+            foundry_cell, num_rows=4, num_cols=32, strap_interval=0,
+        )
+        lib_strap = tile_array(
+            foundry_cell, num_rows=4, num_cols=32, strap_interval=16,
+        )
+
+        plain_cell = None
+        strap_cell = None
+        for c in lib_plain.cells:
+            if "array" in c.name:
+                plain_cell = c
+                break
+        for c in lib_strap.cells:
+            if "array" in c.name:
+                strap_cell = c
+                break
+
+        assert plain_cell is not None
+        assert strap_cell is not None
+
+        bb_plain = plain_cell.bounding_box()
+        bb_strap = strap_cell.bounding_box()
+        assert bb_plain is not None
+        assert bb_strap is not None
+
+        plain_w = bb_plain[1][0] - bb_plain[0][0]
+        strap_w = bb_strap[1][0] - bb_strap[0][0]
+
+        # With 32 columns and strap every 16, we get 1 strap column
+        # (at col 16).  The strap cell is 1.410um wide vs 1.310 bitcell,
+        # so the array should be wider by approximately 1.410.
+        assert strap_w > plain_w
+        # The difference should be approximately one strap width (1.41um)
+        assert strap_w - plain_w == pytest.approx(1.41, abs=0.1)

@@ -106,13 +106,15 @@ def _compute_cell_geometry(
     # Also meets met1 area rule (0.083 μm²) with width > 0.36
     g["vss_top"] = 0.23
 
-    # NMOS diffusion
+    # NMOS diffusion — needs extra extension for source/drain li1 pad spacing.
+    # Same as PMOS: each li1 pad is 0.33 tall, need 0.17 between pads.
+    nmos_diff_ext = max(diff_ext, 0.38)
     g["nmos_diff_bot"] = 0.06  # Overlaps with VSS zone for source contact sharing
-    g["pd_gate_bot"] = g["nmos_diff_bot"] + diff_ext               # 0.33
-    g["pd_gate_top"] = g["pd_gate_bot"] + gate_l                   # 0.48
-    g["pg_gate_bot"] = g["pd_gate_top"] + inter_gate                # 0.77
-    g["pg_gate_top"] = g["pg_gate_bot"] + gate_l                    # 0.92
-    g["nmos_diff_top"] = g["pg_gate_top"] + diff_ext                # 1.19
+    g["pd_gate_bot"] = g["nmos_diff_bot"] + nmos_diff_ext
+    g["pd_gate_top"] = g["pd_gate_bot"] + gate_l
+    g["pg_gate_bot"] = g["pd_gate_top"] + inter_gate
+    g["pg_gate_top"] = g["pg_gate_bot"] + gate_l
+    g["nmos_diff_top"] = g["pg_gate_top"] + nmos_diff_ext
 
     # Internal node contact (between PD and PG gates)
     g["int_node_y"] = (g["pd_gate_top"] + g["pg_gate_bot"]) / 2.0  # center of gap
@@ -124,10 +126,14 @@ def _compute_cell_geometry(
     g["nwell_bot"] = g["nmos_diff_top"] + nwell_to_ndiff            # 1.53
     g["pmos_diff_bot"] = g["nwell_bot"] + nwell_encl_pdiff          # 1.71
 
-    # PMOS diffusion
-    g["pu_gate_bot"] = g["pmos_diff_bot"] + diff_ext                # 1.98
-    g["pu_gate_top"] = g["pu_gate_bot"] + gate_l                    # 2.13
-    g["pmos_diff_top"] = g["pu_gate_top"] + diff_ext                # 2.40
+    # PMOS diffusion — needs extra diff extension to fit drain + source li1 pads
+    # with 0.17 li1 spacing between them. Each pad is 0.33 tall (licon + encl).
+    # Required: 2 × pad_h + li1_spacing + 2 × encl = 2×0.33 + 0.17 + 2×0.04 = 0.91
+    # Gate takes 0.15 of that, so total diff extension each side = (0.91-0.15)/2 = 0.38
+    pmos_diff_ext = max(diff_ext, 0.38)
+    g["pu_gate_bot"] = g["pmos_diff_bot"] + pmos_diff_ext
+    g["pu_gate_top"] = g["pu_gate_bot"] + gate_l
+    g["pmos_diff_top"] = g["pu_gate_top"] + pmos_diff_ext
 
     # PU drain contact (internal node, between pmos_diff_bot and PU gate)
     g["pu_drain_y"] = (g["pmos_diff_bot"] + g["pu_gate_bot"]) / 2.0
@@ -412,10 +418,15 @@ def create_bitcell(
     # CONTACTS ON DIFFUSION (licon) + LI1 pads
     # ===================================================================
 
-    # LI1 minimum area: 0.0561 μm². Minimum pad: 0.17 × 0.33 = 0.0561
+    # LI1 pad sizing:
+    # - "connected" pads (part of vertical li1 routing) use minimum size
+    #   since the connected strip satisfies the area rule (0.0561 μm²)
+    # - "isolated" pads need full area-rule size
     li_min_area = 0.0561
-    li_pad_h = max(licon_sz + 2 * li_encl, li_min_area / li_w)  # ensure area rule
-    li_pad_w = max(li_w, li_min_area / li_pad_h)  # ensure area rule
+    li_pad_h_min = licon_sz + 2 * li_encl   # 0.33 — tight fit around licon
+    li_pad_h_area = li_min_area / li_w       # 0.33 — for area rule on isolated pads
+    li_pad_h = li_pad_h_min                  # use minimum; vertical strips handle area
+    li_pad_w = li_w                          # minimum width
 
     # --- VSS source contacts (PD source, bottom of NMOS diff) ---
     vss_cy = _snap(g["nmos_diff_bot"] + 0.04 + licon_sz / 2.0)
@@ -436,13 +447,15 @@ def create_bitcell(
         _li_pad(cell, cx, bl_cy, li_pad_w, li_pad_h)
 
     # --- PU drain contacts (internal node, bottom of PMOS diff) ---
-    pu_drain_cy = _snap(g["pmos_diff_bot"] + 0.04 + licon_sz / 2.0)
+    # Position to maximize spacing from VDD source contact
+    pu_drain_cy = _snap(g["pmos_diff_bot"] + R.LICON_DIFF_ENCLOSURE + licon_sz / 2.0)
     for cx in (g["pl_cx"], g["pr_cx"]):
         _contact(cell, cx, pu_drain_cy, L.LICON1.as_tuple, licon_sz)
         _li_pad(cell, cx, pu_drain_cy, li_pad_w, li_pad_h)
 
     # --- VDD source contacts (PU source, top of PMOS diff) ---
-    vdd_cy = _snap(g["pmos_diff_top"] - 0.04 - licon_sz / 2.0)
+    # Position at top of diff, maximizing distance from PU drain
+    vdd_cy = _snap(g["pmos_diff_top"] - R.LICON_DIFF_ENCLOSURE - licon_sz / 2.0)
     for cx in (g["pl_cx"], g["pr_cx"]):
         _contact(cell, cx, vdd_cy, L.LICON1.as_tuple, licon_sz)
         _li_pad(cell, cx, vdd_cy, li_pad_w, li_pad_h)
@@ -483,7 +496,8 @@ def create_bitcell(
     # This means cross-coupling routes ACROSS the cell horizontally.
 
     # --- Q net: left drains → right gates (pads on right outer edge) ---
-    # Horizontal li1 from left NMOS internal node across to right gate pad
+    # Horizontal li1 from left NMOS internal node to right gate stack.
+    # The gate stack vertical li1 runs at pdr_pad X. Route to its inner edge.
     q_route_y = int_cy
     _rect(cell, L.LI1.as_tuple,
           g["nl_cx"] - li_w / 2, q_route_y - li_w / 2,

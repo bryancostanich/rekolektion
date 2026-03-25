@@ -8,17 +8,47 @@ Produces optimized 6T SRAM macros targeting **50,000–150,000 bits/mm²** — a
 
 **Input**: Target size (words × bits), port width, column mux ratio, SKY130 DRC rules.
 
-**Output**: DRC/LVS-clean GDS, LEF, Liberty `.lib` timing model, Verilog behavioral model.
+**Output**:
+- **GDS** — Layout for fabrication
+- **SPICE netlist** — For circuit simulation
+- **LEF** — Abstract for place-and-route (planned)
+- **Liberty .lib** — Timing model for STA (planned)
+- **Verilog** — Behavioral model for simulation (planned)
+- **SVG** — 2D layout visualization with layer colors
+- **GLB** — 3D visualization with per-layer materials (viewable in macOS Quick Look, any glTF viewer)
+- **GLB (in-situ)** — 3D cross-section showing the cell embedded in semi-transparent process strata (substrate, oxides, ILD, passivation) with layer labels
+- **STL** — Per-layer 3D meshes for Blender import
 
 ## Status
 
-**Phase 1** — 6T bitcell design and characterization.
+**Phase 1** — 6T bitcell design and DRC iteration.
 
 ## Quick Start
 
 ```bash
 pip install -e ".[dev]"
-rekolektion bitcell -o my_cell.gds --spice
+
+# Generate bitcell GDS + SPICE netlist
+rekolektion bitcell -o output/bitcell.gds --spice
+
+# Generate 2D SVG visualization
+python -c "
+import gdstk
+from rekolektion.bitcell.sky130_6t import create_bitcell
+cell = create_bitcell()
+cell.write_svg('output/bitcell.svg', scaling=800, background='#FFFFFF')
+"
+
+# Generate 3D visualizations (STL + colored GLB + in-situ GLB)
+python scripts/gds_to_stl.py output/bitcell.gds output/3d/
+
+# View in macOS
+open output/3d/bitcell_3d.glb           # colored 3D model
+open output/3d/bitcell_3d_in_situ.glb   # 3D cross-section with process strata
+
+# Run DRC (requires Magic + SKY130 PDK)
+export PDK_ROOT=$HOME/.volare
+bash scripts/run_drc.sh output/bitcell.gds
 ```
 
 ## Architecture

@@ -755,16 +755,15 @@ def export_glb_in_situ(
                 alpha_mode="BLEND",
             )
 
-    # Add actual cell features (opaque, rendered on top)
+    # Add actual cell features — fully opaque to avoid transparency artifacts
     for name, color_f, vertices, indices in meshes:
-        # Make cell features slightly more opaque than the base GLB
         color_f = list(color_f)
-        color_f[3] = min(1.0, color_f[3] + 0.2)
+        color_f[3] = 1.0  # fully opaque
         _add_mesh_to_glb(
             name, color_f, vertices, indices,
             buffer_data, accessors, buffer_views,
             gltf_meshes, materials, nodes,
-            alpha_mode="BLEND" if color_f[3] < 1.0 else "OPAQUE",
+            alpha_mode="OPAQUE",
         )
 
     gltf = {

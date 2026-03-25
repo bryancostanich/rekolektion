@@ -118,8 +118,9 @@ def _compute_cell_geometry(
     structural_gap = 0.34 + nwell_encl  # 0.52
     np_gap = max(contact_gap, structural_gap)
 
-    # Power rail width
-    rail_w = max(R.MET1_MIN_WIDTH, mcon_sz + 2 * R.MET1_ENCLOSURE_OF_MCON_OTHER)  # 0.29
+    # Power rail width — thin M1 vertical rails (current only flows vertically
+    # to reach the M2 horizontal power straps above, not along the whole row)
+    rail_w = R.MET1_MIN_WIDTH  # 0.14 μm — minimum width
 
     # gate_B poly contact pad on NMOS outer (left) side.
     # Pad needs licon.14 (0.19) clearance from NMOS diff.
@@ -227,6 +228,26 @@ def _compute_cell_geometry(
     g["pwr_cy"] = _snap((g["gate_a_y1"] + g["gate_b_y0"]) / 2.0)
     g["int_top_cy"] = _snap((g["gate_b_y1"] + g["wl_top_y0"]) / 2.0)
     g["bl_top_cy"] = _snap(g["diff_top"] - R.LICON_DIFF_ENCLOSURE_OTHER - licon_sz / 2.0)
+
+    # --- M2 horizontal power straps ---
+    via_sz = R.VIA_SIZE                         # 0.15
+    m1_enc_via = R.MET1_ENCLOSURE_OF_VIA        # 0.055
+    m2_enc_via = R.MET2_ENCLOSURE_OF_VIA        # 0.055
+    m2_stripe_w = max(0.28, via_sz + 2 * 0.09)  # ensure generous via enclosure (0.33)
+
+    # M2 stripes run full cell width, centered on the power Y position
+    # VGND stripe at bottom of cell, VPWR stripe at top of cell
+    # Position them at cell edges so they tile/stitch between rows
+    g["m2_stripe_w"] = m2_stripe_w
+    g["m2_vgnd_y0"] = 0.0
+    g["m2_vgnd_y1"] = m2_stripe_w
+    g["m2_vpwr_y0"] = g["cell_h"] - m2_stripe_w
+    g["m2_vpwr_y1"] = g["cell_h"]
+
+    # Via parameters
+    g["via_sz"] = via_sz
+    g["m1_enc_via"] = m1_enc_via
+    g["m2_enc_via"] = m2_enc_via
 
     # Store params
     for name, val in [
@@ -424,6 +445,49 @@ def create_bitcell(
           g["pmos_cx"] - mcon_sz / 2.0 - R.MET1_ENCLOSURE_OF_MCON_OTHER,
           g["pwr_cy"] - met1_pwr_h / 2.0,
           g["vpwr_x1"], g["pwr_cy"] + met1_pwr_h / 2.0)
+
+    # ===================================================================
+    # M2 HORIZONTAL POWER STRAPS + VIAS
+    # ===================================================================
+    via_sz = g["via_sz"]
+    m1_enc_via = g["m1_enc_via"]
+    m2_enc_via = g["m2_enc_via"]
+
+    # M2 horizontal stripes — extend slightly past cell edges so that vias
+    # at the thin M1 rails (near x=0 and x=cw) have full M2 enclosure.
+    m2_x_ext = via_sz / 2.0 + m2_enc_via + 0.04  # generous overshoot
+    _rect(cell, L.MET2.as_tuple, -m2_x_ext, g["m2_vgnd_y0"], cw + m2_x_ext, g["m2_vgnd_y1"])
+    _rect(cell, L.MET2.as_tuple, -m2_x_ext, g["m2_vpwr_y0"], cw + m2_x_ext, g["m2_vpwr_y1"])
+
+    # Via: VGND M1 rail → M2 VGND stripe
+    # Place via where M1 rail overlaps M2 stripe, centered on rail
+    via_hs = via_sz / 2.0
+    vgnd_via_cy = _snap((g["m2_vgnd_y0"] + g["m2_vgnd_y1"]) / 2.0)
+    vpwr_via_cy = _snap((g["m2_vpwr_y0"] + g["m2_vpwr_y1"]) / 2.0)
+
+    # The thin M1 rail (0.14) is narrower than via + 2*enclosure (0.26).
+    # We need a local M1 pad at the via location to meet enclosure rules.
+    # Magic via.5a requires met1 overlap >= 0.085 on two opposite sides when
+    # the other sides have only 0.055. Use generous enclosure to be safe.
+    m1_via_enc = 0.085
+    m1_via_pad_w = via_sz + 2 * m1_via_enc   # 0.32
+    m1_via_pad_h = via_sz + 2 * m1_via_enc   # 0.32
+
+    # VGND vias — on left rail
+    _contact(cell, vgnd_cx, vgnd_via_cy, L.VIA.as_tuple, via_sz)
+    _rect(cell, L.MET1.as_tuple,
+          vgnd_cx - m1_via_pad_w / 2, vgnd_via_cy - m1_via_pad_h / 2,
+          vgnd_cx + m1_via_pad_w / 2, vgnd_via_cy + m1_via_pad_h / 2)
+
+    # VPWR vias — on right rail
+    _contact(cell, vpwr_cx, vpwr_via_cy, L.VIA.as_tuple, via_sz)
+    _rect(cell, L.MET1.as_tuple,
+          vpwr_cx - m1_via_pad_w / 2, vpwr_via_cy - m1_via_pad_h / 2,
+          vpwr_cx + m1_via_pad_w / 2, vpwr_via_cy + m1_via_pad_h / 2)
+
+    # M2 labels for power nets
+    _label(cell, "VSS", L.MET2_LABEL.as_tuple, _snap(cw / 2.0), vgnd_via_cy)
+    _label(cell, "VDD", L.MET2_LABEL.as_tuple, _snap(cw / 2.0), vpwr_via_cy)
 
     # ===================================================================
     # BIT LINE CONTACTS

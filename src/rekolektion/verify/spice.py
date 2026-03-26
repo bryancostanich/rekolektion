@@ -56,27 +56,31 @@ Vwl  WL  0 DC vdd_val
 * Instantiate bitcell
 Xcell BL BLB WL VDD VSS ${subckt_name}
 
-* DC noise sources for butterfly curve
-* Sweep Vn1 at Q node, measure QB; then sweep Vn2 at QB, measure Q
-Vn1 Q_probe Xcell.Q DC 0
-Vn2 QB_probe Xcell.QB DC 0
+* DC noise source at Q node — sweep to get VTC of inverter (Q→QB)
+Vn1 Q_force Xcell.Q DC 0
 
-* Butterfly curve: sweep noise source, measure inverse transfer
-.dc Vn1 0 ${vdd} 0.01
-
-* Measurements
-.meas DC snm_high FIND V(Xcell.QB) WHEN V(Q_probe)=V(Xcell.QB) RISE=1
-.meas DC snm_low  FIND V(Xcell.QB) WHEN V(Q_probe)=V(Xcell.QB) FALL=1
+* Butterfly curve: sweep Q from 0 to VDD, measure QB
+.dc Vn1 0 ${vdd} 0.005
 
 .control
 run
-set hcopypscolor = 1
-set color0 = white
-set color1 = black
-set color2 = blue
-set color3 = red
-plot V(Xcell.QB) vs V(Q_probe) title "Read SNM Butterfly Curve"
-wrdata ${output_prefix}_read_snm.csv V(Xcell.QB) vs V(Q_probe)
+
+* Save VTC data: columns are V(Q_force) and V(Xcell.QB)
+wrdata ${output_prefix}_read_snm.csv V(Xcell.QB)
+
+* Compute read SNM from the butterfly curve
+* SNM = max diagonal distance between VTC and the mirrored VTC
+let vtc = V(Xcell.QB)
+let vin = V(Q_force)
+let n = length(vtc)
+let diag_diff = vtc - vin
+let snm_est = maximum(diag_diff) - minimum(diag_diff)
+
+echo
+echo "=== Read SNM Estimate ==="
+print maximum(diag_diff)
+print minimum(diag_diff)
+echo "SNM ~ max - |min| of (VTC - diagonal)"
 .endc
 
 .end

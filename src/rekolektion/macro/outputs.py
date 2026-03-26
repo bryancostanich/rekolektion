@@ -1,17 +1,27 @@
-"""Output generation for SRAM macros: behavioral SPICE and Verilog models.
+"""Output generation for SRAM macros: behavioral SPICE and Verilog models,
+LEF abstracts, and Liberty timing models.
 
 These are simplified behavioral models for simulation — not transistor-level
 netlists.  They provide the correct port interface so that the SRAM macro
 can be instantiated in a larger design.
 
+The LEF and Liberty generators produce files needed by OpenLane for
+place-and-route and static timing analysis.
+
 Usage::
 
     from rekolektion.macro.assembler import compute_macro_params
     from rekolektion.macro.outputs import generate_spice, generate_verilog
+    from rekolektion.macro.outputs import generate_all_outputs
 
     params = compute_macro_params(words=1024, bits=32, mux_ratio=8)
     generate_spice(params, "output/sram_1024x32.sp")
     generate_verilog(params, "output/sram_1024x32.v")
+
+    # Or generate all outputs at once:
+    params.macro_width = 500.0
+    params.macro_height = 400.0
+    paths = generate_all_outputs(params, "output", "sram_1024x32")
 """
 
 from __future__ import annotations
@@ -20,6 +30,41 @@ import math
 from pathlib import Path
 
 from rekolektion.macro.assembler import MacroParams
+
+
+def generate_all_outputs(
+    params: MacroParams,
+    output_dir: str | Path,
+    stem: str,
+) -> dict[str, Path]:
+    """Generate all output files (SPICE, Verilog, LEF, Liberty) for a macro.
+
+    Parameters
+    ----------
+    params : MacroParams
+        Macro parameters (must have macro_width/macro_height set for LEF/lib).
+    output_dir : path
+        Directory for output files.
+    stem : str
+        Base filename (without extension).
+
+    Returns
+    -------
+    dict[str, Path]
+        Mapping of output type to file path.
+    """
+    from rekolektion.macro.lef_generator import generate_lef
+    from rekolektion.macro.liberty_generator import generate_liberty
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    paths: dict[str, Path] = {}
+    paths["sp"] = generate_spice(params, out_dir / f"{stem}.sp")
+    paths["v"] = generate_verilog(params, out_dir / f"{stem}.v")
+    paths["lef"] = generate_lef(params, out_dir / f"{stem}.lef")
+    paths["lib"] = generate_liberty(params, out_dir / f"{stem}.lib")
+    return paths
 
 
 def generate_spice(

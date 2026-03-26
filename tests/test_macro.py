@@ -207,6 +207,167 @@ class TestMacroGeneration:
         assert params.cols == 8
 
 
+class TestLefGeneration:
+    """Tests for LEF abstract generation."""
+
+    def test_lef_generation(self, tmp_path):
+        """Verify LEF has correct SIZE and all pins present."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=256, bits=16, mux_ratio=4)
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+
+        out = tmp_path / "sram.lef"
+        generate_lef(params, out)
+
+        assert out.exists()
+        text = out.read_text()
+
+        # Check macro name and SIZE
+        assert "MACRO sram_256x16_mux4" in text
+        assert "SIZE 200.000 BY 150.000" in text
+        assert "CLASS BLOCK" in text
+        assert "SYMMETRY X Y" in text
+
+        # Check UNITS
+        assert "DATABASE MICRONS 1000" in text
+
+        # Check all address pins (8 bits for 256 words)
+        for i in range(8):
+            assert f"PIN addr[{i}]" in text
+
+        # Check data pins
+        for i in range(16):
+            assert f"PIN din[{i}]" in text
+            assert f"PIN dout[{i}]" in text
+
+        # Check control/power pins
+        assert "PIN clk" in text
+        assert "PIN we" in text
+        assert "PIN VPWR" in text
+        assert "PIN VGND" in text
+
+        # Check directions
+        assert "DIRECTION INPUT" in text
+        assert "DIRECTION OUTPUT" in text
+        assert "DIRECTION INOUT" in text
+
+        # Check power use
+        assert "USE POWER" in text
+        assert "USE GROUND" in text
+
+        # Check obstruction layers
+        assert "OBS" in text
+        assert "LAYER met1" in text
+        assert "LAYER met2" in text
+        assert "LAYER met3" in text
+
+        # Check footer
+        assert "END LIBRARY" in text
+
+    def test_lef_pin_count(self, tmp_path):
+        """Verify total pin count matches expected."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=2)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+
+        out = tmp_path / "sram_small.lef"
+        generate_lef(params, out)
+
+        text = out.read_text()
+        # 6 addr + 8 din + 8 dout + clk + we + VPWR + VGND = 26 pins
+        pin_count = text.count("  PIN ")
+        expected = params.num_addr_bits + params.bits * 2 + 4  # addr + din + dout + clk,we,VPWR,VGND
+        assert pin_count == expected
+
+
+class TestLibertyGeneration:
+    """Tests for Liberty timing model generation."""
+
+    def test_liberty_generation(self, tmp_path):
+        """Verify .lib has correct cell name and pin definitions."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=256, bits=16, mux_ratio=4)
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+
+        out = tmp_path / "sram.lib"
+        generate_liberty(params, out)
+
+        assert out.exists()
+        text = out.read_text()
+
+        # Check library and cell name
+        assert "library (sram_256x16_mux4_lib)" in text
+        assert "cell (sram_256x16_mux4)" in text
+
+        # Check area
+        area = 200.0 * 150.0
+        assert f"area : {area:.3f}" in text
+
+        # Check operating conditions
+        assert "nom_voltage : 1.8" in text
+        assert "nom_temperature : 25.0" in text
+        assert "nom_process : 1.0" in text
+
+        # Check clk pin is declared as clock
+        assert "pin (clk)" in text
+        assert "clock : true" in text
+
+        # Check address pins
+        for i in range(8):
+            assert f"pin (addr[{i}])" in text
+
+        # Check data pins
+        for i in range(16):
+            assert f"pin (din[{i}])" in text
+            assert f"pin (dout[{i}])" in text
+
+        # Check we pin
+        assert "pin (we)" in text
+
+        # Check power pins
+        assert "pin (VPWR)" in text
+        assert "pin (VGND)" in text
+
+        # Check timing arcs exist
+        assert "setup_rising" in text
+        assert "hold_rising" in text
+        assert "rising_edge" in text
+
+        # Check placeholder timing values
+        assert '1.0000' in text  # setup
+        assert '0.5000' in text  # hold
+        assert '2.0000' in text  # clk-to-Q
+
+    def test_liberty_pin_directions(self, tmp_path):
+        """Verify pin directions are correct."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1)
+        params.macro_width = 50.0
+        params.macro_height = 40.0
+
+        out = tmp_path / "sram_small.lib"
+        generate_liberty(params, out)
+
+        text = out.read_text()
+        # dout pins should be output
+        assert "direction : output" in text
+        # addr/din/clk/we should be input
+        assert "direction : input" in text
+        # power pins should be inout
+        assert "direction : inout" in text
+
+
 class TestVerilogGeneration:
     """Tests for Verilog model output."""
 

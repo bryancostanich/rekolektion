@@ -11,6 +11,8 @@ def _cmd_macro(args: argparse.Namespace) -> None:
     """Generate a complete SRAM macro."""
     from rekolektion.macro.assembler import generate_sram_macro
     from rekolektion.macro.outputs import generate_spice, generate_verilog
+    from rekolektion.macro.lef_generator import generate_lef
+    from rekolektion.macro.liberty_generator import generate_liberty
 
     output = Path(args.output)
     print(
@@ -41,6 +43,14 @@ def _cmd_macro(args: argparse.Namespace) -> None:
     if args.verilog:
         v_path = generate_verilog(params, out_dir / f"{stem}.v")
         print(f"Verilog model written to {v_path}")
+
+    if args.lef:
+        lef_path = generate_lef(params, out_dir / f"{stem}.lef")
+        print(f"LEF abstract written to {lef_path}")
+
+    if args.liberty:
+        lib_path = generate_liberty(params, out_dir / f"{stem}.lib")
+        print(f"Liberty model written to {lib_path}")
 
 
 def _cmd_array(args: argparse.Namespace) -> None:
@@ -106,6 +116,10 @@ def main(argv: list[str] | None = None) -> None:
     p_macro.add_argument("--no-spice", action="store_false", dest="spice", help="Skip SPICE model generation")
     p_macro.add_argument("--verilog", action="store_true", default=True, help="Generate Verilog model (default: True)")
     p_macro.add_argument("--no-verilog", action="store_false", dest="verilog", help="Skip Verilog model generation")
+    p_macro.add_argument("--lef", action="store_true", default=True, help="Generate LEF abstract (default: True)")
+    p_macro.add_argument("--no-lef", action="store_false", dest="lef", help="Skip LEF abstract generation")
+    p_macro.add_argument("--liberty", action="store_true", default=True, help="Generate Liberty timing model (default: True)")
+    p_macro.add_argument("--no-liberty", action="store_false", dest="liberty", help="Skip Liberty model generation")
     p_macro.set_defaults(func=_cmd_macro)
 
     # --- array subcommand ---

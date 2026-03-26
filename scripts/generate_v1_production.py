@@ -7,7 +7,7 @@ V1 chip configuration:
 
 Total: ~256 KB across 66 macros.
 
-Each macro gets GDS, Verilog (.v), and SPICE (.sp) output files.
+Each macro gets GDS, Verilog (.v), SPICE (.sp), LEF (.lef), and Liberty (.lib) output files.
 All outputs are written to output/v1_macros/.
 """
 
@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rekolektion.macro.assembler import generate_sram_macro, MacroParams
 from rekolektion.macro.outputs import generate_spice, generate_verilog
+from rekolektion.macro.lef_generator import generate_lef
+from rekolektion.macro.liberty_generator import generate_liberty
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "v1_macros"
 
@@ -107,6 +109,12 @@ def generate_all() -> list[dict]:
         # SPICE
         sp_path = generate_spice(params, OUTPUT_DIR / f"{name}.sp")
 
+        # LEF
+        lef_path = generate_lef(params, OUTPUT_DIR / f"{name}.lef")
+
+        # Liberty
+        lib_path = generate_liberty(params, OUTPUT_DIR / f"{name}.lib")
+
         elapsed = time.time() - t0
 
         total_bits = cfg["words"] * cfg["bits"]
@@ -132,6 +140,8 @@ def generate_all() -> list[dict]:
             "gds_path": str(gds_path),
             "v_path": str(v_path),
             "sp_path": str(sp_path),
+            "lef_path": str(lef_path),
+            "lib_path": str(lib_path),
             "elapsed_s": elapsed,
         }
         results.append(result)
@@ -219,10 +229,12 @@ def write_manifest(results: list[dict]) -> Path:
         "",
         "## Output Files",
         "",
-        "Each macro produces three files:",
+        "Each macro produces five files:",
         "- `.gds` -- GDS-II layout",
         "- `.v` -- Behavioral Verilog model",
         "- `.sp` -- SPICE subcircuit stub",
+        "- `.lef` -- LEF abstract for place-and-route",
+        "- `.lib` -- Liberty timing model for STA",
         "",
     ]
 

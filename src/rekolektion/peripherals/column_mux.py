@@ -6,10 +6,10 @@ single output pair via NMOS pass gates controlled by select lines.
 
 Supported mux ratios: 1:1 (no mux), 2:1, 4:1, 8:1.
 
-Interface:
-    BL_in[0..N-1], BR_in[0..N-1]   -- input bit-line pairs from array
-    BL_out[0..N/R-1], BR_out[0..N/R-1] -- output bit-line pairs to sense amps
-    sel[0..log2(R)-1]               -- select lines
+Layout: one NMOS pass transistor per column per mux input, stacked
+vertically.  Gate contacts on horizontal poly extension to the LEFT
+of the diffusion (outside active area, avoids poly.11 bends).
+Minimum bl_pitch = 1.9 um.
 
 Usage::
 
@@ -25,106 +25,154 @@ from typing import Tuple
 
 import gdstk
 
-# SKY130 layers
-LAYER_DIFF = (65, 20)       # ndiffusion (NMOS active)
-LAYER_POLY = (66, 20)       # polysilicon gate
-LAYER_LICON = (66, 44)      # local interconnect contact
-LAYER_LI1 = (67, 20)        # local interconnect
-LAYER_MCON = (67, 44)       # metal1 contact
-LAYER_MET1 = (68, 20)       # metal1
-LAYER_VIA1 = (68, 44)       # via1
-LAYER_MET2 = (69, 20)       # metal2
-LAYER_NSDM = (93, 44)       # n+ source/drain implant
-LAYER_BOUNDARY = (235, 0)
-
-# Column mux pitch should match the bitcell pitch
-_DEFAULT_BL_PITCH = 1.2  # microns -- approximate bitcell width
-
-# Pass-transistor geometry (SKY130 minimum-ish dimensions)
-_NMOS_W = 0.42             # NMOS gate width (diffusion height)
-_NMOS_L = 0.15             # NMOS gate length (poly width across diff)
-_DIFF_EXT = 0.13           # diffusion extension beyond gate
-_CONTACT_SIZE = 0.17       # licon / mcon contact size
-_IMPLANT_ENC = 0.125       # nsdm enclosure of diffusion
+from rekolektion.tech.sky130 import LAYERS, RULES
 
 
-def _draw_pass_transistor(
+# ---------------------------------------------------------------------------
+# Design-rule-derived constants
+# ---------------------------------------------------------------------------
+
+_W = 0.42       # transistor channel width (diff extent in X)
+_L = 0.15       # gate length (poly extent in Y)
+_SD_EXT = 0.36  # source/drain diff past gate (need S/D li1 pads 0.17 apart)
+_POLY_OVH = 0.13          # poly extension past diff edge (poly.8)
+_GATE_EXT = 0.50           # poly extension past diff for gate contact pad
+_LICON = 0.17              # contact size
+_LI_ENC = 0.08             # li1 enclosure of licon
+_NSDM_ENC = 0.125          # nsdm enclosure of diff
+_MCON = 0.17               # mcon size
+
+_LI_PAD = _LICON + 2 * _LI_ENC       # 0.33 — li1 pad side
+_POLY_PAD_W = _LICON + 2 * 0.05      # 0.27 — poly pad width (licon enc 0.05)
+_POLY_PAD_H = _LICON + 2 * 0.08      # 0.33 — poly pad height (licon enc 0.08)
+
+# Transistor total heights
+_DIFF_H = _L + 2 * _SD_EXT           # 0.75
+_TRANS_PITCH = 1.60                   # Y pitch between stacked transistors
+
+# X extent per transistor: gate_ext + diff_half + poly_ovh
+_TRANS_X = _GATE_EXT + _W + _POLY_OVH  # 1.05
+
+# Minimum column pitch: transistor X + poly spacing
+_MIN_BL_PITCH = 1.9
+
+# Layer shortcuts
+_DIFF = LAYERS.DIFF.as_tuple
+_POLY = LAYERS.POLY.as_tuple
+_LICON1 = LAYERS.LICON1.as_tuple
+_LI1 = LAYERS.LI1.as_tuple
+_MCON_L = LAYERS.MCON.as_tuple
+_MET1 = LAYERS.MET1.as_tuple
+_VIA = LAYERS.VIA.as_tuple
+_MET2 = LAYERS.MET2.as_tuple
+_NSDM = LAYERS.NSDM.as_tuple
+_BOUNDARY = (235, 0)
+
+
+def _snap(v: float, grid: float = 0.005) -> float:
+    return round(v / grid) * grid
+
+
+def _rect(cell: gdstk.Cell, layer: tuple[int, int],
+          x0: float, y0: float, x1: float, y1: float) -> None:
+    cell.add(gdstk.rectangle(
+        (_snap(x0), _snap(y0)), (_snap(x1), _snap(y1)),
+        layer=layer[0], datatype=layer[1],
+    ))
+
+
+def _sq_contact(cell: gdstk.Cell, layer: tuple[int, int],
+                cx: float, cy: float, size: float) -> None:
+    """Draw a square contact guaranteed to be exactly `size` after snapping."""
+    x0 = _snap(cx - size / 2)
+    y0 = _snap(cy - size / 2)
+    cell.add(gdstk.rectangle(
+        (x0, y0), (x0 + size, y0 + size),
+        layer=layer[0], datatype=layer[1],
+    ))
+
+
+def _draw_nmos_pass_transistor(
     cell: gdstk.Cell,
     x_center: float,
     y_center: float,
-    gate_y_bottom: float,
-    gate_y_top: float,
-) -> None:
-    """Draw a single NMOS pass transistor at the given location.
+) -> tuple[float, float, float]:
+    """Draw one NMOS pass transistor with gate contact on the left.
 
-    The transistor is oriented vertically: source/drain are above and
-    below the gate, with diffusion running vertically and poly running
-    horizontally across it.
+    Diffusion runs vertically (source at bottom, drain at top).
+    Poly gate is horizontal (Y width = L = 0.15).
+    Gate contact pad on extended poly to the LEFT of diff.
 
-    Parameters
-    ----------
-    cell : gdstk.Cell
-        Target cell.
-    x_center : float
-        X centre of the transistor.
-    y_center : float
-        Y centre of the transistor (centre of gate).
-    gate_y_bottom, gate_y_top : float
-        Y extent of the poly gate line (may extend beyond the transistor
-        to connect to the select bus).
+    Returns (gate_pad_cx, gate_pad_cy, gate_pad_right_x) for routing.
     """
-    half_w = _NMOS_W / 2.0
-    half_l = _NMOS_L / 2.0
+    hw = _W / 2.0       # 0.21
+    hl = _L / 2.0       # 0.075
 
-    # Diffusion (vertical strip)
-    diff_bottom = y_center - half_w - _DIFF_EXT
-    diff_top = y_center + half_w + _DIFF_EXT
-    cell.add(gdstk.rectangle(
-        (x_center - half_l, diff_bottom),
-        (x_center + half_l, diff_top),
-        layer=LAYER_DIFF[0], datatype=LAYER_DIFF[1],
-    ))
+    diff_left = x_center - hw
+    diff_right = x_center + hw
+    diff_bot = y_center - hl - _SD_EXT
+    diff_top = y_center + hl + _SD_EXT
 
-    # N+ implant around diffusion
-    cell.add(gdstk.rectangle(
-        (x_center - half_l - _IMPLANT_ENC, diff_bottom - _IMPLANT_ENC),
-        (x_center + half_l + _IMPLANT_ENC, diff_top + _IMPLANT_ENC),
-        layer=LAYER_NSDM[0], datatype=LAYER_NSDM[1],
-    ))
+    # 1. Diffusion
+    _rect(cell, _DIFF, diff_left, diff_bot, diff_right, diff_top)
 
-    # Poly gate (horizontal, across diffusion, extending to gate bus)
-    cell.add(gdstk.rectangle(
-        (x_center - half_l - 0.06, gate_y_bottom),
-        (x_center + half_l + 0.06, gate_y_top),
-        layer=LAYER_POLY[0], datatype=LAYER_POLY[1],
-    ))
+    # 2. NSDM implant
+    _rect(cell, _NSDM,
+          diff_left - _NSDM_ENC, diff_bot - _NSDM_ENC,
+          diff_right + _NSDM_ENC, diff_top + _NSDM_ENC)
 
-    # Source contact (bottom)
-    cs = _CONTACT_SIZE / 2.0
-    src_y = y_center - half_w - _DIFF_EXT / 2.0
-    cell.add(gdstk.rectangle(
-        (x_center - cs, src_y - cs),
-        (x_center + cs, src_y + cs),
-        layer=LAYER_LICON[0], datatype=LAYER_LICON[1],
-    ))
+    # 3. Poly gate — extends far left for gate contact, normal right overhang
+    poly_left = diff_left - _GATE_EXT  # 0.50 past diff for contact pad
+    poly_right = diff_right + _POLY_OVH  # 0.13 past diff (minimum)
+    _rect(cell, _POLY, poly_left, y_center - hl, poly_right, y_center + hl)
 
-    # Drain contact (top)
-    drn_y = y_center + half_w + _DIFF_EXT / 2.0
-    cell.add(gdstk.rectangle(
-        (x_center - cs, drn_y - cs),
-        (x_center + cs, drn_y + cs),
-        layer=LAYER_LICON[0], datatype=LAYER_LICON[1],
-    ))
+    # 4. Poly contact pad — widen poly at far left (outside diff, no poly.11)
+    pad_left = poly_left
+    pad_right = poly_left + _POLY_PAD_W  # 0.27
+    _rect(cell, _POLY,
+          pad_left, y_center - _POLY_PAD_H / 2,
+          pad_right, y_center + _POLY_PAD_H / 2)
+
+    # 5. Gate licon + li1 on poly pad
+    gate_cx = pad_left + _POLY_PAD_W / 2  # pad center X
+    gate_cy = y_center
+    _sq_contact(cell, _LICON1, gate_cx, gate_cy, _LICON)
+    _rect(cell, _LI1,
+          gate_cx - _LI_PAD / 2, gate_cy - _LI_PAD / 2,
+          gate_cx + _LI_PAD / 2, gate_cy + _LI_PAD / 2)
+
+    # 6. Source contact (bottom of diff)
+    src_y = y_center - hl - _SD_EXT / 2.0
+    _sq_contact(cell, _LICON1, x_center, src_y, _LICON)
+    _rect(cell, _LI1,
+          x_center - _LI_PAD / 2, src_y - _LI_PAD / 2,
+          x_center + _LI_PAD / 2, src_y + _LI_PAD / 2)
+
+    # 7. Drain contact (top of diff)
+    drn_y = y_center + hl + _SD_EXT / 2.0
+    _sq_contact(cell, _LICON1, x_center, drn_y, _LICON)
+    _rect(cell, _LI1,
+          x_center - _LI_PAD / 2, drn_y - _LI_PAD / 2,
+          x_center + _LI_PAD / 2, drn_y + _LI_PAD / 2)
+
+    return gate_cx, gate_cy, pad_right
 
 
 def generate_column_mux(
     num_cols: int,
     mux_ratio: int = 1,
-    bl_pitch: float = _DEFAULT_BL_PITCH,
+    bl_pitch: float = 1.925,
     cell_name: str | None = None,
     output_path: str | Path | None = None,
 ) -> Tuple[gdstk.Cell, gdstk.Library]:
     """Generate a column mux cell with pass-transistor topology.
+
+    Each column has ``mux_ratio`` pass transistors stacked vertically
+    (one per mux input).  Each transistor is a standalone NMOS with
+    gate contact on the left.  Separate BL and BR transistors per column
+    would double the transistor count; for simplicity this generator
+    creates one transistor per column that switches the BL line.  A
+    separate instance can be generated for BR if needed.
 
     Parameters
     ----------
@@ -133,15 +181,11 @@ def generate_column_mux(
     mux_ratio : int
         Mux ratio -- must be 1, 2, 4, or 8.
     bl_pitch : float
-        Bit-line pair pitch (typically == bitcell width).
+        Bit-line pair pitch (clamped to minimum 1.9 um).
     cell_name : str, optional
-        Name for the cell (auto-generated if not given).
+        Name for the cell.
     output_path : path, optional
-        If given, write GDS to this file.
-
-    Returns
-    -------
-    (gdstk.Cell, gdstk.Library)
+        Write GDS to this file.
     """
     if mux_ratio not in (1, 2, 4, 8):
         raise ValueError(f"mux_ratio must be 1, 2, 4, or 8; got {mux_ratio}")
@@ -150,120 +194,88 @@ def generate_column_mux(
             f"num_cols ({num_cols}) must be divisible by mux_ratio ({mux_ratio})"
         )
 
+    eff_pitch = max(bl_pitch, _MIN_BL_PITCH)
     num_outputs = num_cols // mux_ratio
     num_sel = int(math.log2(mux_ratio)) if mux_ratio > 1 else 0
 
     name = cell_name or f"column_mux_{num_cols}x{mux_ratio}"
-    width = num_cols * bl_pitch
-    height = 2.0 * mux_ratio  # Scale height with mux ratio
+    width = _snap(num_cols * eff_pitch)
+
+    # Height: bottom margin + select buses + transistor slots + top margin
+    bot_margin = 0.5
+    sel_region = max(num_sel * 0.30, 0.3)
+    trans_region = mux_ratio * _TRANS_PITCH
+    top_margin = 0.5
+    height = _snap(bot_margin + sel_region + trans_region + top_margin)
 
     lib = gdstk.Library(name=f"{name}_lib")
     cell = gdstk.Cell(name)
     lib.add(cell)
 
-    # Boundary rectangle
-    cell.add(gdstk.rectangle(
-        (0, 0), (width, height),
-        layer=LAYER_BOUNDARY[0], datatype=LAYER_BOUNDARY[1],
-    ))
+    _rect(cell, _BOUNDARY, 0, 0, width, height)
 
-    # --- Select line buses (met1, horizontal) --------------------------------
-    # Each select line runs the full width as a horizontal met1 bus.
+    if mux_ratio <= 1:
+        # Pass-through: just met2 stubs
+        for i in range(num_cols):
+            xc = i * eff_pitch + eff_pitch / 2
+            _rect(cell, _MET2, xc - 0.07, 0, xc + 0.07, height)
+        if output_path:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            lib.write_gds(str(output_path))
+        return cell, lib
+
+    # --- Select buses (met1, horizontal) ------------------------------------
     sel_y_positions = []
     for s in range(num_sel):
-        y = height * 0.3 + s * (height * 0.4 / max(num_sel, 1))
+        y = bot_margin + 0.15 + s * 0.30
         sel_y_positions.append(y)
-        # Full-width select bus
-        cell.add(gdstk.rectangle(
-            (0, y - 0.07), (width, y + 0.07),
-            layer=LAYER_MET1[0], datatype=LAYER_MET1[1],
-        ))
+        _rect(cell, _MET1, 0, y - 0.07, width, y + 0.07)  # 0.14 wide met1
+
+    trans_base_y = bot_margin + sel_region + 0.3  # first transistor Y center
+
+    # --- Per-column pass transistors ----------------------------------------
+    for col in range(num_cols):
+        x_center = col * eff_pitch + eff_pitch / 2
+        inp = col % mux_ratio
+
+        y_center = trans_base_y + inp * _TRANS_PITCH
+
+        # Draw transistor
+        gate_cx, gate_cy, _ = _draw_nmos_pass_transistor(cell, x_center, y_center)
+
+        # Connect gate to select bus via mcon -> met1
+        sel_idx = inp % max(num_sel, 1)
+        sel_y = sel_y_positions[sel_idx]
+
+        # mcon on gate li1
+        _sq_contact(cell, _MCON_L, gate_cx, gate_cy, _MCON)
+
+        # met1 pad at mcon
+        met1_pad = _MCON + 2 * 0.06  # 0.29
+        _rect(cell, _MET1,
+              gate_cx - met1_pad / 2, gate_cy - met1_pad / 2,
+              gate_cx + met1_pad / 2, gate_cy + met1_pad / 2)
+
+        # Vertical met1 from gate to select bus
+        met1_w = 0.14
+        y_lo = min(sel_y - 0.07, gate_cy - met1_pad / 2)
+        y_hi = max(sel_y + 0.07, gate_cy + met1_pad / 2)
+        _rect(cell, _MET1, gate_cx - met1_w / 2, y_lo, gate_cx + met1_w / 2, y_hi)
+
+        # --- Met2 stubs for bit-line connectivity ---------------------------
+        # Input stub (bottom)
+        _rect(cell, _MET2, x_center - 0.07, 0, x_center + 0.07, y_center - 0.3)
+        # Output stub (top, only for first column of each mux group)
+        if inp == 0:
+            _rect(cell, _MET2, x_center - 0.07, y_center + 0.3, x_center + 0.07, height)
+
+        # Labels
         cell.add(gdstk.Label(
-            f"sel[{s}]", (0.25, y),
-            layer=LAYER_MET1[0], texttype=LAYER_MET1[1],
+            f"BL_in[{col}]", (_snap(x_center), 0.15),
+            layer=_MET2[0], texttype=_MET2[1],
         ))
 
-    # --- Pass-transistor mux groups ------------------------------------------
-    # For each mux group, we have ``mux_ratio`` input BL pairs that are
-    # switched to one output BL pair.  Each input has two NMOS pass gates
-    # (one for BL, one for BR) controlled by the appropriate select line.
-    #
-    # For decoded mux (binary select lines):
-    #   mux_ratio=2 : sel[0] selects input 0 or input 1
-    #   mux_ratio=4 : sel[1:0] decoded to 4 selects (one-hot internally)
-    #   mux_ratio=8 : sel[2:0] decoded to 8 selects (one-hot internally)
-    # We draw one transistor per input per BL/BR, with its gate connected to
-    # the corresponding select line.  For simplicity the gate is connected to
-    # sel[input_index % num_sel] which is correct for mux_ratio=2 and gives a
-    # representative layout for larger ratios.
-
-    transistor_y_region_bottom = 0.6
-    transistor_y_region_top = height - 0.6
-    transistor_y_span = transistor_y_region_top - transistor_y_region_bottom
-
-    for grp in range(num_outputs):
-        for inp in range(mux_ratio):
-            col_idx = grp * mux_ratio + inp
-            x_bl = col_idx * bl_pitch + bl_pitch * 0.35
-            x_br = col_idx * bl_pitch + bl_pitch * 0.65
-
-            # Y position for this input's transistor pair
-            t_y = transistor_y_region_bottom + (inp + 0.5) * transistor_y_span / mux_ratio
-
-            # Select line for this input
-            sel_idx = inp % max(num_sel, 1)
-            gate_y = sel_y_positions[sel_idx] if sel_y_positions else t_y
-
-            # Draw pass transistors for BL and BR
-            _draw_pass_transistor(cell, x_bl, t_y, gate_y - 0.07, gate_y + 0.07)
-            _draw_pass_transistor(cell, x_br, t_y, gate_y - 0.07, gate_y + 0.07)
-
-    # --- Input bit-line stubs (met2, bottom edge) ----------------------------
-    for i in range(num_cols):
-        x_bl = i * bl_pitch + bl_pitch * 0.35
-        x_br = i * bl_pitch + bl_pitch * 0.65
-        # BL_in / BR_in stubs at bottom
-        cell.add(gdstk.rectangle(
-            (x_bl - 0.07, 0), (x_bl + 0.07, 0.5),
-            layer=LAYER_MET2[0], datatype=LAYER_MET2[1],
-        ))
-        cell.add(gdstk.rectangle(
-            (x_br - 0.07, 0), (x_br + 0.07, 0.5),
-            layer=LAYER_MET2[0], datatype=LAYER_MET2[1],
-        ))
-        # Label
-        cell.add(gdstk.Label(
-            f"BL_in[{i}]", (x_bl, 0.25),
-            layer=LAYER_MET2[0], texttype=LAYER_MET2[1],
-        ))
-        cell.add(gdstk.Label(
-            f"BR_in[{i}]", (x_br, 0.25),
-            layer=LAYER_MET2[0], texttype=LAYER_MET2[1],
-        ))
-
-    # --- Output bit-line stubs (met2, top edge) ------------------------------
-    out_pitch = bl_pitch * mux_ratio
-    for i in range(num_outputs):
-        x_bl = i * out_pitch + out_pitch * 0.35
-        x_br = i * out_pitch + out_pitch * 0.65
-        cell.add(gdstk.rectangle(
-            (x_bl - 0.07, height - 0.5), (x_bl + 0.07, height),
-            layer=LAYER_MET2[0], datatype=LAYER_MET2[1],
-        ))
-        cell.add(gdstk.rectangle(
-            (x_br - 0.07, height - 0.5), (x_br + 0.07, height),
-            layer=LAYER_MET2[0], datatype=LAYER_MET2[1],
-        ))
-        cell.add(gdstk.Label(
-            f"BL_out[{i}]", (x_bl, height - 0.25),
-            layer=LAYER_MET2[0], texttype=LAYER_MET2[1],
-        ))
-        cell.add(gdstk.Label(
-            f"BR_out[{i}]", (x_br, height - 0.25),
-            layer=LAYER_MET2[0], texttype=LAYER_MET2[1],
-        ))
-
-    if output_path is not None:
+    if output_path:
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         lib.write_gds(str(out))

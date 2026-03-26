@@ -260,7 +260,8 @@ def generate_sram_macro(
                     cell_map[c.name] = new_cell
                     lib.add(new_cell)
             mux_cell = cell_map[mux_cell_obj.name]
-            mux_h = 2.0 * mux_ratio
+            mux_bb = mux_cell.bounding_box()
+            mux_h = mux_bb[1][1] - mux_bb[0][1] if mux_bb else 2.0 * mux_ratio
         except Exception as e:
             logger.warning("Could not generate column_mux: %s", e)
 
@@ -276,7 +277,8 @@ def generate_sram_macro(
                 cell_map[c.name] = new_cell
                 lib.add(new_cell)
         pre_cell = cell_map[pre_cell_obj.name]
-        pre_h = 3.0
+        pre_bb = pre_cell.bounding_box()
+        pre_h = pre_bb[1][1] - pre_bb[0][1] if pre_bb else 6.0
     except Exception as e:
         logger.warning("Could not generate precharge: %s", e)
         pre_cell = None

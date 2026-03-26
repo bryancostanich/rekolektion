@@ -298,10 +298,14 @@ def create_bitcell(
     # ===================================================================
     # N-WELL (PMOS side, extends past Y edges)
     # ===================================================================
+    # Extend nwell 0.08 beyond diff enclosure in Y so that Y-mirrored
+    # row pairs create a nwell overlap ≥ 0.84 μm (nwell.1 min width).
+    # At y_pitch = cell_h - m2_stripe_w: overlap = 2*(nwell_encl+0.08) + m2_w - cell_h
     nwell_encl = g["nwell_encl"]
+    nwell_y_ext = nwell_encl + 0.08  # 0.26 total past diff edge
     _rect(cell, L.NWELL.as_tuple,
-          g["nwell_x0"], g["diff_bot"] - nwell_encl,
-          cw + 0.10, g["diff_top"] + nwell_encl)
+          g["nwell_x0"], g["diff_bot"] - nwell_y_ext,
+          cw + 0.10, g["diff_top"] + nwell_y_ext)
 
     # ===================================================================
     # DIFFUSION

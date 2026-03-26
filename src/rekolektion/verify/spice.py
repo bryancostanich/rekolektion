@@ -37,7 +37,7 @@ READ_SNM_TEMPLATE = Template("""\
 .param temp_val = ${temp}
 
 * Include SKY130 models
-.lib "$$PDK_ROOT/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/sky130A/${model_path}" ${corner}
 
 * Include bitcell subcircuit
 .include "${bitcell_spice}"
@@ -54,7 +54,7 @@ Vblb BLB 0 DC vdd_val
 Vwl  WL  0 DC vdd_val
 
 * Instantiate bitcell
-Xcell BL BLB WL VDD VSS sky130_sram_6t_bitcell
+Xcell BL BLB WL VDD VSS ${subckt_name}
 
 * DC noise sources for butterfly curve
 * Sweep Vn1 at Q node, measure QB; then sweep Vn2 at QB, measure Q
@@ -99,7 +99,7 @@ WRITE_MARGIN_TEMPLATE = Template("""\
 .param vdd_val = ${vdd}
 .param temp_val = ${temp}
 
-.lib "$$PDK_ROOT/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/sky130A/${model_path}" ${corner}
 .include "${bitcell_spice}"
 
 Vvdd VDD 0 DC vdd_val
@@ -113,7 +113,7 @@ Vblb BLB 0 DC vdd_val
 Vbl  BL  0 DC vdd_val
 
 * Instantiate and initialize cell (Q=VDD, QB=0)
-Xcell BL BLB WL VDD VSS sky130_sram_6t_bitcell
+Xcell BL BLB WL VDD VSS ${subckt_name}
 .ic V(Xcell.Q) = vdd_val
 .ic V(Xcell.QB) = 0
 
@@ -146,7 +146,7 @@ HOLD_MARGIN_TEMPLATE = Template("""\
 .param vdd_val = ${vdd}
 .param temp_val = ${temp}
 
-.lib "$$PDK_ROOT/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/sky130A/${model_path}" ${corner}
 .include "${bitcell_spice}"
 
 Vvdd VDD 0 DC vdd_val
@@ -159,7 +159,7 @@ Vwl WL 0 DC 0
 Rbl  BL  VDD 1G
 Rblb BLB VDD 1G
 
-Xcell BL BLB WL VDD VSS sky130_sram_6t_bitcell
+Xcell BL BLB WL VDD VSS ${subckt_name}
 
 * Noise source at Q
 Vn Q_probe Xcell.Q DC 0
@@ -190,7 +190,7 @@ TRANSIENT_TEMPLATE = Template("""\
 .param period = 20n
 .param temp_val = ${temp}
 
-.lib "$$PDK_ROOT/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/sky130A/${model_path}" ${corner}
 .include "${bitcell_spice}"
 
 Vvdd VDD 0 DC vdd_val
@@ -254,7 +254,7 @@ Rblb_drive BLB_drive BLB 100
 Cbl  BL  0 50f
 Cblb BLB 0 50f
 
-Xcell BL BLB WL VDD VSS sky130_sram_6t_bitcell
+Xcell BL BLB WL VDD VSS ${subckt_name}
 
 .tran 0.01n 80n
 
@@ -297,6 +297,13 @@ def generate_testbenches(
     output_dir.mkdir(parents=True, exist_ok=True)
     bitcell_spice = Path(bitcell_spice).resolve()
 
+    # Extract subcircuit name from the netlist file
+    subckt_name = "sky130_sram_6t_bitcell"  # default
+    for line in bitcell_spice.read_text().splitlines():
+        if line.strip().lower().startswith(".subckt"):
+            subckt_name = line.split()[1]
+            break
+
     generated: list[Path] = []
 
     templates = {
@@ -305,6 +312,9 @@ def generate_testbenches(
         "hold_snm": HOLD_MARGIN_TEMPLATE,
         "transient": TRANSIENT_TEMPLATE,
     }
+
+    import os
+    pdk_root = os.environ.get("PDK_ROOT", os.path.expanduser("~/.volare"))
 
     for corner in corners:
         model_lib = SPICE_MODELS.get(corner, SPICE_MODELS["tt"])
@@ -319,6 +329,8 @@ def generate_testbenches(
                     "model_path": model_path,
                     "bitcell_spice": str(bitcell_spice),
                     "output_prefix": f"{corner}_{vdd:.2f}V_{temp:.0f}C",
+                    "subckt_name": subckt_name,
+                    "pdk_root": pdk_root,
                 }
 
                 for name, template in templates.items():

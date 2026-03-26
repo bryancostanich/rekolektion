@@ -260,135 +260,27 @@ def _export_glb(
 ) -> Path | None:
     """Export a colored GLB (binary glTF 2.0) with per-layer materials.
 
-    Builds the GLB directly without trimesh/scipy to avoid numpy version
-    conflicts. Each IC layer becomes a separate mesh with its own color.
-    Viewable in macOS Quick Look (spacebar), any browser glTF viewer, etc.
+    Uses the same mesh pipeline as the in-situ version (which renders
+    correctly) but without the strata/font layers.
     """
-    import json
-    import struct
-
-    lib = gdstk.read_gds(str(gds_path))
-    cell = lib.top_level()[0]
-
-    layer_polys: dict[tuple[int, int], list[np.ndarray]] = {}
-    for poly in cell.polygons:
-        key = (poly.layer, poly.datatype)
-        if key not in layer_polys:
-            layer_polys[key] = []
-        layer_polys[key].append(poly.points)
-
-    # Build per-layer mesh data
-    meshes = []  # list of (name, color_rgba, vertices_f32, indices_u32)
-    for layer_key, polys in sorted(layer_polys.items()):
-        stackup = SKY130_STACKUP.get(layer_key)
-        if stackup is None or layer_key in SKIP_LAYERS:
-            continue
-        z_bot, z_top, name, color_hex = stackup
-        rgba = _hex_to_rgba(color_hex, alpha=200)
-        color_f = [c / 255.0 for c in rgba]
-
-        all_verts = []
-        for pts in polys:
-            tris = extrude_polygon(pts * scale, z_bot * scale, z_top * scale)
-            if len(tris) > 0:
-                all_verts.append(tris.reshape(-1, 3))
-        if not all_verts:
-            continue
-
-        vertices = np.concatenate(all_verts, axis=0).astype(np.float32)
-        # Swap Y↔Z so the layer stack points "up" in glTF's Y-up coordinate system.
-        # GDS layout is in XY, extrusion is Z; glTF viewers expect Y = up.
-        vertices = vertices[:, [0, 2, 1]]  # (x, y, z) → (x, z, y)
-        indices = np.arange(len(vertices), dtype=np.uint32)
-        meshes.append((name, color_f, vertices, indices))
-
+    meshes = _build_glb_mesh_data(gds_path, scale)
     if not meshes:
         return None
 
-    # === Build glTF JSON + binary buffer ===
     buffer_data = bytearray()
-    accessors = []
-    buffer_views = []
-    gltf_meshes = []
-    materials = []
-    nodes = []
+    accessors, buffer_views = [], []
+    gltf_meshes, materials, nodes = [], [], []
 
-    for i, (name, color_f, vertices, indices) in enumerate(meshes):
-        # Material
-        materials.append({
-            "name": name,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": color_f,
-                "metallicFactor": 0.1,
-                "roughnessFactor": 0.6,
-            },
-            "alphaMode": "BLEND" if color_f[3] < 1.0 else "OPAQUE",
-        })
-
-        # Indices buffer view + accessor
-        idx_bytes = indices.tobytes()
-        idx_bv_offset = len(buffer_data)
-        buffer_data.extend(idx_bytes)
-        # Pad to 4-byte alignment
-        while len(buffer_data) % 4 != 0:
-            buffer_data.append(0)
-
-        idx_bv_idx = len(buffer_views)
-        buffer_views.append({
-            "buffer": 0,
-            "byteOffset": idx_bv_offset,
-            "byteLength": len(idx_bytes),
-            "target": 34963,  # ELEMENT_ARRAY_BUFFER
-        })
-        idx_acc_idx = len(accessors)
-        accessors.append({
-            "bufferView": idx_bv_idx,
-            "componentType": 5125,  # UNSIGNED_INT
-            "count": len(indices),
-            "type": "SCALAR",
-            "max": [int(indices.max())],
-            "min": [int(indices.min())],
-        })
-
-        # Vertices buffer view + accessor
-        vert_bytes = vertices.tobytes()
-        vert_bv_offset = len(buffer_data)
-        buffer_data.extend(vert_bytes)
-        while len(buffer_data) % 4 != 0:
-            buffer_data.append(0)
-
-        vert_bv_idx = len(buffer_views)
-        buffer_views.append({
-            "buffer": 0,
-            "byteOffset": vert_bv_offset,
-            "byteLength": len(vert_bytes),
-            "target": 34962,  # ARRAY_BUFFER
-            "byteStride": 12,  # 3 floats × 4 bytes
-        })
-        vert_acc_idx = len(accessors)
-        v_min = vertices.min(axis=0).tolist()
-        v_max = vertices.max(axis=0).tolist()
-        accessors.append({
-            "bufferView": vert_bv_idx,
-            "componentType": 5126,  # FLOAT
-            "count": len(vertices),
-            "type": "VEC3",
-            "max": v_max,
-            "min": v_min,
-        })
-
-        # Mesh
-        gltf_meshes.append({
-            "name": name,
-            "primitives": [{
-                "attributes": {"POSITION": vert_acc_idx},
-                "indices": idx_acc_idx,
-                "material": i,
-            }],
-        })
-
-        # Node
-        nodes.append({"mesh": i, "name": name})
+    for name, color_f, vertices, indices in meshes:
+        # Force fully opaque
+        color_f = list(color_f)
+        color_f[3] = 1.0
+        _add_mesh_to_glb(
+            name, color_f, vertices, indices,
+            buffer_data, accessors, buffer_views,
+            gltf_meshes, materials, nodes,
+            alpha_mode="OPAQUE",
+        )
 
     gltf = {
         "asset": {"version": "2.0", "generator": "rekolektion gds_to_stl.py"},
@@ -401,16 +293,6 @@ def _export_glb(
         "bufferViews": buffer_views,
         "buffers": [{"byteLength": len(buffer_data)}],
     }
-
-    # Encode JSON chunk
-    json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
-    # Pad JSON to 4-byte alignment with spaces
-    while len(json_bytes) % 4 != 0:
-        json_bytes += b" "
-
-    # GLB structure: header (12) + JSON chunk (8 + json_len) + BIN chunk (8 + bin_len)
-    bin_bytes = bytes(buffer_data)
-    total_length = 12 + 8 + len(json_bytes) + 8 + len(bin_bytes)
 
     glb_path = output_dir / "bitcell_3d.glb"
     _write_glb(gltf, buffer_data, glb_path)
@@ -467,8 +349,9 @@ def _build_glb_mesh_data(
         if stackup is None or layer_key in SKIP_LAYERS:
             continue
         z_bot, z_top, name, color_hex = stackup
-        rgba = _hex_to_rgba(color_hex, alpha=200)
+        rgba = _hex_to_rgba(color_hex, alpha=255)
         color_f = [c / 255.0 for c in rgba]
+        color_f[3] = 1.0  # force fully opaque
 
         all_verts = []
         for pts in polys:
@@ -480,6 +363,11 @@ def _build_glb_mesh_data(
 
         vertices = np.concatenate(all_verts, axis=0).astype(np.float32)
         vertices = vertices[:, [0, 2, 1]]  # Z-up → Y-up
+        # Fix winding order reversed by the Y↔Z swap
+        for ti in range(0, len(vertices) - 2, 3):
+            vertices[ti + 1], vertices[ti + 2] = (
+                vertices[ti + 2].copy(), vertices[ti + 1].copy()
+            )
         indices = np.arange(len(vertices), dtype=np.uint32)
         meshes.append((name, color_f, vertices, indices))
 
@@ -696,8 +584,6 @@ def export_glb_in_situ(
     passivation — all as semi-transparent colored slabs surrounding the
     actual cell geometry.
     """
-    from rekolektion.bitcell.sky130_6t import CELL_WIDTH, CELL_HEIGHT
-
     gds_path = Path(gds_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -705,9 +591,18 @@ def export_glb_in_situ(
     # Get actual cell mesh data
     meshes = _build_glb_mesh_data(gds_path, scale)
 
-    # Cell boundary in scaled units
-    cw = CELL_WIDTH * scale
-    ch = CELL_HEIGHT * scale
+    # Derive cell extents from the GDS bounding box (works for any cell)
+    lib = gdstk.read_gds(str(gds_path))
+    top = lib.top_level()[0]
+    bbox = top.bounding_box()
+    # Use actual min/max coordinates, not just width/height,
+    # so strata covers geometry with negative offsets (e.g., nwell, M2 extensions)
+    x_min = bbox[0][0] * scale
+    y_min = bbox[0][1] * scale  # layout Y → glTF Z
+    x_max = bbox[1][0] * scale
+    y_max = bbox[1][1] * scale
+    cw = x_max - x_min  # for text sizing only
+    ch = y_max - y_min
     # Add a small margin around the strata so the cell features aren't flush with edges
     margin = 0.5 * scale
 
@@ -736,17 +631,17 @@ def export_glb_in_situ(
     # Text label sizing — tiny engraved labels
     pixel_size = 0.010 * scale   # each font pixel
     text_depth = 0.007 * scale   # extrusion depth
-    text_x = -margin + 0.1 * scale  # start X for labels
-    text_z = -margin              # front face Z
+    text_x = x_min - margin + 0.1 * scale  # start X for labels
+    text_z = y_min - margin       # front face Z
 
     # Add strata + text labels
     for sname, z_bot_um, z_top_um, color_hex, alpha in strata:
         z_bot = z_bot_um * scale
         z_top = z_top_um * scale
-        # Box in Y-up space: X=[−margin, cw+margin], Y=[z_bot, z_top], Z=[−margin, ch+margin]
+        # Box in Y-up space: X=[x_min−margin, x_max+margin], Y=[z_bot, z_top], Z=[y_min−margin, y_max+margin]
         box_tris = _make_box(
-            -margin, z_bot, -margin,
-            cw + margin, z_top, ch + margin,
+            x_min - margin, z_bot, y_min - margin,
+            x_max + margin, z_top, y_max + margin,
         )
         verts = box_tris.reshape(-1, 3).astype(np.float32)
         idxs = np.arange(len(verts), dtype=np.uint32)

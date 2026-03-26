@@ -33,7 +33,7 @@ WEIGHT_MACROS = [
     {
         "filename": "sram_weight_bank_a",
         "macro_name": "sram_weight_bank_a",
-        "words": 1024,
+        "words": 8192,
         "bits": 32,
         "mux_ratio": 8,
         "description": "Weight bank A (32 KB)",
@@ -41,7 +41,7 @@ WEIGHT_MACROS = [
     {
         "filename": "sram_weight_bank_b",
         "macro_name": "sram_weight_bank_b",
-        "words": 1024,
+        "words": 8192,
         "bits": 32,
         "mux_ratio": 8,
         "description": "Weight bank B (32 KB)",

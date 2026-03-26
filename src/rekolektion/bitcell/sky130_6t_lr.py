@@ -503,6 +503,58 @@ def create_bitcell(
 
 
 # ---------------------------------------------------------------------------
+# BitcellInfo for array tiler integration
+# ---------------------------------------------------------------------------
+
+def load_lr_bitcell(gds_path: str | Path = "output/sky130_6t_lr.gds") -> "BitcellInfo":
+    """Return a BitcellInfo for the LR bitcell, generating GDS if needed.
+
+    This provides the same interface as load_foundry_sp_bitcell() so the
+    array tiler can work with either cell interchangeably.
+    """
+    from rekolektion.bitcell.base import BitcellInfo, PinInfo
+
+    gds_path = Path(gds_path)
+    if not gds_path.exists():
+        generate_bitcell(str(gds_path))
+
+    g = _compute_cell_geometry()
+    cw, ch = g["cell_w"], g["cell_h"]
+
+    # Pin positions (x_center, y_center, layer_name)
+    vgnd_cx = g["rail_w"] / 2.0
+    vpwr_cx = g["vpwr_x0"] + g["rail_w"] / 2.0
+    pins = {
+        "BL":   PinInfo("BL",   [(g["nmos_cx"], g["bl_bot_cy"], "met1")]),
+        "BLB":  PinInfo("BLB",  [(g["nmos_cx"], g["bl_top_cy"], "met1")]),
+        "WL":   PinInfo("WL",   [(cw / 2.0, g["wl_bot_cy"], "poly")]),
+        "VGND": PinInfo("VGND", [(vgnd_cx, g["pwr_cy"], "met1")]),
+        "VPWR": PinInfo("VPWR", [(vpwr_cx, g["pwr_cy"], "met1")]),
+    }
+
+    # Array tiling pitch — cells share power rails and M2 stripes at boundaries.
+    # x_pitch = cell_w - rail_w + 0.03 (shared VPWR + poly.2 spacing)
+    # y_pitch = 2.04 (minimum DRC-clean Y sharing)
+    # The tiler places cells at cell_width/cell_height pitch, so we set these
+    # to the tiling pitch. Geometry extends past the boundary by design —
+    # adjacent cells' shared features (rails, M2, nwell) merge.
+    x_pitch = _snap(cw - g["rail_w"] + 0.03)   # 1.925
+    y_pitch = _snap(2.04)                       # minimum DRC-clean
+
+    return BitcellInfo(
+        cell_name="sky130_sram_6t_bitcell_lr",
+        cell_width=x_pitch,       # tiling pitch
+        cell_height=y_pitch,      # tiling pitch
+        pins=pins,
+        gds_path=gds_path,
+        origin_x=0.0,
+        origin_y=0.0,
+        geometry_width=cw,        # actual GDS extent (for mirror offset)
+        geometry_height=ch,       # actual GDS extent
+    )
+
+
+# ---------------------------------------------------------------------------
 # Output generation
 # ---------------------------------------------------------------------------
 

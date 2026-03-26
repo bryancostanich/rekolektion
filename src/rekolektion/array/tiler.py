@@ -313,8 +313,12 @@ def tile_array(
     if num_rows < 1 or num_cols < 1:
         raise ValueError("num_rows and num_cols must be >= 1")
 
-    cw = bitcell.cell_width
-    ch = bitcell.cell_height
+    cw = bitcell.cell_width    # tiling pitch
+    ch = bitcell.cell_height   # tiling pitch
+    # Actual geometry dimensions for mirror offset (may differ from pitch
+    # when using shared-boundary tiling)
+    gw = bitcell.geometry_width or cw
+    gh = bitcell.geometry_height or ch
     name = array_name or f"sram_array_{num_rows}x{num_cols}"
 
     # --- build library -----------------------------------------------------
@@ -479,7 +483,7 @@ def tile_array(
                 y_mirror = (row % 2) == 1
                 _place_cell(
                     array_cell, bit_cell,
-                    x_pos, y_pos, cw, ch,
+                    x_pos, y_pos, gw, gh,
                     x_mirror=x_mirror, y_mirror=y_mirror,
                 )
 

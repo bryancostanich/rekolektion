@@ -57,6 +57,12 @@ class BitcellInfo:
     # geometry on adjacent cell boundaries abuts cleanly.
     origin_x: float = 0.0
     origin_y: float = 0.0
+    # Actual geometry dimensions (may differ from cell_width/cell_height when
+    # using shared-boundary tiling). cell_width/cell_height = tiling pitch.
+    # geometry_width/geometry_height = actual GDS extent, used for mirror offset.
+    # If 0, defaults to cell_width/cell_height.
+    geometry_width: float = 0.0
+    geometry_height: float = 0.0
 
     # --- convenience -------------------------------------------------------
 

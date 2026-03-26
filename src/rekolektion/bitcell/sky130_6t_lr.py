@@ -130,7 +130,7 @@ def _compute_cell_geometry(
     # margin_left >= 0.17 ensures spacing >= 0.14.
     margin_left = 0.17
 
-    margin_right = 0.20  # PMOS side margin
+    margin_right = 0.15  # PMOS side: just PSDM clearance (0.125) + buffer
 
     # --- X coordinates ---
     g["vgnd_x0"] = 0.0

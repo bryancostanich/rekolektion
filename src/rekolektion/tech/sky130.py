@@ -67,6 +67,9 @@ class SKY130Layers:
     MET1_PIN = Layer(68, 16)
     MET2_PIN = Layer(69, 16)
 
+    # Area IDs
+    COREID = Layer(81, 2)       # SRAM core cell marker — enables relaxed li1 rules
+
     # Boundary
     BOUNDARY = Layer(235, 4)
 

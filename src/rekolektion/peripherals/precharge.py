@@ -35,8 +35,8 @@ from rekolektion.tech.sky130 import LAYERS, RULES
 _W = 0.42       # transistor channel width
 _L = 0.15       # gate length
 _SD_EXT = 0.36  # source/drain diff past gate (need S/D li1 pads 0.17 apart)
-_POLY_OVH = 0.13          # poly extension past diff (right side)
-_GATE_EXT = 0.50           # poly extension past diff (left side, for gate contact)
+_POLY_OVH = 0.14          # poly extension past diff (right side, poly.8 + margin)
+_GATE_EXT = 0.52           # poly extension past diff (left side, for gate contact)
 _LICON = 0.17
 _LI_ENC = 0.08
 _PSDM_ENC = 0.125
@@ -44,8 +44,8 @@ _NWELL_ENC = 0.18
 _MCON = 0.17
 
 _LI_PAD = _LICON + 2 * _LI_ENC
-_POLY_PAD_W = _LICON + 2 * 0.05
-_POLY_PAD_H = _LICON + 2 * 0.08
+_POLY_PAD_W = _LICON + 2 * 0.06      # 0.29 (licon enc 0.05 + margin)
+_POLY_PAD_H = _LICON + 2 * 0.09      # 0.35 (licon enc 0.08 + margin)
 _DIFF_H = _L + 2 * _SD_EXT
 _TRANS_PITCH = 1.60
 
@@ -205,7 +205,7 @@ def generate_precharge(
         layer=_MET1[0], texttype=_MET1[1],
     ))
 
-    met1_w = 0.14
+    met1_w = 0.15
 
     for i in range(num_cols):
         x_center = i * eff_pitch + eff_pitch / 2

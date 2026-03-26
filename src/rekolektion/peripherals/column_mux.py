@@ -35,16 +35,16 @@ from rekolektion.tech.sky130 import LAYERS, RULES
 _W = 0.42       # transistor channel width (diff extent in X)
 _L = 0.15       # gate length (poly extent in Y)
 _SD_EXT = 0.36  # source/drain diff past gate (need S/D li1 pads 0.17 apart)
-_POLY_OVH = 0.13          # poly extension past diff edge (poly.8)
-_GATE_EXT = 0.50           # poly extension past diff for gate contact pad
+_POLY_OVH = 0.14          # poly extension past diff edge (poly.8 = 0.13 + margin)
+_GATE_EXT = 0.52           # poly extension past diff for gate contact pad
 _LICON = 0.17              # contact size
 _LI_ENC = 0.08             # li1 enclosure of licon
 _NSDM_ENC = 0.125          # nsdm enclosure of diff
 _MCON = 0.17               # mcon size
 
 _LI_PAD = _LICON + 2 * _LI_ENC       # 0.33 — li1 pad side
-_POLY_PAD_W = _LICON + 2 * 0.05      # 0.27 — poly pad width (licon enc 0.05)
-_POLY_PAD_H = _LICON + 2 * 0.08      # 0.33 — poly pad height (licon enc 0.08)
+_POLY_PAD_W = _LICON + 2 * 0.06      # 0.29 — poly pad width (licon enc 0.05 + margin)
+_POLY_PAD_H = _LICON + 2 * 0.09      # 0.35 — poly pad height (licon enc 0.08 + margin)
 
 # Transistor total heights
 _DIFF_H = _L + 2 * _SD_EXT           # 0.75
@@ -257,7 +257,7 @@ def generate_column_mux(
               gate_cx + met1_pad / 2, gate_cy + met1_pad / 2)
 
         # Vertical met1 from gate to select bus
-        met1_w = 0.14
+        met1_w = 0.15
         y_lo = min(sel_y - 0.07, gate_cy - met1_pad / 2)
         y_hi = max(sel_y + 0.07, gate_cy + met1_pad / 2)
         _rect(cell, _MET1, gate_cx - met1_w / 2, y_lo, gate_cx + met1_w / 2, y_hi)

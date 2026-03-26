@@ -62,7 +62,7 @@ Vn1 Q_probe Xcell.Q DC 0
 Vn2 QB_probe Xcell.QB DC 0
 
 * Butterfly curve: sweep noise source, measure inverse transfer
-.dc Vn1 0 vdd_val 0.01
+.dc Vn1 0 ${vdd} 0.01
 
 * Measurements
 .meas DC snm_high FIND V(Xcell.QB) WHEN V(Q_probe)=V(Xcell.QB) RISE=1
@@ -118,7 +118,7 @@ Xcell BL BLB WL VDD VSS ${subckt_name}
 .ic V(Xcell.QB) = 0
 
 * Sweep BL from VDD down to 0
-.dc Vbl vdd_val 0 -0.01
+.dc Vbl ${vdd} 0 -0.01
 
 .meas DC write_trip FIND V(BL) WHEN V(Xcell.Q)=V(Xcell.QB)
 .meas DC write_margin PARAM='vdd_val - write_trip'
@@ -164,7 +164,7 @@ Xcell BL BLB WL VDD VSS ${subckt_name}
 * Noise source at Q
 Vn Q_probe Xcell.Q DC 0
 
-.dc Vn 0 vdd_val 0.01
+.dc Vn 0 ${vdd} 0.01
 
 .control
 run

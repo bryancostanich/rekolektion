@@ -50,6 +50,13 @@ class BitcellInfo:
     cell_height: float  # microns
     pins: Dict[str, PinInfo] = field(default_factory=dict)
     gds_path: Path = field(default_factory=lambda: Path())
+    # LEF ORIGIN offset: the (x, y) shift between the GDS origin and the
+    # lower-left corner of the cell boundary.  When non-zero the GDS geometry
+    # extends *left* of x=0 by origin_x (and below y=0 by origin_y).  The
+    # tiler must account for this when computing mirror placement so that
+    # geometry on adjacent cell boundaries abuts cleanly.
+    origin_x: float = 0.0
+    origin_y: float = 0.0
 
     # --- convenience -------------------------------------------------------
 

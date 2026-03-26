@@ -40,16 +40,18 @@ _LOCAL_LEF = _CELLS_DIR / f"{_CELL_NAME}.magic.lef"
 # LEF parser (minimal, only what we need for pin extraction)
 # ---------------------------------------------------------------------------
 
-def _parse_lef_pins(lef_path: Path) -> Tuple[float, float, Dict[str, PinInfo]]:
-    """Parse SIZE and PIN sections from a LEF macro definition.
+def _parse_lef_pins(lef_path: Path) -> Tuple[float, float, float, float, Dict[str, PinInfo]]:
+    """Parse SIZE, ORIGIN, and PIN sections from a LEF macro definition.
 
-    Returns (width, height, pins_dict).
+    Returns (width, height, origin_x, origin_y, pins_dict).
     """
     text = lef_path.read_text()
     lines = text.splitlines()
 
     width = 0.0
     height = 0.0
+    origin_x = 0.0
+    origin_y = 0.0
     pins: Dict[str, PinInfo] = {}
 
     current_pin: str | None = None
@@ -58,6 +60,13 @@ def _parse_lef_pins(lef_path: Path) -> Tuple[float, float, Dict[str, PinInfo]]:
 
     for line in lines:
         stripped = line.strip()
+
+        # ORIGIN x y ;
+        m = re.match(r"ORIGIN\s+([-\d.]+)\s+([-\d.]+)", stripped)
+        if m:
+            origin_x = float(m.group(1))
+            origin_y = float(m.group(2))
+            continue
 
         # SIZE w BY h ;
         m = re.match(r"SIZE\s+([\d.]+)\s+BY\s+([\d.]+)", stripped)
@@ -103,7 +112,7 @@ def _parse_lef_pins(lef_path: Path) -> Tuple[float, float, Dict[str, PinInfo]]:
             pins[current_pin].ports.append((cx, cy, current_layer))
             continue
 
-    return width, height, pins
+    return width, height, origin_x, origin_y, pins
 
 
 def _pick_primary_port(pin: PinInfo) -> PinInfo:
@@ -152,7 +161,7 @@ def load_foundry_sp_bitcell(
             "Clone the foundry cell repo or copy the LEF into cells/."
         )
 
-    width, height, pins = _parse_lef_pins(lef)
+    width, height, origin_x, origin_y, pins = _parse_lef_pins(lef)
 
     # Reorder each pin's ports so the highest metal layer is primary.
     for pin in pins.values():
@@ -164,4 +173,6 @@ def load_foundry_sp_bitcell(
         cell_height=height,
         pins=pins,
         gds_path=gds,
+        origin_x=origin_x,
+        origin_y=origin_y,
     )

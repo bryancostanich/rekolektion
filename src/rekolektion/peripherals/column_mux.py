@@ -196,14 +196,16 @@ def generate_column_mux(
 
     eff_pitch = max(bl_pitch, _MIN_BL_PITCH)
     num_outputs = num_cols // mux_ratio
-    num_sel = int(math.log2(mux_ratio)) if mux_ratio > 1 else 0
+    # One-hot select: each mux input gets its own select line
+    num_sel = mux_ratio if mux_ratio > 1 else 0
 
     name = cell_name or f"column_mux_{num_cols}x{mux_ratio}"
     width = _snap(num_cols * eff_pitch)
 
     # Height: bottom margin + select buses + transistor slots + top margin
     bot_margin = 0.5
-    sel_region = max(num_sel * 0.30, 0.3)
+    sel_spacing = 0.50
+    sel_region = max(num_sel * sel_spacing + 0.20, 0.3) if mux_ratio > 1 else 0.3
     trans_region = mux_ratio * _TRANS_PITCH
     top_margin = 0.5
     height = _snap(bot_margin + sel_region + trans_region + top_margin)
@@ -227,7 +229,7 @@ def generate_column_mux(
     # --- Select buses (met1, horizontal) ------------------------------------
     sel_y_positions = []
     for s in range(num_sel):
-        y = bot_margin + 0.15 + s * 0.30
+        y = bot_margin + 0.20 + s * sel_spacing
         sel_y_positions.append(y)
         _rect(cell, _MET1, 0, y - 0.07, width, y + 0.07)  # 0.14 wide met1
 
@@ -243,24 +245,36 @@ def generate_column_mux(
         # Draw transistor
         gate_cx, gate_cy, _ = _draw_nmos_pass_transistor(cell, x_center, y_center)
 
-        # Connect gate to select bus via mcon -> met1
-        sel_idx = inp % max(num_sel, 1)
+        # Connect gate to select bus via mcon -> met1 -> via -> met2 -> via -> met1
+        # (met2 vertical jump avoids shorting to other select buses)
+        sel_idx = inp  # one-hot: each input has its own select line
         sel_y = sel_y_positions[sel_idx]
 
         # mcon on gate li1
         _sq_contact(cell, _MCON_L, gate_cx, gate_cy, _MCON)
 
-        # met1 pad at mcon
-        met1_pad = _MCON + 2 * 0.06  # 0.29
+        # met1 pad at gate mcon (large enough for mcon + via enclosure via.5a)
+        pad_sz = 0.34  # via(0.15) + 2*0.095 enclosure (via.5a needs 0.085)
         _rect(cell, _MET1,
-              gate_cx - met1_pad / 2, gate_cy - met1_pad / 2,
-              gate_cx + met1_pad / 2, gate_cy + met1_pad / 2)
+              gate_cx - pad_sz / 2, gate_cy - pad_sz / 2,
+              gate_cx + pad_sz / 2, gate_cy + pad_sz / 2)
 
-        # Vertical met1 from gate to select bus
-        met1_w = 0.15
-        y_lo = min(sel_y - 0.07, gate_cy - met1_pad / 2)
-        y_hi = max(sel_y + 0.07, gate_cy + met1_pad / 2)
-        _rect(cell, _MET1, gate_cx - met1_w / 2, y_lo, gate_cx + met1_w / 2, y_hi)
+        # Via up to met2 at gate position
+        via_sz = 0.15
+        _sq_contact(cell, _VIA, gate_cx, gate_cy, via_sz)
+        _rect(cell, _MET2,
+              gate_cx - pad_sz / 2, gate_cy - pad_sz / 2,
+              gate_cx + pad_sz / 2, gate_cy + pad_sz / 2)
+
+        # Met2 vertical strip from gate down to select bus Y
+        _rect(cell, _MET2, gate_cx - pad_sz / 2, sel_y - pad_sz / 2,
+              gate_cx + pad_sz / 2, gate_cy + pad_sz / 2)
+
+        # Via back to met1 at select bus Y
+        _sq_contact(cell, _VIA, gate_cx, sel_y, via_sz)
+        _rect(cell, _MET1,
+              gate_cx - pad_sz / 2, sel_y - pad_sz / 2,
+              gate_cx + pad_sz / 2, sel_y + pad_sz / 2)
 
         # --- Met2 stubs for bit-line connectivity ---------------------------
         # Input stub (bottom)

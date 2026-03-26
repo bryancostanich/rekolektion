@@ -22,11 +22,12 @@ Y levels (bottom to top):
     WL_top: PG-top gate (horizontal poly, full width)
 
 Cross-coupling strategy:
-    gate_A is driven by QB (PMOS drain) — contact pad in the N-P gap,
-    short horizontal li1 from PMOS int_bot contact.
-    gate_B is driven by Q (NMOS drain) — contact pad on the NMOS outer
-    (left) side, short vertical li1 from NMOS int_top contact.
-    This avoids routing two nets through the same gap corridor.
+    BOTH gate_A and gate_B poly contacts are in the N-P gap at the
+    same X position but different Y levels. This eliminates the wide
+    left margin that was needed for the gate_B outer pad.
+    - gate_A ← PMOS int_bot: horizontal li1 from PMOS, vertical in gap
+    - gate_B ← NMOS int_top: horizontal li1 from NMOS, vertical in gap
+    Li1 spacing between routes: 0.37 μm (> 0.17 li.3 min).
 
 All dimensions in micrometers. Grid snapped to 5nm for SKY130.
 """
@@ -122,19 +123,12 @@ def _compute_cell_geometry(
     # to reach the M2 horizontal power straps above, not along the whole row)
     rail_w = R.MET1_MIN_WIDTH  # 0.14 μm — minimum width
 
-    # gate_B poly contact pad on NMOS outer (left) side.
-    # Pad needs licon.14 (0.19) clearance from NMOS diff.
-    # Licon center: nmos_diff_x0 - licon_to_ndiff - licon_sz/2
-    # Pad outer edge: licon_center - pad_w_x/2
-    licon_to_diff_pad = licon_to_ndiff  # 0.19
-
-    # Margin from NMOS outer (left) side: enough for poly pad + rail
-    # pad outer X from diff: licon_to_diff_pad + licon_sz/2 + pad_w_x/2
-    #                      = 0.19 + 0.085 + 0.135 = 0.41
-    # But we need nsdm clearance too. And the rail needs to fit.
-    # Approach: set margin = distance from diff left edge to rail right edge
-    outer_pad_extent = licon_to_diff_pad + licon_sz / 2.0 + pad_w_x / 2.0  # 0.41
-    margin_left = max(outer_pad_extent + 0.05, 0.20)  # 0.46 — room for pad + buffer
+    # Both poly contacts (gate_A and gate_B) are in the N-P gap at the same X
+    # but different Y levels. No outer pad needed on NMOS left side.
+    # Need met1.2 clearance between VGND via pad and BL met1 pad at nmos_cx.
+    # VGND via pad right edge ~0.23, BL pad left ~nmos_cx-0.145.
+    # margin_left >= 0.17 ensures spacing >= 0.14.
+    margin_left = 0.17
 
     margin_right = 0.20  # PMOS side margin
 
@@ -155,11 +149,9 @@ def _compute_cell_geometry(
 
     g["cell_w"] = g["vpwr_x1"]
 
-    # Gap poly contact center X (for gate_A, QB net)
+    # Gap poly contact center X — shared by BOTH gate_A and gate_B licons
+    # (same X, different Y levels). Clearance: licon.14 from NMOS diff.
     g["gap_licon_cx"] = _snap(g["nmos_diff_x1"] + licon_to_ndiff + licon_sz / 2.0)
-
-    # NMOS outer poly contact center X (for gate_B, Q net)
-    g["nmos_outer_licon_cx"] = _snap(g["nmos_diff_x0"] - licon_to_diff_pad - licon_sz / 2.0)
 
     # Diff center X
     g["nmos_cx"] = _snap((g["nmos_diff_x0"] + g["nmos_diff_x1"]) / 2.0)
@@ -301,7 +293,6 @@ def create_bitcell(
     pad_w_x = g["pad_w_x"]
     pad_h_y = g["pad_h_y"]
     gap_licon_cx = g["gap_licon_cx"]
-    nmos_outer_cx = g["nmos_outer_licon_cx"]
     li_pad_h = g["li_pad_h"]
 
     # ===================================================================
@@ -344,24 +335,17 @@ def create_bitcell(
                             ("wl_top_y0", "wl_top_y1")]:
         _rect(cell, L.POLY.as_tuple, poly_x0, g[y0_key], poly_x1, g[y1_key])
 
-    # Gate A poly contact pad in gap (for QB net)
+    # Gate A poly contact pad in gap (for cross-coupling)
     _rect(cell, L.POLY.as_tuple,
           gap_licon_cx - pad_w_x / 2.0, g["gate_a_cy"] - pad_h_y / 2.0,
           gap_licon_cx + pad_w_x / 2.0, g["gate_a_cy"] + pad_h_y / 2.0)
 
-    # Gate B poly contact pad on NMOS outer (left) side (for Q net)
+    # Gate B poly contact pad in gap (for cross-coupling, same X, different Y)
+    # Poly spacing between pads: (gate_b - pad_h/2) - (gate_a + pad_h/2)
+    #   = cc_to_cc_zone + gate_l - pad_h_y = 0.54 - 0.33 = 0.21 (= poly.2 min)
     _rect(cell, L.POLY.as_tuple,
-          nmos_outer_cx - pad_w_x / 2.0, g["gate_b_cy"] - pad_h_y / 2.0,
-          nmos_outer_cx + pad_w_x / 2.0, g["gate_b_cy"] + pad_h_y / 2.0)
-    # Extend gate_B poly from its main stripe to the pad
-    # The main stripe already extends to poly_x0 = nmos_diff_x0 - poly_ext.
-    # The pad is at nmos_outer_cx which is further left.
-    # Connect them if there's a gap (pad right edge may overlap with poly_x0).
-    pad_right = nmos_outer_cx + pad_w_x / 2.0
-    if pad_right < poly_x0:
-        _rect(cell, L.POLY.as_tuple,
-              pad_right, g["gate_b_y0"],
-              poly_x0, g["gate_b_y1"])
+          gap_licon_cx - pad_w_x / 2.0, g["gate_b_cy"] - pad_h_y / 2.0,
+          gap_licon_cx + pad_w_x / 2.0, g["gate_b_cy"] + pad_h_y / 2.0)
 
     # ===================================================================
     # LICON ON DIFF + LI1 PADS
@@ -377,48 +361,44 @@ def create_bitcell(
     # POLY CONTACTS FOR CROSS-COUPLING
     # ===================================================================
 
-    # Gate A contact in gap (QB net)
+    # Gate A contact in gap
     _contact(cell, gap_licon_cx, g["gate_a_cy"], L.LICON1.as_tuple, licon_sz)
     _li_pad(cell, gap_licon_cx, g["gate_a_cy"], li_w + 2 * li_encl, li_w)
 
-    # Gate B contact on NMOS outer side (Q net)
-    _contact(cell, nmos_outer_cx, g["gate_b_cy"], L.LICON1.as_tuple, licon_sz)
-    _li_pad(cell, nmos_outer_cx, g["gate_b_cy"], li_w + 2 * li_encl, li_w)
+    # Gate B contact in gap (same X as gate_A, different Y)
+    _contact(cell, gap_licon_cx, g["gate_b_cy"], L.LICON1.as_tuple, licon_sz)
+    _li_pad(cell, gap_licon_cx, g["gate_b_cy"], li_w + 2 * li_encl, li_w)
 
     # ===================================================================
     # CROSS-COUPLING LI1 ROUTING
     # ===================================================================
-    # Only use adjacent zone connections to avoid crossing the power zone:
-    # - QB net: PMOS int_bot (zone 1) → gate_A (adjacent, no pwr crossing)
-    # - Q net: NMOS int_top (zone 3) → gate_B (adjacent, no pwr crossing)
+    # Both cross-coupling routes go through the N-P gap.
+    # Adjacent zone connections avoid crossing the power zone:
+    # - Route 1: PMOS int_bot (zone 1) → gate_A (adjacent, below pwr)
+    # - Route 2: NMOS int_top (zone 3) → gate_B (adjacent, above pwr)
+    # Li1 spacing between routes: gap_b_bottom - gap_a_top = 0.37 > 0.17 ✓
 
-    # QB net: PMOS int_bot → gate_A via gap
-    # The gate_A poly contact li1 pad is (li_w + 2*li_encl) wide.
-    # Match vertical route width to pad width to avoid li.3 gaps.
-    gate_a_pad_hw = (li_w + 2 * li_encl) / 2.0
+    gap_pad_hw = (li_w + 2 * li_encl) / 2.0  # half-width of gap li1 pads
 
+    # Route 1: PMOS int_bot → gate_A via gap (same as before)
     # Horizontal li1 from PMOS int_bot contact to gap
     _rect(cell, L.LI1.as_tuple,
-          gap_licon_cx - gate_a_pad_hw, g["int_bot_cy"] - li_w / 2.0,
+          gap_licon_cx - gap_pad_hw, g["int_bot_cy"] - li_w / 2.0,
           g["pmos_cx"] + li_w / 2.0, g["int_bot_cy"] + li_w / 2.0)
-    # Vertical li1 in gap from int_bot up to gate_A (same width as pad)
+    # Vertical li1 in gap from int_bot up to gate_A
     _rect(cell, L.LI1.as_tuple,
-          gap_licon_cx - gate_a_pad_hw, g["int_bot_cy"] - li_w / 2.0,
-          gap_licon_cx + gate_a_pad_hw, g["gate_a_cy"] + li_w / 2.0)
+          gap_licon_cx - gap_pad_hw, g["int_bot_cy"] - li_w / 2.0,
+          gap_licon_cx + gap_pad_hw, g["gate_a_cy"] + li_w / 2.0)
 
-    # Q net: NMOS int_top → gate_B via outer side
-    # The gate_B poly contact li1 pad is (li_w + 2*li_encl) wide.
-    # The vertical route must match that width to avoid li.3 gaps.
-    gate_b_pad_hw = (li_w + 2 * li_encl) / 2.0  # half-width of gate_B li1 pad
-
-    # Horizontal li1 from NMOS int_top contact to outer side
+    # Route 2: NMOS int_top → gate_B via gap (NEW — was on outer side)
+    # Horizontal li1 from NMOS int_top contact rightward to gap
     _rect(cell, L.LI1.as_tuple,
-          nmos_outer_cx - gate_b_pad_hw, g["int_top_cy"] - li_w / 2.0,
-          g["nmos_cx"] + li_w / 2.0, g["int_top_cy"] + li_w / 2.0)
-    # Vertical li1 on outer side from gate_B down to int_top (same width as pad)
+          g["nmos_cx"] - li_w / 2.0, g["int_top_cy"] - li_w / 2.0,
+          gap_licon_cx + gap_pad_hw, g["int_top_cy"] + li_w / 2.0)
+    # Vertical li1 in gap from gate_B down to int_top (continuous with pad)
     _rect(cell, L.LI1.as_tuple,
-          nmos_outer_cx - gate_b_pad_hw, g["gate_b_cy"] - li_w / 2.0,
-          nmos_outer_cx + gate_b_pad_hw, g["int_top_cy"] + li_w / 2.0)
+          gap_licon_cx - gap_pad_hw, g["gate_b_cy"] - li_w / 2.0,
+          gap_licon_cx + gap_pad_hw, g["int_top_cy"] + li_w / 2.0)
 
     # ===================================================================
     # POWER ROUTING
@@ -430,7 +410,6 @@ def create_bitcell(
     vpwr_cx = _snap((g["vpwr_x0"] + g["vpwr_x1"]) / 2.0)
 
     # VSS: NMOS pwr contact → mcon at nmos_cx → met1 horizontal to VGND rail
-    # Use met1 for the horizontal run to avoid li.3 with Q-net outer routing
     _contact(cell, g["nmos_cx"], g["pwr_cy"], L.MCON.as_tuple, mcon_sz)
     # met1 horizontal from VGND rail to NMOS pwr contact
     met1_pwr_h = max(R.MET1_MIN_WIDTH, mcon_sz + 2 * R.MET1_ENCLOSURE_OF_MCON)

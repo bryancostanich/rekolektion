@@ -1,0 +1,2 @@
+Error while reading /openlane/designs/test/macros/test_sram.v:
+Error: /openlane/designs/test/macros/test_sram.v line 17, syntax error

@@ -1,0 +1,85 @@
+- status: 0 - openlane design prep
+  runtime_s: 2.73
+  runtime_ts: 0h0m2s730ms
+- status: 1 - synthesis - yosys
+  runtime_s: 0.66
+  runtime_ts: 0h0m0s658ms
+- status: 2 - sta - openroad
+  runtime_s: 0.26
+  runtime_ts: 0h0m0s259ms
+- status: 3 - floorplan initialization - openroad
+  runtime_s: 0.46
+  runtime_ts: 0h0m0s462ms
+- status: 4 - ioplace - openroad
+  runtime_s: 0.39
+  runtime_ts: 0h0m0s389ms
+- status: 6 - tap/decap insertion - openroad
+  runtime_s: 0.4
+  runtime_ts: 0h0m0s400ms
+- status: 7 - pdn generation - openroad
+  runtime_s: 0.42
+  runtime_ts: 0h0m0s420ms
+- status: 8 - global placement - openroad
+  runtime_s: 0.43
+  runtime_ts: 0h0m0s428ms
+- status: 9 - sta - openroad
+  runtime_s: 0.34
+  runtime_ts: 0h0m0s335ms
+- status: 10 - ioplace - openroad
+  runtime_s: 0.39
+  runtime_ts: 0h0m0s394ms
+- status: 11 - global placement - openroad
+  runtime_s: 0.42
+  runtime_ts: 0h0m0s423ms
+- status: 12 - sta - openroad
+  runtime_s: 0.34
+  runtime_ts: 0h0m0s335ms
+- status: 13 - resizer design optimizations - openroad
+  runtime_s: 1.55
+  runtime_ts: 0h0m1s546ms
+- status: 14 - detailed placement - openroad
+  runtime_s: 0.4
+  runtime_ts: 0h0m0s404ms
+- status: 15 - sta - openroad
+  runtime_s: 0.34
+  runtime_ts: 0h0m0s340ms
+- status: 16 - cts - openroad
+  runtime_s: 4.43
+  runtime_ts: 0h0m4s426ms
+- status: 17 - sta - openroad
+  runtime_s: 0.35
+  runtime_ts: 0h0m0s348ms
+- status: 18 - resizer timing optimizations - openroad
+  runtime_s: 1.36
+  runtime_ts: 0h0m1s357ms
+- status: 19 - resizer design optimizations - openroad
+  runtime_s: 1.52
+  runtime_ts: 0h0m1s523ms
+- status: 20 - sta - openroad
+  runtime_s: 0.35
+  runtime_ts: 0h0m0s351ms
+- status: 21 - resizer timing optimizations - openroad
+  runtime_s: 1.36
+  runtime_ts: 0h0m1s357ms
+- status: 22 - sta - openroad
+  runtime_s: 0.35
+  runtime_ts: 0h0m0s348ms
+- status: 24 - write verilog - openroad
+  runtime_s: 0.35
+  runtime_ts: 0h0m0s351ms
+- status: 25 - sta - openroad
+  runtime_s: 0.34
+  runtime_ts: 0h0m0s342ms
+- status: 25 - global routing - openroad
+  runtime_s: 0.34
+  runtime_ts: 0h0m0s342ms
+- status: 26 - fill insertion - openroad
+  runtime_s: 0.47
+  runtime_ts: 0h0m0s471ms
+---
+- status: routed
+  runtime_s: -1
+  runtime_ts: '-1'
+- status: flow failed
+  runtime_s: 23.0
+  runtime_ts: 0h0m23s0ms

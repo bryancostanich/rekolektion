@@ -1,0 +1,13 @@
+- status: 0 - openlane design prep
+  runtime_s: 2.84
+  runtime_ts: 0h0m2s838ms
+- status: 1 - synthesis - yosys
+  runtime_s: 0.7
+  runtime_ts: 0h0m0s701ms
+---
+- status: routed
+  runtime_s: -1
+  runtime_ts: '-1'
+- status: flow failed
+  runtime_s: 4.0
+  runtime_ts: 0h0m4s0ms

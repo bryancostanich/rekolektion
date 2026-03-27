@@ -1,0 +1,2 @@
+[ERROR DRT-0416] Term addr[0] contains offgrid pin shape. Pin shape ( 49930 62442 ) ( 50070 62722 ) is not a multiple of the manufacturing grid 5.
+Error: droute.tcl, 40 DRT-0416

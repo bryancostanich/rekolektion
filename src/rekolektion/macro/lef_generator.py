@@ -37,12 +37,17 @@ _PIN_LAYER = "met2"
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _snap(v: float, grid: float = 0.005) -> float:
+    """Snap coordinate to manufacturing grid (5nm for SKY130)."""
+    return round(v / grid) * grid
+
+
 def _pin_rect(cx: float, cy: float) -> str:
-    """Return a RECT string centred on (cx, cy)."""
-    x1 = cx - _PIN_WIDTH / 2
-    y1 = cy - _PIN_HEIGHT / 2
-    x2 = cx + _PIN_WIDTH / 2
-    y2 = cy + _PIN_HEIGHT / 2
+    """Return a RECT string centred on (cx, cy), snapped to mfg grid."""
+    x1 = _snap(cx - _PIN_WIDTH / 2)
+    y1 = _snap(cy - _PIN_HEIGHT / 2)
+    x2 = _snap(cx + _PIN_WIDTH / 2)
+    y2 = _snap(cy + _PIN_HEIGHT / 2)
     return f"        RECT {x1:.3f} {y1:.3f} {x2:.3f} {y2:.3f} ;"
 
 

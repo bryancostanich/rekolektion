@@ -1,0 +1,3 @@
+Warning: Calma reading is not undoable!  I hope that's OK.
+CIF file read warning: CIF style sky130(): units rescaled by factor of 5 / 1
+Warning:  cell test_sram already existed before reading GDS!

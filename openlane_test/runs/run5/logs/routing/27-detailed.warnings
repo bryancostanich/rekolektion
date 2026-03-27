@@ -1,0 +1,34 @@
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer mcon
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer mcon
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via2
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via2
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via3
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via3
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via4
+[WARNING DRT-0349] LEF58_ENCLOSURE with no CUTCLASS is not supported. Skipping for layer via4
+[WARNING DRT-0418] Term u_sram/addr[0] has no pins on routing grid
+[WARNING DRT-0418] Term u_sram/addr[1] has no pins on routing grid
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/addr[2]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/addr[3]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/addr[4]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/addr[5]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[0]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[1]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[2]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[3]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[4]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[5]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[6]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/din[7]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[0]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[1]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[2]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[3]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[4]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[5]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[6]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/dout[7]
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/clk
+[WARNING DRT-0419] No routing tracks pass through the center of Term u_sram/we

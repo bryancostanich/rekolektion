@@ -1,0 +1,19 @@
+
+===========================================================================
+report_checks -path_delay max (Setup)
+============================================================================
+======================= Fastest Corner ===================================
+
+No paths found.
+
+worst slack corner Fastest: INF
+======================= Slowest Corner ===================================
+
+No paths found.
+
+worst slack corner Slowest: INF
+======================= Typical Corner ===================================
+
+No paths found.
+
+worst slack corner Typical: INF

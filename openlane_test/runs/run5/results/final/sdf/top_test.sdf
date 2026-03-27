@@ -1,0 +1,126 @@
+(DELAYFILE
+ (SDFVERSION "3.0")
+ (DESIGN "top_test")
+ (DATE "Fri Mar 27 03:19:13 2026")
+ (VENDOR "Parallax")
+ (PROGRAM "STA")
+ (VERSION "2.5.0")
+ (DIVIDER .)
+ (VOLTAGE 1.800::1.800)
+ (PROCESS "1.000::1.000")
+ (TEMPERATURE 25.000::25.000)
+ (TIMESCALE 1ns)
+ (CELL
+  (CELLTYPE "top_test")
+  (INSTANCE)
+  (DELAY
+   (ABSOLUTE
+    (INTERCONNECT addr[0] u_sram.addr[0] (0.028:0.028:0.028) (0.013:0.013:0.013))
+    (INTERCONNECT addr[1] u_sram.addr[1] (0.016:0.016:0.016) (0.007:0.007:0.007))
+    (INTERCONNECT addr[2] u_sram.addr[2] (0.018:0.018:0.018) (0.008:0.008:0.008))
+    (INTERCONNECT addr[3] u_sram.addr[3] (0.017:0.017:0.017) (0.007:0.007:0.007))
+    (INTERCONNECT addr[4] u_sram.addr[4] (0.017:0.017:0.017) (0.008:0.008:0.008))
+    (INTERCONNECT addr[5] u_sram.addr[5] (0.017:0.017:0.017) (0.008:0.008:0.008))
+    (INTERCONNECT clk u_sram.clk (0.011:0.011:0.011) (0.005:0.005:0.005))
+    (INTERCONNECT cs u_sram.cs (0.020:0.020:0.020) (0.009:0.009:0.009))
+    (INTERCONNECT din[0] u_sram.din[0] (0.023:0.023:0.023) (0.011:0.011:0.011))
+    (INTERCONNECT din[1] u_sram.din[1] (0.024:0.024:0.024) (0.011:0.011:0.011))
+    (INTERCONNECT din[2] u_sram.din[2] (0.027:0.027:0.027) (0.013:0.013:0.013))
+    (INTERCONNECT din[3] u_sram.din[3] (0.025:0.025:0.025) (0.012:0.012:0.012))
+    (INTERCONNECT din[4] u_sram.din[4] (0.024:0.024:0.024) (0.011:0.011:0.011))
+    (INTERCONNECT din[5] u_sram.din[5] (0.027:0.027:0.027) (0.013:0.013:0.013))
+    (INTERCONNECT din[6] u_sram.din[6] (0.034:0.034:0.034) (0.016:0.016:0.016))
+    (INTERCONNECT din[7] u_sram.din[7] (0.034:0.034:0.034) (0.016:0.016:0.016))
+    (INTERCONNECT we u_sram.we (0.016:0.016:0.016) (0.007:0.007:0.007))
+    (INTERCONNECT u_sram.dout[0] output1.A (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT u_sram.dout[1] output2.A (0.000:0.000:0.000) (0.000:0.000:0.000))
+    (INTERCONNECT u_sram.dout[2] output3.A (0.000:0.000:0.000))
+    (INTERCONNECT u_sram.dout[3] output4.A (0.000:0.000:0.000))
+    (INTERCONNECT u_sram.dout[4] output5.A (0.000:0.000:0.000))
+    (INTERCONNECT u_sram.dout[5] output6.A (0.000:0.000:0.000))
+    (INTERCONNECT u_sram.dout[6] output7.A (0.000:0.000:0.000))
+    (INTERCONNECT u_sram.dout[7] output8.A (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT output1.X dout[0] (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT output2.X dout[1] (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT output3.X dout[2] (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT output4.X dout[3] (0.000:0.000:0.000))
+    (INTERCONNECT output5.X dout[4] (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT output6.X dout[5] (0.001:0.001:0.001) (0.001:0.001:0.001))
+    (INTERCONNECT output7.X dout[6] (0.000:0.000:0.000))
+    (INTERCONNECT output8.X dout[7] (0.001:0.001:0.001) (0.001:0.001:0.001))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output1)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.182:0.182:0.182) (0.162:0.162:0.162))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output2)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.182:0.182:0.182) (0.162:0.162:0.162))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output3)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.181:0.181:0.181) (0.161:0.161:0.161))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output4)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.179:0.179:0.179) (0.160:0.160:0.160))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output5)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.182:0.182:0.182) (0.162:0.162:0.162))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output6)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.183:0.183:0.183) (0.162:0.162:0.162))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output7)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.179:0.179:0.179) (0.160:0.160:0.160))
+   )
+  )
+ )
+ (CELL
+  (CELLTYPE "sky130_fd_sc_hd__buf_2")
+  (INSTANCE output8)
+  (DELAY
+   (ABSOLUTE
+    (IOPATH A X (0.183:0.183:0.183) (0.163:0.163:0.163))
+   )
+  )
+ )
+)

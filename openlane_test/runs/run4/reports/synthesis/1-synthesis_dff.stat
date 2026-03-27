@@ -1,0 +1,15 @@
+
+56. Printing statistics.
+
+=== top_test ===
+
+   Number of wires:                  7
+   Number of wire bits:             26
+   Number of public wires:           7
+   Number of public wire bits:      26
+   Number of memories:               0
+   Number of memory bits:            0
+   Number of processes:              0
+   Number of cells:                  1
+     test_sram                       1
+

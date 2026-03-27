@@ -78,6 +78,7 @@ def _pin_block(
 def generate_lef(
     params: MacroParams,
     output_path: str | Path,
+    macro_name: str | None = None,
 ) -> Path:
     """Generate a LEF abstract for the SRAM macro.
 
@@ -98,7 +99,8 @@ def generate_lef(
 
     w = params.macro_width
     h = params.macro_height
-    macro_name = f"sram_{params.words}x{params.bits}_mux{params.mux_ratio}"
+    if not macro_name:
+        macro_name = f"sram_{params.words}x{params.bits}_mux{params.mux_ratio}"
     addr_bits = params.num_addr_bits
     data_bits = params.bits
 
@@ -150,13 +152,13 @@ def generate_lef(
     lines += _pin_block("VPWR", "INOUT", cx=w / 2, cy=h, use="POWER")
     lines.append("")
 
-    # Bottom edge: VGND, clk, we — spread across width
-    bottom_pins = ["VGND", "clk", "we"]
-    bottom_step = w / (len(bottom_pins) + 1)
+    # Bottom edge: VGND, clk, we, cs — spread across width
+    bottom_step = w / 5
     for idx, (pname, pdir, puse) in enumerate([
         ("VGND", "INOUT", "GROUND"),
         ("clk", "INPUT", None),
         ("we", "INPUT", None),
+        ("cs", "INPUT", None),
     ]):
         cx = bottom_step * (idx + 1)
         lines += _pin_block(pname, pdir, cx=cx, cy=0.0, use=puse)

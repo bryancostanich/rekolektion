@@ -203,6 +203,7 @@ def compute_timing(params: MacroParams) -> SRAMTiming:
 def generate_liberty(
     params: MacroParams,
     output_path: str | Path,
+    macro_name: str | None = None,
 ) -> Path:
     """Generate a Liberty timing model for the SRAM macro.
 
@@ -226,7 +227,7 @@ def generate_liberty(
 
     timing = compute_timing(params)
 
-    cell_name = f"sram_{params.words}x{params.bits}_mux{params.mux_ratio}"
+    cell_name = macro_name or f"sram_{params.words}x{params.bits}_mux{params.mux_ratio}"
     addr_bits = params.num_addr_bits
     data_bits = params.bits
     area_um2 = params.macro_width * params.macro_height
@@ -280,6 +281,10 @@ def generate_liberty(
 
     # we pin
     lines += _input_pin_with_timing("we", timing.t_setup_ns, timing.t_hold_ns)
+    lines.append('')
+
+    # cs pin
+    lines += _input_pin_with_timing("cs", timing.t_setup_ns, timing.t_hold_ns)
     lines.append('')
 
     # Address pins

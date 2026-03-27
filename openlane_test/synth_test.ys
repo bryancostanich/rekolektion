@@ -1,0 +1,14 @@
+# Yosys synthesis test for SRAM macro integration
+# Validates: Verilog blackbox pin interface, synthesis succeeds
+
+# Read the blackbox macro definition (provides module interface)
+read_verilog -lib macros/test_sram.v
+
+# Read the top-level design
+read_verilog src/top_test.v
+
+# Synthesize (no standard cell mapping — just validates elaboration)
+synth -top top_test -noabc
+
+# Report hierarchy and statistics
+stat

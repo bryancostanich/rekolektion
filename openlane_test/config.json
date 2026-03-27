@@ -1,0 +1,27 @@
+{
+    "DESIGN_NAME": "top_test",
+    "VERILOG_FILES": [
+        "dir::src/top_test.v"
+    ],
+    "VERILOG_FILES_BLACKBOX": [
+        "dir::macros/test_sram.v"
+    ],
+    "EXTRA_LEFS": [
+        "dir::macros/test_sram.lef"
+    ],
+    "EXTRA_GDS_FILES": [
+        "dir::macros/test_sram.gds"
+    ],
+    "EXTRA_LIBS": [
+        "dir::macros/test_sram.lib"
+    ],
+    "CLOCK_PORT": "clk",
+    "CLOCK_PERIOD": 20.0,
+    "FP_SIZING": "absolute",
+    "DIE_AREA": "0 0 200 250",
+    "FP_CORE_UTIL": 30,
+    "MACRO_PLACEMENT_CFG": "dir::macro_placement.cfg",
+    "FP_PDN_MACRO_HOOKS": "u_sram VPWR VGND VPWR VGND",
+    "PDK": "sky130A",
+    "STD_CELL_LIBRARY": "sky130_fd_sc_hd"
+}

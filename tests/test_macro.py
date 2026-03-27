@@ -280,9 +280,9 @@ class TestLefGeneration:
         generate_lef(params, out)
 
         text = out.read_text()
-        # 6 addr + 8 din + 8 dout + clk + we + VPWR + VGND = 26 pins
+        # 6 addr + 8 din + 8 dout + clk + we + cs + VPWR + VGND = 27 pins
         pin_count = text.count("  PIN ")
-        expected = params.num_addr_bits + params.bits * 2 + 4  # addr + din + dout + clk,we,VPWR,VGND
+        expected = params.num_addr_bits + params.bits * 2 + 5  # addr + din + dout + clk,we,cs,VPWR,VGND
         assert pin_count == expected
 
 
@@ -386,17 +386,19 @@ class TestVerilogGeneration:
         assert out.exists()
         text = out.read_text()
 
-        # Check module name
-        assert "module sram_256x16" in text
+        # Check module name (now includes mux ratio)
+        assert "module sram_256x16_mux4" in text
         # Check port widths
         assert "[7:0]" in text  # addr_bits = 8, so [7:0]
         assert "[15:0]" in text  # data bits
         # Check memory declaration
         assert "mem [0:255]" in text
-        # Check basic structure
-        assert "posedge CLK" in text
-        assert "WE" in text
-        assert "CS" in text
+        # Check basic structure (lowercase pin names)
+        assert "posedge clk" in text
+        assert "we" in text
+        assert "cs" in text
+        assert "VPWR" in text
+        assert "VGND" in text
 
     def test_spice_generation(self, tmp_path):
         """Verify SPICE model is generated."""
@@ -409,8 +411,9 @@ class TestVerilogGeneration:
 
         assert out.exists()
         text = out.read_text()
-        assert ".subckt sram_512x32" in text
-        assert "A[0]" in text
-        assert "DIN[0]" in text
-        assert "DOUT[0]" in text
+        assert ".subckt sram_512x32_mux2" in text
+        assert "addr[0]" in text
+        assert "din[0]" in text
+        assert "dout[0]" in text
+        assert "VPWR" in text
         assert ".ends" in text

@@ -103,17 +103,19 @@ def generate_all() -> list[dict]:
             macro_name=cfg["macro_name"],
         )
 
+        mn = cfg["macro_name"]
+
         # Verilog
-        v_path = generate_verilog(params, OUTPUT_DIR / f"{name}.v")
+        v_path = generate_verilog(params, OUTPUT_DIR / f"{name}.v", macro_name=mn)
 
         # SPICE
-        sp_path = generate_spice(params, OUTPUT_DIR / f"{name}.sp")
+        sp_path = generate_spice(params, OUTPUT_DIR / f"{name}.sp", macro_name=mn)
 
         # LEF
-        lef_path = generate_lef(params, OUTPUT_DIR / f"{name}.lef")
+        lef_path = generate_lef(params, OUTPUT_DIR / f"{name}.lef", macro_name=mn)
 
         # Liberty
-        lib_path = generate_liberty(params, OUTPUT_DIR / f"{name}.lib")
+        lib_path = generate_liberty(params, OUTPUT_DIR / f"{name}.lib", macro_name=mn)
 
         elapsed = time.time() - t0
 

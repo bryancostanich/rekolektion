@@ -2,7 +2,7 @@
 
 Open-source SRAM macro generator for the SkyWater SKY130 130nm process.
 
-Takes bitcells (foundry-provided or custom) and generates complete, characterized SRAM macros — parameterized by size, port width, and column mux ratio.
+Takes bitcells (foundry-provided or custom) and generates complete, characterized SRAM macros — parameterized by size, word width, and column mux ratio.
 
 ![3D visualization of a 6T SRAM bitcell on SKY130](Sample_3D_Viz.jpg)
 
@@ -12,21 +12,23 @@ The open-source silicon ecosystem has good bitcells (SkyWater's foundry-designed
 
 rekolektion bridges that gap:
 - **Uses SkyWater's production 6T cell** (2.07 μm², foundry-verified) as the default bitcell
-- **Generates complete macros** with array tiling, peripheral circuits, power routing, and all output artifacts (GDS, LEF, .lib, Verilog)
-- **Parameterized** — specify words × bits, port width, column mux ratio, and get a macro
+- **300-426K bits/mm²** macro density — 50-70x improvement over OpenRAM
+- **Generates complete macros** with array tiling, peripheral circuits, and all output artifacts (GDS, LEF, .lib, Verilog, SPICE)
+- **Parameterized** — specify words × bits, column mux ratio, and get a macro
 - **OpenLane validated** — synthesis through routing with 0 violations
 - **SPICE characterized** — both cells verified across 9 PVT corners
 
 ## Two Bitcell Options
 
 ### Foundry cell (default, recommended)
-SkyWater's `sram_sp_cell_opt1` — 1.31 × 1.58 μm = 2.07 μm². Uses SRAM-specific transistor models (`special_nfet_latch`, `special_pfet_pass` HVT), asymmetric sizing (cell ratio 2.0), and SRAM core DRC rules. Foundry-verified. Bundled in the repo.
+SkyWater's `sram_sp_cell_opt1` — 1.31 × 1.58 μm = 2.07 μm². Uses SRAM-specific transistor models (`special_nfet_latch`, `special_pfet_pass` HVT), asymmetric sizing (cell ratio 2.0), and SRAM core DRC rules. Matching foundry peripheral cells (precharge, column mux) from the OpenRAM library.
 
 ### Custom LR cell (educational / fully open)
 Our DRC-clean 6T cell built entirely from standard `nfet_01v8`/`pfet_01v8` devices — 2.035 × 2.330 μm = 4.74 μm² standalone, **3.93 μm² array-effective** with shared-boundary tiling. Uses a left/right NMOS/PMOS topology inspired by the foundry cell.
 - **Zero DRC violations** on standard SKY130 rules (no blackbox, no waivers)
 - **Fully transparent** — every polygon generated from documented design rules
 - **Modifiable** — change transistor sizing, experiment with layout techniques
+- **Matched peripherals** — custom DRC-clean column mux and precharge generators at 1.9 μm pitch
 
 ## SPICE Characterization
 
@@ -48,11 +50,11 @@ Both cells verified across 9 PVT corners (TT/SS/FF × 1.62V/1.80V/1.98V at 27°C
 
 The LR cell is strongest where the foundry cell is weakest (SS/low-voltage), and vice versa. The LR cell's symmetric W=0.42 transistors make it easy to write at slow corners but harder when PMOS gets strong (FF). The foundry cell's asymmetric sizing + HVT PMOS gives it stability at FF but squeezes at SS/low-voltage.
 
-Full report: [docs/spice_characterization_report.md](docs/spice_characterization_report.md)
+Full report and raw data: [`docs/spice_characterization_report.md`](docs/spice_characterization_report.md) | [`docs/spice_results/`](docs/spice_results/)
 
 ## What It Generates
 
-**Input**: Bitcell choice, target size (words × bits), column mux ratio.
+**Input**: Bitcell choice (`foundry` or `lr`), target size (words × bits), column mux ratio (1, 2, 4, or 8).
 
 **Output** (6 files per macro):
 - **GDS** — Flattened layout for fabrication
@@ -60,16 +62,17 @@ Full report: [docs/spice_characterization_report.md](docs/spice_characterization
 - **Liberty .lib** — Timing model with analytical CLK-to-Q, setup, hold
 - **Verilog** — Behavioral model + blackbox stub for synthesis
 - **SPICE** — Subcircuit netlist
-- **Visualizations** — SVG (2D), GLB (3D), STL, per-layer PNG renders
+
+Plus visualization tools for 2D (SVG, per-layer PNG) and 3D (GLB, STL).
 
 ## Status
 
-**Production ready for V1 tapeout.** 66 macros generated (2 × 32 KB weight + 64 × 3 KB activation = 256 KB total).
+**Production ready for V1 tapeout.** 66 macros generated (2 × 32 KB weight + 64 × 3 KB activation = 256 KB total, 4.81 mm²).
 
-- DRC-clean peripherals (column mux, precharge) — foundry cells for foundry bitcell, custom generators for LR cell
+- DRC-clean peripherals — foundry cells for foundry bitcell, custom generators for LR cell
 - Analytical Liberty timing (weight: 14.2 ns CLK-to-Q, activation: 4.0 ns at 50 MHz)
 - OpenLane integration validated (synthesis → floorplan → placement → CTS → routing, 0 violations)
-- SPICE characterized across 9 PVT corners
+- SPICE characterized across 9 PVT corners (both cells)
 
 ## Quick Start
 
@@ -86,32 +89,46 @@ rekolektion macro --words 64 --bits 8 --mux 2 --cell lr -o output/my_lr_sram.gds
 rekolektion array --cell foundry --rows 8 --cols 32 -o output/array.gds
 rekolektion array --cell lr --rows 4 --cols 4 -o output/lr_array.gds
 
+# Generate 3D visualizations (GLB + STL)
+python scripts/gds_to_stl.py output/my_sram.gds output/3d/
+
 # Regenerate all 66 V1 production macros
 python scripts/generate_v1_production.py
 
 # Run DRC (requires Magic + SKY130 PDK)
 export PDK_ROOT=$HOME/.volare
-bash scripts/run_drc.sh output/bitcell.gds
+bash scripts/run_drc.sh output/my_sram.gds
 ```
+
+## Documentation
+
+- [`docs/spice_characterization_report.md`](docs/spice_characterization_report.md) — Full SPICE results and analysis
+- [`docs/spice_results/`](docs/spice_results/) — Raw simulation data (write margin, SNM CSVs + SPICE netlists)
+- [`docs/models/`](docs/models/) — 3D bitcell models (GLB, STL) for both cells
+- [`docs/research/`](docs/research/) — Design research (foundry cell analysis, node scaling, cell comparison)
 
 ## Architecture
 
-- `src/rekolektion/bitcell/` — Bitcell abstraction, foundry cell loader, custom LR cell generator
-- `src/rekolektion/array/` — Array tiler with X/Y mirroring, support cells, WL/BL routing
-- `src/rekolektion/peripherals/` — Column mux, precharge, sense amp, write driver, decoder
-- `src/rekolektion/macro/` — Macro assembler, LEF/Liberty/Verilog/SPICE generators
-- `src/rekolektion/verify/` — DRC (Magic), LVS (netgen), SPICE (ngspice) automation
-- `src/rekolektion/tech/` — SKY130 design rules and layer definitions
-- `scripts/` — Production macro generation, visualization, verification
+```
+src/rekolektion/
+├── bitcell/       Bitcell abstraction, foundry cell loader, custom LR generator
+├── array/         Array tiler with X/Y mirroring, support cells, WL/BL routing
+├── peripherals/   Column mux, precharge, sense amp, write driver, decoder
+├── macro/         Macro assembler, LEF/Liberty/Verilog/SPICE generators
+├── verify/        DRC (Magic), LVS (netgen), SPICE (ngspice) automation
+└── tech/          SKY130 design rules and layer definitions
+
+scripts/           Production macro generation, 3D visualization, verification
+```
 
 ## Prerequisites
 
 - Python >= 3.10
 - [gdstk](https://github.com/heitzmann/gdstk) for GDS generation
 - [Magic](http://opencircuitdesign.com/magic/) for DRC
-- [netgen](http://opencircuitdesign.com/netgen/) for LVS
 - [ngspice](http://ngspice.sourceforge.net/) for SPICE simulation
 - [SkyWater SKY130 PDK](https://github.com/google/skywater-pdk) (install via [volare](https://github.com/efabless/volare))
+- Optional: [netgen](http://opencircuitdesign.com/netgen/) for LVS, [OpenLane](https://github.com/The-OpenROAD-Project/OpenLane) for P&R
 
 ## License
 

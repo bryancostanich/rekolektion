@@ -14,61 +14,80 @@ rekolektion bridges that gap:
 - **Uses SkyWater's production 6T cell** (2.07 μm², foundry-verified) as the default bitcell
 - **Generates complete macros** with array tiling, peripheral circuits, power routing, and all output artifacts (GDS, LEF, .lib, Verilog)
 - **Parameterized** — specify words × bits, port width, column mux ratio, and get a macro
-- **~290,000 bits/mm²** estimated macro density with the foundry cell (vs ~6,000 for pre-built OpenRAM macros)
+- **OpenLane validated** — synthesis through routing with 0 violations
+- **SPICE characterized** — both cells verified across 9 PVT corners
 
 ## Two Bitcell Options
 
 ### Foundry cell (default, recommended)
-SkyWater's `sram_sp_cell_opt1` — 1.31 × 1.58 μm = 2.07 μm². Uses SRAM-specific transistor models with optimized DRC rules, diagonal li1 cross-coupling, continuous poly gates, and L-shaped diffusion. Foundry-verified. Bundled in the repo.
+SkyWater's `sram_sp_cell_opt1` — 1.31 × 1.58 μm = 2.07 μm². Uses SRAM-specific transistor models (`special_nfet_latch`, `special_pfet_pass` HVT), asymmetric sizing (cell ratio 2.0), and SRAM core DRC rules. Foundry-verified. Bundled in the repo.
 
-### Custom cell (educational / fully open)
-Our DRC-clean 6T cell built entirely from standard `nfet_01v8`/`pfet_01v8` devices — 2.32 × 3.11 μm = 7.22 μm². Larger than the foundry cell, but:
+### Custom LR cell (educational / fully open)
+Our DRC-clean 6T cell built entirely from standard `nfet_01v8`/`pfet_01v8` devices — 2.035 × 2.330 μm = 4.74 μm² standalone, **3.93 μm² array-effective** with shared-boundary tiling. Uses a left/right NMOS/PMOS topology inspired by the foundry cell.
 - **Zero DRC violations** on standard SKY130 rules (no blackbox, no waivers)
 - **Fully transparent** — every polygon generated from documented design rules
 - **Modifiable** — change transistor sizing, experiment with layout techniques
-- **Educational** — the code documents exactly why each dimension is what it is
 
-The custom cell exists to demonstrate what's achievable with standard device rules and to serve as a starting point for anyone who wants to understand or modify an SRAM bitcell layout from scratch.
+## SPICE Characterization
 
-## What It Does
+Both cells verified across 9 PVT corners (TT/SS/FF × 1.62V/1.80V/1.98V at 27°C). All corners pass.
 
-**Input**: Bitcell choice, target size (words × bits), port width, column mux ratio.
+### Write Margin Comparison
 
-**Output**:
-- **GDS** — Layout for fabrication
-- **SPICE netlist** — For circuit simulation
-- **LEF** — Abstract for place-and-route (planned)
-- **Liberty .lib** — Timing model for STA (planned)
-- **Verilog** — Behavioral model for simulation (planned)
-- **SVG** — 2D layout visualization with layer colors
-- **GLB** — 3D visualization with per-layer materials (viewable in macOS Quick Look, any glTF viewer)
-- **GLB (in-situ)** — 3D cross-section showing the cell embedded in semi-transparent process strata (substrate, oxides, ILD, passivation) with layer labels
-- **STL** — Per-layer 3D meshes for Blender import
+| Corner | VDD | LR Custom | Foundry |
+|--------|-----|-----------|---------|
+| TT | 1.62V | 1.040V (64%) | 0.320V (20%) |
+| TT | 1.80V | 1.110V (62%) | 1.010V (56%) |
+| TT | 1.98V | 0.590V (30%) | 1.080V (55%) |
+| SS | 1.62V | 1.070V (66%) | 0.230V (14%) |
+| SS | 1.80V | 1.160V (64%) | 0.210V (12%) |
+| SS | 1.98V | 1.230V (62%) | 1.140V (58%) |
+| FF | 1.62V | 0.980V (60%) | 0.590V (36%) |
+| FF | 1.80V | 0.410V (23%) | 0.940V (52%) |
+| FF | 1.98V | 0.430V (22%) | 1.020V (52%) |
+
+The LR cell is strongest where the foundry cell is weakest (SS/low-voltage), and vice versa. The LR cell's symmetric W=0.42 transistors make it easy to write at slow corners but harder when PMOS gets strong (FF). The foundry cell's asymmetric sizing + HVT PMOS gives it stability at FF but squeezes at SS/low-voltage.
+
+Full report: [docs/spice_characterization_report.md](docs/spice_characterization_report.md)
+
+## What It Generates
+
+**Input**: Bitcell choice, target size (words × bits), column mux ratio.
+
+**Output** (6 files per macro):
+- **GDS** — Flattened layout for fabrication
+- **LEF** — Abstract for place-and-route (OpenLane compatible)
+- **Liberty .lib** — Timing model with analytical CLK-to-Q, setup, hold
+- **Verilog** — Behavioral model + blackbox stub for synthesis
+- **SPICE** — Subcircuit netlist
+- **Visualizations** — SVG (2D), GLB (3D), STL, per-layer PNG renders
 
 ## Status
 
-**Phase 2** — Array generation with foundry cell integration.
+**Production ready for V1 tapeout.** 66 macros generated (2 × 32 KB weight + 64 × 3 KB activation = 256 KB total).
 
-- Phase 1 complete: custom bitcell DRC-clean, foundry cell integrated
-- Phase 2 in progress: array tiling with mirroring, support cells, wiring
-- Phases 3-6 planned: peripherals, macro assembly, verification, production macros
+- DRC-clean peripherals (column mux, precharge) — foundry cells for foundry bitcell, custom generators for LR cell
+- Analytical Liberty timing (weight: 14.2 ns CLK-to-Q, activation: 4.0 ns at 50 MHz)
+- OpenLane integration validated (synthesis → floorplan → placement → CTS → routing, 0 violations)
+- SPICE characterized across 9 PVT corners
 
 ## Quick Start
 
 ```bash
 pip install -e ".[dev]"
 
-# Generate a tiled array using the foundry cell
+# Generate a complete SRAM macro (64 words × 8 bits, 2:1 column mux)
+rekolektion macro --words 64 --bits 8 --mux 2 -o output/my_sram.gds
+
+# Use the custom LR bitcell instead of foundry cell
+rekolektion macro --words 64 --bits 8 --mux 2 --cell lr -o output/my_lr_sram.gds
+
+# Generate a tiled array
 rekolektion array --cell foundry --rows 8 --cols 32 -o output/array.gds
+rekolektion array --cell lr --rows 4 --cols 4 -o output/lr_array.gds
 
-# Generate custom bitcell GDS + SPICE netlist
-rekolektion bitcell -o output/bitcell.gds --spice
-
-# Generate 3D visualizations (STL + colored GLB + in-situ GLB)
-python scripts/gds_to_stl.py output/bitcell.gds output/3d/
-
-# Regenerate all outputs after changes
-bash scripts/generate_all.sh
+# Regenerate all 66 V1 production macros
+python scripts/generate_v1_production.py
 
 # Run DRC (requires Magic + SKY130 PDK)
 export PDK_ROOT=$HOME/.volare
@@ -77,13 +96,13 @@ bash scripts/run_drc.sh output/bitcell.gds
 
 ## Architecture
 
-- `src/rekolektion/bitcell/` — Bitcell abstraction, foundry cell loader, custom cell generator
-- `src/rekolektion/array/` — Array tiler with mirroring, support cells, routing
-- `src/rekolektion/tech/` — SKY130 design rules and layer definitions
-- `src/rekolektion/peripherals/` — Row decoder, column mux, sense amp, write driver (planned)
-- `src/rekolektion/macro/` — Full macro assembly and output generation (planned)
+- `src/rekolektion/bitcell/` — Bitcell abstraction, foundry cell loader, custom LR cell generator
+- `src/rekolektion/array/` — Array tiler with X/Y mirroring, support cells, WL/BL routing
+- `src/rekolektion/peripherals/` — Column mux, precharge, sense amp, write driver, decoder
+- `src/rekolektion/macro/` — Macro assembler, LEF/Liberty/Verilog/SPICE generators
 - `src/rekolektion/verify/` — DRC (Magic), LVS (netgen), SPICE (ngspice) automation
-- `scripts/` — Helper scripts for verification, visualization, and output generation
+- `src/rekolektion/tech/` — SKY130 design rules and layer definitions
+- `scripts/` — Production macro generation, visualization, verification
 
 ## Prerequisites
 

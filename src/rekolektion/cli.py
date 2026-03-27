@@ -20,11 +20,13 @@ def _cmd_macro(args: argparse.Namespace) -> None:
         f"mux ratio {args.mux}"
     )
 
+    cell_type = getattr(args, "cell", "foundry")
     lib, params = generate_sram_macro(
         words=args.words,
         bits=args.bits,
         mux_ratio=args.mux,
         output_path=output,
+        cell_type=cell_type,
     )
 
     print(f"Array: {params.rows} rows x {params.cols} columns")
@@ -59,8 +61,10 @@ def _cmd_array(args: argparse.Namespace) -> None:
 
     if args.cell == "foundry":
         from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
-
         bitcell = load_foundry_sp_bitcell()
+    elif args.cell == "lr":
+        from rekolektion.bitcell.sky130_6t_lr import load_lr_bitcell
+        bitcell = load_lr_bitcell()
     else:
         print(f"Unknown cell type: {args.cell}", file=sys.stderr)
         sys.exit(1)
@@ -111,6 +115,7 @@ def main(argv: list[str] | None = None) -> None:
     p_macro.add_argument("--words", type=int, required=True, help="Number of words (memory depth)")
     p_macro.add_argument("--bits", type=int, required=True, help="Word width (data bits)")
     p_macro.add_argument("--mux", type=int, default=1, choices=[1, 2, 4, 8], help="Column mux ratio (default: 1)")
+    p_macro.add_argument("--cell", default="foundry", choices=["foundry", "lr"], help="Bitcell type (default: foundry)")
     p_macro.add_argument("-o", "--output", required=True, help="Output GDS path")
     p_macro.add_argument("--spice", action="store_true", default=True, help="Generate SPICE model (default: True)")
     p_macro.add_argument("--no-spice", action="store_false", dest="spice", help="Skip SPICE model generation")
@@ -127,7 +132,7 @@ def main(argv: list[str] | None = None) -> None:
     p_array.add_argument(
         "--cell",
         default="foundry",
-        choices=["foundry"],
+        choices=["foundry", "lr"],
         help="Bitcell to use (default: foundry)",
     )
     p_array.add_argument("--rows", type=int, required=True, help="Number of rows (word lines)")

@@ -139,6 +139,7 @@ def generate_sram_macro(
     output_path: str | Path | None = None,
     macro_name: str | None = None,
     *,
+    cell_type: str = "foundry",
     with_routing: bool = False,
     flatten: bool = True,
 ) -> tuple[gdstk.Library, MacroParams]:
@@ -156,6 +157,8 @@ def generate_sram_macro(
         Write GDS to this file.
     macro_name : str, optional
         Name for the top-level cell.
+    cell_type : str
+        Bitcell to use: "foundry" (default) or "lr" (custom LR topology).
     with_routing : bool
         Add WL/BL/power routing to the bitcell array.
     flatten : bool
@@ -171,8 +174,12 @@ def generate_sram_macro(
     name = macro_name or f"sram_{words}x{bits}_mux{mux_ratio}"
 
     # --- load bitcell ------------------------------------------------------
-    from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
-    bitcell = load_foundry_sp_bitcell()
+    if cell_type == "lr":
+        from rekolektion.bitcell.sky130_6t_lr import load_lr_bitcell
+        bitcell = load_lr_bitcell()
+    else:
+        from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
+        bitcell = load_foundry_sp_bitcell()
     params.cell_name = bitcell.cell_name
     params.cell_width = bitcell.cell_width
     params.cell_height = bitcell.cell_height

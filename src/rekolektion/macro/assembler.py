@@ -140,6 +140,7 @@ def generate_sram_macro(
     macro_name: str | None = None,
     *,
     with_routing: bool = False,
+    flatten: bool = True,
 ) -> tuple[gdstk.Library, MacroParams]:
     """Generate a complete SRAM macro GDS.
 
@@ -157,6 +158,10 @@ def generate_sram_macro(
         Name for the top-level cell.
     with_routing : bool
         Add WL/BL/power routing to the bitcell array.
+    flatten : bool
+        Flatten the top-level cell before writing GDS (default True).
+        This inlines all sub-cell references so downstream tools (e.g.
+        OpenLane GDS merge) don't need to resolve external cell names.
 
     Returns
     -------
@@ -361,6 +366,16 @@ def generate_sram_macro(
     else:
         params.macro_width = x_offset + array_w
         params.macro_height = current_y
+
+    # --- flatten top cell --------------------------------------------------
+    if flatten:
+        top_cell.flatten()
+        # Remove sub-cells that are now inlined into the top cell
+        sub_cells = [c for c in lib.cells if c.name != top_cell.name]
+        for c in sub_cells:
+            lib.remove(c)
+        logger.info("Flattened top cell %s (removed %d sub-cells)",
+                     top_cell.name, len(sub_cells))
 
     # --- write output ------------------------------------------------------
     if output_path is not None:

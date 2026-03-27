@@ -68,6 +68,9 @@ def generate_all_outputs(
     paths: dict[str, Path] = {}
     paths["sp"] = generate_spice(params, out_dir / f"{stem}.sp", macro_name=mn)
     paths["v"] = generate_verilog(params, out_dir / f"{stem}.v", macro_name=mn)
+    paths["bb_v"] = generate_verilog_blackbox(
+        params, out_dir / f"{stem}_bb.v", macro_name=mn,
+    )
     paths["lef"] = generate_lef(params, out_dir / f"{stem}.lef", macro_name=mn)
     paths["lib"] = generate_liberty(params, out_dir / f"{stem}.lib", macro_name=mn)
     return paths
@@ -154,6 +157,47 @@ def generate_verilog(
         f"        end",
         f"    end",
         f"",
+        f"endmodule",
+        "",
+    ]
+
+    out.write_text("\n".join(lines))
+    return out
+
+
+def generate_verilog_blackbox(
+    params: MacroParams,
+    output_path: str | Path,
+    macro_name: str | None = None,
+) -> Path:
+    """Generate a blackbox Verilog stub for the SRAM macro.
+
+    This produces a module declaration with ports but no implementation,
+    suitable for OpenSTA and synthesis tools that cannot parse behavioral
+    Verilog (``reg``, ``always``, etc.).
+    """
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    mn = _macro_name(params, macro_name)
+    b = params.bits
+    addr_bits = params.num_addr_bits
+
+    lines = [
+        f"// Blackbox Verilog stub for {mn}",
+        f"// {params.words} words x {b} bits, mux {params.mux_ratio}",
+        f"",
+        f"(* blackbox *)",
+        f"module {mn} (",
+        f"    input  wire               clk,",
+        f"    input  wire               we,",
+        f"    input  wire               cs,",
+        f"    input  wire [{addr_bits-1}:0]  addr,",
+        f"    input  wire [{b-1}:0]  din,",
+        f"    output wire [{b-1}:0]  dout,",
+        f"    inout  wire              VPWR,",
+        f"    inout  wire              VGND",
+        f");",
         f"endmodule",
         "",
     ]

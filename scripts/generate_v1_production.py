@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rekolektion.macro.assembler import generate_sram_macro, MacroParams
-from rekolektion.macro.outputs import generate_spice, generate_verilog
+from rekolektion.macro.outputs import generate_spice, generate_verilog, generate_verilog_blackbox
 from rekolektion.macro.lef_generator import generate_lef
 from rekolektion.macro.liberty_generator import generate_liberty
 
@@ -108,6 +108,9 @@ def generate_all() -> list[dict]:
         # Verilog
         v_path = generate_verilog(params, OUTPUT_DIR / f"{name}.v", macro_name=mn)
 
+        # Blackbox Verilog
+        bb_v_path = generate_verilog_blackbox(params, OUTPUT_DIR / f"{name}_bb.v", macro_name=mn)
+
         # SPICE
         sp_path = generate_spice(params, OUTPUT_DIR / f"{name}.sp", macro_name=mn)
 
@@ -141,6 +144,7 @@ def generate_all() -> list[dict]:
             "density_bits_per_mm2": density,
             "gds_path": str(gds_path),
             "v_path": str(v_path),
+            "bb_v_path": str(bb_v_path),
             "sp_path": str(sp_path),
             "lef_path": str(lef_path),
             "lib_path": str(lib_path),
@@ -231,9 +235,10 @@ def write_manifest(results: list[dict]) -> Path:
         "",
         "## Output Files",
         "",
-        "Each macro produces five files:",
+        "Each macro produces six files:",
         "- `.gds` -- GDS-II layout",
         "- `.v` -- Behavioral Verilog model",
+        "- `_bb.v` -- Blackbox Verilog stub (for OpenSTA / synthesis)",
         "- `.sp` -- SPICE subcircuit stub",
         "- `.lef` -- LEF abstract for place-and-route",
         "- `.lib` -- Liberty timing model for STA",

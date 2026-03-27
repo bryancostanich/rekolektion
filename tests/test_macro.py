@@ -342,10 +342,13 @@ class TestLibertyGeneration:
         assert "hold_rising" in text
         assert "rising_edge" in text
 
-        # Check placeholder timing values
-        assert '1.0000' in text  # setup
-        assert '0.5000' in text  # hold
-        assert '2.0000' in text  # clk-to-Q
+        # Check that computed timing values are present and reasonable
+        import re
+        timing_values = re.findall(r'values \("([\d.]+)"\)', text)
+        assert len(timing_values) > 0, "No timing values found"
+        for v in timing_values:
+            val = float(v)
+            assert 0.01 < val < 100.0, f"Timing value {val} out of range"
 
     def test_liberty_pin_directions(self, tmp_path):
         """Verify pin directions are correct."""

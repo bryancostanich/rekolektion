@@ -256,45 +256,69 @@ def generate_sram_macro(
     except Exception as e:
         logger.warning("Could not load nand2_dec: %s", e)
 
-    # Column mux
+    # Column mux and precharge — use foundry cells for foundry bitcell,
+    # custom generators for LR bitcell
     mux_cell = None
     mux_h = 0.0
-    if mux_ratio > 1:
+    pre_cell = None
+    pre_h = 0.0
+    # Track foundry unit cells for tiled placement
+    _foundry_mux_unit = None
+    _foundry_pre_unit = None
+
+    if cell_type == "foundry":
+        # Use foundry peripheral cells (matched to foundry bitcell pitch)
+        if mux_ratio > 1:
+            try:
+                mux_info = get_peripheral_cell("column_mux")
+                _foundry_mux_unit = _add_gds_to_lib(
+                    lib, cell_map, mux_info.gds_path, mux_info.cell_name)
+                mux_h = mux_info.height if mux_info.height > 0 else 6.82
+            except Exception as e:
+                logger.warning("Could not load foundry column_mux: %s", e)
         try:
-            mux_cell_obj, mux_lib = generate_column_mux(
+            pre_info = get_peripheral_cell("precharge")
+            _foundry_pre_unit = _add_gds_to_lib(
+                lib, cell_map, pre_info.gds_path, pre_info.cell_name)
+            pre_h = pre_info.height if pre_info.height > 0 else 3.98
+        except Exception as e:
+            logger.warning("Could not load foundry precharge: %s", e)
+    else:
+        # LR cell — use custom generators (pitch-matched at 1.9+ um)
+        if mux_ratio > 1:
+            try:
+                mux_cell_obj, mux_lib = generate_column_mux(
+                    num_cols=params.cols,
+                    mux_ratio=mux_ratio,
+                    bl_pitch=bitcell.cell_width,
+                )
+                for c in mux_lib.cells:
+                    if c.name not in cell_map:
+                        new_cell = c.copy(c.name)
+                        cell_map[c.name] = new_cell
+                        lib.add(new_cell)
+                mux_cell = cell_map[mux_cell_obj.name]
+                mux_bb = mux_cell.bounding_box()
+                mux_h = mux_bb[1][1] - mux_bb[0][1] if mux_bb else 2.0 * mux_ratio
+            except Exception as e:
+                logger.warning("Could not generate column_mux: %s", e)
+        try:
+            pre_cell_obj, pre_lib = generate_precharge(
                 num_cols=params.cols,
-                mux_ratio=mux_ratio,
                 bl_pitch=bitcell.cell_width,
             )
-            for c in mux_lib.cells:
+            for c in pre_lib.cells:
                 if c.name not in cell_map:
                     new_cell = c.copy(c.name)
                     cell_map[c.name] = new_cell
                     lib.add(new_cell)
-            mux_cell = cell_map[mux_cell_obj.name]
-            mux_bb = mux_cell.bounding_box()
-            mux_h = mux_bb[1][1] - mux_bb[0][1] if mux_bb else 2.0 * mux_ratio
+            pre_cell = cell_map[pre_cell_obj.name]
+            pre_bb = pre_cell.bounding_box()
+            pre_h = pre_bb[1][1] - pre_bb[0][1] if pre_bb else 6.0
         except Exception as e:
-            logger.warning("Could not generate column_mux: %s", e)
-
-    # Precharge
-    try:
-        pre_cell_obj, pre_lib = generate_precharge(
-            num_cols=params.cols,
-            bl_pitch=bitcell.cell_width,
-        )
-        for c in pre_lib.cells:
-            if c.name not in cell_map:
-                new_cell = c.copy(c.name)
-                cell_map[c.name] = new_cell
-                lib.add(new_cell)
-        pre_cell = cell_map[pre_cell_obj.name]
-        pre_bb = pre_cell.bounding_box()
-        pre_h = pre_bb[1][1] - pre_bb[0][1] if pre_bb else 6.0
-    except Exception as e:
-        logger.warning("Could not generate precharge: %s", e)
-        pre_cell = None
-        pre_h = 0.0
+            logger.warning("Could not generate precharge: %s", e)
+            pre_cell = None
+            pre_h = 0.0
 
     # --- placement ---------------------------------------------------------
     # Layout (bottom to top):
@@ -339,6 +363,18 @@ def generate_sram_macro(
         ref = gdstk.Reference(mux_cell, origin=(x_offset, current_y))
         top_cell.add(ref)
         current_y += mux_h + 0.5
+    elif _foundry_mux_unit:
+        # Tile foundry unit cell across the array width
+        mux_bb = _foundry_mux_unit.bounding_box()
+        mux_unit_w = mux_bb[1][0] - mux_bb[0][0] if mux_bb else 3.37
+        n_mux = max(1, int(array_w / mux_unit_w))
+        for i in range(n_mux):
+            ref = gdstk.Reference(
+                _foundry_mux_unit,
+                origin=(x_offset + i * mux_unit_w, current_y),
+            )
+            top_cell.add(ref)
+        current_y += mux_h + 0.5
 
     # 3. Bitcell array
     array_ref = gdstk.Reference(
@@ -353,6 +389,17 @@ def generate_sram_macro(
     if pre_cell:
         ref = gdstk.Reference(pre_cell, origin=(x_offset, current_y))
         top_cell.add(ref)
+    elif _foundry_pre_unit:
+        # Tile foundry unit cell across the array width
+        pre_unit_bb = _foundry_pre_unit.bounding_box()
+        pre_unit_w = pre_unit_bb[1][0] - pre_unit_bb[0][0] if pre_unit_bb else 3.12
+        n_pre = max(1, int(array_w / pre_unit_w))
+        for i in range(n_pre):
+            ref = gdstk.Reference(
+                _foundry_pre_unit,
+                origin=(x_offset + i * pre_unit_w, current_y),
+            )
+            top_cell.add(ref)
         current_y += pre_h + 0.5
 
     # 5. Row decoder on the left side (stack of NAND gates)

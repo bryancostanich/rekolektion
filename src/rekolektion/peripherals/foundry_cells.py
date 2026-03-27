@@ -45,6 +45,8 @@ _CELL_REGISTRY: Dict[str, str] = {
     "nand3_dec":  "sky130_fd_bd_sram__openram_sp_nand3_dec",
     "nand4_dec":  "sky130_fd_bd_sram__openram_sp_nand4_dec",
     "dff":        "sky130_fd_bd_sram__openram_dff",
+    "precharge":  "precharge_0",
+    "column_mux": "single_level_column_mux",
 }
 
 

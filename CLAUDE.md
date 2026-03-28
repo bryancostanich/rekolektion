@@ -9,7 +9,7 @@ Run ALL steps after modifying `src/rekolektion/bitcell/sky130_6t_lr.py`:
 python3 -c "from rekolektion.bitcell.sky130_6t_lr import generate_bitcell; generate_bitcell('output/sky130_6t_lr.gds')"
 
 # 2. Render per-layer PNGs (F# tool — READ these to verify visually)
-cd ~/Git_Repos/bryan_costanich/khalkulo/tools/viz
+cd ~/Git_Repos/bryan_costanich/rekolektion/tools/viz
 dotnet run -- render ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/rekolektion/output/renders/lr/
 
 # 3. Generate 3D files — GLB + STL + in-situ GLB (F# tool)
@@ -65,9 +65,9 @@ dotnet run -- web ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/index.html
 
 - `src/rekolektion/bitcell/sky130_6t_lr.py` — active custom bitcell (LR topology)
 - `src/rekolektion/tech/sky130.py` — design rules and layer definitions
+- `tools/viz/` — F# GDS reader, layer renderer, 3D mesh generator (.NET 10)
 - `scripts/render_cell.py` — GDS to per-layer PNG renderer (Python, legacy)
 - `scripts/gds_to_stl.py` — GDS to 3D GLB/STL converter (Python, legacy)
-- F# visualization tool — `~/Git_Repos/bryan_costanich/khalkulo/tools/viz/`
 
 ## Planning
 

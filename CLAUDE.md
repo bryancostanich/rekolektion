@@ -34,7 +34,9 @@ quit -noprompt
 EOF
 ```
 
-## Visualization (F# tool at `khalkulo/tools/viz/`)
+## Chip Visualization (F# tool at `khalkulo/tools/viz/`)
+
+Chip-level visualizations live in the khalkulo repo at `docs/viz/`.
 
 ```bash
 cd ~/Git_Repos/bryan_costanich/khalkulo/tools/viz
@@ -47,12 +49,6 @@ dotnet run -- animate ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/chip_dataflo
 
 # Interactive HTML viewer (single self-contained file)
 dotnet run -- web ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/index.html
-
-# Per-layer PNGs (LR bitcell)
-dotnet run -- render ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/renders/
-
-# 3D models (LR bitcell)
-dotnet run -- mesh ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/3d/
 ```
 
 ## Output Locations
@@ -64,13 +60,6 @@ dotnet run -- mesh ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.g
 | LR 3D GLB/STL | `output/3d_lr/` |
 | Foundry per-layer PNGs | `output/renders/foundry/` |
 | Foundry 3D | `output/3d_foundry/` |
-| TB (original) GDS | `output/sky130_sram_6t_bitcell.gds` |
-| TB 3D | `output/3d/` |
-| Static block diagram | `khalkulo/docs/viz/chip_dataflow.svg` |
-| Animated dataflow | `khalkulo/docs/viz/chip_dataflow_animated.svg` |
-| Interactive viewer | `khalkulo/docs/viz/index.html` |
-| Per-layer PNGs | `khalkulo/docs/viz/renders/` |
-| 3D models (GLB/STL) | `khalkulo/docs/viz/3d/` |
 
 ## Key Files
 

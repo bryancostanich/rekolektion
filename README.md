@@ -8,6 +8,8 @@ Also makes neat 3D models, so you can explore SRAM design topologies visually:
 
 ![3D visualization of a 6T SRAM bitcell on SKY130](Sample_3D_Viz.jpg)
 
+This project feeds into the [Khalkulo](https://github.com/bryancostanich/khalkulo) chip design, which includes an [animated dataflow visualization](https://github.com/bryancostanich/khalkulo/blob/main/docs/viz/chip_dataflow_animated.svg) of the inference accelerator architecture.
+
 ## Why This Exists
 
 The open-source silicon ecosystem has good bitcells (SkyWater's foundry-designed 6T cell at `2.07 μm²`) but no easy way to turn them into complete, usable SRAM macros with the specific sizes and port configurations a chip design needs. OpenRAM exists but ships pre-built macros using 8T dual-port cells at `~12 μm²`, achieving only `~6,000 bits/mm²`.

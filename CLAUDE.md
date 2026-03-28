@@ -40,13 +40,19 @@ EOF
 cd ~/Git_Repos/bryan_costanich/khalkulo/tools/viz
 
 # Static block diagram SVG
-dotnet run -- svg ~/Git_Repos/bryan_costanich/rekolektion/output/viz/chip_dataflow.svg
+dotnet run -- svg ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/chip_dataflow.svg
 
 # Animated dataflow SVG (standalone CSS animation)
-dotnet run -- animate ~/Git_Repos/bryan_costanich/rekolektion/output/viz/chip_dataflow_animated.svg
+dotnet run -- animate ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/chip_dataflow_animated.svg
 
 # Interactive HTML viewer (single self-contained file)
-dotnet run -- web ~/Git_Repos/bryan_costanich/rekolektion/output/viz/index.html
+dotnet run -- web ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/index.html
+
+# Per-layer PNGs (LR bitcell)
+dotnet run -- render ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/renders/
+
+# 3D models (LR bitcell)
+dotnet run -- mesh ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/3d/
 ```
 
 ## Output Locations
@@ -60,9 +66,11 @@ dotnet run -- web ~/Git_Repos/bryan_costanich/rekolektion/output/viz/index.html
 | Foundry 3D | `output/3d_foundry/` |
 | TB (original) GDS | `output/sky130_sram_6t_bitcell.gds` |
 | TB 3D | `output/3d/` |
-| Static block diagram | `output/viz/chip_dataflow.svg` |
-| Animated dataflow | `output/viz/chip_dataflow_animated.svg` |
-| Interactive viewer | `output/viz/index.html` |
+| Static block diagram | `khalkulo/docs/viz/chip_dataflow.svg` |
+| Animated dataflow | `khalkulo/docs/viz/chip_dataflow_animated.svg` |
+| Interactive viewer | `khalkulo/docs/viz/index.html` |
+| Per-layer PNGs | `khalkulo/docs/viz/renders/` |
+| 3D models (GLB/STL) | `khalkulo/docs/viz/3d/` |
 
 ## Key Files
 

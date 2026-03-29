@@ -28,7 +28,12 @@ let private sky130Stackup : Map<(int * int), StackupEntry> =
         (67, 44), { ZBot =  0.53; ZTop = 0.89; Name = "mcon";  ColorHex = "#606060" }
         (68, 20), { ZBot =  0.89; ZTop = 1.25; Name = "met1";  ColorHex = "#4090FF" }
         (68, 44), { ZBot =  1.25; ZTop = 1.61; Name = "via";   ColorHex = "#505050" }
-        (69, 20), { ZBot =  1.61; ZTop = 1.97; Name = "met2";  ColorHex = "#40FF90" }
+        (69, 20), { ZBot =  1.61; ZTop = 1.97; Name = "met2";   ColorHex = "#40FF90" }
+        (69, 44), { ZBot =  1.97; ZTop = 2.33; Name = "via2";   ColorHex = "#646464" }
+        (70, 20), { ZBot =  2.33; ZTop = 2.69; Name = "met3";   ColorHex = "#FFA040" }
+        (70, 44), { ZBot =  2.69; ZTop = 3.05; Name = "via3";   ColorHex = "#464646" }
+        (71, 20), { ZBot =  3.05; ZTop = 3.41; Name = "met4";   ColorHex = "#FFFF40" }
+        (89, 44), { ZBot =  2.50; ZTop = 2.55; Name = "mimcap"; ColorHex = "#FFC800" }
     ]
     |> Map.ofList
 
@@ -351,8 +356,10 @@ let private generateInSitu (gdsPath: string) (outputDir: string) : unit =
         ("Gate oxide",        0.00,  0.01, "#E8E8F8", 30)
         ("ILD0 (pre-metal)",  0.18,  0.43, "#C8E8C8", 35)
         ("ILD1 (via0)",       0.53,  0.89, "#E8E0C8", 35)
-        ("IMD1 (above met1)", 1.25,  1.50, "#D0D8E8", 30)
-        ("Passivation",       1.50,  1.60, "#E0E0E0", 25)
+        ("IMD1 (above met1)", 1.25,  1.61, "#D0D8E8", 30)
+        ("IMD2 (above met2)", 1.97,  2.33, "#D8D0E8", 30)
+        ("IMD3 (above met3)", 2.69,  3.05, "#E8D0D0", 30)
+        ("Passivation",       3.41,  3.60, "#E0E0E0", 25)
     ]
 
     let scene = new SharpGLTF.Scenes.SceneBuilder("bitcell_in_situ")

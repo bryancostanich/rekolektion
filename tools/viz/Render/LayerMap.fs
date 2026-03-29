@@ -28,6 +28,11 @@ let sky130Layers : Map<(int * int), LayerStyle> =
         (68, 20), { Name = "met1";  Color = rgba 64uy  144uy 255uy 200uy }
         (68, 44), { Name = "via";   Color = rgba 80uy  80uy  80uy  240uy }
         (69, 20), { Name = "met2";  Color = rgba 64uy  255uy 144uy 200uy }
+        (69, 44), { Name = "via2";  Color = rgba 100uy 100uy 100uy 240uy }
+        (70, 20), { Name = "met3";  Color = rgba 255uy 160uy 64uy  200uy }
+        (70, 44), { Name = "via3";  Color = rgba 70uy  70uy  70uy  240uy }
+        (71, 20), { Name = "met4";  Color = rgba 255uy 255uy 64uy  200uy }
+        (89, 44), { Name = "mimcap"; Color = rgba 255uy 200uy 0uy  160uy }
         (93, 44), { Name = "nsdm";  Color = rgba 255uy 255uy 128uy 60uy }
         (94, 20), { Name = "psdm";  Color = rgba 255uy 128uy 255uy 60uy }
     ]
@@ -37,7 +42,8 @@ let sky130Layers : Map<(int * int), LayerStyle> =
 let renderOrder : (int * int) list = [
     (64, 20); (65, 20); (65, 44); (93, 44); (94, 20)
     (66, 20); (66, 44); (67, 20); (67, 44)
-    (68, 20); (68, 44); (69, 20)
+    (68, 20); (68, 44); (69, 20); (69, 44)
+    (70, 20); (70, 44); (71, 20); (89, 44)
 ]
 
 /// Look up style for a layer/datatype pair.

@@ -70,10 +70,8 @@ Plus visualization tools for 2D (SVG, per-layer PNG) and 3D (GLB, STL).
 
 ## Status
 
-**Production ready for V1 tapeout.** `256 KB` on-die SRAM across 160 macros (32 weight + 128 activation), feeding 1024 MACs at `100 MHz` for `102.4 GOPS` — with an experimental `200 MHz` turbo mode targeting `204.8 GOPS`.
+**Production ready for V1 tapeout.** `256 KB` on-die SRAM across 160 macros (32 weight + 128 activation) — with an experimental `200 MHz` turbo mode targeting `204.8 GOPS`.
 
-- **1024 INT8 MACs** (16 groups × 64) at `100 MHz` = `102.4 GOPS`
-- **`256 KB` on-die SRAM** in `~5.1 mm²` — 160 macros (32 × `512×32` weight + 128 × `192×64` activation)
 - **All SRAM passes `100 MHz` timing** — weight macros at `3.2 ns` CLK-to-Q (`+5.9 ns` margin), activation at `2.85 ns` (`+6.3 ns` margin)
 - **`200 MHz` turbo mode** — activation banks split 2× (96 rows) for `1.33 ns` margin at `200 MHz`. Safe fallback to `100 MHz`.
 - DRC-clean peripherals — foundry cells for foundry bitcell, custom generators for LR cell

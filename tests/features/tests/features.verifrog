@@ -1,0 +1,197 @@
+# Production feature behavioral tests
+# 16x8 SRAM with write enable, clock gating, power gating, WL switchoff, burn-in
+#
+# Default pin state after reset: all control pins = 0
+# For normal operation: cen=1, cs=1, ben=1, sleep=0, wl_off=0, tm=0
+
+# ---------------------------------------------------------------------------
+# Smoke: basic operation with all features at default
+# ---------------------------------------------------------------------------
+
+test "baseline write/read with features enabled" [Smoke]:
+  write cen = 1, cs = 1, ben = 1, sleep = 0, wl_off = 0, tm = 0
+  write we = 1, addr = 0, din = 0xAB
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xAB
+
+# ---------------------------------------------------------------------------
+# Phase 3: Clock gating (CEN)
+# ---------------------------------------------------------------------------
+
+test "CEN=1 allows normal write" [Unit]:
+  write cen = 1, cs = 1, ben = 1
+  write we = 1, addr = 1, din = 0x42
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0x42
+
+test "CEN=0 blocks write — data preserved" [Unit]:
+  # Write known value
+  write cen = 1, cs = 1, ben = 1
+  write we = 1, addr = 2, din = 0xBE
+  step 1
+  # Deassert CEN — clock gated, no operations should happen
+  write cen = 0
+  write din = 0x00
+  step 5
+  # Reassert CEN and read — original value should be intact
+  write cen = 1, we = 0, addr = 2
+  step 2
+  expect dout == 0xBE
+
+test "CEN=0 blocks read — dout unchanged" [Unit]:
+  # Write to addr 3
+  write cen = 1, cs = 1, ben = 1
+  write we = 1, addr = 3, din = 0x55
+  step 1
+  # Read addr 3 to set dout
+  write we = 0, addr = 3
+  step 2
+  expect dout == 0x55
+  # Gate clock, attempt read from different address (should not update dout)
+  write cen = 0, addr = 0
+  step 5
+  # dout should still be 0x55 (from addr 3, not addr 0)
+  expect dout == 0x55
+
+# ---------------------------------------------------------------------------
+# Phase 4: Power gating (SLEEP)
+# ---------------------------------------------------------------------------
+
+test "sleep=0 allows normal operation" [Unit]:
+  write cen = 1, cs = 1, ben = 1, sleep = 0
+  write we = 1, addr = 4, din = 0x99
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0x99
+
+test "sleep=1 blocks write" [Unit]:
+  # Write known value
+  write cen = 1, cs = 1, ben = 1, sleep = 0
+  write we = 1, addr = 5, din = 0xCC
+  step 1
+  # Assert sleep — should block all operations
+  write sleep = 1, din = 0x00
+  step 5
+  # Wake up and read — original value should survive
+  write sleep = 0, we = 0, addr = 5
+  step 2
+  expect dout == 0xCC
+
+test "sleep=1 blocks read — dout unchanged" [Unit]:
+  write cen = 1, cs = 1, ben = 1, sleep = 0
+  write we = 1, addr = 6, din = 0xDD
+  step 1
+  write we = 0, addr = 6
+  step 2
+  expect dout == 0xDD
+  # Assert sleep, attempt read from addr 0
+  write sleep = 1, addr = 0
+  step 5
+  # dout should still hold 0xDD
+  expect dout == 0xDD
+
+# ---------------------------------------------------------------------------
+# Phase 5: Wordline switchoff (WL_OFF)
+# ---------------------------------------------------------------------------
+
+test "wl_off=0 allows normal operation" [Unit]:
+  write cen = 1, cs = 1, ben = 1, wl_off = 0
+  write we = 1, addr = 7, din = 0xEE
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xEE
+
+test "wl_off=1 blocks write — data preserved" [Unit]:
+  # Write data
+  write cen = 1, cs = 1, ben = 1, wl_off = 0
+  write we = 1, addr = 8, din = 0x77
+  step 1
+  # Assert WL_OFF — all wordlines deasserted
+  write wl_off = 1, din = 0x00
+  step 10
+  # Deassert WL_OFF, read back
+  write wl_off = 0, we = 0, addr = 8
+  step 2
+  expect dout == 0x77
+
+test "wl_off=1 blocks read — dout unchanged" [Unit]:
+  write cen = 1, cs = 1, ben = 1, wl_off = 0
+  write we = 1, addr = 9, din = 0x33
+  step 1
+  write we = 0, addr = 9
+  step 2
+  expect dout == 0x33
+  # Assert WL_OFF, attempt read from different addr
+  write wl_off = 1, addr = 0
+  step 5
+  expect dout == 0x33
+
+# ---------------------------------------------------------------------------
+# Phase 6: Burn-in test mode (TM)
+# ---------------------------------------------------------------------------
+
+test "tm=0 normal operation unaffected" [Unit]:
+  write cen = 1, cs = 1, ben = 1, tm = 0
+  write we = 1, addr = 10, din = 0x44
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0x44
+
+test "tm toggling does not corrupt data" [Unit]:
+  # TM is physical-only — behavioral model ignores it
+  write cen = 1, cs = 1, ben = 1
+  write we = 1, addr = 11, din = 0xAA
+  step 1
+  # Toggle TM during idle
+  write we = 0, tm = 1
+  step 5
+  write tm = 0
+  step 1
+  # Read back — data intact
+  write addr = 11
+  step 2
+  expect dout == 0xAA
+
+# ---------------------------------------------------------------------------
+# Composability: multiple features interacting
+# ---------------------------------------------------------------------------
+
+test "CEN=0 + sleep=0 — clock gating alone blocks" [Unit]:
+  write cen = 1, cs = 1, ben = 1, sleep = 0, wl_off = 0
+  write we = 1, addr = 12, din = 0x11
+  step 1
+  write cen = 0
+  write din = 0xFF
+  step 3
+  write cen = 1, we = 0, addr = 12
+  step 2
+  expect dout == 0x11
+
+test "CEN=1 + wl_off=1 — WL switchoff alone blocks" [Unit]:
+  write cen = 1, cs = 1, ben = 1, wl_off = 0
+  write we = 1, addr = 13, din = 0x22
+  step 1
+  write wl_off = 1, din = 0xFF
+  step 3
+  write wl_off = 0, we = 0, addr = 13
+  step 2
+  expect dout == 0x22
+
+test "all gating features active simultaneously" [Unit]:
+  write cen = 1, cs = 1, ben = 1
+  write we = 1, addr = 14, din = 0xFE
+  step 1
+  # Enable all gating: CEN=0, sleep=1, wl_off=1
+  write cen = 0, sleep = 1, wl_off = 1, din = 0x00
+  step 10
+  # Disable all gating, read back
+  write cen = 1, sleep = 0, wl_off = 0, we = 0, addr = 14
+  step 2
+  expect dout == 0xFE

@@ -78,6 +78,30 @@ Plus visualization tools for 2D (SVG, per-layer PNG) and 3D (GLB, STL).
 - OpenLane integration validated (synthesis → floorplan → placement → CTS → routing, 0 violations)
 - SPICE characterized across 9 PVT corners (both cells)
 
+## Production Features
+
+Six composable features close the gap with commercial SRAM compilers. Each is a CLI flag — off by default, any combination valid.
+
+```bash
+rekolektion macro --words 1024 --bits 32 --mux 8 \
+  --write-enable --scan-chain --clock-gating \
+  --power-gating --wl-switchoff --burn-in \
+  -o output/production_sram.gds
+```
+
+| Feature | Flag | Pin(s) | What It Does |
+|---------|------|--------|--------------|
+| **Byte-level write enables** | `--write-enable` | `ben[N-1:0]` | AND gates on write drivers, per-byte masking. Eliminates read-modify-write. |
+| **Scan chain DFT** | `--scan-chain` | `scan_in`, `scan_out`, `scan_en` | Shift register on all input flops. Validated with Fault DFT toolchain. |
+| **Clock gating** | `--clock-gating` | `cen` | Latch-based ICG cell. **99.8% dynamic power reduction** when idle. |
+| **Power gating** | `--power-gating` | `sleep` | PMOS header switches on VDD rail. **99.99% leakage reduction**. |
+| **Wordline switchoff** | `--wl-switchoff` | `wl_off` | AND gate on each decoder output. Data retained with zero dynamic power. |
+| **Burn-in test mode** | `--burn-in` | `tm` | 2:1 mux at WL driver. All wordlines active for stress testing. |
+
+SPICE-characterized on SKY130 (TT, 1.8V, 27C). RTL follows OpenRAM 3-block pattern (posedge capture / negedge read). Passes `verilator --lint-only -Wall`. DFT integration verified with [Fault](https://github.com/AUCOHL/Fault).
+
+See [`docs/power_gating_integration.md`](docs/power_gating_integration.md) for chip-level integration guide.
+
 ## Quick Start
 
 ```bash
@@ -85,6 +109,12 @@ pip install -e ".[dev]"
 
 # Generate a complete SRAM macro (64 words × 8 bits, 2:1 column mux)
 rekolektion macro --words 64 --bits 8 --mux 2 -o output/my_sram.gds
+
+# With production features
+rekolektion macro --words 256 --bits 32 --mux 4 --write-enable --clock-gating -o output/sram_prod.gds
+
+# Extract transistor-level SPICE netlist from GDS via Magic
+rekolektion macro --words 64 --bits 8 --mux 2 --extracted-spice -o output/my_sram.gds
 
 # Use the custom LR bitcell instead of foundry cell
 rekolektion macro --words 64 --bits 8 --mux 2 --cell lr -o output/my_lr_sram.gds
@@ -106,6 +136,7 @@ bash scripts/run_drc.sh output/my_sram.gds
 
 ## Documentation
 
+- [`docs/power_gating_integration.md`](docs/power_gating_integration.md) — Chip-level power gating integration guide (sequencing, isolation, SKY130 cells)
 - [`docs/spice_characterization_report.md`](docs/spice_characterization_report.md) — Full SPICE results and analysis
 - [`docs/spice_results/`](docs/spice_results/) — Raw simulation data (write margin, SNM CSVs + SPICE netlists)
 - [`docs/models/`](docs/models/) — 3D bitcell models (GLB, STL) for both cells
@@ -117,7 +148,8 @@ bash scripts/run_drc.sh output/my_sram.gds
 src/rekolektion/
 ├── bitcell/       Bitcell abstraction, foundry cell loader, custom LR generator
 ├── array/         Array tiler with X/Y mirroring, support cells, WL/BL routing
-├── peripherals/   Column mux, precharge, sense amp, write driver, decoder
+├── peripherals/   Column mux, precharge, sense amp, write driver, decoder,
+│                  write enable gates, power switch, WL gate, WL mux
 ├── macro/         Macro assembler, LEF/Liberty/Verilog/SPICE generators
 ├── verify/        DRC (Magic), LVS (netgen), SPICE (ngspice) automation
 └── tech/          SKY130 design rules and layer definitions

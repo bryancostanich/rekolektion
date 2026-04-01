@@ -1,0 +1,16 @@
+[design]
+top = "sram_16x8_mux1"
+sources = ["rtl/sram_16x8_mux1.v"]
+
+[verilator]
+flags = ["--trace"]
+
+[test]
+output = "build"
+tests = "tests"
+
+[memories.data]
+path = "mem"
+banks = 1
+depth = 16
+width = 8

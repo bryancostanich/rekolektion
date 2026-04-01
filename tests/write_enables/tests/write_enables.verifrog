@@ -1,0 +1,154 @@
+# Byte-level write enable tests for SRAM macro
+# Tests BEN[3:0] gating of individual byte lanes during writes.
+# 32-bit word, 4 BEN bits — one per byte.
+
+# ---------------------------------------------------------------------------
+# Smoke: basic write-all / read-back
+# ---------------------------------------------------------------------------
+
+test "full word write with all BEN active" [Smoke]:
+  write cs = 1
+  write we = 1
+  write ben = 0xF
+  write addr = 0
+  write din = 0xDEADBEEF
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xDEADBEEF
+
+test "read returns zero from unwritten address" [Smoke]:
+  write cs = 1
+  write we = 0
+  write addr = 42
+  step 1
+  expect dout == 0x00000000
+
+# ---------------------------------------------------------------------------
+# Unit: individual byte lane writes
+# ---------------------------------------------------------------------------
+
+test "write byte 0 only" [Unit]:
+  # First write full word to known pattern
+  write cs = 1, we = 1, ben = 0xF, addr = 1, din = 0x11223344
+  step 1
+  # Now overwrite only byte 0 (bits [7:0])
+  write ben = 0x1, din = 0xFFFFFFAA
+  step 1
+  # Read back — byte 0 should be 0xAA, rest unchanged
+  write we = 0
+  step 2
+  expect dout == 0x112233AA
+
+test "write byte 1 only" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 2, din = 0x11223344
+  step 1
+  write ben = 0x2, din = 0xFFFFBBFF
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0x1122BB44
+
+test "write byte 2 only" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 3, din = 0x11223344
+  step 1
+  write ben = 0x4, din = 0xFFCCFFFF
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0x11CC3344
+
+test "write byte 3 only" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 4, din = 0x11223344
+  step 1
+  write ben = 0x8, din = 0xDDFFFFFF
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xDD223344
+
+test "write no bytes (BEN=0) preserves data" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 5, din = 0xCAFEBABE
+  step 1
+  write ben = 0x0, din = 0x00000000
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xCAFEBABE
+
+# ---------------------------------------------------------------------------
+# Unit: multi-byte partial writes
+# ---------------------------------------------------------------------------
+
+test "write upper halfword (bytes 2-3)" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 10, din = 0xAAAA5555
+  step 1
+  write ben = 0xC, din = 0xBBBBFFFF
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xBBBB5555
+
+test "write lower halfword (bytes 0-1)" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 11, din = 0xAAAA5555
+  step 1
+  write ben = 0x3, din = 0xFFFF9999
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xAAAA9999
+
+test "write bytes 1 and 3 only" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 12, din = 0x11223344
+  step 1
+  write ben = 0xA, din = 0xAABBCCDD
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xAA22CC44
+
+# ---------------------------------------------------------------------------
+# Unit: sequential partial writes to same address
+# ---------------------------------------------------------------------------
+
+test "build word byte-by-byte" [Unit]:
+  write cs = 1, we = 1, addr = 20
+  # Byte 0
+  write ben = 0x1, din = 0x00000011
+  step 1
+  # Byte 1
+  write ben = 0x2, din = 0x00002200
+  step 1
+  # Byte 2
+  write ben = 0x4, din = 0x00330000
+  step 1
+  # Byte 3
+  write ben = 0x8, din = 0x44000000
+  step 1
+  # Read back complete word
+  write we = 0
+  step 2
+  expect dout == 0x44332211
+
+# ---------------------------------------------------------------------------
+# Unit: chip select interaction
+# ---------------------------------------------------------------------------
+
+test "BEN ignored when CS deasserted" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 30, din = 0xDEADBEEF
+  step 1
+  # Deassert CS — write should not happen
+  write cs = 0, ben = 0xF, din = 0x00000000
+  step 1
+  # Read back — original value should remain
+  write cs = 1, we = 0
+  step 2
+  expect dout == 0xDEADBEEF
+
+test "BEN ignored when WE deasserted" [Unit]:
+  write cs = 1, we = 1, ben = 0xF, addr = 31, din = 0xBAADF00D
+  step 1
+  # WE=0 — even with BEN=0xF, no write should happen
+  write we = 0, ben = 0xF, din = 0x00000000
+  step 2
+  expect dout == 0xBAADF00D

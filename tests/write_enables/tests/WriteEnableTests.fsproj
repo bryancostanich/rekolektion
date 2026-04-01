@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <RootNamespace>Rekolektion.Tests.WriteEnables</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="DeclarativeTests.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../../verifrog/src/Verifrog.Sim/Verifrog.Sim.fsproj" />
+    <ProjectReference Include="../../../../verifrog/src/Verifrog.Runner/Verifrog.Runner.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Expecto" Version="10.2.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
+    <PackageReference Include="YoloDev.Expecto.TestSdk" Version="0.14.3" />
+  </ItemGroup>
+
+</Project>

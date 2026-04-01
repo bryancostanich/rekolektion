@@ -297,6 +297,36 @@ def generate_liberty(
         lines += _input_pin_with_timing(f"din[{i}]", timing.t_setup_ns, timing.t_hold_ns)
         lines.append('')
 
+    # Byte-enable pins
+    ben_bits = params.num_ben_bits
+    if ben_bits:
+        for i in range(ben_bits):
+            lines += _input_pin_with_timing(f"ben[{i}]", timing.t_setup_ns, timing.t_hold_ns)
+            lines.append('')
+
+    # Scan chain pins
+    if params.scan_chain:
+        lines += _input_pin_with_timing("scan_in", timing.t_setup_ns, timing.t_hold_ns)
+        lines.append('')
+        lines += _input_pin_with_timing("scan_en", timing.t_setup_ns, timing.t_hold_ns)
+        lines.append('')
+        lines += _output_pin_with_timing(
+            "scan_out", timing.t_clk_to_q_ns,
+            timing.t_rise_ns, timing.t_fall_ns,
+        )
+        lines.append('')
+
+    # Feature control pins
+    for feat_flag, pin_name in [
+        (params.clock_gating, "cen"),
+        (params.power_gating, "sleep"),
+        (params.wl_switchoff, "wl_off"),
+        (params.burn_in, "tm"),
+    ]:
+        if feat_flag:
+            lines += _input_pin_with_timing(pin_name, timing.t_setup_ns, timing.t_hold_ns)
+            lines.append('')
+
     # Data-out pins
     for i in range(data_bits):
         lines += _output_pin_with_timing(

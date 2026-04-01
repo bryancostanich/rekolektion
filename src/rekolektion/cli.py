@@ -21,12 +21,24 @@ def _cmd_macro(args: argparse.Namespace) -> None:
     )
 
     cell_type = getattr(args, "cell", "foundry")
+    write_enable = getattr(args, "write_enable", False)
+    scan_chain = getattr(args, "scan_chain", False)
+    clock_gating = getattr(args, "clock_gating", False)
+    power_gating = getattr(args, "power_gating", False)
+    wl_switchoff = getattr(args, "wl_switchoff", False)
+    burn_in = getattr(args, "burn_in", False)
     lib, params = generate_sram_macro(
         words=args.words,
         bits=args.bits,
         mux_ratio=args.mux,
         output_path=output,
         cell_type=cell_type,
+        write_enable=write_enable,
+        scan_chain=scan_chain,
+        clock_gating=clock_gating,
+        power_gating=power_gating,
+        wl_switchoff=wl_switchoff,
+        burn_in=burn_in,
     )
 
     print(f"Array: {params.rows} rows x {params.cols} columns")
@@ -40,7 +52,23 @@ def _cmd_macro(args: argparse.Namespace) -> None:
 
     if args.spice:
         sp_path = generate_spice(params, out_dir / f"{stem}.sp")
-        print(f"SPICE model written to {sp_path}")
+        print(f"SPICE behavioral model written to {sp_path}")
+
+    if getattr(args, "extracted_spice", False):
+        from rekolektion.verify.lvs import extract_netlist
+        macro_name = f"sram_{args.words}x{args.bits}_mux{args.mux}"
+        ext_dir = out_dir / f"{stem}_extracted"
+        print(f"Extracting transistor-level SPICE from GDS via Magic...")
+        try:
+            ext_path = extract_netlist(
+                output, cell_name=macro_name, output_dir=ext_dir,
+            )
+            lines = ext_path.read_text().splitlines()
+            nfet = sum(1 for l in lines if "nfet" in l)
+            pfet = sum(1 for l in lines if "pfet" in l)
+            print(f"Extracted SPICE: {ext_path} ({nfet + pfet} devices)")
+        except Exception as e:
+            print(f"SPICE extraction failed: {e}")
 
     if args.verilog:
         v_path = generate_verilog(params, out_dir / f"{stem}.v")
@@ -125,6 +153,13 @@ def main(argv: list[str] | None = None) -> None:
     p_macro.add_argument("--no-lef", action="store_false", dest="lef", help="Skip LEF abstract generation")
     p_macro.add_argument("--liberty", action="store_true", default=True, help="Generate Liberty timing model (default: True)")
     p_macro.add_argument("--no-liberty", action="store_false", dest="liberty", help="Skip Liberty model generation")
+    p_macro.add_argument("--write-enable", action="store_true", default=False, help="Add byte-level write enable (BEN) port")
+    p_macro.add_argument("--scan-chain", action="store_true", default=False, help="Add scan chain DFT wrapper (ScanIn/ScanOut/ScanEnable)")
+    p_macro.add_argument("--clock-gating", action="store_true", default=False, help="Add clock gating ICG cell (CEN pin)")
+    p_macro.add_argument("--power-gating", action="store_true", default=False, help="Add power gating switch cells (SLEEP pin)")
+    p_macro.add_argument("--wl-switchoff", action="store_true", default=False, help="Add wordline switchoff gating (WL_OFF pin)")
+    p_macro.add_argument("--burn-in", action="store_true", default=False, help="Add burn-in test mode (TM pin)")
+    p_macro.add_argument("--extracted-spice", action="store_true", default=False, help="Extract transistor-level SPICE netlist from GDS via Magic")
     p_macro.set_defaults(func=_cmd_macro)
 
     # --- array subcommand ---

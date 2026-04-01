@@ -1,0 +1,191 @@
+# All-features regression test suite
+# 16x16 SRAM with all 6 production features enabled simultaneously:
+#   write enable (2 BEN), scan chain (24 flops), clock gating,
+#   power gating, WL switchoff, burn-in test mode
+#
+# Default active state: cen=1, cs=1, ben=3, sleep=0, wl_off=0, tm=0, scan_en=0
+
+# ---------------------------------------------------------------------------
+# Smoke: all features at default, basic write/read
+# ---------------------------------------------------------------------------
+
+test "full word write/read" [Smoke]:
+  write cen = 1, cs = 1, ben = 3, sleep = 0, wl_off = 0, tm = 0, scan_en = 0
+  write we = 1, addr = 0, din = 0xCAFE
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0xCAFE
+
+# ---------------------------------------------------------------------------
+# Write enables (byte-level)
+# ---------------------------------------------------------------------------
+
+test "write low byte only" [Unit]:
+  write cen = 1, cs = 1, scan_en = 0
+  write we = 1, ben = 3, addr = 1, din = 0xAABB
+  step 1
+  write ben = 1, din = 0xFF11
+  step 1
+  write we = 0, ben = 3
+  step 2
+  expect dout == 0xAA11
+
+test "write high byte only" [Unit]:
+  write cen = 1, cs = 1, scan_en = 0
+  write we = 1, ben = 3, addr = 2, din = 0xCCDD
+  step 1
+  write ben = 2, din = 0xEEFF
+  step 1
+  write we = 0, ben = 3
+  step 2
+  expect dout == 0xEEDD
+
+# ---------------------------------------------------------------------------
+# Scan chain
+# ---------------------------------------------------------------------------
+
+test "scan chain shifts ones" [Unit]:
+  write scan_en = 1, scan_in = 1
+  step 24
+  expect scan_out == 1
+
+test "scan chain length is 24" [Unit]:
+  write scan_en = 1, scan_in = 1
+  step 1
+  write scan_in = 0
+  step 22
+  expect scan_out == 0
+  step 1
+  expect scan_out == 1
+
+# ---------------------------------------------------------------------------
+# Clock gating
+# ---------------------------------------------------------------------------
+
+test "CEN=0 blocks write" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 3, din = 0x1234
+  step 1
+  write cen = 0, din = 0x0000
+  step 5
+  write cen = 1, we = 0, addr = 3
+  step 2
+  expect dout == 0x1234
+
+# ---------------------------------------------------------------------------
+# Power gating
+# ---------------------------------------------------------------------------
+
+test "sleep blocks write" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 4, din = 0x5678
+  step 1
+  write sleep = 1, din = 0x0000
+  step 5
+  write sleep = 0, we = 0, addr = 4
+  step 2
+  expect dout == 0x5678
+
+# ---------------------------------------------------------------------------
+# WL switchoff
+# ---------------------------------------------------------------------------
+
+test "wl_off blocks write" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 5, din = 0x9ABC
+  step 1
+  write wl_off = 1, din = 0x0000
+  step 10
+  write wl_off = 0, we = 0, addr = 5
+  step 2
+  expect dout == 0x9ABC
+
+# ---------------------------------------------------------------------------
+# Burn-in (TM)
+# ---------------------------------------------------------------------------
+
+test "TM toggle preserves data" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 6, din = 0xDEF0
+  step 1
+  write we = 0, tm = 1
+  step 5
+  write tm = 0, addr = 6
+  step 2
+  expect dout == 0xDEF0
+
+# ---------------------------------------------------------------------------
+# Composability: multiple features interacting
+# ---------------------------------------------------------------------------
+
+test "byte write + clock gating" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 7, din = 0x1111
+  step 1
+  # Clock gate, try overwrite low byte
+  write cen = 0, ben = 1, din = 0xFF22
+  step 3
+  # Ungate, read — should see original
+  write cen = 1, we = 0, ben = 3, addr = 7
+  step 2
+  expect dout == 0x1111
+
+test "sleep + wl_off simultaneously" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 8, din = 0x2222
+  step 1
+  write sleep = 1, wl_off = 1, din = 0x0000
+  step 10
+  write sleep = 0, wl_off = 0, we = 0, addr = 8
+  step 2
+  expect dout == 0x2222
+
+test "all gating + byte write" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 9, din = 0x3333
+  step 1
+  write cen = 0, sleep = 1, wl_off = 1
+  step 10
+  write cen = 1, sleep = 0, wl_off = 0
+  # Byte write after un-gating
+  write ben = 2, din = 0xFF00
+  step 1
+  write we = 0, ben = 3
+  step 2
+  expect dout == 0xFF33
+
+test "scan then functional — data survives" [Unit]:
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 10, din = 0x4444
+  step 1
+  # Enter scan mode
+  write scan_en = 1, scan_in = 1
+  step 24
+  write scan_en = 0
+  # Read back — data should survive scan
+  write we = 0, addr = 10
+  step 2
+  expect dout == 0x4444
+
+test "full feature stress: write, gate, wake, byte-modify, read" [Regression]:
+  # Write full word
+  write cen = 1, cs = 1, ben = 3, scan_en = 0
+  write we = 1, addr = 15, din = 0xBEEF
+  step 1
+  # Power gate
+  write sleep = 1
+  step 5
+  # Wake
+  write sleep = 0
+  step 1
+  # Byte-modify low byte
+  write ben = 1, din = 0x00AA
+  step 1
+  # Clock gate
+  write cen = 0
+  step 3
+  # Ungate and read
+  write cen = 1, we = 0, ben = 3
+  step 2
+  expect dout == 0xBEAA

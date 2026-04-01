@@ -108,6 +108,8 @@ def generate_lef(
         macro_name = f"sram_{params.words}x{params.bits}_mux{params.mux_ratio}"
     addr_bits = params.num_addr_bits
     data_bits = params.bits
+    ben_bits = params.num_ben_bits
+    scan = params.scan_chain
 
     lines: list[str] = []
 
@@ -157,14 +159,32 @@ def generate_lef(
     lines += _pin_block("VPWR", "INOUT", cx=w / 2, cy=h, use="POWER")
     lines.append("")
 
-    # Bottom edge: VGND, clk, we, cs — spread across width
-    bottom_step = w / 5
-    for idx, (pname, pdir, puse) in enumerate([
+    # Bottom edge: VGND, clk, we, cs, [ben] — spread across width
+    bottom_pins = [
         ("VGND", "INOUT", "GROUND"),
         ("clk", "INPUT", None),
         ("we", "INPUT", None),
         ("cs", "INPUT", None),
-    ]):
+    ]
+    if ben_bits:
+        for i in range(ben_bits):
+            bottom_pins.append((f"ben[{i}]", "INPUT", None))
+    if scan:
+        bottom_pins += [
+            ("scan_in", "INPUT", None),
+            ("scan_out", "OUTPUT", None),
+            ("scan_en", "INPUT", None),
+        ]
+    if params.clock_gating:
+        bottom_pins.append(("cen", "INPUT", None))
+    if params.power_gating:
+        bottom_pins.append(("sleep", "INPUT", None))
+    if params.wl_switchoff:
+        bottom_pins.append(("wl_off", "INPUT", None))
+    if params.burn_in:
+        bottom_pins.append(("tm", "INPUT", None))
+    bottom_step = w / (len(bottom_pins) + 1)
+    for idx, (pname, pdir, puse) in enumerate(bottom_pins):
         cx = bottom_step * (idx + 1)
         lines += _pin_block(pname, pdir, cx=cx, cy=0.0, use=puse)
         lines.append("")

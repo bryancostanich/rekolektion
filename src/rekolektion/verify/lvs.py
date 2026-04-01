@@ -48,23 +48,25 @@ def extract_netlist(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    gds_path = gds_path.resolve()
+
     sky130a = pdk_root / "sky130A"
     if not sky130a.exists():
         sky130a = pdk_root
 
-    techfile = sky130a / "libs.tech" / "magic" / "sky130A.tech"
     magicrc = sky130a / "libs.tech" / "magic" / "sky130A.magicrc"
 
     extracted_spice = output_dir / f"{cell_name or 'top'}_extracted.spice"
 
+    # Magic writes .ext files relative to CWD, so we run from output_dir
+    # and use absolute paths for GDS and output.
     tcl_script = f"""\
-tech load {techfile}
 gds read {gds_path}
 {"" if not cell_name else f"load {cell_name}"}
 select top cell
 extract all
 ext2spice lvs
-ext2spice -o {extracted_spice}
+ext2spice -o {extracted_spice.resolve()}
 quit -noprompt
 """
     tcl_path = output_dir / "extract.tcl"
@@ -73,12 +75,22 @@ quit -noprompt
     cmd = ["magic", "-dnull", "-noconsole"]
     if magicrc.exists():
         cmd.extend(["-rcfile", str(magicrc)])
-    cmd.append(str(tcl_path))
+    cmd.append(str(tcl_path.resolve()))
 
-    subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=str(output_dir))
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=300,
+        cwd=str(output_dir),
+    )
+
+    # Write Magic log for debugging
+    log_path = output_dir / "extract.log"
+    log_path.write_text(result.stdout + "\n" + result.stderr)
 
     if not extracted_spice.exists():
-        raise RuntimeError(f"Extraction failed — no output at {extracted_spice}")
+        raise RuntimeError(
+            f"Extraction failed — no output at {extracted_spice}. "
+            f"See {log_path}"
+        )
 
     return extracted_spice
 

@@ -1,0 +1,146 @@
+# Scan chain DFT tests for SRAM macro
+# 16x8 SRAM with 14-bit scan chain: addr[3:0] + we + cs + din[7:0]
+#
+# Chain order (LSB first): addr[0], addr[1], addr[2], addr[3], we, cs,
+#   din[0], din[1], din[2], din[3], din[4], din[5], din[6], din[7]
+# scan_out = scan_chain[13] (MSB = din[7])
+
+# ---------------------------------------------------------------------------
+# Smoke: scan chain shifts data
+# ---------------------------------------------------------------------------
+
+test "scan chain shifts in ones" [Smoke]:
+  write scan_en = 1
+  write scan_in = 1
+  step 14
+  # After 14 clocks with scan_in=1, all 14 flops should be 1
+  # scan_out should be 1
+  expect scan_out == 1
+
+test "scan chain outputs zero after reset" [Smoke]:
+  # After reset, scan_chain is all zeros
+  write scan_en = 1
+  write scan_in = 0
+  step 1
+  expect scan_out == 0
+
+# ---------------------------------------------------------------------------
+# Unit: shift known pattern through chain
+# ---------------------------------------------------------------------------
+
+test "shift single bit through chain" [Unit]:
+  write scan_en = 1
+  # Shift a single 1 into the chain
+  write scan_in = 1
+  step 1
+  # Now shift zeros — the 1 bit propagates through
+  write scan_in = 0
+  step 13
+  # After 14 total clocks (1 + 13), the single 1 should reach scan_out
+  expect scan_out == 1
+  # One more clock — the 1 bit shifts out
+  step 1
+  expect scan_out == 0
+
+test "scan chain length is 14" [Unit]:
+  # Shift in a 1 and count how many clocks until it appears at scan_out
+  write scan_en = 1
+  write scan_in = 1
+  step 1
+  write scan_in = 0
+  # The bit entered at clock 1. It takes 13 more clocks to reach bit[13].
+  step 12
+  expect scan_out == 0
+  step 1
+  expect scan_out == 1
+
+# ---------------------------------------------------------------------------
+# Unit: functional mode with scan_en=0
+# ---------------------------------------------------------------------------
+
+test "functional write/read when scan_en=0" [Unit]:
+  # Normal operation (scan_en=0)
+  write scan_en = 0
+  write cs = 1
+  write we = 1
+  write addr = 3
+  write din = 0x42
+  step 1
+  write we = 0
+  step 2
+  expect dout == 0x42
+
+test "scan mode does not corrupt functional path" [Unit]:
+  # Write data in functional mode
+  write scan_en = 0, cs = 1, we = 1, addr = 5, din = 0xAB
+  step 1
+  # Enter scan mode — shift some data
+  write scan_en = 1, scan_in = 1
+  step 14
+  write scan_en = 0
+  # Read back original data — should be preserved
+  write we = 0, addr = 5
+  step 2
+  expect dout == 0xAB
+
+# ---------------------------------------------------------------------------
+# Unit: load pattern via scan and execute
+# ---------------------------------------------------------------------------
+
+test "scan-loaded write executes on functional edge" [Unit]:
+  # Load scan chain with: addr=0x2, we=1, cs=1, din=0x55
+  # Chain mapping: chain[3:0]=addr, chain[4]=we, chain[5]=cs, chain[13:6]=din
+  # Shift register: {chain[12:0], scan_in} — first bit in goes to MSB after 14 clocks
+  # So we shift MSB first: din[7], din[6]..din[0], cs, we, addr[3]..addr[0]
+  # din=0x55=01010101, cs=1, we=1, addr=0x2=0010
+  write scan_en = 1
+  # din[7]=0
+  write scan_in = 0
+  step 1
+  # din[6]=1
+  write scan_in = 1
+  step 1
+  # din[5]=0
+  write scan_in = 0
+  step 1
+  # din[4]=1
+  write scan_in = 1
+  step 1
+  # din[3]=0
+  write scan_in = 0
+  step 1
+  # din[2]=1
+  write scan_in = 1
+  step 1
+  # din[1]=0
+  write scan_in = 0
+  step 1
+  # din[0]=1
+  write scan_in = 1
+  step 1
+  # cs=1
+  write scan_in = 1
+  step 1
+  # we=1
+  write scan_in = 1
+  step 1
+  # addr[3]=0
+  write scan_in = 0
+  step 1
+  # addr[2]=0
+  write scan_in = 0
+  step 1
+  # addr[1]=1
+  write scan_in = 1
+  step 1
+  # addr[0]=0
+  write scan_in = 0
+  step 1
+  # Chain is now loaded. scan_en=1 means _int signals are driven by chain.
+  # The memory write happens on the NEXT clock edge since cs_int=1 and we_int=1.
+  step 1
+  # Switch to functional mode to read back
+  write scan_en = 0
+  write cs = 1, we = 0, addr = 2
+  step 2
+  expect dout == 0x55

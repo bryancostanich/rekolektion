@@ -417,3 +417,653 @@ class TestVerilogGeneration:
         assert "dout[0]" in text
         assert "VPWR" in text
         assert ".ends" in text
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Bit-level write enables
+# ---------------------------------------------------------------------------
+
+class TestWriteEnableGates:
+    """Tests for write enable AND gate peripheral generator."""
+
+    def test_basic_generation(self):
+        from rekolektion.peripherals.write_enable_gate import generate_write_enable_gates
+        cell, lib = generate_write_enable_gates(num_bits=32, ben_bits=4)
+        assert cell is not None
+        bb = cell.bounding_box()
+        assert bb is not None
+        w = bb[1][0] - bb[0][0]
+        assert w > 0
+
+    def test_8bit_single_ben(self):
+        from rekolektion.peripherals.write_enable_gate import generate_write_enable_gates
+        cell, lib = generate_write_enable_gates(num_bits=8, ben_bits=1)
+        assert cell is not None
+
+    def test_write_gds(self, tmp_path):
+        from rekolektion.peripherals.write_enable_gate import generate_write_enable_gates
+        out = tmp_path / "we_gates.gds"
+        cell, lib = generate_write_enable_gates(
+            num_bits=16, ben_bits=2, output_path=out,
+        )
+        assert out.exists()
+
+    def test_invalid_params(self):
+        from rekolektion.peripherals.write_enable_gate import generate_write_enable_gates
+        with pytest.raises(ValueError):
+            generate_write_enable_gates(num_bits=0, ben_bits=1)
+
+    def test_macro_with_write_enable_gds(self, tmp_path):
+        """Full macro generation with write_enable includes AND gates."""
+        from rekolektion.macro.assembler import generate_sram_macro
+        out = tmp_path / "macro_we.gds"
+        lib, params = generate_sram_macro(
+            words=64, bits=8, mux_ratio=2, output_path=out,
+            write_enable=True,
+        )
+        assert out.exists()
+        assert params.write_enable is True
+        assert params.num_ben_bits == 1
+
+
+class TestWriteEnableParams:
+    """Tests for write_enable in MacroParams."""
+
+    def test_ben_bits_32bit_word(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=True)
+        assert p.write_enable is True
+        assert p.num_ben_bits == 4  # 32 / 8 = 4 bytes
+
+    def test_ben_bits_8bit_word(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=64, bits=8, mux_ratio=1, write_enable=True)
+        assert p.num_ben_bits == 1  # 8 / 8 = 1 byte
+
+    def test_ben_bits_64bit_word(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=128, bits=64, mux_ratio=2, write_enable=True)
+        assert p.num_ben_bits == 8  # 64 / 8 = 8 bytes
+
+    def test_ben_bits_disabled(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=64, bits=32, mux_ratio=1, write_enable=False)
+        assert p.num_ben_bits == 0
+
+    def test_ben_bits_sub_byte(self):
+        """Words narrower than 8 bits get 1 BEN bit."""
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=64, bits=4, mux_ratio=1, write_enable=True)
+        assert p.num_ben_bits == 1
+
+
+class TestWriteEnableVerilog:
+    """Tests for Verilog generation with write enables."""
+
+    def test_verilog_ben_port(self, tmp_path):
+        """Verify BEN port appears in Verilog when write_enable=True."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=True)
+        out = tmp_path / "sram_we.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "ben" in text
+        assert "[3:0]" in text  # 4 BEN bits
+        assert "if (ben_reg[" in text  # byte-masked write logic (3-block pattern)
+
+    def test_verilog_no_ben_when_disabled(self, tmp_path):
+        """Verify BEN port absent when write_enable=False."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=False)
+        out = tmp_path / "sram_nowe.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "ben" not in text
+
+    def test_verilog_byte_mask_coverage(self, tmp_path):
+        """Verify all 4 bytes are covered in 32-bit write enable."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=32, mux_ratio=1, write_enable=True)
+        out = tmp_path / "sram_mask.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        # All 4 byte lanes (3-block pattern uses addr_reg)
+        assert "mem[addr_reg][7:0]" in text
+        assert "mem[addr_reg][15:8]" in text
+        assert "mem[addr_reg][23:16]" in text
+        assert "mem[addr_reg][31:24]" in text
+
+    def test_blackbox_ben_port(self, tmp_path):
+        """Verify blackbox includes BEN port."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog_blackbox
+
+        params = compute_macro_params(words=256, bits=16, mux_ratio=2, write_enable=True)
+        out = tmp_path / "sram_bb.v"
+        generate_verilog_blackbox(params, out)
+        text = out.read_text()
+
+        assert "ben" in text
+        assert "[1:0]" in text  # 2 BEN bits for 16-bit word
+
+
+class TestWriteEnableSpice:
+    """Tests for SPICE generation with write enables."""
+
+    def test_spice_ben_pins(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_spice
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=True)
+        out = tmp_path / "sram_we.sp"
+        generate_spice(params, out)
+        text = out.read_text()
+
+        assert "ben[0]" in text
+        assert "ben[3]" in text
+
+    def test_spice_no_ben_when_disabled(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_spice
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=False)
+        out = tmp_path / "sram_nowe.sp"
+        generate_spice(params, out)
+        text = out.read_text()
+
+        assert "ben" not in text
+
+
+class TestWriteEnableLef:
+    """Tests for LEF generation with write enables."""
+
+    def test_lef_ben_pins(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=True)
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+        out = tmp_path / "sram_we.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+
+        for i in range(4):
+            assert f"PIN ben[{i}]" in text
+        assert text.count("PIN ben[") == 4
+
+    def test_lef_no_ben_when_disabled(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=False)
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+        out = tmp_path / "sram_nowe.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+
+        assert "ben" not in text
+
+    def test_lef_pin_count_with_ben(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=2, write_enable=True)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / "sram_we_small.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+
+        # 6 addr + 8 din + 8 dout + clk + we + cs + VPWR + VGND + 1 ben = 28
+        pin_count = text.count("  PIN ")
+        expected = params.num_addr_bits + params.bits * 2 + 5 + params.num_ben_bits
+        assert pin_count == expected
+
+
+class TestWriteEnableLiberty:
+    """Tests for Liberty generation with write enables."""
+
+    def test_liberty_ben_pins(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=True)
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+        out = tmp_path / "sram_we.lib"
+        generate_liberty(params, out)
+        text = out.read_text()
+
+        for i in range(4):
+            assert f"pin (ben[{i}])" in text
+        # BEN pins should have setup/hold timing
+        assert text.count("pin (ben[") == 4
+
+    def test_liberty_no_ben_when_disabled(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=False)
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+        out = tmp_path / "sram_nowe.lib"
+        generate_liberty(params, out)
+        text = out.read_text()
+
+        assert "ben" not in text
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Scan chain DFT
+# ---------------------------------------------------------------------------
+
+class TestScanChainParams:
+    """Tests for scan_chain in MacroParams."""
+
+    def test_scan_flop_count_basic(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=256, bits=16, mux_ratio=4, scan_chain=True)
+        # 8 addr + 1 we + 1 cs + 16 din = 26
+        assert p.num_scan_flops == 26
+
+    def test_scan_flop_count_with_ben(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=256, bits=32, mux_ratio=4, write_enable=True, scan_chain=True)
+        # 8 addr + 1 we + 1 cs + 32 din + 4 ben = 46
+        assert p.num_scan_flops == 46
+
+    def test_scan_disabled(self):
+        from rekolektion.macro.assembler import compute_macro_params
+        p = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=False)
+        assert p.num_scan_flops == 0
+
+
+class TestScanChainVerilog:
+    """Tests for Verilog generation with scan chain."""
+
+    def test_verilog_scan_ports(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        out = tmp_path / "sram_scan.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "scan_in" in text
+        assert "scan_out" in text
+        assert "scan_en" in text
+        assert "scan_chain" in text  # internal register
+        assert "addr_int" in text    # muxed functional input
+
+    def test_verilog_no_scan_when_disabled(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=False)
+        out = tmp_path / "sram_noscan.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "scan_in" not in text
+        assert "scan_out" not in text
+        assert "scan_en" not in text
+
+    def test_verilog_scan_chain_length(self, tmp_path):
+        """Verify scan chain register width matches expected flop count."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        out = tmp_path / "sram_scan_len.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        # 6 addr + 1 we + 1 cs + 8 din = 16 flops -> [15:0]
+        assert f"[{params.num_scan_flops - 1}:0] scan_chain" in text
+
+    def test_blackbox_scan_ports(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog_blackbox
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        out = tmp_path / "sram_scan_bb.v"
+        generate_verilog_blackbox(params, out)
+        text = out.read_text()
+
+        assert "scan_in" in text
+        assert "scan_out" in text
+        assert "scan_en" in text
+
+    def test_scan_with_write_enable(self, tmp_path):
+        """Scan chain includes BEN bits when both features enabled."""
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(
+            words=256, bits=32, mux_ratio=4,
+            write_enable=True, scan_chain=True,
+        )
+        out = tmp_path / "sram_scan_we.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "scan_in" in text
+        assert "ben_int" in text  # muxed BEN signal
+        assert f"[{params.num_scan_flops - 1}:0] scan_chain" in text
+
+
+class TestScanChainSpice:
+    """Tests for SPICE generation with scan chain."""
+
+    def test_spice_scan_pins(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_spice
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        out = tmp_path / "sram_scan.sp"
+        generate_spice(params, out)
+        text = out.read_text()
+
+        assert "scan_in" in text
+        assert "scan_out" in text
+        assert "scan_en" in text
+
+    def test_spice_no_scan_when_disabled(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_spice
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=False)
+        out = tmp_path / "sram_noscan.sp"
+        generate_spice(params, out)
+        text = out.read_text()
+
+        assert "scan_in" not in text
+
+
+class TestScanChainLef:
+    """Tests for LEF generation with scan chain."""
+
+    def test_lef_scan_pins(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / "sram_scan.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+
+        assert "PIN scan_in" in text
+        assert "PIN scan_out" in text
+        assert "PIN scan_en" in text
+
+    def test_lef_scan_pin_directions(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / "sram_scan_dir.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+
+        # scan_out should be OUTPUT
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if "PIN scan_out" in line:
+                assert "DIRECTION OUTPUT" in lines[i + 1]
+                break
+
+
+class TestScanChainLiberty:
+    """Tests for Liberty generation with scan chain."""
+
+    def test_liberty_scan_pins(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / "sram_scan.lib"
+        generate_liberty(params, out)
+        text = out.read_text()
+
+        assert "pin (scan_in)" in text
+        assert "pin (scan_out)" in text
+        assert "pin (scan_en)" in text
+
+    def test_liberty_scan_out_is_output(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=True)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / "sram_scan_dir.lib"
+        generate_liberty(params, out)
+        text = out.read_text()
+
+        # scan_out should have direction : output and timing arcs
+        assert "pin (scan_out)" in text
+        # It uses _output_pin_with_timing which includes rising_edge
+        idx = text.index("pin (scan_out)")
+        section = text[idx:idx+300]
+        assert "direction : output" in section
+
+    def test_liberty_no_scan_when_disabled(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, scan_chain=False)
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / "sram_noscan.lib"
+        generate_liberty(params, out)
+        text = out.read_text()
+
+        assert "scan_in" not in text
+
+
+# ---------------------------------------------------------------------------
+# Phases 3-6 — Clock gating, power gating, WL switchoff, burn-in
+# ---------------------------------------------------------------------------
+
+class TestFeatureFlags:
+    """Tests for Phase 3-6 feature flags across all output generators."""
+
+    FEATURES = [
+        ("clock_gating", "cen"),
+        ("power_gating", "sleep"),
+        ("wl_switchoff", "wl_off"),
+        ("burn_in", "tm"),
+    ]
+
+    @pytest.mark.parametrize("feature,pin", FEATURES)
+    def test_verilog_pin_present(self, tmp_path, feature, pin):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, **{feature: True})
+        out = tmp_path / f"sram_{feature}.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+        assert pin in text
+
+    @pytest.mark.parametrize("feature,pin", FEATURES)
+    def test_verilog_pin_absent_when_disabled(self, tmp_path, feature, pin):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, **{feature: False})
+        out = tmp_path / f"sram_no{feature}.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+        assert pin not in text
+
+    @pytest.mark.parametrize("feature,pin", FEATURES)
+    def test_blackbox_pin_present(self, tmp_path, feature, pin):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog_blackbox
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, **{feature: True})
+        out = tmp_path / f"sram_{feature}_bb.v"
+        generate_verilog_blackbox(params, out)
+        text = out.read_text()
+        assert pin in text
+
+    @pytest.mark.parametrize("feature,pin", FEATURES)
+    def test_spice_pin_present(self, tmp_path, feature, pin):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_spice
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, **{feature: True})
+        out = tmp_path / f"sram_{feature}.sp"
+        generate_spice(params, out)
+        text = out.read_text()
+        assert pin in text
+
+    @pytest.mark.parametrize("feature,pin", FEATURES)
+    def test_lef_pin_present(self, tmp_path, feature, pin):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, **{feature: True})
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / f"sram_{feature}.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+        assert f"PIN {pin}" in text
+
+    @pytest.mark.parametrize("feature,pin", FEATURES)
+    def test_liberty_pin_present(self, tmp_path, feature, pin):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.liberty_generator import generate_liberty
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, **{feature: True})
+        params.macro_width = 100.0
+        params.macro_height = 80.0
+        out = tmp_path / f"sram_{feature}.lib"
+        generate_liberty(params, out)
+        text = out.read_text()
+        assert f"pin ({pin})" in text
+
+
+class TestClockGatingBehavior:
+    """Tests for clock gating behavioral logic."""
+
+    def test_icg_logic_in_verilog(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, clock_gating=True)
+        out = tmp_path / "sram_cg.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "clk_gated" in text
+        assert "cen_latched" in text
+
+
+class TestPowerGatingBehavior:
+    """Tests for power gating behavioral logic."""
+
+    def test_sleep_forces_x(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, power_gating=True)
+        out = tmp_path / "sram_pg.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "sleep" in text
+        assert "!sleep" in text
+
+
+class TestWlSwitchoffBehavior:
+    """Tests for WL switchoff behavioral logic."""
+
+    def test_wl_off_gates_access(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(words=64, bits=8, mux_ratio=1, wl_switchoff=True)
+        out = tmp_path / "sram_wl.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        assert "wl_off" in text
+        assert "!wl_off" in text
+
+
+class TestAllFeaturesComposed:
+    """Test that all features can be enabled simultaneously."""
+
+    def test_all_features_verilog(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_verilog
+
+        params = compute_macro_params(
+            words=256, bits=32, mux_ratio=4,
+            write_enable=True, scan_chain=True,
+            clock_gating=True, power_gating=True,
+            wl_switchoff=True, burn_in=True,
+        )
+        out = tmp_path / "sram_all.v"
+        generate_verilog(params, out)
+        text = out.read_text()
+
+        for pin in ["ben", "scan_in", "scan_out", "scan_en", "cen", "sleep", "wl_off", "tm"]:
+            assert pin in text, f"Missing pin {pin} in all-features Verilog"
+
+    def test_all_features_lef(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.lef_generator import generate_lef
+
+        params = compute_macro_params(
+            words=256, bits=32, mux_ratio=4,
+            write_enable=True, scan_chain=True,
+            clock_gating=True, power_gating=True,
+            wl_switchoff=True, burn_in=True,
+        )
+        params.macro_width = 200.0
+        params.macro_height = 150.0
+        out = tmp_path / "sram_all.lef"
+        generate_lef(params, out)
+        text = out.read_text()
+
+        for pin in ["ben[0]", "scan_in", "scan_out", "scan_en", "cen", "sleep", "wl_off", "tm"]:
+            assert f"PIN {pin}" in text, f"Missing PIN {pin} in all-features LEF"
+
+    def test_all_features_spice(self, tmp_path):
+        from rekolektion.macro.assembler import compute_macro_params
+        from rekolektion.macro.outputs import generate_spice
+
+        params = compute_macro_params(
+            words=256, bits=32, mux_ratio=4,
+            write_enable=True, scan_chain=True,
+            clock_gating=True, power_gating=True,
+            wl_switchoff=True, burn_in=True,
+        )
+        out = tmp_path / "sram_all.sp"
+        generate_spice(params, out)
+        text = out.read_text()
+
+        for pin in ["ben[0]", "scan_in", "scan_out", "scan_en", "cen", "sleep", "wl_off", "tm"]:
+            assert pin in text, f"Missing pin {pin} in all-features SPICE"

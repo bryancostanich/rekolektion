@@ -1,0 +1,16 @@
+[design]
+top = "sram_256x32_mux4"
+sources = ["rtl/sram_256x32_mux4.v"]
+
+[verilator]
+flags = ["--trace"]
+
+[test]
+output = "build"
+tests = "tests"
+
+[memories.data]
+path = "mem"
+banks = 1
+depth = 256
+width = 32

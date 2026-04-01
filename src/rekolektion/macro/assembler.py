@@ -50,12 +50,40 @@ class MacroParams:
     cell_height: float = 0.0
     macro_width: float = 0.0
     macro_height: float = 0.0
+    write_enable: bool = False
+    scan_chain: bool = False
+    clock_gating: bool = False
+    power_gating: bool = False
+    wl_switchoff: bool = False
+    burn_in: bool = False
+
+    @property
+    def num_ben_bits(self) -> int:
+        """Number of byte-enable bits (1 per byte, minimum 1)."""
+        if not self.write_enable:
+            return 0
+        return max(1, self.bits // 8)
+
+    @property
+    def num_scan_flops(self) -> int:
+        """Number of scan flops in the chain (0 if scan_chain disabled)."""
+        if not self.scan_chain:
+            return 0
+        # Chain order: addr → we → cs → din → [ben]
+        return self.num_addr_bits + 2 + self.bits + self.num_ben_bits
 
 
 def compute_macro_params(
     words: int,
     bits: int,
     mux_ratio: int,
+    *,
+    write_enable: bool = False,
+    scan_chain: bool = False,
+    clock_gating: bool = False,
+    power_gating: bool = False,
+    wl_switchoff: bool = False,
+    burn_in: bool = False,
 ) -> MacroParams:
     """Compute array dimensions and address partitioning."""
     if mux_ratio not in (1, 2, 4, 8):
@@ -82,6 +110,12 @@ def compute_macro_params(
         num_addr_bits=num_addr_bits,
         num_row_bits=num_row_bits,
         num_col_bits=num_col_bits,
+        write_enable=write_enable,
+        scan_chain=scan_chain,
+        clock_gating=clock_gating,
+        power_gating=power_gating,
+        wl_switchoff=wl_switchoff,
+        burn_in=burn_in,
     )
 
 
@@ -142,6 +176,12 @@ def generate_sram_macro(
     cell_type: str = "foundry",
     with_routing: bool = False,
     flatten: bool = True,
+    write_enable: bool = False,
+    scan_chain: bool = False,
+    clock_gating: bool = False,
+    power_gating: bool = False,
+    wl_switchoff: bool = False,
+    burn_in: bool = False,
 ) -> tuple[gdstk.Library, MacroParams]:
     """Generate a complete SRAM macro GDS.
 
@@ -170,7 +210,12 @@ def generate_sram_macro(
     -------
     (gdstk.Library, MacroParams)
     """
-    params = compute_macro_params(words, bits, mux_ratio)
+    params = compute_macro_params(
+        words, bits, mux_ratio,
+        write_enable=write_enable, scan_chain=scan_chain,
+        clock_gating=clock_gating, power_gating=power_gating,
+        wl_switchoff=wl_switchoff, burn_in=burn_in,
+    )
     name = macro_name or f"sram_{words}x{bits}_mux{mux_ratio}"
 
     # --- load bitcell ------------------------------------------------------
@@ -225,6 +270,7 @@ def generate_sram_macro(
     from rekolektion.peripherals.foundry_cells import get_peripheral_cell
     from rekolektion.peripherals.column_mux import generate_column_mux
     from rekolektion.peripherals.precharge import generate_precharge
+    from rekolektion.peripherals.write_enable_gate import generate_write_enable_gates
 
     # Sense amplifier
     try:
@@ -320,12 +366,58 @@ def generate_sram_macro(
             pre_cell = None
             pre_h = 0.0
 
+    # Write enable AND gates (BEN masking)
+    we_gate_cell = None
+    we_gate_h = 0.0
+    if write_enable and params.num_ben_bits > 0:
+        try:
+            we_gate_obj, we_gate_lib = generate_write_enable_gates(
+                num_bits=bits,
+                ben_bits=params.num_ben_bits,
+            )
+            for c in we_gate_lib.cells:
+                if c.name not in cell_map:
+                    new_cell = c.copy(c.name)
+                    cell_map[c.name] = new_cell
+                    lib.add(new_cell)
+            we_gate_cell = cell_map[we_gate_obj.name]
+            we_bb = we_gate_cell.bounding_box()
+            we_gate_h = we_bb[1][1] - we_bb[0][1] if we_bb else 6.0
+        except Exception as e:
+            logger.warning("Could not generate write_enable_gates: %s", e)
+
+    # Power switch header (PMOS switches on VDD rail)
+    pwr_sw_cell = None
+    pwr_sw_h = 0.0
+    if power_gating:
+        from rekolektion.peripherals.power_switch import generate_power_switches
+        try:
+            # Scale switch count with macro size: ~1 switch per 8µm of width
+            est_width = params.cols * bitcell.cell_width + (nand_w + 2.0 if nand_cell else 10.0)
+            n_switches = max(2, int(est_width / 8.0))
+            pwr_sw_obj, pwr_sw_lib = generate_power_switches(
+                num_switches=n_switches,
+                macro_width=est_width,
+            )
+            for c in pwr_sw_lib.cells:
+                if c.name not in cell_map:
+                    new_cell = c.copy(c.name)
+                    cell_map[c.name] = new_cell
+                    lib.add(new_cell)
+            pwr_sw_cell = cell_map[pwr_sw_obj.name]
+            pwr_bb = pwr_sw_cell.bounding_box()
+            pwr_sw_h = pwr_bb[1][1] - pwr_bb[0][1] if pwr_bb else 4.0
+        except Exception as e:
+            logger.warning("Could not generate power_switches: %s", e)
+
     # --- placement ---------------------------------------------------------
     # Layout (bottom to top):
+    #   0. Write enable AND gates (if enabled)
     #   1. Sense amps + write drivers
     #   2. Column mux
     #   3. Bitcell array
     #   4. Precharge
+    #   5. Power switch header (if enabled)
     # Row decoder on the left side
 
     top_cell = gdstk.Cell(name)
@@ -336,6 +428,12 @@ def generate_sram_macro(
     x_offset = decoder_width  # Array starts after decoder
 
     current_y = 0.0
+
+    # 0. Write enable AND gates (byte-enable masking)
+    if we_gate_cell:
+        ref = gdstk.Reference(we_gate_cell, origin=(x_offset, current_y))
+        top_cell.add(ref)
+        current_y += we_gate_h + 0.5
 
     # 1. Sense amplifiers + write drivers (one per output bit)
     sa_wd_height = max(sa_h, wd_h) if (sa_cell or wd_cell) else 0.0
@@ -402,7 +500,44 @@ def generate_sram_macro(
             top_cell.add(ref)
         current_y += pre_h + 0.5
 
-    # 5. Row decoder on the left side (stack of NAND gates)
+    # 5. Power switch header at top (if power gating enabled)
+    if pwr_sw_cell:
+        ref = gdstk.Reference(pwr_sw_cell, origin=(0, current_y))
+        top_cell.add(ref)
+        current_y += pwr_sw_h + 0.5
+
+    # 6. Row decoder on the left side (stack of NAND gates + WL gating)
+    wl_gate_cell = None
+    if wl_switchoff:
+        from rekolektion.peripherals.wl_gate import generate_wl_gate
+        try:
+            wl_gate_obj, wl_gate_lib = generate_wl_gate()
+            for c in wl_gate_lib.cells:
+                if c.name not in cell_map:
+                    new_cell = c.copy(c.name)
+                    cell_map[c.name] = new_cell
+                    lib.add(new_cell)
+            wl_gate_cell = cell_map[wl_gate_obj.name]
+        except Exception as e:
+            logger.warning("Could not generate wl_gate: %s", e)
+
+    wl_mux_cell = None
+    wl_mux_w = 0.0
+    if burn_in:
+        from rekolektion.peripherals.wl_mux import generate_wl_mux
+        try:
+            wl_mux_obj, wl_mux_lib = generate_wl_mux()
+            for c in wl_mux_lib.cells:
+                if c.name not in cell_map:
+                    new_cell = c.copy(c.name)
+                    cell_map[c.name] = new_cell
+                    lib.add(new_cell)
+            wl_mux_cell = cell_map[wl_mux_obj.name]
+            mux_bb = wl_mux_cell.bounding_box()
+            wl_mux_w = mux_bb[1][0] - mux_bb[0][0] if mux_bb else 3.5
+        except Exception as e:
+            logger.warning("Could not generate wl_mux: %s", e)
+
     if nand_cell:
         for row in range(params.rows):
             y_dec = array_bottom_y + row * bitcell.cell_height
@@ -411,6 +546,70 @@ def generate_sram_macro(
                 origin=(0, y_dec),
             )
             top_cell.add(ref)
+            # Place WL gate AND cell adjacent to decoder NAND
+            wl_chain_x = nand_w + 0.5
+            if wl_gate_cell:
+                ref_wl = gdstk.Reference(
+                    wl_gate_cell,
+                    origin=(wl_chain_x, y_dec),
+                )
+                top_cell.add(ref_wl)
+                wl_chain_x += 3.0 + 0.5  # wl_gate width + gap
+            # Place WL mux for burn-in after WL gate (or after decoder)
+            if wl_mux_cell:
+                ref_mux = gdstk.Reference(
+                    wl_mux_cell,
+                    origin=(wl_chain_x, y_dec),
+                )
+                top_cell.add(ref_mux)
+
+    # --- add port labels for SPICE extraction --------------------------------
+    # Place met2 labels at macro edges so Magic can identify ports.
+    # Positions mirror the LEF generator pin placement.
+    _MET2 = (69, 20)  # met2 layer/datatype
+    w_dim = x_offset + array_w  # approximate macro width
+    h_dim = current_y           # approximate macro height
+
+    def _add_port_label(name: str, x: float, y: float) -> None:
+        top_cell.add(gdstk.Label(name, (x, y), layer=_MET2[0], texttype=_MET2[1]))
+
+    # Address pins — left edge
+    addr_step = h_dim * 0.8 / max(params.num_addr_bits, 1)
+    for i in range(params.num_addr_bits):
+        cy = h_dim * 0.1 + i * addr_step + addr_step / 2
+        _add_port_label(f"addr[{i}]", 0.0, cy)
+
+    # Data pins — right edge
+    data_total = params.bits * 2
+    data_step = h_dim * 0.9 / max(data_total, 1)
+    for i in range(params.bits):
+        cy = h_dim * 0.05 + i * data_step + data_step / 2
+        _add_port_label(f"din[{i}]", w_dim, cy)
+    for i in range(params.bits):
+        cy = h_dim * 0.05 + (params.bits + i) * data_step + data_step / 2
+        _add_port_label(f"dout[{i}]", w_dim, cy)
+
+    # Power — top/bottom
+    _add_port_label("VPWR", w_dim / 2, h_dim)
+    _add_port_label("VGND", w_dim / 5, 0.0)
+
+    # Control pins — bottom edge
+    bottom_ctrl = ["clk", "we", "cs"]
+    if params.num_ben_bits:
+        bottom_ctrl += [f"ben[{i}]" for i in range(params.num_ben_bits)]
+    if params.scan_chain:
+        bottom_ctrl += ["scan_in", "scan_out", "scan_en"]
+    if params.clock_gating:
+        bottom_ctrl.append("cen")
+    if params.power_gating:
+        bottom_ctrl.append("sleep")
+    if params.wl_switchoff:
+        bottom_ctrl.append("wl_off")
+    if params.burn_in:
+        bottom_ctrl.append("tm")
+    ctrl_step = w_dim / (len(bottom_ctrl) + 2)
+    for idx, pname in enumerate(bottom_ctrl):
+        _add_port_label(pname, ctrl_step * (idx + 2), 0.0)
 
     # --- compute final dimensions ------------------------------------------
     bb = top_cell.bounding_box()

@@ -27,6 +27,21 @@ output/
 *.raw
 *.log
 
+# .NET build artifacts (verifrog test projects)
+bin/
+obj/
+*.dll
+*.pdb
+
+# Verifrog build output
+**/build/libverifrog_sim.*
+**/build/verifrog_model.*
+**/build/verilated/
+.verifrog.env
+
+# SPICE simulation output
+*.csv
+
 # IDE
 .vscode/
 .idea/

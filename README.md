@@ -166,6 +166,10 @@ scripts/           Production macro generation, 3D visualization, verification
 - [SkyWater SKY130 PDK](https://github.com/google/skywater-pdk) (install via [volare](https://github.com/efabless/volare))
 - Optional: [netgen](http://opencircuitdesign.com/netgen/) for LVS, [OpenLane](https://github.com/The-OpenROAD-Project/OpenLane) for P&R
 
+## Attribution
+
+Foundry peripheral cells (sense amp, write driver, decoder gates, DFF) are from the [SkyWater SKY130 SRAM library](https://github.com/google/skywater-pdk-libs-sky130_fd_bd_sram) (Apache 2.0, Copyright 2020 SkyWater PDK Authors). Precharge and column mux cells are from [OpenRAM](https://github.com/VLSIDA/OpenRAM) (BSD 3-Clause, Copyright 2016-2024 Regents of the University of California). See [`src/rekolektion/peripherals/cells/ATTRIBUTION.md`](src/rekolektion/peripherals/cells/ATTRIBUTION.md) for details.
+
 ## License
 
 Apache 2.0

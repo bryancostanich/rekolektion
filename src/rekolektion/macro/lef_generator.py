@@ -21,6 +21,7 @@ import math
 from pathlib import Path
 
 from rekolektion.macro.assembler import MacroParams
+from rekolektion.macro.outputs import _pn
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,8 @@ def generate_lef(
     params: MacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
 ) -> Path:
     """Generate a LEF abstract for the SRAM macro.
 
@@ -131,6 +134,7 @@ def generate_lef(
     ]
 
     # --- Pin placement ---
+    up = uppercase_ports
 
     # Left edge: address pins, evenly spaced vertically
     addr_start_y = h * 0.1
@@ -138,7 +142,7 @@ def generate_lef(
     addr_step = addr_span / max(addr_bits, 1)
     for i in range(addr_bits):
         cy = addr_start_y + i * addr_step + addr_step / 2
-        lines += _pin_block(f"addr[{i}]", "INPUT", cx=0.0, cy=cy)
+        lines += _pin_block(_pn(f"addr[{i}]", up), "INPUT", cx=0.0, cy=cy)
         lines.append("")
 
     # Right edge: din and dout, evenly spaced vertically
@@ -148,11 +152,11 @@ def generate_lef(
     data_step = data_span / max(data_pins_total, 1)
     for i in range(data_bits):
         cy = data_start_y + i * data_step + data_step / 2
-        lines += _pin_block(f"din[{i}]", "INPUT", cx=w, cy=cy)
+        lines += _pin_block(_pn(f"din[{i}]", up), "INPUT", cx=w, cy=cy)
         lines.append("")
     for i in range(data_bits):
         cy = data_start_y + (data_bits + i) * data_step + data_step / 2
-        lines += _pin_block(f"dout[{i}]", "OUTPUT", cx=w, cy=cy)
+        lines += _pin_block(_pn(f"dout[{i}]", up), "OUTPUT", cx=w, cy=cy)
         lines.append("")
 
     # Top edge: VPWR, centred
@@ -162,27 +166,27 @@ def generate_lef(
     # Bottom edge: VGND, clk, we, cs, [ben] — spread across width
     bottom_pins = [
         ("VGND", "INOUT", "GROUND"),
-        ("clk", "INPUT", None),
-        ("we", "INPUT", None),
-        ("cs", "INPUT", None),
+        (_pn("clk", up), "INPUT", None),
+        (_pn("we", up), "INPUT", None),
+        (_pn("cs", up), "INPUT", None),
     ]
     if ben_bits:
         for i in range(ben_bits):
-            bottom_pins.append((f"ben[{i}]", "INPUT", None))
+            bottom_pins.append((_pn(f"ben[{i}]", up), "INPUT", None))
     if scan:
         bottom_pins += [
-            ("scan_in", "INPUT", None),
-            ("scan_out", "OUTPUT", None),
-            ("scan_en", "INPUT", None),
+            (_pn("scan_in", up), "INPUT", None),
+            (_pn("scan_out", up), "OUTPUT", None),
+            (_pn("scan_en", up), "INPUT", None),
         ]
     if params.clock_gating:
-        bottom_pins.append(("cen", "INPUT", None))
+        bottom_pins.append((_pn("cen", up), "INPUT", None))
     if params.power_gating:
-        bottom_pins.append(("sleep", "INPUT", None))
+        bottom_pins.append((_pn("sleep", up), "INPUT", None))
     if params.wl_switchoff:
-        bottom_pins.append(("wl_off", "INPUT", None))
+        bottom_pins.append((_pn("wl_off", up), "INPUT", None))
     if params.burn_in:
-        bottom_pins.append(("tm", "INPUT", None))
+        bottom_pins.append((_pn("tm", up), "INPUT", None))
     bottom_step = w / (len(bottom_pins) + 1)
     for idx, (pname, pdir, puse) in enumerate(bottom_pins):
         cx = bottom_step * (idx + 1)
@@ -190,14 +194,27 @@ def generate_lef(
         lines.append("")
 
     # --- OBS (obstruction) ---
+    # met1/met2: full-area obstruction (dense internal routing)
+    # met3: narrow strips only at power rail via locations (top/bottom edges)
+    #   The SRAM uses met3 only for via2 landing pads connecting met2 power
+    #   straps to met3 power rails. These are at the first and last bitcell
+    #   rows (~15 um from each edge). Obstructing only these strips frees
+    #   93% of the met3 area for over-the-macro signal routing.
+    # met4/met5: not obstructed (SRAM doesn't use them)
+    met3_rail_margin = 18.0  # um from each edge to cover power rail vias
     lines += [
         "  OBS",
     ]
-    for layer in ("met1", "met2", "met3"):
+    for layer in ("met1", "met2"):
         lines += [
             f"    LAYER {layer} ;",
             f"      RECT 0.000 0.000 {w:.3f} {h:.3f} ;",
         ]
+    lines += [
+        f"    LAYER met3 ;",
+        f"      RECT 0.000 0.000 {w:.3f} {met3_rail_margin:.3f} ;",
+        f"      RECT 0.000 {_snap(h - met3_rail_margin):.3f} {w:.3f} {h:.3f} ;",
+    ]
     lines += [
         "  END",
         "",

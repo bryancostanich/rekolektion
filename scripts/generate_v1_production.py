@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Generate all 66 V1 production SRAM macros.
+"""Generate V1 production SRAM macros.
 
-V1 chip configuration:
-  - 2x  weight macros:     1024 words x 32 bits, 8:1 mux  (~32 KB each)
-  - 64x activation macros:  384 words x 64 bits, 2:1 mux  (~3 KB each)
+V1 chip configuration (parallel weight bank architecture):
+  - 1x weight macro type: sram_weight_bank_small  512 words x 32 bits, mux4 (2 KB)
+    Instantiated 32 times in RTL (2 bank sets x 16 banks per set)
+  - 1x activation macro type: sram_activation_bank  256 words x 64 bits, mux2 (2 KB)
+    Instantiated 128 times in RTL (16 groups x 8 banks per group)
 
-Total: ~256 KB across 66 macros.
+Port names use UPPERCASE to match khalkulo RTL convention:
+  CLK, ADDR, DIN, DOUT, WE, CS
 
-Each macro gets GDS, Verilog (.v), SPICE (.sp), LEF (.lef), and Liberty (.lib) output files.
+Each macro gets GDS, Verilog (.v), blackbox (.bb.v), SPICE (.sp),
+LEF (.lef), and Liberty (.lib) output files.
 All outputs are written to output/v1_macros/.
 """
 
@@ -27,39 +31,35 @@ from rekolektion.macro.liberty_generator import generate_liberty
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "v1_macros"
 
+# All V1 macros use uppercase ports and exclude VPWR/VGND from Verilog
+# (power pins are connected via OpenLane power grid, not RTL instantiation)
+UPPERCASE_PORTS = True
+INCLUDE_POWER_PINS = False
+
 # ---------------------------------------------------------------------------
 # Macro definitions
 # ---------------------------------------------------------------------------
 
 WEIGHT_MACROS = [
     {
-        "filename": "sram_weight_bank_a",
-        "macro_name": "sram_weight_bank_a",
-        "words": 8192,
+        "filename": "sram_weight_bank_small",
+        "macro_name": "sram_weight_bank_small",
+        "words": 512,
         "bits": 32,
-        "mux_ratio": 8,
-        "description": "Weight bank A (32 KB)",
-    },
-    {
-        "filename": "sram_weight_bank_b",
-        "macro_name": "sram_weight_bank_b",
-        "words": 8192,
-        "bits": 32,
-        "mux_ratio": 8,
-        "description": "Weight bank B (32 KB)",
+        "mux_ratio": 4,
+        "description": "Weight bank small (512x32, 2 KB)",
     },
 ]
 
 ACTIVATION_MACROS = [
     {
-        "filename": f"sram_activation_bank_{i:02d}",
-        "macro_name": f"sram_activation_bank_{i:02d}",
-        "words": 384,
+        "filename": "sram_activation_bank",
+        "macro_name": "sram_activation_bank",
+        "words": 256,
         "bits": 64,
         "mux_ratio": 2,
-        "description": f"Activation bank {i:02d} (~3 KB)",
-    }
-    for i in range(64)
+        "description": "Activation bank (256x64, 2 KB)",
+    },
 ]
 
 ALL_MACROS = WEIGHT_MACROS + ACTIVATION_MACROS
@@ -84,15 +84,16 @@ def _format_area(area_um2: float) -> str:
 # ---------------------------------------------------------------------------
 
 def generate_all() -> list[dict]:
-    """Generate all 66 macros and return a list of result dicts."""
+    """Generate all V1 macros and return a list of result dicts."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     results = []
+    total = len(ALL_MACROS)
 
     for idx, cfg in enumerate(ALL_MACROS, 1):
         name = cfg["filename"]
         gds_path = OUTPUT_DIR / f"{name}.gds"
 
-        print(f"[{idx:2d}/66] {cfg['description']:40s} ", end="", flush=True)
+        print(f"[{idx:2d}/{total}] {cfg['description']:40s} ", end="", flush=True)
         t0 = time.time()
 
         lib, params = generate_sram_macro(
@@ -106,19 +107,27 @@ def generate_all() -> list[dict]:
         mn = cfg["macro_name"]
 
         # Verilog
-        v_path = generate_verilog(params, OUTPUT_DIR / f"{name}.v", macro_name=mn)
+        v_path = generate_verilog(params, OUTPUT_DIR / f"{name}.v", macro_name=mn,
+                                  uppercase_ports=UPPERCASE_PORTS,
+                                  include_power_pins=INCLUDE_POWER_PINS)
 
         # Blackbox Verilog
-        bb_v_path = generate_verilog_blackbox(params, OUTPUT_DIR / f"{name}_bb.v", macro_name=mn)
+        bb_v_path = generate_verilog_blackbox(params, OUTPUT_DIR / f"{name}_bb.v", macro_name=mn,
+                                              uppercase_ports=UPPERCASE_PORTS,
+                                              include_power_pins=INCLUDE_POWER_PINS)
 
         # SPICE
-        sp_path = generate_spice(params, OUTPUT_DIR / f"{name}.sp", macro_name=mn)
+        sp_path = generate_spice(params, OUTPUT_DIR / f"{name}.sp", macro_name=mn,
+                                 uppercase_ports=UPPERCASE_PORTS)
 
-        # LEF
-        lef_path = generate_lef(params, OUTPUT_DIR / f"{name}.lef", macro_name=mn)
+        # LEF (with GDS-based OBS generation)
+        lef_path = generate_lef(params, OUTPUT_DIR / f"{name}.lef", macro_name=mn,
+                                uppercase_ports=UPPERCASE_PORTS,
+                                gds_path=gds_path)
 
         # Liberty
-        lib_path = generate_liberty(params, OUTPUT_DIR / f"{name}.lib", macro_name=mn)
+        lib_path = generate_liberty(params, OUTPUT_DIR / f"{name}.lib", macro_name=mn,
+                                    uppercase_ports=UPPERCASE_PORTS)
 
         elapsed = time.time() - t0
 
@@ -180,9 +189,10 @@ def write_manifest(results: list[dict]) -> Path:
         "",
         "## Summary",
         "",
-        f"- **Total macros**: {len(results)}",
-        f"- **Weight macros**: {len(weight_results)} (1024x32, 8:1 mux, 32 KB each)",
-        f"- **Activation macros**: {len(act_results)} (384x64, 2:1 mux, ~3 KB each)",
+        f"- **Total macro types**: {len(results)}",
+        f"- **Weight macro types**: {len(weight_results)}",
+        f"- **Activation macro types**: {len(act_results)}",
+        f"- **RTL instances**: 32 weight (2 bank sets x 16) + 128 activation (16 groups x 8) = 160",
         f"- **Total capacity**: {total_kb:.1f} KB ({total_bits:,} bits)",
         f"- **Total SRAM area**: {total_area_mm2:.6f} mm^2",
         "",

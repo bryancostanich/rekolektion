@@ -403,7 +403,7 @@ def generate_lef(
             pct = obs_area / total_area * 100
             # Comment with stats
             lines.append(
-                f"    ; {layer_name}: {obs_count} OBS rects from "
+                f"    # {layer_name}: {obs_count} OBS rects from "
                 f"{shape_count} shapes ({pct:.0f}% area blocked)"
             )
     else:

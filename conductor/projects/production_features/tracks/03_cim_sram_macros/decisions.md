@@ -136,3 +136,46 @@ caps (SRAM-A, SRAM-B).
 
 Total CIM area 0.39 mm² fits within 2.95 mm² budget with 2.56 mm²
 remaining for peripherals, ADCs, and routing.
+
+## Decision 4: CIM Peripheral Cell Design Approach
+
+**Date:** 2026-04-14
+**Status:** Implementing
+
+### Decision Point
+
+How to implement the three CIM peripheral cells (MWL driver, MBL
+precharge, MBL sense buffer). These sit alongside the standard SRAM
+peripherals in the macro.
+
+### Approach: Python-generated cells (same as bitcell/precharge)
+
+All three cells are small (1–3 transistors each) and follow the same
+pattern as the existing `precharge.py` generator. Generate with gdstk
+for consistency, parameterizability, and DRC automation.
+
+### Cell Designs
+
+**MWL Driver** (1 per row):
+- Non-inverting buffer: 2 CMOS inverters in series
+- Input: MWL_EN[row] (from CIM controller)
+- Output: MWL poly (drives T7 gates across the row)
+- Sizing: PMOS W=0.84, NMOS W=0.42 (2:1 for balanced rise/fall)
+- Placed on left side of array alongside row decoder
+
+**MBL Precharge** (1 per column):
+- Single PMOS switch: gate=MBL_PRE (active low), drain=MBL (M4),
+  source=VREF (external VDD/2 reference pin)
+- PMOS W=0.84 for fast precharge of ~256fF MBL parasitic
+- Placed at top of array
+- VREF supplied externally — no on-chip voltage divider (simpler, more
+  accurate, standard for analog test chips)
+
+**MBL Sense Buffer** (1 per column):
+- NMOS source follower: gate=MBL (M4 input), drain=VDD,
+  source=MBL_OUT (analog output to pad/ADC)
+- Current bias: NMOS with gate=VBIAS (external bias voltage)
+- NMOS W=1.0 for >10MHz bandwidth at ~1pF pad load
+- Placed at bottom of array
+- Analog output — does NOT digitize. ADC is external.
+- VBIAS supplied externally

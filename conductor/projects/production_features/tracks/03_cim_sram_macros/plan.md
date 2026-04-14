@@ -70,22 +70,20 @@ Extend the array tiler (`array/tiler.py`) to route MWL and MBL signals.
 New peripheral cells for CIM operation. These sit alongside the standard
 SRAM peripherals (WL drivers, precharge, sense amps, write drivers).
 
-- [ ] MWL driver cells:
-    - [ ] Design: buffer that drives MWL for an entire row
-    - [ ] During normal SRAM operation: MWL inactive (all low)
-    - [ ] During CIM compute: MWL active for all selected rows simultaneously
-    - [ ] Key difference from WL driver: WL activates 1 row; MWL activates N rows
-    - [ ] Layout in Magic, DRC clean
-    - [ ] SPICE extract, verify drive strength for 64-column load
-- [ ] MBL precharge cells:
-    - [ ] Design: precharge MBL to VDD/2 (or reference voltage) before CIM compute
-    - [ ] Standard precharge topology (PMOS header, equalize)
-    - [ ] Layout in Magic, DRC clean
-- [ ] MBL sense output buffers:
-    - [ ] Design: buffer analog MBL voltage to output pin
-    - [ ] Must NOT digitize — ADC is external
-    - [ ] Simple source follower or unity-gain buffer
-    - [ ] Layout in Magic, DRC clean
+- [x] MWL driver cell (`cim_mwl_driver.py`):
+    - [x] Non-inverting buffer: 2 horizontal gates on shared NMOS/PMOS diff (LR style)
+    - [x] PMOS W=0.84, NMOS W=0.42 (2:1 for balanced rise/fall)
+    - [x] DRC clean (sky130B), 2.09 × 2.04 um
+    - [ ] SPICE extract, verify drive strength for 64-column poly load
+- [x] MBL precharge cell (`cim_mbl_precharge.py`):
+    - [x] Single PMOS switch: gate=MBL_PRE, drain=MBL, source=VREF (external)
+    - [x] PMOS W=0.84 for fast precharge
+    - [x] DRC clean (sky130B), 1.20 × 1.17 um
+- [x] MBL sense buffer cell (`cim_mbl_sense.py`):
+    - [x] NMOS source follower (W=1.0) + NMOS current bias (W=0.5)
+    - [x] Analog output — does NOT digitize. ADC is external.
+    - [x] VBIAS supplied externally
+    - [x] DRC clean (sky130B), 1.26 × 1.73 um
     - [ ] SPICE extract, verify signal integrity (bandwidth, noise)
 - [ ] Add peripheral cells to `array/support_cells.py` registry
 

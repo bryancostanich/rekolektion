@@ -26,7 +26,7 @@ import os
 from pathlib import Path
 from string import Template
 
-from rekolektion.tech.sky130 import SPICE_MODELS
+from rekolektion.tech.sky130 import SPICE_MODELS, PDK_VARIANT
 
 _PDK_ROOT = os.environ.get("PDK_ROOT", os.path.expanduser("~/.volare"))
 
@@ -119,7 +119,7 @@ _BASELINE_TEMPLATE = Template("""\
 .param vdd_val=${vdd}
 .temp ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner_name}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner_name}
 .include "${bitcell_spice}"
 
 ${column_circuit}
@@ -188,7 +188,7 @@ _CLOCK_GATING_TEMPLATE = Template("""\
 .param vdd_val=${vdd}
 .temp ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner_name}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner_name}
 .include "${bitcell_spice}"
 
 ${column_circuit}
@@ -257,7 +257,7 @@ _POWER_GATING_TEMPLATE = Template("""\
 .param vdd_val=${vdd}
 .temp ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner_name}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner_name}
 .include "${bitcell_spice}"
 
 * --- Power switch (header switch) ---
@@ -331,7 +331,7 @@ _WL_SWITCHOFF_TEMPLATE = Template("""\
 .param vdd_val=${vdd}
 .temp ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner_name}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner_name}
 .include "${bitcell_spice}"
 
 ${column_circuit_stored}
@@ -396,7 +396,7 @@ _BURNIN_TEMPLATE = Template("""\
 .param vdd_val=${vdd}
 .temp ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner_name}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner_name}
 .include "${bitcell_spice}"
 
 * Supply (measure current)
@@ -535,6 +535,7 @@ def generate_feature_testbenches(
                     "model_path": model_path,
                     "bitcell_spice": str(bitcell_spice),
                     "pdk_root": _PDK_ROOT,
+                    "pdk_variant": PDK_VARIANT,
                     "output_prefix": prefix,
                     "nrows": str(nrows),
                     "c_bl": f"{c_bl:.1f}",

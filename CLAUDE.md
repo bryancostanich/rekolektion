@@ -19,7 +19,7 @@ dotnet run -- mesh ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.g
 cd ~/Git_Repos/bryan_costanich/rekolektion
 export PATH="$HOME/.local/bin:$PATH"
 export PDK_ROOT="$HOME/.volare"
-magic -dnull -noconsole -rcfile "$PDK_ROOT/sky130A/libs.tech/magic/sky130A.magicrc" <<'EOF'
+magic -dnull -noconsole -rcfile "$PDK_ROOT/sky130B/libs.tech/magic/sky130B.magicrc" <<'EOF'
 gds read output/sky130_6t_lr.gds
 load sky130_sram_6t_bitcell_lr
 select top cell

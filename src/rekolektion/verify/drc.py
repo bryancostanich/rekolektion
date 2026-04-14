@@ -30,27 +30,10 @@ class DRCResult:
 
 def find_pdk_root() -> Path:
     """Locate the SKY130 PDK root directory."""
-    # Check environment variable first
-    pdk_root = os.environ.get("PDK_ROOT")
-    if pdk_root:
-        p = Path(pdk_root)
-        if p.exists():
-            return p
-
-    # Common install locations
-    candidates = [
-        Path.home() / "pdk" / "sky130A",
-        Path.home() / ".volare" / "sky130A",
-        Path("/usr/local/share/pdk/sky130A"),
-        Path("/opt/pdk/sky130A"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return c.parent  # Return parent (PDK_ROOT), not sky130A itself
-
-    raise FileNotFoundError(
-        "Cannot find SKY130 PDK. Set PDK_ROOT environment variable or install via volare."
-    )
+    from rekolektion.tech.sky130 import pdk_path
+    # pdk_path() returns the variant dir (e.g. .volare/sky130B).
+    # Return its parent as PDK_ROOT for backward compat.
+    return pdk_path().parent
 
 
 def run_drc(
@@ -83,12 +66,9 @@ def run_drc(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sky130a = pdk_root / "sky130A"
-    if not sky130a.exists():
-        sky130a = pdk_root  # Maybe pdk_root already points to sky130A
-
-    techfile = sky130a / "libs.tech" / "magic" / "sky130A.tech"
-    magicrc = sky130a / "libs.tech" / "magic" / "sky130A.magicrc"
+    from rekolektion.tech.sky130 import magic_techfile, magic_rcfile
+    techfile = magic_techfile(pdk_root)
+    magicrc = magic_rcfile(pdk_root)
 
     # Build the Magic TCL script
     log_path = output_dir / "drc_results.log"

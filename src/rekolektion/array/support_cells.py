@@ -8,7 +8,7 @@ Loads pre-exported GDS files and LEF pin data for foundry support cells:
 - WL strap cells (VDD and GND well taps)
 
 The GDS files in cells/ were exported from the foundry MAG files via Magic:
-    magic -dnull -noconsole -rcfile $PDK_ROOT/sky130A/libs.tech/magic/sky130A.magicrc
+    magic -dnull -noconsole -rcfile $PDK_ROOT/sky130B/libs.tech/magic/sky130B.magicrc
     load <cell>.mag
     gds write <cell>.gds
 """

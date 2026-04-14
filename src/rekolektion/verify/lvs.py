@@ -50,11 +50,8 @@ def extract_netlist(
 
     gds_path = gds_path.resolve()
 
-    sky130a = pdk_root / "sky130A"
-    if not sky130a.exists():
-        sky130a = pdk_root
-
-    magicrc = sky130a / "libs.tech" / "magic" / "sky130A.magicrc"
+    from rekolektion.tech.sky130 import magic_rcfile
+    magicrc = magic_rcfile(pdk_root)
 
     extracted_spice = output_dir / f"{cell_name or 'top'}_extracted.spice"
 
@@ -123,15 +120,13 @@ def run_lvs(
         pdk_root = find_pdk_root()
     pdk_root = Path(pdk_root)
 
-    sky130a = pdk_root / "sky130A"
-    if not sky130a.exists():
-        sky130a = pdk_root
+    from rekolektion.tech.sky130 import netgen_setup
 
     # Step 1: Extract netlist from layout
     extracted = extract_netlist(gds_path, cell_name, pdk_root, output_dir)
 
     # Step 2: Run netgen comparison
-    setup_file = sky130a / "libs.tech" / "netgen" / "sky130A_setup.tcl"
+    setup_file = netgen_setup(pdk_root)
     log_path = output_dir / "lvs_results.log"
 
     subckt = cell_name or "sky130_sram_6t_bitcell"

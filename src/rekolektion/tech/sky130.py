@@ -3,7 +3,7 @@
 All dimensions in micrometers (μm) unless noted otherwise.
 
 Sources:
-- SkyWater SKY130 PDK DRC rules (sky130A/libs.tech/magic/sky130A.tech)
+- SkyWater SKY130 PDK DRC rules (libs.tech/magic/sky130{A,B}.tech)
 - SKY130 Periphery design rules documentation
 - Values validated against Magic DRC deck
 
@@ -13,6 +13,60 @@ the actual PDK DRC deck before tapeout.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# PDK variant selection
+# ---------------------------------------------------------------------------
+# sky130B adds ReRAM BEOL between M1/M2 (reram layer 201/20).
+# FEOL (transistors, diff, poly, contacts, M1) is identical to sky130A.
+# DRC rules for SRAM and MIM caps are unchanged.
+# Only difference: via1 is thicker (0.565 vs 0.27um), shifting M2+ up 0.295um in Z.
+
+PDK_VARIANT = "sky130B"  # "sky130A" or "sky130B"
+
+
+def pdk_path(pdk_root: Path | str | None = None) -> Path:
+    """Return the path to the active PDK variant directory.
+
+    Searches standard locations if pdk_root is not provided.
+    """
+    if pdk_root is not None:
+        p = Path(pdk_root)
+        # Accept either the root or the variant dir directly
+        if p.name == PDK_VARIANT:
+            return p
+        return p / PDK_VARIANT
+
+    candidates = [
+        Path.home() / ".volare" / PDK_VARIANT,
+        Path.home() / "pdk" / PDK_VARIANT,
+        Path(f"/usr/local/share/pdk/{PDK_VARIANT}"),
+        Path(f"/opt/pdk/{PDK_VARIANT}"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+
+    raise FileNotFoundError(
+        f"PDK {PDK_VARIANT} not found. Set PDK_ROOT env var or install via volare."
+    )
+
+
+def magic_rcfile(pdk_root: Path | str | None = None) -> Path:
+    """Return path to the Magic rcfile for the active PDK variant."""
+    return pdk_path(pdk_root) / "libs.tech" / "magic" / f"{PDK_VARIANT}.magicrc"
+
+
+def magic_techfile(pdk_root: Path | str | None = None) -> Path:
+    """Return path to the Magic tech file for the active PDK variant."""
+    return pdk_path(pdk_root) / "libs.tech" / "magic" / f"{PDK_VARIANT}.tech"
+
+
+def netgen_setup(pdk_root: Path | str | None = None) -> Path:
+    """Return path to the netgen setup file for the active PDK variant."""
+    return pdk_path(pdk_root) / "libs.tech" / "netgen" / f"{PDK_VARIANT}_setup.tcl"
 
 
 # ---------------------------------------------------------------------------

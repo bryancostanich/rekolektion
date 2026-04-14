@@ -12,7 +12,7 @@ from pathlib import Path
 from string import Template
 
 from rekolektion.tech.sky130 import (
-    NMOS_MODEL, PMOS_MODEL, RULES, SPICE_MODELS,
+    NMOS_MODEL, PMOS_MODEL, RULES, SPICE_MODELS, PDK_VARIANT,
 )
 
 
@@ -37,7 +37,7 @@ READ_SNM_TEMPLATE = Template("""\
 .param temp_val = ${temp}
 
 * Include SKY130 models
-.lib "${pdk_root}/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner}
 
 * Include bitcell subcircuit
 .include "${bitcell_spice}"
@@ -103,7 +103,7 @@ WRITE_MARGIN_TEMPLATE = Template("""\
 .param vdd_val = ${vdd}
 .param temp_val = ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner}
 .include "${bitcell_spice}"
 
 Vvdd VDD 0 DC vdd_val
@@ -150,7 +150,7 @@ HOLD_MARGIN_TEMPLATE = Template("""\
 .param vdd_val = ${vdd}
 .param temp_val = ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner}
 .include "${bitcell_spice}"
 
 Vvdd VDD 0 DC vdd_val
@@ -194,7 +194,7 @@ TRANSIENT_TEMPLATE = Template("""\
 .param period = 20n
 .param temp_val = ${temp}
 
-.lib "${pdk_root}/sky130A/${model_path}" ${corner}
+.lib "${pdk_root}/${pdk_variant}/${model_path}" ${corner}
 .include "${bitcell_spice}"
 
 Vvdd VDD 0 DC vdd_val
@@ -335,6 +335,7 @@ def generate_testbenches(
                     "output_prefix": f"{corner}_{vdd:.2f}V_{temp:.0f}C",
                     "subckt_name": subckt_name,
                     "pdk_root": pdk_root,
+                    "pdk_variant": PDK_VARIANT,
                 }
 
                 for name, template in templates.items():

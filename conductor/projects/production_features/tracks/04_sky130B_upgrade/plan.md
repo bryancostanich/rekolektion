@@ -27,24 +27,25 @@ for CIM analog IP.
 
 Update rekolektion's tech layer definitions and DRC rules to reference sky130B.
 
-- [ ] Audit `src/rekolektion/tech/sky130.py`:
-    - [ ] Identify all PDK path references (model files, tech files, cell libraries)
-    - [ ] Identify any hardcoded layer heights or parasitic values
-    - [ ] Check if GDS layer numbers change (expect: no change except reram 201/20 added)
-- [ ] Update PDK references from sky130A to sky130B:
-    - [ ] Magic tech file: `sky130A.tech` → `sky130B.tech`
-    - [ ] Magic rcfile: `sky130A.magicrc` → `sky130B.magicrc`
-    - [ ] Magic TCL procs: `sky130A.tcl` → `sky130B.tcl`
-    - [ ] Cell library paths: `libs.ref/*/sky130_fd_pr` (same in both, verify)
-    - [ ] Standard cell paths: `libs.ref/*/sky130_fd_sc_hd` (same in both, verify)
-- [ ] Verify DRC rules in sky130B.tech are a superset of sky130A.tech:
-    - [ ] Diff the two tech files (expect: identical FEOL rules, added reram rules)
-    - [ ] Confirm no existing DRC rules tightened or changed
-    - [ ] Check MIM cap minimum dimensions (capm.1/capm.2): if sky130B allows
-      smaller MIM caps than sky130A's 2.0×2.0um minimum, Track 03 Decision 2
-      reopens — could enable smaller caps for SRAM-C/D variants and tighter
-      tiling pitch (Decision 3)
-- [ ] Run existing unit tests with sky130B — expect all pass unchanged
+- [x] Audit `src/rekolektion/tech/sky130.py`:
+    - [x] 24 sky130A references found across 6 source files (verify/, CLAUDE.md)
+    - [x] No hardcoded layer heights (heights are display-only in tech file)
+    - [x] GDS layer numbers identical (reram 201/20 added, no changes)
+- [x] Update PDK references from sky130A to sky130B:
+    - [x] Added `PDK_VARIANT = "sky130B"` constant + `pdk_path()`, `magic_rcfile()`,
+          `magic_techfile()`, `netgen_setup()` helpers to sky130.py
+    - [x] verify/drc.py: uses sky130.pdk_path() + magic_rcfile()
+    - [x] verify/lvs.py: uses magic_rcfile() + netgen_setup()
+    - [x] verify/spice.py: template uses `${pdk_variant}` instead of hardcoded sky130A
+    - [x] verify/macro_spice.py: same template fix
+    - [x] CLAUDE.md: DRC command updated to sky130B.magicrc
+    - [x] array/support_cells.py: comment updated
+- [x] Verify DRC rules in sky130B.tech are a superset of sky130A.tech:
+    - [x] Diffed tech files: sky130B adds 37 lines (reram layer + ReRAM DRC rules only)
+    - [x] Zero FEOL rule changes. Zero MIM cap rule changes.
+    - [x] MIM cap minimum: capm.1 = 1.0um in BOTH sky130A and sky130B (identical)
+    - [x] Only Z-stack heights change: via1 thicker (0.27→0.565), M2+ shifts up 0.295um
+- [ ] Run existing unit tests with sky130B — no unit test suite exists yet
 
 ## Phase 2: Bitcell Regeneration
 
@@ -54,16 +55,14 @@ Regenerate all bitcell variants under sky130B.
     - [ ] Load with sky130B tech, DRC check (expect: 0 new errors)
     - [ ] Extract SPICE, compare parasitic values vs sky130A extraction
     - [ ] Flag any parasitic change >10%
-- [ ] 6T custom LR cell:
-    - [ ] Regenerate with sky130B tech, DRC check
+- [x] 6T custom LR cell:
+    - [x] DRC check with sky130B: **DRC CLEAN** (0 errors)
     - [ ] Extract SPICE, compare vs sky130A
-- [ ] 7T+1C CIM cell (Track 03):
-    - [ ] Regenerate with sky130B tech, DRC check
-    - [ ] MIM cap sits on M3/M4 — verify M3/M4 height shift doesn't affect
-      MIM enclosure rules
-    - [ ] Extract SPICE — MIM parasitic capacitance to substrate changes
-      because M3 is 0.295 um higher. Quantify the shift.
-    - [ ] Compare CIM signal (MBL_OUT voltage delta per cell) vs sky130A baseline
+- [x] 7T+1C CIM cell (Track 03):
+    - [x] DRC check with sky130B: all 4 variants **DRC CLEAN** (0 errors)
+    - [x] MIM cap M3/M4 height shift: XY DRC rules unchanged (height is Z only)
+    - [ ] Extract SPICE — quantify MIM parasitic change from M3 height shift
+    - [ ] Compare CIM signal vs sky130A baseline
 
 ## Phase 3: Macro Regeneration
 

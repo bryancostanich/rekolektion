@@ -95,21 +95,19 @@ SRAM peripherals (WL drivers, precharge, sense amps, write drivers).
 
 Extend the macro assembler to produce complete CIM SRAM array macros.
 
-- [ ] Update `MacroParams` dataclass for CIM mode:
-    - [ ] `cim_enabled: bool`
-    - [ ] `num_mwl_drivers: int` (= rows)
-    - [ ] `num_mbl_columns: int` (= cols)
-- [ ] Update assembler placement:
-    - [ ] Place MWL drivers on left side (alongside row decoder)
-    - [ ] Place MBL precharge at top of array
-    - [ ] Place MBL sense buffers at bottom of array (output side)
-- [ ] Generate macro for each array size:
-    - [ ] SRAM-A: 256×64, 1.3×3.1 cap (11.08 um²/cell)
-    - [ ] SRAM-B: 256×64, 1.1×2.65 cap (9.17 um²/cell)
-    - [ ] SRAM-C: 64×64, 1.1×1.8 cap (7.63 um²/cell)
-    - [ ] SRAM-D: 64×64, 1.0×1.45 cap (7.54 um²/cell)
-- [ ] DRC each macro in Magic
-- [ ] LVS each macro (netgen)
+- [x] CIM macro assembler (`macro/cim_assembler.py`):
+    - [x] `CIMMacroParams` dataclass (variant, rows, cols, cap params)
+    - [x] `generate_cim_macro()` — loads bitcell, tiles array, places peripherals
+    - [x] `generate_all_cim_macros()` — produces all 4 variants
+    - [x] Placement: MWL drivers left, MBL precharge top, MBL sense bottom
+    - [x] Hierarchical GDS (no flatten — avoids gdstk coordinate distortion)
+- [x] Generated + DRC verified all 4 macros (sky130B):
+    - [x] SRAM-A: 143.5 × 1323.3 um (256×64, ~8 fF)
+    - [x] SRAM-B: 129.3 × 1208.1 um (256×64, ~6 fF)
+    - [x] SRAM-C: 129.3 × 254.8 um (64×64, ~4 fF)
+    - [x] SRAM-D: 127.7 × 254.8 um (64×64, ~3 fF)
+    All: zero real DRC errors (known waivers: nwell.2a, via.2, subcell overlap)
+- [ ] LVS each macro (netgen) — deferred (requires full inter-cell routing)
 
 ## Phase 5: LEF + Liberty Generation
 

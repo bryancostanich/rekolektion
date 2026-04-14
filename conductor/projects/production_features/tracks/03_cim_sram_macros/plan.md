@@ -131,16 +131,16 @@ Produce the files needed for P&R integration.
 
 ## Phase 6: Ring Oscillators + Test Structures
 
-- [ ] Ring oscillator cells (one per cell size):
-    - [ ] Standard inverter ring using CIM cell transistors
-    - [ ] Output routed to macro pin for frequency measurement
-    - [ ] Layout, DRC clean
-- [ ] Unit cell test structures (one per cell size):
-    - [ ] Single cell with all ports directly accessible
-    - [ ] For post-silicon characterization
-    - [ ] Layout, DRC clean
-- [ ] Place ring oscillators and test structures adjacent to corresponding arrays
-- [ ] Include in macro LEF (as sub-blocks or separate small macros)
+- [x] Ring oscillator (`cim_ring_osc.py`):
+    - [x] 11-stage ring + 2-stage buffer, W=0.42/0.42 L=0.15 (matches CIM cell)
+    - [x] 1.67 × 9.41 um, DRC clean (sky130B)
+    - [x] Ports: RO_EN, RO_OUT, VDD, VSS
+- [x] Unit cell test structures (`cim_unit_cell.py`):
+    - [x] Single CIM cell with all ports (BL, BLB, WL, MWL, MBL, VDD, VSS)
+    - [x] All 4 variants generated, all DRC clean
+    - [x] Output in output/cim_test_structures/
+- [~] Place adjacent to arrays — deferred (separate small macros for flexibility)
+- [~] LEF for test structures — deferred (not needed for initial shuttle placement)
 
 ## Phase 7: Integration Test
 
@@ -151,3 +151,10 @@ End-to-end validation that macros work in the khalkulo P&R flow.
 - [ ] Run OpenLane elaboration check (Yosys reads blackbox + LEF)
 - [ ] Run floorplan test (place CIM macros, verify no overlap with v1a SRAMs)
 - [ ] Verify OpenSTA reads timing arcs correctly
+
+## Phase 8: Documentation Cleanup
+
+- [ ] Update continuation prompt with final state
+- [ ] Update decisions.md — final pitch/area numbers for all variants
+- [ ] Update Track 04 Phase 3 — CIM macros now available for sky130B regen
+- [ ] Commit all output artifacts (GDS/LEF/Liberty) or add to .gitignore

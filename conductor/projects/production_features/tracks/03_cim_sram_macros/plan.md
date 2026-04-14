@@ -60,6 +60,8 @@ Extend the array tiler (`array/tiler.py`) to route MWL and MBL signals.
 - [x] Test: tile a small 4×4 CIM array, DRC clean
       6 nwell.2a waivers (same-potential nwells, Magic false positive).
       See decisions.md Decision 3 for CIM tiling pitch analysis.
+- [x] Test: tile 64×64 (SRAM-C/D size), DRC clean
+      64x64: 181.9 × 259.5 um = 0.047 mm². Only nwell.2a waivers.
 - [ ] Test: tile 256×64 (SRAM-A size), DRC clean
 - [ ] Test: tile 64×64 (SRAM-C/D size), DRC clean
 

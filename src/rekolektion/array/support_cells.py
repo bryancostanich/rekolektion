@@ -120,4 +120,78 @@ def get_support_cell(name: str) -> SupportCellInfo:
 
 def list_support_cells() -> list[str]:
     """Return list of available support cell short names."""
-    return sorted(_CELL_REGISTRY.keys())
+    _init_cim_generators()
+    return sorted(list(_CELL_REGISTRY.keys()) + list(_CIM_GENERATORS.keys()))
+
+
+# ---------------------------------------------------------------------------
+# CIM peripheral cells (generated on demand, not from static GDS)
+# ---------------------------------------------------------------------------
+
+_CIM_GENERATORS: Dict[str, Tuple] = {}  # populated lazily
+
+
+def _init_cim_generators():
+    """Register CIM peripheral cell generators."""
+    global _CIM_GENERATORS
+    if _CIM_GENERATORS:
+        return
+    _CIM_GENERATORS.update({
+        "cim_mwl_driver": (
+            "rekolektion.peripherals.cim_mwl_driver",
+            "generate_mwl_driver",
+            "cim_mwl_driver",
+        ),
+        "cim_mbl_precharge": (
+            "rekolektion.peripherals.cim_mbl_precharge",
+            "generate_mbl_precharge",
+            "cim_mbl_precharge",
+        ),
+        "cim_mbl_sense": (
+            "rekolektion.peripherals.cim_mbl_sense",
+            "generate_mbl_sense",
+            "cim_mbl_sense",
+        ),
+    })
+
+
+def get_cim_peripheral(name: str) -> SupportCellInfo:
+    """Get a CIM peripheral cell by name (generated on demand).
+
+    Valid names: cim_mwl_driver, cim_mbl_precharge, cim_mbl_sense
+    """
+    if name in _cache:
+        return _cache[name]
+
+    _init_cim_generators()
+    if name not in _CIM_GENERATORS:
+        raise KeyError(
+            f"Unknown CIM peripheral '{name}'. "
+            f"Valid: {sorted(_CIM_GENERATORS.keys())}"
+        )
+
+    module_name, func_name, cell_name = _CIM_GENERATORS[name]
+    import importlib
+    mod = importlib.import_module(module_name)
+    gen_func = getattr(mod, func_name)
+    cell, lib = gen_func()
+
+    bb = cell.bounding_box()
+    width = bb[1][0] - bb[0][0] if bb else 0.0
+    height = bb[1][1] - bb[0][1] if bb else 0.0
+
+    # Write GDS to output for DRC/extraction
+    out_dir = Path("output/cim_peripherals")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    gds_path = out_dir / f"{cell_name}.gds"
+    lib.write_gds(str(gds_path))
+
+    info = SupportCellInfo(
+        short_name=name,
+        cell_name=cell_name,
+        width=width,
+        height=height,
+        gds_path=gds_path,
+    )
+    _cache[name] = info
+    return info

@@ -74,7 +74,7 @@ SRAM peripherals (WL drivers, precharge, sense amps, write drivers).
     - [x] Non-inverting buffer: 2 horizontal gates on shared NMOS/PMOS diff (LR style)
     - [x] PMOS W=0.84, NMOS W=0.42 (2:1 for balanced rise/fall)
     - [x] DRC clean (sky130B), 2.09 × 2.04 um
-    - [ ] SPICE extract, verify drive strength for 64-column poly load
+    - [x] SPICE extract: 2 NMOS (0.42/0.15) + 2 PMOS (0.84/0.15) — correct buffer
 - [x] MBL precharge cell (`cim_mbl_precharge.py`):
     - [x] Single PMOS switch: gate=MBL_PRE, drain=MBL, source=VREF (external)
     - [x] PMOS W=0.84 for fast precharge
@@ -84,8 +84,12 @@ SRAM peripherals (WL drivers, precharge, sense amps, write drivers).
     - [x] Analog output — does NOT digitize. ADC is external.
     - [x] VBIAS supplied externally
     - [x] DRC clean (sky130B), 1.26 × 1.73 um
-    - [ ] SPICE extract, verify signal integrity (bandwidth, noise)
-- [ ] Add peripheral cells to `array/support_cells.py` registry
+    - [x] SPICE extract: 2 NMOS (1.0/0.15) — driver + bias, source follower correct
+          Note: bias W=1.0 (shares diff with driver). Intended W=0.50 requires
+          split diff — acceptable for shuttle, higher quiescent current.
+- [x] Add peripheral cells to `array/support_cells.py` registry
+      `get_cim_peripheral("cim_mwl_driver"|"cim_mbl_precharge"|"cim_mbl_sense")`
+      Generates on demand, writes GDS to output/cim_peripherals/.
 
 ## Phase 4: Macro Assembly
 

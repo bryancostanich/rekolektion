@@ -63,7 +63,11 @@ Extend the array tiler (`array/tiler.py`) to route MWL and MBL signals.
 - [x] Test: tile 64×64 (SRAM-C/D size), DRC clean
       64x64: 181.9 × 259.5 um = 0.047 mm². Only nwell.2a waivers.
       (tested at 2.0×2.0 cap; needs retest with per-variant caps)
-- [ ] Test: tile 256×64 (SRAM-A size), DRC clean
+- [x] Test: tile 256×64 (SRAM-A size), DRC clean
+      256x64: 139.4 × 1319.1 um = 0.184 mm².
+      Waivers: 4191 nwell.2a + 32384 via.2 (both same-potential: adjacent
+      cells' VPWR nets too close for different-net rules but same net).
+      Zero real DRC errors.
 
 ## Phase 3: CIM Peripherals
 

@@ -389,12 +389,21 @@ def load_cim_bitcell(
         "MBL":  PinInfo("MBL",  [(cell_cx, cell_cy, "met4")]),
     }
 
-    # Tiling pitch — same X as 6T, Y increased for T7 overhead.
-    # T7 diff extends to t7_diff_top. Add NSDM margin + some spacing
-    # for Y-mirrored tiling.
-    x_pitch = _snap(cw - g["rail_w"] + 0.03)  # same as 6T: 1.925
-    # Y pitch: from 6T bottom to T7 top + margin for mirrored neighbor
-    y_pitch = _snap(t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF + 0.10)
+    # Tiling pitch — MIM cap dominates both X and Y.
+    # X: MIM cap (2.0um) + capm.2a spacing (0.84um) between caps = 2.84
+    # Y: MIM cap spacing between mirrored rows requires y_pitch ≥
+    #    (geom_h - cap_y0) + cap_y0 + capm.2a = geom_h + capm.2a.
+    #    Also need NSDM spacing (0.38um) for T7 diffs.
+    mim_cap_spacing = 0.84  # capm.2a: minimum spacing between MIM caps
+    x_pitch = _snap(MIM_MIN_WIDTH + mim_cap_spacing + 0.01)  # +10nm margin
+    geom_h = t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF
+    # Y-pitch: max of NSDM constraint and MIM cap constraint.
+    # MIM cap: mirrored cap top at (geom_h - cap_y0), next cap bottom at
+    # y_pitch + cap_y0. Spacing = y_pitch - (geom_h - 2*cap_y0).
+    cap_y0_local = _snap(ch / 2.0 - MIM_MIN_LENGTH / 2.0)
+    y_mim_constraint = _snap(geom_h - 2 * cap_y0_local + mim_cap_spacing + 0.01)
+    y_nsdm_constraint = _snap(geom_h + RULES.NSDM_MIN_SPACING)
+    y_pitch = max(y_mim_constraint, y_nsdm_constraint)
 
     return BitcellInfo(
         cell_name="sky130_sram_6t_cim_lr",

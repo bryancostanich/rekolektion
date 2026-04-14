@@ -48,17 +48,18 @@ parameterization + DRC + SPICE extraction.
 
 Extend the array tiler (`array/tiler.py`) to route MWL and MBL signals.
 
-- [ ] Add MWL routing to `tile_array()`:
-    - [ ] MWL is horizontal poly, one per row — same pattern as WL
-    - [ ] MWL must be independent from WL (separate driver connection)
-    - [ ] Route MWL straps at same intervals as WL straps
-- [ ] Add MBL routing to `tile_array()`:
-    - [ ] MBL is vertical on M4, one per column
-    - [ ] No conflict with BL/BLB (M2) — different metal layer
-    - [ ] Route MBL to array edge for external connection
-- [ ] Update dummy cell handling:
-    - [ ] Dummy cells need MWL/MBL stubs (floating OK, but must be DRC clean)
-- [ ] Test: tile a small 4×4 CIM array, DRC clean
+- [x] Add MWL routing to `tile_array()`:
+    - [x] MWL poly is continuous across tiled cells (extends full cell width)
+    - [x] MWL independent from WL (separate poly line at T7 Y position)
+    - [~] MWL metal straps — deferred (poly-only sufficient for small arrays)
+- [x] Add MBL routing to `tile_array()`:
+    - [x] MBL vertical M4 stripes per column (route_mbl in routing.py)
+    - [x] Met4 min width = 0.30um (met4.1)
+    - [x] No conflict with BL/BLB (M2) — different metal layer
+- [~] Update dummy cell handling — deferred (not needed for initial arrays)
+- [x] Test: tile a small 4×4 CIM array, DRC clean
+      6 nwell.2a waivers (same-potential nwells, Magic false positive).
+      See decisions.md Decision 3 for CIM tiling pitch analysis.
 - [ ] Test: tile 256×64 (SRAM-A size), DRC clean
 - [ ] Test: tile 64×64 (SRAM-C/D size), DRC clean
 

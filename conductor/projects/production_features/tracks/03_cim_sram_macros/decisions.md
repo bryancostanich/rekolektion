@@ -102,3 +102,36 @@ independent of the CIM additions.
 The SPICE-characterized smaller-cap variants (3.9 fF, 2.9 fF, 1.3 fF)
 are useful reference data for a future process that has smaller MIM caps
 but are not physically realizable on SKY130.
+
+## Decision 3: CIM Cell Tiling Pitch (MIM Cap vs Cell Density)
+
+**Date:** 2026-04-14
+**Status:** Implemented
+
+### Problem
+
+The 2.0×2.0 um MIM cap (SKY130 minimum, capm.1/capm.2) is wider than
+the 6T X-tiling pitch (1.925 um). Adjacent columns' MIM caps overlap,
+shorting their MBL lines. Similarly, T7 prevents Y-boundary sharing,
+requiring full NSDM spacing (0.38um) between rows.
+
+### Fix
+
+Increase tiling pitch to accommodate MIM cap + spacing rules:
+- **X-pitch**: 2.84 um (MIM cap 2.0 + capm.2a spacing 0.84)
+- **Y-pitch**: 3.915 um (geometry 3.535 + NSDM spacing 0.38)
+- **Effective cell area**: 11.1 um² (vs 3.93 um² for 6T-only)
+
+### Impact on Array Sizes
+
+| Array | Rows×Cols | 6T-only Area | CIM Area | Notes |
+|-------|-----------|-------------|----------|-------|
+| SRAM-A | 256×64 | 0.064 mm² | 0.182 mm² | 2.8x larger |
+| SRAM-B | 256×64 | 0.049 mm² | 0.182 mm² | same CIM layout |
+| SRAM-C | 64×64 | 0.016 mm² | 0.045 mm² | |
+| SRAM-D | 64×64 | 0.013 mm² | 0.045 mm² | |
+| **Total** | | **0.142 mm²** | **0.454 mm²** | fits in 2.95 mm² |
+
+The 2.8x area overhead is the real cost of CIM on SKY130. The 2.0um
+MIM cap minimum dominates the X-pitch. On a process with smaller MIM
+caps (e.g., 45nm with 0.5um minimum), the overhead would be much less.

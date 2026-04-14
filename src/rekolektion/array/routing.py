@@ -27,11 +27,13 @@ from rekolektion.bitcell.base import BitcellInfo
 # (layer_number, datatype)
 LAYER_MET1 = (68, 20)
 LAYER_MET2 = (69, 20)
+LAYER_MET4 = (71, 20)
 
 # Routing widths in microns
 WL_WIDTH = 0.14       # Word line on met1: minimum width
 BL_WIDTH = 0.14       # Bit lines on met2: minimum width
 POWER_WIDTH = 0.28    # Power rails on met2: 2x minimum for lower IR drop
+MBL_WIDTH = 0.30      # MBL on met4: met4.1 minimum width
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +239,50 @@ def route_power_rails(
         _hstripe(cell, pwr_y, x_offset, x_offset + total_w, POWER_WIDTH, LAYER_MET2)
 
 
+def route_mbl(
+    cell: gdstk.Cell,
+    bitcell: BitcellInfo,
+    num_rows: int,
+    num_cols: int,
+    x_offset: float = 0.0,
+    y_offset: float = 0.0,
+    array_height: float | None = None,
+) -> None:
+    """Add vertical met4 MBL (multiply bitline) stripes for CIM arrays.
+
+    MBL carries analog voltage from the MIM coupling capacitors.
+    One MBL per column, on met4 (no conflict with BL/BLB on met2).
+
+    Parameters
+    ----------
+    cell : gdstk.Cell
+        Array cell to add routing to.
+    bitcell : BitcellInfo
+        Bitcell info with MBL pin position.
+    num_rows, num_cols : int
+        Array dimensions.
+    x_offset, y_offset : float
+        Offset of the bitcell array origin.
+    array_height : float, optional
+        Total height to extend MBL stripes.
+    """
+    if "MBL" not in bitcell.pins:
+        return
+
+    cw = bitcell.cell_width
+    ch = bitcell.cell_height
+    total_h = array_height if array_height is not None else num_rows * ch
+    mbl_x_local = bitcell.pins["MBL"].x
+
+    for col in range(num_cols):
+        if col % 2 == 0:
+            mbl_x = x_offset + col * cw + mbl_x_local
+        else:
+            mbl_x = x_offset + col * cw + (cw - mbl_x_local)
+
+        _vstripe(cell, mbl_x, y_offset, y_offset + total_h, MBL_WIDTH, LAYER_MET4)
+
+
 def route_array(
     cell: gdstk.Cell,
     bitcell: BitcellInfo,
@@ -247,9 +293,11 @@ def route_array(
     array_width: float | None = None,
     array_height: float | None = None,
 ) -> None:
-    """Add all routing (WL, BL/BR, power) to the array cell.
+    """Add all routing (WL, BL/BR, power, and CIM if applicable) to the array.
 
-    Convenience wrapper that calls all three routing functions.
+    Automatically detects CIM pins (MWL, MBL) and adds CIM routing.
+    MWL routing is not needed — MWL poly is continuous across tiled cells.
+    MBL gets vertical met4 stripes per column.
     """
     route_word_lines(
         cell, bitcell, num_rows, num_cols,
@@ -263,3 +311,9 @@ def route_array(
         cell, bitcell, num_rows, num_cols,
         x_offset, y_offset, array_width,
     )
+    # CIM routing: MBL vertical stripes on met4
+    if "MBL" in bitcell.pins:
+        route_mbl(
+            cell, bitcell, num_rows, num_cols,
+            x_offset, y_offset, array_height,
+        )

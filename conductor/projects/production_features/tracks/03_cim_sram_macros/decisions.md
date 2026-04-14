@@ -67,3 +67,38 @@ code has 54 DRC errors AND a topology bug: T7 source connects to BLB, not Q.
 | li.3 (li1 spacing) | violations | proper spacing |
 | diff/tap.2 (transistor width) | violations | proper width |
 | poly.1a (poly width) | possible snap error | proper snapping |
+
+## Decision 2: MIM Cap Minimum Size Constraint
+
+**Date:** 2026-04-14
+**Status:** Accepted
+
+### Problem
+
+The Track 21 SPICE characterization tested smaller MIM caps for SRAM-C
+(1.4x1.4 um, 3.9 fF) and SRAM-D (1.2x1.2 um, 2.9 fF). However, SKY130
+DRC rule capm.1 requires minimum MIM cap width = 2.0 um, and capm.2
+requires minimum length = 2.0 um. Caps below 2x2 um violate DRC.
+
+### Consequence
+
+All four CIM cell variants use the same 2.0x2.0 um MIM cap (8 fF):
+- SRAM-A (3.93 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← characterized
+- SRAM-B (3.0 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← identical
+- SRAM-C (2.5 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← identical
+- SRAM-D (2.07 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← identical
+
+The cell-to-cell differentiation is ONLY in the base 6T routing density
+(tighter M1/M2/li1 spacing), which requires changes to the 6T cell
+generator — not the CIM additions. Since the 6T generator currently has
+one set of spacing params, all four sizes produce identical GDS.
+
+### Impact on Track 03
+
+Phase 1 scope reduces to one cell variant (SRAM-A = default params).
+The 4-size sweep becomes 6T routing optimization work, which is
+independent of the CIM additions.
+
+The SPICE-characterized smaller-cap variants (3.9 fF, 2.9 fF, 1.3 fF)
+are useful reference data for a future process that has smaller MIM caps
+but are not physically realizable on SKY130.

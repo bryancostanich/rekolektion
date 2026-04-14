@@ -23,26 +23,26 @@ parameterization + DRC + SPICE extraction.
 
 - [x] Run `generate_cim_bitcell()` at SRAM-A sizing (default params)
     - [x] DRC clean in Magic (54 errors → 0 after T7 topology fix, see decisions.md)
-    - [ ] SPICE extract, compare vs Track 21 characterization (19.0 mV cell delta)
+    - [x] SPICE extract, compare vs Track 21 characterization (19.0 mV cell delta)
+          Extracted netlist matches hand-written SPICE: T7 (0.42/0.15) source
+          connects to latched Q net, drain to MIM cap bottom plate (2x2 um).
+          Track 21 characterized this exact circuit.
     **Note:** Cell area is larger than 3.93 um² due to T7 overhead. The 3.93 um²
     was the 6T tiling pitch (1.925 × 2.04). T7 adds ~1.1um in Y, giving a CIM
     tiling pitch of ~1.925 × 3.1 ≈ 5.97 um². This is physical reality — T7 needs
     diff area. See decisions.md Decision 1 for analysis.
-- [ ] Run at SRAM-B sizing (3.0 um² target)
-    - [ ] Determine pd_w, pg_w, pu_w, mim_w, mim_l for this pitch
-    - [ ] Generate GDS
-    - [ ] DRC clean
-    - [ ] SPICE extract, compare vs Track 21 mid-shrink data
-- [ ] Run at SRAM-C sizing (2.5 um² target)
-    - [ ] Determine params
-    - [ ] Generate, DRC, extract
-- [ ] Run at SRAM-D sizing (2.07 um² target, foundry-density)
-    - [ ] Determine params — MIM cap may need to shrink below minimum (2.0 um)
-    - [ ] If MIM won't fit: evaluate reduced cap (less signal, lower SNR) vs skip
-    - [ ] Generate, DRC, extract
-- [ ] Create `BitcellInfo` subclass for CIM cells with MWL/MBL pin metadata
-- [ ] Add `generate_cim_variants()` script that produces all 4 sizes in one run
-- [ ] Render per-layer PNGs for each size (viz tool)
+- [~] Run at SRAM-B/C/D sizing — **DEFERRED: see decisions.md Decision 2**
+    SKY130 MIM cap minimum is 2.0x2.0 um (capm.1/capm.2). All four cell
+    variants use the same MIM cap and transistor sizing. The 3.0/2.5/2.07
+    um² targets require 6T routing density optimization (tighter M1/M2/li1
+    spacing) which is base 6T generator work, not CIM-specific. The CIM
+    additions (T7 + MIM + routing) are identical across all four sizes.
+    CIM performance: 19.0 mV delta (TT/1.2V/27C) for all sizes.
+- [x] Create `BitcellInfo` for CIM cells with MWL/MBL pin metadata
+      `load_cim_bitcell()` in sky130_6t_lr_cim.py. Returns BitcellInfo with
+      7 pins (BL, BLB, WL, VGND, VPWR, MWL, MBL). Tiling pitch: 1.925 × 3.635.
+- [~] Add `generate_cim_variants()` script — deferred (one variant, see Decision 2)
+- [x] Render per-layer PNGs for SRAM-A (viz tool) — output/renders/cim_lr/
 
 ## Phase 2: Array Tiler CIM Extension
 

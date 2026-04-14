@@ -351,5 +351,63 @@ def generate_cim_bitcell(
     return out
 
 
+def load_cim_bitcell(
+    gds_path: str | Path = "output/sky130_6t_cim_lr.gds",
+) -> "BitcellInfo":
+    """Return a BitcellInfo for the CIM bitcell, generating GDS if needed.
+
+    Provides MWL and MBL pin metadata in addition to standard SRAM pins.
+    """
+    from rekolektion.bitcell.base import BitcellInfo, PinInfo
+
+    gds_path = Path(gds_path)
+    if not gds_path.exists():
+        generate_cim_bitcell(str(gds_path))
+
+    g = _compute_cell_geometry()
+    cw, ch = g["cell_w"], g["cell_h"]
+
+    # T7 geometry (must match create_cim_bitcell)
+    t7_diff_bot = _snap(ch + RULES.DIFF_MIN_SPACING)
+    mwl_cy = _snap(t7_diff_bot + _T7_DIFF_OVERHANG + GATE_LENGTH / 2.0)
+    t7_diff_top = _snap(mwl_cy + GATE_LENGTH / 2.0 + _T7_DIFF_OVERHANG)
+
+    cell_cx = cw / 2.0
+    cell_cy = ch / 2.0
+
+    # Pin positions for standard SRAM pins (same as 6T LR cell)
+    vgnd_cx = g["rail_w"] / 2.0
+    vpwr_cx = g["vpwr_x0"] + g["rail_w"] / 2.0
+    pins = {
+        "BL":   PinInfo("BL",   [(g["nmos_cx"], g["bl_bot_cy"], "met1")]),
+        "BLB":  PinInfo("BLB",  [(g["nmos_cx"], g["bl_top_cy"], "met1")]),
+        "WL":   PinInfo("WL",   [(cw / 2.0, g["wl_bot_cy"], "poly")]),
+        "VGND": PinInfo("VGND", [(vgnd_cx, g["pwr_cy"], "met1")]),
+        "VPWR": PinInfo("VPWR", [(vpwr_cx, g["pwr_cy"], "met1")]),
+        # CIM pins
+        "MWL":  PinInfo("MWL",  [(cw / 2.0, mwl_cy, "poly")]),
+        "MBL":  PinInfo("MBL",  [(cell_cx, cell_cy, "met4")]),
+    }
+
+    # Tiling pitch — same X as 6T, Y increased for T7 overhead.
+    # T7 diff extends to t7_diff_top. Add NSDM margin + some spacing
+    # for Y-mirrored tiling.
+    x_pitch = _snap(cw - g["rail_w"] + 0.03)  # same as 6T: 1.925
+    # Y pitch: from 6T bottom to T7 top + margin for mirrored neighbor
+    y_pitch = _snap(t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF + 0.10)
+
+    return BitcellInfo(
+        cell_name="sky130_sram_6t_cim_lr",
+        cell_width=x_pitch,
+        cell_height=y_pitch,
+        pins=pins,
+        gds_path=gds_path,
+        origin_x=0.0,
+        origin_y=0.0,
+        geometry_width=cw,
+        geometry_height=t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF,
+    )
+
+
 if __name__ == "__main__":
     generate_cim_bitcell("output/sky130_6t_cim_lr.gds", generate_spice=True)

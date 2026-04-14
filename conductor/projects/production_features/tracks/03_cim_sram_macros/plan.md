@@ -21,9 +21,13 @@ The ADC/DAC that consume MBL_OUT are external IP — not part of rekolektion.
 Generate 7T+1C cells at all 4 target sizes. The generator exists; this is
 parameterization + DRC + SPICE extraction.
 
-- [ ] Run `generate_cim_bitcell()` at SRAM-A sizing (3.93 um², default params)
-    - [ ] DRC clean in Magic
+- [x] Run `generate_cim_bitcell()` at SRAM-A sizing (default params)
+    - [x] DRC clean in Magic (54 errors → 0 after T7 topology fix, see decisions.md)
     - [ ] SPICE extract, compare vs Track 21 characterization (19.0 mV cell delta)
+    **Note:** Cell area is larger than 3.93 um² due to T7 overhead. The 3.93 um²
+    was the 6T tiling pitch (1.925 × 2.04). T7 adds ~1.1um in Y, giving a CIM
+    tiling pitch of ~1.925 × 3.1 ≈ 5.97 um². This is physical reality — T7 needs
+    diff area. See decisions.md Decision 1 for analysis.
 - [ ] Run at SRAM-B sizing (3.0 um² target)
     - [ ] Determine pd_w, pg_w, pu_w, mim_w, mim_l for this pitch
     - [ ] Generate GDS

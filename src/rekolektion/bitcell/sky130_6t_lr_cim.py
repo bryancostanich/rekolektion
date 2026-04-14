@@ -40,14 +40,26 @@ LAYER_VIA2 = (69, 44)       # Via 2 (M2→M3)
 LAYER_MET4 = (71, 20)       # Metal 4
 LAYER_VIA3 = (70, 44)       # Via 3 (M3→M4)
 
-# MIM cap design rules
+# MIM cap design rules (from SKY130 DRC: capm.*)
 MIM_MIN_WIDTH = 2.0          # Minimum MIM cap width (um)
 MIM_MIN_LENGTH = 2.0         # Minimum MIM cap length (um)
-MIM_M3_ENCLOSURE = 0.06     # M3 enclosure of MIM cap edge
+MIM_M3_ENCLOSURE = 0.14     # M3 enclosure of MIM cap edge (capm.3)
 MIM_M4_OVERLAP = 0.14       # M4 minimum overlap past MIM edge
+MIM_VIA2_SPACING = 0.10     # Via2 to MIM cap spacing (capm.8)
+
+# Via2 design rules
+VIA2_SIZE = 0.200            # Via2 is 200nm square
+VIA2_M2_ENCL = 0.085        # M2 enclosure of via2 (wider direction, via2.4a)
+VIA2_M2_ENCL_OTHER = 0.065  # M2 enclosure of via2 (narrower direction, via2.4)
+VIA2_M3_ENCL = 0.085        # M3 enclosure of via2 (wider direction, via2.5a)
+VIA2_M3_ENCL_OTHER = 0.065  # M3 enclosure of via2 (narrower direction, via2.5)
 
 # Pass transistor sizing (same as access gates for symmetry)
 T7_WIDTH = 0.42
+
+# T7 geometry parameters
+_T7_DIFF_OVERHANG = 0.33    # Diff extension past poly (> poly.7 min 0.25, + licon encl)
+_T7_LICON_TO_GATE = 0.090   # Licon edge to gate edge (> licon.11 min 0.055, + li.3 margin)
 
 
 def create_cim_bitcell(
@@ -58,6 +70,11 @@ def create_cim_bitcell(
     mim_l: float = MIM_MIN_LENGTH,
 ) -> gdstk.Cell:
     """Create a 6T+1T+1C CIM bitcell.
+
+    T7 pass transistor is placed above the 6T core with separate diff.
+    T7 source connects to the latched Q net (Route 1 li1: PMOS int_bot +
+    gate_A poly) via mcon → M1 route through the N-P gap.
+    T7 drain connects to MIM cap M3 bottom plate via full via stack.
 
     Returns a gdstk.Cell with the complete CIM cell layout.
     """
@@ -75,37 +92,125 @@ def create_cim_bitcell(
 
     cw = g["cell_w"]
     ch = g["cell_h"]
-
-    # --- Pass transistor T7 (Q → C_C, gated by MWL) ---
-    # Sits just above the 6T core, on the NMOS side (aligned with Q node)
-
-    cim_y_start = ch + 0.2  # gap above 6T cell
-    t7_gate_y = _snap(cim_y_start)
-    t7_diff_bot = _snap(t7_gate_y - T7_WIDTH / 2)
-    t7_diff_top = _snap(t7_gate_y + T7_WIDTH / 2)
-
     nmos_cx = g["nmos_cx"]
+    licon_sz = g["licon_sz"]
+    li_w = g["li_w"]
+    li_encl = g["li_encl"]
+    mcon_sz = g["mcon_sz"]
+    poly_ext = g["poly_ext"]
 
-    # T7 diffusion
+    # =================================================================
+    # T7 PASS TRANSISTOR (separate NMOS diff above 6T core)
+    # =================================================================
+    # T7 diff is isolated from 6T diff by min spacing (0.27um).
+    # MWL poly gate crosses T7 diff horizontally.
+
+    t7_diff_bot = _snap(ch + RULES.DIFF_MIN_SPACING)  # 2.33 + 0.27 = 2.60
+    mwl_cy = _snap(t7_diff_bot + _T7_DIFF_OVERHANG + GATE_LENGTH / 2.0)
+    mwl_y0 = _snap(mwl_cy - GATE_LENGTH / 2.0)
+    mwl_y1 = _snap(mwl_cy + GATE_LENGTH / 2.0)
+    t7_diff_top = _snap(mwl_y1 + _T7_DIFF_OVERHANG)
+
+    # T7 source and drain licon positions
+    # licon center = gate edge + licon_to_gate + licon/2
+    t7_src_cy = _snap(mwl_y0 - _T7_LICON_TO_GATE - licon_sz / 2.0)
+    t7_drn_cy = _snap(mwl_y1 + _T7_LICON_TO_GATE + licon_sz / 2.0)
+
+    # T7 diffusion (same X as 6T NMOS)
     _rect(cell, LAYERS.DIFF.as_tuple,
           g["nmos_diff_x0"], t7_diff_bot,
           g["nmos_diff_x1"], t7_diff_top)
     _rect(cell, LAYERS.NSDM.as_tuple,
-          g["nmos_diff_x0"] - 0.125, t7_diff_bot - 0.125,
-          g["nmos_diff_x1"] + 0.125, t7_diff_top + 0.125)
+          g["nmos_diff_x0"] - RULES.NSDM_ENCLOSURE_OF_DIFF,
+          t7_diff_bot - RULES.NSDM_ENCLOSURE_OF_DIFF,
+          g["nmos_diff_x1"] + RULES.NSDM_ENCLOSURE_OF_DIFF,
+          t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF)
 
-    # T7 gate (poly, horizontal) — this is the MWL line
-    mwl_poly_y0 = _snap(t7_gate_y - GATE_LENGTH / 2)
-    mwl_poly_y1 = _snap(t7_gate_y + GATE_LENGTH / 2)
-    poly_ext = RULES.POLY_MIN_EXTENSION_PAST_DIFF
+    # MWL poly gate — extend full cell width for array connectivity
+    # At T7's Y position, only the T7 NMOS diff exists (PMOS diff is
+    # at the 6T level below), so MWL creates only one transistor.
     _rect(cell, LAYERS.POLY.as_tuple,
-          g["nmos_diff_x0"] - poly_ext, mwl_poly_y0,
-          g["nmos_diff_x1"] + poly_ext, mwl_poly_y1)
+          g["nmos_diff_x0"] - poly_ext, mwl_y0,
+          g["pmos_diff_x1"] + poly_ext, mwl_y1)
 
-    # --- MIM Capacitor (single, directly over the 6T core) ---
-    # M3/M4 layers sit above M1/M2 in the stack — no XY conflict.
-    # Center the cap on the 6T cell footprint.
+    # T7 source licon + li1
+    _contact(cell, nmos_cx, t7_src_cy, LAYERS.LICON1.as_tuple, licon_sz)
+    li_pad_h = licon_sz + 2 * li_encl
+    _li_pad(cell, nmos_cx, t7_src_cy, li_w, li_pad_h)
 
+    # T7 drain licon + li1
+    _contact(cell, nmos_cx, t7_drn_cy, LAYERS.LICON1.as_tuple, licon_sz)
+    _li_pad(cell, nmos_cx, t7_drn_cy, li_w, li_pad_h)
+
+    # =================================================================
+    # Q-TO-T7 SOURCE ROUTE (M1 through N-P gap)
+    # =================================================================
+    # The latched Q net is on Route 1 li1 (PMOS int_bot + gate_A poly).
+    # Tap into Route 1 li1 with mcon in the gap, run M1 vertically at
+    # X=route_x, then horizontal to T7 source.
+
+    route_x = _snap(1.10)  # in the N-P gap, clear of all 6T M1
+    q_tap_y = g["int_bot_cy"]  # 0.645, on Route 1 li1
+
+    # Mcon on Route 1 li1 → M1 access to Q
+    _contact(cell, route_x, q_tap_y, LAYERS.MCON.as_tuple, mcon_sz)
+
+    # M1 pad at Q tap
+    m1_enc = RULES.MET1_ENCLOSURE_OF_MCON        # 0.03
+    m1_enc_o = RULES.MET1_ENCLOSURE_OF_MCON_OTHER  # 0.06
+    m1_pad_w = mcon_sz + 2 * m1_enc_o  # wider direction
+    m1_pad_h = mcon_sz + 2 * m1_enc    # narrower direction
+
+    # M1 vertical strip at route_x from Q tap up to T7 source level
+    m1_route_hw = RULES.MET1_MIN_WIDTH / 2.0  # half-width of vertical M1
+    m1_route_y_bot = _snap(q_tap_y - m1_pad_h / 2.0)
+    m1_route_y_top = _snap(t7_src_cy + m1_pad_h / 2.0)
+    _rect(cell, LAYERS.MET1.as_tuple,
+          route_x - m1_route_hw, m1_route_y_bot,
+          route_x + m1_route_hw, m1_route_y_top)
+
+    # Widen M1 at Q tap for mcon enclosure
+    _rect(cell, LAYERS.MET1.as_tuple,
+          route_x - m1_pad_w / 2.0, q_tap_y - m1_pad_h / 2.0,
+          route_x + m1_pad_w / 2.0, q_tap_y + m1_pad_h / 2.0)
+
+    # M1 horizontal from route_x to nmos_cx at T7 source level
+    _rect(cell, LAYERS.MET1.as_tuple,
+          nmos_cx - m1_pad_w / 2.0, t7_src_cy - m1_route_hw,
+          route_x + m1_route_hw, t7_src_cy + m1_route_hw)
+
+    # Mcon + M1 pad at T7 source
+    _contact(cell, nmos_cx, t7_src_cy, LAYERS.MCON.as_tuple, mcon_sz)
+    _rect(cell, LAYERS.MET1.as_tuple,
+          nmos_cx - m1_pad_w / 2.0, t7_src_cy - m1_pad_h / 2.0,
+          nmos_cx + m1_pad_w / 2.0, t7_src_cy + m1_pad_h / 2.0)
+
+    # =================================================================
+    # T7 DRAIN TO MIM CAP VIA STACK
+    # =================================================================
+    # T7 drain → licon → li1 → mcon → M1 → via1 → M2 → via2 → M3
+
+    # Mcon at T7 drain
+    _contact(cell, nmos_cx, t7_drn_cy, LAYERS.MCON.as_tuple, mcon_sz)
+
+    # M1 pad at drain
+    _rect(cell, LAYERS.MET1.as_tuple,
+          nmos_cx - m1_pad_w / 2.0, t7_drn_cy - m1_pad_h / 2.0,
+          nmos_cx + m1_pad_w / 2.0, t7_drn_cy + m1_pad_h / 2.0)
+
+    # Via1 (M1→M2) at drain
+    via_sz = RULES.VIA_SIZE  # 0.15
+    via_enc_m1 = RULES.MET1_ENCLOSURE_OF_VIA  # 0.055
+    via_enc_m2 = RULES.MET2_ENCLOSURE_OF_VIA  # 0.055
+    _contact(cell, nmos_cx, t7_drn_cy, LAYERS.VIA.as_tuple, via_sz)
+
+    # M1 pad for via1 (may overlap with mcon pad — that's fine, same net)
+    via_m1_pad = via_sz + 2 * 0.085  # generous enclosure
+    _rect(cell, LAYERS.MET1.as_tuple,
+          nmos_cx - via_m1_pad / 2.0, t7_drn_cy - via_m1_pad / 2.0,
+          nmos_cx + via_m1_pad / 2.0, t7_drn_cy + via_m1_pad / 2.0)
+
+    # --- MIM cap geometry ---
     cell_cx = cw / 2.0
     cell_cy = ch / 2.0
     cap_x0 = _snap(cell_cx - mim_w / 2.0)
@@ -113,55 +218,59 @@ def create_cim_bitcell(
     cap_y0 = _snap(cell_cy - mim_l / 2.0)
     cap_y1 = _snap(cap_y0 + mim_l)
 
-    # M3 bottom plate (with enclosure)
+    # Via2 placement: above MIM cap top edge, above M2 VPWR stripe
+    # Must satisfy: via2 ≥ 0.1um from MIM cap edge (capm.8)
+    #               M2 around via2 ≥ 0.14um from M2 VPWR stripe
+    m2_vpwr_top = g["m2_vpwr_y1"]  # 2.33
+    via2_m2_bot = _snap(m2_vpwr_top + RULES.MET2_MIN_SPACING)  # 2.47
+    via2_cy = _snap(via2_m2_bot + VIA2_M2_ENCL_OTHER + VIA2_SIZE / 2.0)
+
+    # M2 strip from via1 (T7 drain) down to via2
+    m2_strip_hw = _snap((VIA2_SIZE + 2 * VIA2_M2_ENCL) / 2.0)
+    m2_y_bot = _snap(via2_cy - VIA2_SIZE / 2.0 - VIA2_M2_ENCL_OTHER)
+    m2_y_top = _snap(t7_drn_cy + via_sz / 2.0 + via_enc_m2)
+    _rect(cell, LAYERS.MET2.as_tuple,
+          nmos_cx - m2_strip_hw, m2_y_bot,
+          nmos_cx + m2_strip_hw, m2_y_top)
+
+    # Via2 (M2→M3)
+    _rect(cell, LAYER_VIA2,
+          nmos_cx - VIA2_SIZE / 2.0, via2_cy - VIA2_SIZE / 2.0,
+          nmos_cx + VIA2_SIZE / 2.0, via2_cy + VIA2_SIZE / 2.0)
+
+    # =================================================================
+    # MIM CAPACITOR (M3/M4, directly over 6T core)
+    # =================================================================
+
+    # M3 bottom plate (with correct 0.14um enclosure per capm.3)
+    m3_x0 = _snap(cap_x0 - MIM_M3_ENCLOSURE)
+    m3_y0 = _snap(cap_y0 - MIM_M3_ENCLOSURE)
+    m3_x1 = _snap(cap_x1 + MIM_M3_ENCLOSURE)
+    m3_y1 = _snap(cap_y1 + MIM_M3_ENCLOSURE)
+    _rect(cell, LAYER_MET3, m3_x0, m3_y0, m3_x1, m3_y1)
+
+    # M3 extension strip for via2 landing (above main M3 plate)
+    m3_ext_hw = _snap((VIA2_SIZE + 2 * VIA2_M3_ENCL) / 2.0)
+    m3_ext_top = _snap(via2_cy + VIA2_SIZE / 2.0 + VIA2_M3_ENCL_OTHER)
     _rect(cell, LAYER_MET3,
-          cap_x0 - MIM_M3_ENCLOSURE, cap_y0 - MIM_M3_ENCLOSURE,
-          cap_x1 + MIM_M3_ENCLOSURE, cap_y1 + MIM_M3_ENCLOSURE)
+          nmos_cx - m3_ext_hw, m3_y1,
+          nmos_cx + m3_ext_hw, m3_ext_top)
 
     # MIM cap layer
     _rect(cell, LAYER_MIMCAP, cap_x0, cap_y0, cap_x1, cap_y1)
 
-    # M4 top plate (MBL connection, with overlap)
+    # M4 top plate (MBL connection)
     _rect(cell, LAYER_MET4,
           cap_x0 - MIM_M4_OVERLAP, cap_y0 - MIM_M4_OVERLAP,
           cap_x1 + MIM_M4_OVERLAP, cap_y1 + MIM_M4_OVERLAP)
 
-    # --- Via stack: T7 drain → li1 → M1 → mcon → M2 → via2 → M3 (cap bottom plate) ---
-    # T7 is above the 6T core; the cap overlaps the core on M3/M4.
-    # The via stack runs DOWN from T7 into the cap's M3 footprint.
-
-    via2_sz = 0.2
-    m1_w = RULES.MET1_MIN_WIDTH + 2 * 0.03
-    via_cx = nmos_cx
-
-    # Li1 pad + licon on T7 drain
-    t7_drain_y = _snap(t7_gate_y + T7_WIDTH / 4)
-    _li_pad(cell, via_cx, t7_drain_y,
-            RULES.LI1_MIN_WIDTH, RULES.LI1_MIN_WIDTH + 2 * RULES.LI1_ENCLOSURE_OF_LICON)
-    _contact(cell, via_cx, t7_drain_y,
-             LAYERS.LICON1.as_tuple, RULES.LICON_SIZE)
-
-    # M1 pad + mcon
-    _rect(cell, LAYERS.MET1.as_tuple,
-          via_cx - m1_w / 2, _snap(cap_y1 - 0.3), via_cx + m1_w / 2, _snap(t7_diff_top))
-    _contact(cell, via_cx, t7_drain_y,
-             LAYERS.MCON.as_tuple, RULES.MCON_SIZE)
-
-    # M2 runs from T7 drain down into the cap area
-    via2_y = _snap(cap_y1 - 0.3)  # place via2 near top of cap
-    _rect(cell, LAYERS.MET2.as_tuple,
-          via_cx - 0.14, via2_y, via_cx + 0.14, _snap(t7_diff_top))
-
-    # Via2 (M2→M3) inside the cap's M3 footprint
-    _rect(cell, LAYER_VIA2,
-          via_cx - via2_sz / 2, via2_y,
-          via_cx + via2_sz / 2, _snap(via2_y + via2_sz))
-
-    # --- Labels ---
+    # =================================================================
+    # LABELS
+    # =================================================================
     _label(cell, "MWL", LAYERS.POLY.as_tuple,
-           g["nmos_diff_x0"] - poly_ext, t7_gate_y)
+           g["nmos_diff_x0"] - poly_ext, mwl_cy)
     _label(cell, "MBL", LAYER_MET4,
-           cell_cx, (cap_y0 + cap_y1) / 2)
+           cell_cx, cell_cy)
 
     return cell
 

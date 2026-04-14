@@ -422,20 +422,16 @@ def load_cim_bitcell(
     }
 
     # Tiling pitch — per-variant, depends on cap dimensions.
-    # X: must satisfy three constraints:
-    #   1. MIM cap spacing: x_pitch ≥ cap_w + capm.2a (0.84)
-    #   2. 6T shared boundary: x_pitch ≤ geometry_width (rails merge)
-    #   3. M1 separation: x_pitch ≥ geometry_width + met1.2 spacing (0.14)
-    # If cap forces x_pitch > geometry_width, must jump to full separation.
+    # X: mirrored cap gap = x_pitch - cap_w, must be ≥ capm.2a (0.84).
+    # Also must be ≥ 6T minimum pitch. If x_pitch exceeds geometry width,
+    # must jump to full M1 separation (geometry_width + met1.2 spacing).
     six_t_x_pitch = _snap(cw - g["rail_w"] + 0.03)  # 1.925 (shared boundary)
     cap_x_pitch = _snap(mim_w + MIM_CAP_SPACING + 0.01)
-    separated_x_pitch = _snap(cw + RULES.MET1_MIN_SPACING)  # 2.175
-    if cap_x_pitch <= six_t_x_pitch:
-        x_pitch = six_t_x_pitch  # cap fits, use 6T shared boundary
-    elif cap_x_pitch <= cw:
-        x_pitch = six_t_x_pitch  # cap fits within geometry, still share
-    else:
-        x_pitch = _snap(max(cap_x_pitch, separated_x_pitch))
+    x_pitch = _snap(max(cap_x_pitch, six_t_x_pitch))
+    if x_pitch > cw:
+        # Can't share boundaries — ensure M1 power rail separation too
+        separated_x_pitch = _snap(cw + RULES.MET1_MIN_SPACING)  # 2.175
+        x_pitch = _snap(max(x_pitch, separated_x_pitch))
 
     # Y: max of NSDM constraint (T7 diffs) and MIM cap constraint (mirrored rows).
     geom_h = t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF

@@ -33,16 +33,17 @@ parameterization + DRC + SPICE extraction.
     diff area. See decisions.md Decision 1 for analysis.
 - [x] Run at SRAM-B/C/D sizing — **RESTORED (Decision 2 revised)**
     MIM cap minimum is 1.0um (not 2.0 — verified from Magic DRC deck).
-    All 4 variants generated with rectangular caps, all DRC clean:
-    - SRAM-A: 1.30×3.10 (~8 fF), pitch 2.15×5.16 = 11.08 um²
-    - SRAM-B: 1.10×2.65 (~6 fF), pitch 1.95×4.71 = 9.17 um²
-    - SRAM-C: 1.10×1.80 (~4 fF), pitch 1.95×3.92 = 7.63 um²
-    - SRAM-D: 1.00×1.45 (~3 fF), pitch 1.93×3.92 = 7.54 um²
-    GDS + SPICE in output/cim_variants/. See decisions.md (revised).
+    All 4 variants generated with rectangular caps, all DRC clean.
+    Cell + array DRC verified for each variant:
+    - SRAM-A: 1.30×3.10 (~8 fF), pitch 2.175×5.16 = 11.21 um², 256×64 ✓
+    - SRAM-B: 1.10×2.65 (~6 fF), pitch 1.95×4.71 = 9.17 um², 256×64 ✓
+    - SRAM-C: 1.10×1.80 (~4 fF), pitch 1.95×3.92 = 7.63 um², 64×64 ✓
+    - SRAM-D: 1.00×1.45 (~3 fF), pitch 1.93×3.92 = 7.54 um², 64×64 ✓
+    GDS + SPICE in output/cim_variants/. Renders in output/renders/cim_sram_*/.
 - [x] Create `BitcellInfo` for CIM cells with MWL/MBL pin metadata
       `load_cim_bitcell(variant="SRAM-A")` etc. Per-variant pitch computation.
 - [x] Add `generate_cim_variants()` script — produces all 4 sizes
-- [x] Render per-layer PNGs for SRAM-A (viz tool) — output/renders/cim_lr/
+- [x] Render per-layer PNGs for all 4 variants (viz tool) — output/renders/cim_sram_*/
 
 ## Phase 2: Array Tiler CIM Extension
 
@@ -57,17 +58,12 @@ Extend the array tiler (`array/tiler.py`) to route MWL and MBL signals.
     - [x] Met4 min width = 0.30um (met4.1)
     - [x] No conflict with BL/BLB (M2) — different metal layer
 - [~] Update dummy cell handling — deferred (not needed for initial arrays)
-- [x] Test: tile a small 4×4 CIM array, DRC clean
-      6 nwell.2a waivers (same-potential nwells, Magic false positive).
-      See decisions.md Decision 3 for CIM tiling pitch analysis.
-- [x] Test: tile 64×64 (SRAM-C/D size), DRC clean
-      64x64: 181.9 × 259.5 um = 0.047 mm². Only nwell.2a waivers.
-      (tested at 2.0×2.0 cap; needs retest with per-variant caps)
-- [x] Test: tile 256×64 (SRAM-A size), DRC clean
-      256x64: 139.4 × 1319.1 um = 0.184 mm².
-      Waivers: 4191 nwell.2a + 32384 via.2 (both same-potential: adjacent
-      cells' VPWR nets too close for different-net rules but same net).
-      Zero real DRC errors.
+- [x] Test: tile 4×4, 64×64, 256×64 arrays — all DRC clean
+      All 4 variants tested at target array sizes. Zero real DRC errors.
+      Known waivers (all same-potential, Magic can't resolve inter-cell nets):
+      - nwell.2a: adjacent column nwells at VDD (separated mode)
+      - via.2: adjacent VPWR vias (separated mode, SRAM-A only)
+      - subcell overlap: shared boundary abutment (SRAM-B/C/D)
 
 ## Phase 3: CIM Peripherals
 

@@ -61,10 +61,37 @@ dotnet run -- web ~/Git_Repos/bryan_costanich/khalkulo/docs/viz/index.html
 | Foundry per-layer PNGs | `output/renders/foundry/` |
 | Foundry 3D | `output/3d_foundry/` |
 
+## CIM Macro Commands
+
+```bash
+# Generate all 4 CIM cell variants (GDS + SPICE)
+python3 -c "from rekolektion.bitcell.sky130_6t_lr_cim import generate_cim_variants; generate_cim_variants()"
+
+# Assemble all 4 CIM macros (GDS + LEF + Liberty + blackbox Verilog)
+python3 -c "from rekolektion.macro.cim_assembler import generate_all_cim_macros; generate_all_cim_macros()"
+
+# DRC a CIM cell variant
+magic -dnull -noconsole -rcfile "$PDK_ROOT/sky130B/libs.tech/magic/sky130B.magicrc" <<'EOF'
+gds read output/cim_variants/sky130_6t_cim_lr_sram_a.gds
+load sky130_sram_6t_cim_lr
+select top cell
+drc catchup
+drc check
+set result [drc listall why]
+set total 0
+foreach {msg boxes} $result { set n [llength $boxes]; incr total $n; puts "($n) $msg" }
+if {$total == 0} { puts "*** DRC CLEAN ***" }
+puts "=== TOTAL: $total ==="
+quit -noprompt
+EOF
+```
+
 ## Key Files
 
 - `src/rekolektion/bitcell/sky130_6t_lr.py` — active custom bitcell (LR topology)
-- `src/rekolektion/tech/sky130.py` — design rules and layer definitions
+- `src/rekolektion/bitcell/sky130_6t_lr_cim.py` — 7T+1C CIM cell generator + variants
+- `src/rekolektion/tech/sky130.py` — design rules, layer defs, PDK variant config
+- `src/rekolektion/macro/cim_assembler.py` — CIM macro assembler
 - `tools/viz/` — F# GDS reader, layer renderer, 3D mesh generator (.NET 10)
 - `scripts/render_cell.py` — GDS to per-layer PNG renderer (Python, legacy)
 - `scripts/gds_to_stl.py` — GDS to 3D GLB/STL converter (Python, legacy)

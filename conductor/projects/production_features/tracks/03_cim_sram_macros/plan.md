@@ -152,9 +152,15 @@ End-to-end validation that macros work in the khalkulo P&R flow.
 - [ ] Run floorplan test (place CIM macros, verify no overlap with v1a SRAMs)
 - [ ] Verify OpenSTA reads timing arcs correctly
 
-## Phase 8: Documentation Cleanup
+## Phase 8: Documentation
 
-- [ ] Update continuation prompt with final state
-- [ ] Update decisions.md — final pitch/area numbers for all variants
+- [x] Update continuation prompt with final state
+- [x] Update decisions.md — final pitch/area numbers for all variants
+- [x] Public docs:
+    - [x] README.md — CIM section with variant table, commands, link to integration guide
+    - [x] CLAUDE.md — CIM macro commands + key files
+    - [x] docs/cim_integration.md — pin descriptions, compute sequence, voltage domain,
+          output artifacts, DRC waivers, test structures
+- [x] khalkulo: voltage domain integration note added to
+      `conductor/projects/v1b_cim_addition/tracks/decisions_and_questions.md`
 - [ ] Update Track 04 Phase 3 — CIM macros now available for sky130B regen
-- [ ] Commit all output artifacts (GDS/LEF/Liberty) or add to .gitignore

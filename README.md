@@ -102,6 +102,31 @@ SPICE-characterized on SKY130 (TT, 1.8V, 27C). RTL follows OpenRAM 3-block patte
 
 See [`docs/power_gating_integration.md`](docs/power_gating_integration.md) for chip-level integration guide.
 
+## CIM (Compute-in-Memory) Macros
+
+rekolektion also generates **7T+1C CIM SRAM arrays** for in-memory dot-product computation using capacitive coupling (C3SRAM-style). Each cell adds a pass transistor (T7) and a MIM coupling capacitor to the 6T LR core. The stored weight couples charge onto a shared multiply bitline (MBL) — no ADC needed inside the array.
+
+Four variants with different MIM cap sizes for a silicon sensitivity experiment:
+
+| Variant | MIM Cap | ~fF | Macro (256×64 or 64×64) | CIM Delta (TT/1.2V) |
+|---------|---------|-----|------------------------|---------------------|
+| SRAM-A | 1.30 × 3.10 um | 8 | 143 × 1323 um | 19.0 mV |
+| SRAM-B | 1.10 × 2.65 um | 6 | 129 × 1208 um | ~14 mV |
+| SRAM-C | 1.10 × 1.80 um | 4 | 129 × 255 um | ~10 mV |
+| SRAM-D | 1.00 × 1.45 um | 3 | 128 × 255 um | ~8 mV |
+
+```bash
+# Generate all 4 CIM cell variants
+python -c "from rekolektion.bitcell.sky130_6t_lr_cim import generate_cim_variants; generate_cim_variants()"
+
+# Assemble all 4 CIM macros (GDS + LEF + Liberty + blackbox Verilog)
+python -c "from rekolektion.macro.cim_assembler import generate_all_cim_macros; generate_all_cim_macros()"
+```
+
+CIM macros include MWL drivers, MBL precharge, and analog sense buffers. MBL_OUT carries an analog voltage — the ADC is external. Operates at 1.2V for best CIM signal margin.
+
+See [`docs/cim_integration.md`](docs/cim_integration.md) for pin descriptions, timing, and integration guide.
+
 ## Quick Start
 
 ```bash

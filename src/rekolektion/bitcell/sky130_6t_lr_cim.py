@@ -40,9 +40,11 @@ LAYER_VIA2 = (69, 44)       # Via 2 (M2→M3)
 LAYER_MET4 = (71, 20)       # Metal 4
 LAYER_VIA3 = (70, 44)       # Via 3 (M3→M4)
 
-# MIM cap design rules (from SKY130 DRC: capm.*)
-MIM_MIN_WIDTH = 2.0          # Minimum MIM cap width (um)
-MIM_MIN_LENGTH = 2.0         # Minimum MIM cap length (um)
+# MIM cap design rules (from SKY130 DRC deck: capm.*)
+# Verified from Magic tech file: width *mimcap 1000 = 1.0um minimum
+MIM_MIN_WIDTH = 1.0          # Minimum MIM cap width (um) — capm.1
+MIM_MIN_LENGTH = 1.0         # Minimum MIM cap length (um) — capm.1
+MIM_CAP_SPACING = 0.84       # Minimum spacing between MIM caps (um) — capm.2a
 MIM_M3_ENCLOSURE = 0.14     # M3 enclosure of MIM cap edge (capm.3)
 MIM_M4_OVERLAP = 0.14       # M4 minimum overlap past MIM edge
 MIM_VIA2_SPACING = 0.10     # Via2 to MIM cap spacing (capm.8)
@@ -60,6 +62,20 @@ T7_WIDTH = 0.42
 # T7 geometry parameters
 _T7_DIFF_OVERHANG = 0.33    # Diff extension past poly (> poly.7 min 0.25, + licon encl)
 _T7_LICON_TO_GATE = 0.090   # Licon edge to gate edge (> licon.11 min 0.055, + li.3 margin)
+
+# ---------------------------------------------------------------------------
+# CIM cell variants — rectangular caps oriented narrow-in-X for dense tiling
+# ---------------------------------------------------------------------------
+# Cap dimensions chosen to minimize tiling area per target capacitance.
+# Narrow X dimension keeps x_pitch close to 6T pitch (1.925um).
+# See decisions.md Decision 2 (revised) and Decision 3 (revised).
+
+CIM_VARIANTS = {
+    "SRAM-A": {"mim_w": 1.30, "mim_l": 3.10, "rows": 256, "cols": 64},  # ~8.1 fF
+    "SRAM-B": {"mim_w": 1.10, "mim_l": 2.65, "rows": 256, "cols": 64},  # ~5.8 fF
+    "SRAM-C": {"mim_w": 1.10, "mim_l": 1.80, "rows":  64, "cols": 64},  # ~4.0 fF
+    "SRAM-D": {"mim_w": 1.00, "mim_l": 1.45, "rows":  64, "cols": 64},  # ~2.9 fF
+}
 
 
 def create_cim_bitcell(
@@ -218,25 +234,29 @@ def create_cim_bitcell(
     cap_y0 = _snap(cell_cy - mim_l / 2.0)
     cap_y1 = _snap(cap_y0 + mim_l)
 
-    # Via2 placement: above MIM cap top edge, above M2 VPWR stripe
+    # Via2 placement: above BOTH MIM cap top edge AND M2 VPWR stripe
     # Must satisfy: via2 ≥ 0.1um from MIM cap edge (capm.8)
     #               M2 around via2 ≥ 0.14um from M2 VPWR stripe
     m2_vpwr_top = g["m2_vpwr_y1"]  # 2.33
-    via2_m2_bot = _snap(m2_vpwr_top + RULES.MET2_MIN_SPACING)  # 2.47
-    via2_cy = _snap(via2_m2_bot + VIA2_M2_ENCL_OTHER + VIA2_SIZE / 2.0)
+    via2_from_m2 = _snap(m2_vpwr_top + RULES.MET2_MIN_SPACING
+                         + VIA2_M2_ENCL_OTHER + VIA2_SIZE / 2.0)
+    # Use 0.2um Y margin (2x capm.8 minimum) to clear compound DRC checks
+    via2_from_cap = _snap(cap_y1 + 0.20 + VIA2_SIZE / 2.0 + 0.01)
+    via2_cy = max(via2_from_m2, via2_from_cap)
+    via2_cx = nmos_cx  # stays at nmos_cx — Y margin handles capm.8
 
     # M2 strip from via1 (T7 drain) down to via2
     m2_strip_hw = _snap((VIA2_SIZE + 2 * VIA2_M2_ENCL) / 2.0)
     m2_y_bot = _snap(via2_cy - VIA2_SIZE / 2.0 - VIA2_M2_ENCL_OTHER)
     m2_y_top = _snap(t7_drn_cy + via_sz / 2.0 + via_enc_m2)
     _rect(cell, LAYERS.MET2.as_tuple,
-          nmos_cx - m2_strip_hw, m2_y_bot,
-          nmos_cx + m2_strip_hw, m2_y_top)
+          via2_cx - m2_strip_hw, m2_y_bot,
+          via2_cx + m2_strip_hw, m2_y_top)
 
     # Via2 (M2→M3)
     _rect(cell, LAYER_VIA2,
-          nmos_cx - VIA2_SIZE / 2.0, via2_cy - VIA2_SIZE / 2.0,
-          nmos_cx + VIA2_SIZE / 2.0, via2_cy + VIA2_SIZE / 2.0)
+          via2_cx - VIA2_SIZE / 2.0, via2_cy - VIA2_SIZE / 2.0,
+          via2_cx + VIA2_SIZE / 2.0, via2_cy + VIA2_SIZE / 2.0)
 
     # =================================================================
     # MIM CAPACITOR (M3/M4, directly over 6T core)
@@ -353,16 +373,30 @@ def generate_cim_bitcell(
 
 def load_cim_bitcell(
     gds_path: str | Path = "output/sky130_6t_cim_lr.gds",
+    mim_w: float = MIM_MIN_WIDTH,
+    mim_l: float = MIM_MIN_LENGTH,
+    variant: str | None = None,
 ) -> "BitcellInfo":
     """Return a BitcellInfo for the CIM bitcell, generating GDS if needed.
 
-    Provides MWL and MBL pin metadata in addition to standard SRAM pins.
+    Parameters
+    ----------
+    gds_path : path
+        GDS file for this variant.
+    mim_w, mim_l : float
+        MIM cap dimensions (overridden by variant if given).
+    variant : str, optional
+        Key into CIM_VARIANTS (e.g. "SRAM-A"). Overrides mim_w/mim_l.
     """
     from rekolektion.bitcell.base import BitcellInfo, PinInfo
 
+    if variant and variant in CIM_VARIANTS:
+        v = CIM_VARIANTS[variant]
+        mim_w, mim_l = v["mim_w"], v["mim_l"]
+
     gds_path = Path(gds_path)
     if not gds_path.exists():
-        generate_cim_bitcell(str(gds_path))
+        generate_cim_bitcell(str(gds_path), mim_w=mim_w, mim_l=mim_l)
 
     g = _compute_cell_geometry()
     cw, ch = g["cell_w"], g["cell_h"]
@@ -375,7 +409,6 @@ def load_cim_bitcell(
     cell_cx = cw / 2.0
     cell_cy = ch / 2.0
 
-    # Pin positions for standard SRAM pins (same as 6T LR cell)
     vgnd_cx = g["rail_w"] / 2.0
     vpwr_cx = g["vpwr_x0"] + g["rail_w"] / 2.0
     pins = {
@@ -384,26 +417,21 @@ def load_cim_bitcell(
         "WL":   PinInfo("WL",   [(cw / 2.0, g["wl_bot_cy"], "poly")]),
         "VGND": PinInfo("VGND", [(vgnd_cx, g["pwr_cy"], "met1")]),
         "VPWR": PinInfo("VPWR", [(vpwr_cx, g["pwr_cy"], "met1")]),
-        # CIM pins
         "MWL":  PinInfo("MWL",  [(cw / 2.0, mwl_cy, "poly")]),
         "MBL":  PinInfo("MBL",  [(cell_cx, cell_cy, "met4")]),
     }
 
-    # Tiling pitch — MIM cap dominates both X and Y.
-    # X: MIM cap (2.0um) + capm.2a spacing (0.84um) between caps = 2.84
-    # Y: MIM cap spacing between mirrored rows requires y_pitch ≥
-    #    (geom_h - cap_y0) + cap_y0 + capm.2a = geom_h + capm.2a.
-    #    Also need NSDM spacing (0.38um) for T7 diffs.
-    mim_cap_spacing = 0.84  # capm.2a: minimum spacing between MIM caps
-    x_pitch = _snap(MIM_MIN_WIDTH + mim_cap_spacing + 0.01)  # +10nm margin
+    # Tiling pitch — per-variant, depends on cap dimensions.
+    # X: max of (cap_w + capm.2a spacing) and 6T minimum pitch.
+    six_t_x_pitch = _snap(cw - g["rail_w"] + 0.03)  # 1.925
+    x_pitch = _snap(max(mim_w + MIM_CAP_SPACING + 0.01, six_t_x_pitch))
+
+    # Y: max of NSDM constraint (T7 diffs) and MIM cap constraint (mirrored rows).
     geom_h = t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF
-    # Y-pitch: max of NSDM constraint and MIM cap constraint.
-    # MIM cap: mirrored cap top at (geom_h - cap_y0), next cap bottom at
-    # y_pitch + cap_y0. Spacing = y_pitch - (geom_h - 2*cap_y0).
-    cap_y0_local = _snap(ch / 2.0 - MIM_MIN_LENGTH / 2.0)
-    y_mim_constraint = _snap(geom_h - 2 * cap_y0_local + mim_cap_spacing + 0.01)
-    y_nsdm_constraint = _snap(geom_h + RULES.NSDM_MIN_SPACING)
-    y_pitch = max(y_mim_constraint, y_nsdm_constraint)
+    cap_y0_local = _snap(cell_cy - mim_l / 2.0)
+    y_mim = _snap(geom_h - 2 * cap_y0_local + MIM_CAP_SPACING + 0.01)
+    y_nsdm = _snap(geom_h + RULES.NSDM_MIN_SPACING)
+    y_pitch = max(y_mim, y_nsdm)
 
     return BitcellInfo(
         cell_name="sky130_sram_6t_cim_lr",
@@ -414,9 +442,27 @@ def load_cim_bitcell(
         origin_x=0.0,
         origin_y=0.0,
         geometry_width=cw,
-        geometry_height=t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF,
+        geometry_height=geom_h,
     )
 
 
+def generate_cim_variants(output_dir: str = "output/cim_variants") -> None:
+    """Generate all 4 CIM cell variants (GDS + SPICE)."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    for name, v in CIM_VARIANTS.items():
+        gds = out / f"sky130_6t_cim_lr_{name.lower().replace('-','_')}.gds"
+        generate_cim_bitcell(
+            str(gds), generate_spice=True,
+            mim_w=v["mim_w"], mim_l=v["mim_l"],
+        )
+        info = load_cim_bitcell(gds, mim_w=v["mim_w"], mim_l=v["mim_l"])
+        cap_fF = v["mim_w"] * v["mim_l"] * 2.0
+        print(f"  {name}: {v['mim_w']:.2f} x {v['mim_l']:.2f} um "
+              f"(~{cap_fF:.1f} fF), pitch {info.cell_width:.3f} x "
+              f"{info.cell_height:.3f} = {info.cell_width * info.cell_height:.2f} um²")
+
+
 if __name__ == "__main__":
-    generate_cim_bitcell("output/sky130_6t_cim_lr.gds", generate_spice=True)
+    generate_cim_variants()

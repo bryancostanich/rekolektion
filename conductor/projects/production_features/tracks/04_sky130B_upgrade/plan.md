@@ -40,6 +40,10 @@ Update rekolektion's tech layer definitions and DRC rules to reference sky130B.
 - [ ] Verify DRC rules in sky130B.tech are a superset of sky130A.tech:
     - [ ] Diff the two tech files (expect: identical FEOL rules, added reram rules)
     - [ ] Confirm no existing DRC rules tightened or changed
+    - [ ] Check MIM cap minimum dimensions (capm.1/capm.2): if sky130B allows
+      smaller MIM caps than sky130A's 2.0×2.0um minimum, Track 03 Decision 2
+      reopens — could enable smaller caps for SRAM-C/D variants and tighter
+      tiling pitch (Decision 3)
 - [ ] Run existing unit tests with sky130B — expect all pass unchanged
 
 ## Phase 2: Bitcell Regeneration

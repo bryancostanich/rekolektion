@@ -68,70 +68,71 @@ code has 54 DRC errors AND a topology bug: T7 source connects to BLB, not Q.
 | diff/tap.2 (transistor width) | violations | proper width |
 | poly.1a (poly width) | possible snap error | proper snapping |
 
-## Decision 2: MIM Cap Minimum Size Constraint
+## Decision 2: MIM Cap Sizing — Rectangular Caps Per Variant (REVISED)
 
-**Date:** 2026-04-14
-**Status:** Accepted
+**Date:** 2026-04-14 (revised from earlier same-day version)
+**Status:** Implemented
 
-### Problem
+### Problem (original)
 
-The Track 21 SPICE characterization tested smaller MIM caps for SRAM-C
-(1.4x1.4 um, 3.9 fF) and SRAM-D (1.2x1.2 um, 2.9 fF). However, SKY130
-DRC rule capm.1 requires minimum MIM cap width = 2.0 um, and capm.2
-requires minimum length = 2.0 um. Caps below 2x2 um violate DRC.
+Originally assumed SKY130 MIM cap minimum was 2.0×2.0 um (from code
+constant `MIM_MIN_WIDTH`). This collapsed all 4 variants to one cell.
 
-### Consequence
+### Correction
 
-All four CIM cell variants use the same 2.0x2.0 um MIM cap (8 fF):
-- SRAM-A (3.93 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← characterized
-- SRAM-B (3.0 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← identical
-- SRAM-C (2.5 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← identical
-- SRAM-D (2.07 um²): 2x2 MIM, 8 fF, 19.0 mV delta ← identical
+Verified against the actual Magic DRC deck (`sky130A.tech`):
+`width *mimcap 1000` = **1.0 um minimum**, not 2.0. Both sky130A and
+sky130B have identical 1.0um minimum. The Track 21 smaller caps
+(1.4×1.4, 1.2×1.2) were physically legal all along.
 
-The cell-to-cell differentiation is ONLY in the base 6T routing density
-(tighter M1/M2/li1 spacing), which requires changes to the 6T cell
-generator — not the CIM additions. Since the 6T generator currently has
-one set of spacing params, all four sizes produce identical GDS.
+### Solution
 
-### Impact on Track 03
+Use **rectangular** MIM caps oriented narrow-in-X to minimize X-pitch.
+Each variant has a different cap area (= different capacitance = different
+CIM sensitivity), with the narrow dimension keeping X-pitch close to
+the 6T baseline (1.925um).
 
-Phase 1 scope reduces to one cell variant (SRAM-A = default params).
-The 4-size sweep becomes 6T routing optimization work, which is
-independent of the CIM additions.
+| Variant | Cap Geometry | Cap (fF) | X-pitch | Y-pitch | Cell Area |
+|---------|-------------|----------|---------|---------|-----------|
+| SRAM-A | 1.30 × 3.10 | ~8.1 | 2.150 | 5.155 | 11.08 um² |
+| SRAM-B | 1.10 × 2.65 | ~5.8 | 1.950 | 4.705 | 9.17 um² |
+| SRAM-C | 1.10 × 1.80 | ~4.0 | 1.950 | 3.915 | 7.63 um² |
+| SRAM-D | 1.00 × 1.45 | ~2.9 | 1.925 | 3.915 | 7.54 um² |
 
-The SPICE-characterized smaller-cap variants (3.9 fF, 2.9 fF, 1.3 fF)
-are useful reference data for a future process that has smaller MIM caps
-but are not physically realizable on SKY130.
+SRAM-C and SRAM-D caps fit within the 6T X-pitch — no X overhead from
+the cap. SRAM-D X-pitch = 6T X-pitch (6T-limited, not cap-limited).
 
-## Decision 3: CIM Cell Tiling Pitch (MIM Cap vs Cell Density)
+All 4 variants DRC clean. The 4-size CIM experiment is fully restored.
 
-**Date:** 2026-04-14
+## Decision 3: CIM Cell Tiling Pitch — Per-Variant (REVISED)
+
+**Date:** 2026-04-14 (revised)
 **Status:** Implemented
 
 ### Problem
 
-The 2.0×2.0 um MIM cap (SKY130 minimum, capm.1/capm.2) is wider than
-the 6T X-tiling pitch (1.925 um). Adjacent columns' MIM caps overlap,
-shorting their MBL lines. Similarly, T7 prevents Y-boundary sharing,
-requiring full NSDM spacing (0.38um) between rows.
+Tiling pitch depends on cap dimensions (which vary per variant) and T7
+overhead (constant). Need per-variant pitch calculation.
 
-### Fix
+### Solution
 
-Increase tiling pitch to accommodate MIM cap + spacing rules:
-- **X-pitch**: 2.84 um (MIM cap 2.0 + capm.2a spacing 0.84)
-- **Y-pitch**: 3.915 um (geometry 3.535 + NSDM spacing 0.38)
-- **Effective cell area**: 11.1 um² (vs 3.93 um² for 6T-only)
+Pitch computed per-variant in `load_cim_bitcell()`:
+- **X-pitch** = max(cap_w + capm.2a spacing 0.84, 6T x_pitch 1.925)
+- **Y-pitch** = max(NSDM constraint, MIM cap Y-spacing constraint)
+
+T7 prevents 6T boundary sharing in Y for all variants. NSDM spacing
+(0.38um) dominates Y for small caps; MIM cap spacing dominates for tall
+caps (SRAM-A, SRAM-B).
 
 ### Impact on Array Sizes
 
-| Array | Rows×Cols | 6T-only Area | CIM Area | Notes |
-|-------|-----------|-------------|----------|-------|
-| SRAM-A | 256×64 | 0.064 mm² | 0.182 mm² | 2.8x larger |
-| SRAM-B | 256×64 | 0.049 mm² | 0.182 mm² | same CIM layout |
-| SRAM-C | 64×64 | 0.016 mm² | 0.045 mm² | |
-| SRAM-D | 64×64 | 0.013 mm² | 0.045 mm² | |
-| **Total** | | **0.142 mm²** | **0.454 mm²** | fits in 2.95 mm² |
+| Array | Rows×Cols | Cell Area | Array Area |
+|-------|-----------|-----------|------------|
+| SRAM-A | 256×64 | 11.08 um² | 0.182 mm² |
+| SRAM-B | 256×64 | 9.17 um² | 0.150 mm² |
+| SRAM-C | 64×64 | 7.63 um² | 0.031 mm² |
+| SRAM-D | 64×64 | 7.54 um² | 0.031 mm² |
+| **Total** | | | **0.394 mm²** |
 
-The 2.8x area overhead is the real cost of CIM on SKY130. The 2.0um
-MIM cap minimum dominates the X-pitch. On a process with smaller MIM
-caps (e.g., 45nm with 0.5um minimum), the overhead would be much less.
+Total CIM area 0.39 mm² fits within 2.95 mm² budget with 2.56 mm²
+remaining for peripherals, ADCs, and routing.

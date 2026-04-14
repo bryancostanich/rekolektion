@@ -59,9 +59,14 @@ MIM cap minimum is 1.0um (verified from Magic DRC deck, NOT the 2.0um in old cod
 
 3. **Per-variant tiling pitch.** X-pitch = max(cap_w + 0.84, 1.925). Y-pitch = max(NSDM, cap Y-spacing). Total array area 0.39 mm². See Decision 3 (revised).
 
-## Important: sky130B Migration Pending
+## sky130B Migration: COMPLETE (Track 04 Phases 1–2)
 
-Track 04 (`conductor/projects/production_features/tracks/04_sky130B_upgrade/`) plans migration from sky130A to sky130B. FEOL is identical. MIM cap rules are identical (verified). Track 03 work is not affected by the migration — it's a PDK path change + re-DRC, not a redesign.
+Rekolektion now targets **sky130B**. Migration confirmed zero functional impact:
+- `PDK_VARIANT = "sky130B"` in `src/rekolektion/tech/sky130.py`
+- All cells DRC clean on sky130B (6T LR + 4 CIM variants)
+- SPICE extraction identical between sky130A and sky130B
+- Track 21 characterization data applies unchanged
+- Track 04 Phases 3–5 (macro regen, OpenLane verify, docs) blocked on Track 03 completion
 
 ## Constraints
 
@@ -80,17 +85,11 @@ re-doing DRC/extraction later. The upgrade is expected to be mechanical
 (FEOL identical, MIM rules identical — already verified), but confirming
 this early avoids wasted work.
 
-### Immediate: Track 04 Phases 1–2
+### Track 03 remaining work (all on sky130B)
 
-1. Read `conductor/projects/production_features/tracks/04_sky130B_upgrade/plan.md`
-2. Phase 1: Tech file migration — audit sky130.py, update PDK refs, diff
-   DRC rules, run unit tests. Confirm MIM cap rules unchanged (we already
-   checked — capm.1 = 1.0um in both A and B, but verify with actual DRC run).
-3. Phase 2: Regenerate all bitcells under sky130B — 6T foundry, 6T LR,
-   7T+1C CIM (all 4 variants). DRC each. Extract SPICE, compare parasitics.
-
-### Then: Track 03 remaining work (on sky130B)
-
-4. Phase 2 remaining: fix array routing for CIM tiling, test 256×64 array
-5. Phases 3–7: peripherals, macro assembly, LEF/Liberty, test structures,
-   integration test — all targeting sky130B
+1. Phase 2 remaining: fix array routing for CIM non-shared-boundary tiling,
+   test 256×64 array
+2. Phase 3: CIM peripherals (MWL drivers, MBL precharge, MBL sense buffers)
+3. Phase 4: Macro assembly (extend assembler for CIM mode)
+4. Phase 5: LEF + Liberty generation (CIM pin definitions + timing arcs)
+5. Phases 6–7: test structures, integration test

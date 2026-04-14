@@ -126,16 +126,16 @@ caps (SRAM-A, SRAM-B).
 
 ### Impact on Array Sizes
 
-| Array | Rows×Cols | Cell Area | Array Area |
-|-------|-----------|-----------|------------|
-| SRAM-A | 256×64 | 11.08 um² | 0.182 mm² |
-| SRAM-B | 256×64 | 9.17 um² | 0.150 mm² |
-| SRAM-C | 64×64 | 7.63 um² | 0.031 mm² |
-| SRAM-D | 64×64 | 7.54 um² | 0.031 mm² |
-| **Total** | | | **0.394 mm²** |
+| Array | Rows×Cols | Pitch | Cell Area | Macro Size | Array Area |
+|-------|-----------|-------|-----------|------------|------------|
+| SRAM-A | 256×64 | 2.175×5.155 | 11.21 um² | 143.5×1323 um | 0.190 mm² |
+| SRAM-B | 256×64 | 1.950×4.705 | 9.17 um² | 129.3×1208 um | 0.156 mm² |
+| SRAM-C | 64×64 | 1.950×3.915 | 7.63 um² | 129.3×255 um | 0.033 mm² |
+| SRAM-D | 64×64 | 1.925×3.915 | 7.54 um² | 127.7×255 um | 0.033 mm² |
+| **Total** | | | | | **0.412 mm²** |
 
-Total CIM area 0.39 mm² fits within 2.95 mm² budget with 2.56 mm²
-remaining for peripherals, ADCs, and routing.
+Total CIM area ~0.41 mm² (including peripheral overhead) fits within
+2.95 mm² budget with 2.54 mm² remaining for ADCs, routing, and pads.
 
 ## Decision 4: CIM Peripheral Cell Design Approach
 

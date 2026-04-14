@@ -41,8 +41,14 @@ def generate_cim_liberty(
     params: CIMMacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    pwr_pin: str = "VPWR",
+    gnd_pin: str = "VGND",
 ) -> Path:
-    """Generate a Liberty timing model for a CIM SRAM macro."""
+    """Generate a Liberty timing model for a CIM SRAM macro.
+
+    pwr_pin/gnd_pin: power pin names (default VPWR/VGND for khalkulo).
+    """
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -130,15 +136,18 @@ def generate_cim_liberty(
         lines.append(f'      pin (MWL_EN[{i}]) {{ }}')
     lines += [f'    }}', '']
 
-    # MBL_OUT bus (output, timing from MWL_EN)
+    # MBL_OUT bus (output, timing from MBL_PRE)
+    # Use MBL_PRE as related_pin (scalar) to avoid STA-1216 bus width mismatch
+    # with MWL_EN. The real CIM compute is triggered by MWL_EN, but from STA's
+    # perspective, MBL_PRE falling edge starts the compute cycle.
     lines += [
         f'    bus (MBL_OUT) {{',
         f'      bus_type : mbl_out_type ;',
         f'      direction : output ;',
         f'      max_capacitance : {_MBL_OUT_CAP_PF} ;',
         f'      timing () {{',
-        f'        related_pin : "MWL_EN" ;',
-        f'        timing_type : rising_edge ;',
+        f'        related_pin : "MBL_PRE" ;',
+        f'        timing_type : falling_edge ;',
         f'        cell_rise (scalar) {{ values ("{_CIM_COMPUTE_NS:.4f}") ; }}',
         f'        cell_fall (scalar) {{ values ("{_CIM_COMPUTE_NS:.4f}") ; }}',
         f'        rise_transition (scalar) {{ values ("{_CHARGE_SHARE_NS:.4f}") ; }}',
@@ -149,23 +158,11 @@ def generate_cim_liberty(
         lines.append(f'      pin (MBL_OUT[{i}]) {{ }}')
     lines += [f'    }}', '']
 
-    # MBL_PRE (input, setup/hold relative to MWL_EN)
+    # MBL_PRE (input, no timing constraints — it's the reference for MBL_OUT)
     lines += [
         f'    pin (MBL_PRE) {{',
         f'      direction : input ;',
         f'      capacitance : {_INPUT_CAP_PF} ;',
-        f'      timing () {{',
-        f'        related_pin : "MWL_EN" ;',
-        f'        timing_type : setup_rising ;',
-        f'        rise_constraint (scalar) {{ values ("{_SETUP_NS:.4f}") ; }}',
-        f'        fall_constraint (scalar) {{ values ("{_SETUP_NS:.4f}") ; }}',
-        f'      }}',
-        f'      timing () {{',
-        f'        related_pin : "MWL_EN" ;',
-        f'        timing_type : hold_rising ;',
-        f'        rise_constraint (scalar) {{ values ("{_HOLD_NS:.4f}") ; }}',
-        f'        fall_constraint (scalar) {{ values ("{_HOLD_NS:.4f}") ; }}',
-        f'      }}',
         f'    }}',
         f'',
     ]
@@ -180,14 +177,14 @@ def generate_cim_liberty(
             f'',
         ]
 
-    # Power pins
+    # Power pins (configurable naming for chip-level integration)
     lines += [
-        f'    pin (VDD) {{',
+        f'    pin ({pwr_pin}) {{',
         f'      direction : inout ;',
         f'      always_on : true ;',
         f'    }}',
         f'',
-        f'    pin (VSS) {{',
+        f'    pin ({gnd_pin}) {{',
         f'      direction : inout ;',
         f'      always_on : true ;',
         f'    }}',

@@ -29,8 +29,13 @@ def generate_cim_lef(
     macro_name: str | None = None,
     *,
     gds_path: str | Path | None = None,
+    pwr_pin: str = "VPWR",
+    gnd_pin: str = "VGND",
 ) -> Path:
-    """Generate a LEF abstract for a CIM SRAM macro."""
+    """Generate a LEF abstract for a CIM SRAM macro.
+
+    pwr_pin/gnd_pin: power pin names (default VPWR/VGND for khalkulo).
+    """
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -85,9 +90,9 @@ def generate_cim_lef(
     lines.append("")
 
     # --- Power pins ---
-    lines += _pin_block("VDD", "INOUT", cx=w * 0.7, cy=h, use="POWER")
+    lines += _pin_block(pwr_pin, "INOUT", cx=w * 0.7, cy=h, use="POWER")
     lines.append("")
-    lines += _pin_block("VSS", "INOUT", cx=w * 0.3, cy=0.0, use="GROUND")
+    lines += _pin_block(gnd_pin, "INOUT", cx=w * 0.3, cy=0.0, use="GROUND")
     lines.append("")
 
     # --- OBS (obstruction) ---

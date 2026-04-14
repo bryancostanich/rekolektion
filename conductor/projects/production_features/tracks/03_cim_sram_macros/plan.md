@@ -62,8 +62,8 @@ Extend the array tiler (`array/tiler.py`) to route MWL and MBL signals.
       See decisions.md Decision 3 for CIM tiling pitch analysis.
 - [x] Test: tile 64×64 (SRAM-C/D size), DRC clean
       64x64: 181.9 × 259.5 um = 0.047 mm². Only nwell.2a waivers.
+      (tested at 2.0×2.0 cap; needs retest with per-variant caps)
 - [ ] Test: tile 256×64 (SRAM-A size), DRC clean
-- [ ] Test: tile 64×64 (SRAM-C/D size), DRC clean
 
 ## Phase 3: CIM Peripherals
 
@@ -102,10 +102,10 @@ Extend the macro assembler to produce complete CIM SRAM array macros.
     - [ ] Place MBL precharge at top of array
     - [ ] Place MBL sense buffers at bottom of array (output side)
 - [ ] Generate macro for each array size:
-    - [ ] SRAM-A: 256×64, 3.93 um² cell
-    - [ ] SRAM-B: 256×64, 3.0 um² cell
-    - [ ] SRAM-C: 64×64, 2.5 um² cell
-    - [ ] SRAM-D: 64×64, 2.07 um² cell
+    - [ ] SRAM-A: 256×64, 1.3×3.1 cap (11.08 um²/cell)
+    - [ ] SRAM-B: 256×64, 1.1×2.65 cap (9.17 um²/cell)
+    - [ ] SRAM-C: 64×64, 1.1×1.8 cap (7.63 um²/cell)
+    - [ ] SRAM-D: 64×64, 1.0×1.45 cap (7.54 um²/cell)
 - [ ] DRC each macro in Magic
 - [ ] LVS each macro (netgen)
 

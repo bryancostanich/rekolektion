@@ -6,67 +6,62 @@ Paste this into a new Claude Code session in the rekolektion repo.
 
 ## Context
 
-You are working in the **rekolektion** repo — an open-source SRAM macro generator for SKY130. Your task is **Track 03: CIM SRAM Array Macros**.
+You are working in the **rekolektion** repo — an open-source SRAM macro generator targeting **sky130B**. Your task is **Track 03: CIM SRAM Array Macros**.
 
 Read these files before doing anything:
 
-1. `CLAUDE.md` — repo rules, build/DRC/render commands
+1. `CLAUDE.md` — repo rules, build/DRC/render commands (uses sky130B)
 2. `conductor/projects/production_features/tracks/03_cim_sram_macros/plan.md` — track plan with checkboxes
-3. `conductor/projects/production_features/tracks/03_cim_sram_macros/decisions.md` — 3 design decisions (reviewed and approved)
+3. `conductor/projects/production_features/tracks/03_cim_sram_macros/decisions.md` — 4 design decisions (all approved)
 4. `conductor/workflow.md` — development methodology, commit conventions
 
 Key source files:
-- `src/rekolektion/bitcell/sky130_6t_lr_cim.py` — CIM cell generator + `load_cim_bitcell()` + `CIM_VARIANTS` + `generate_cim_variants()`
+- `src/rekolektion/bitcell/sky130_6t_lr_cim.py` — CIM cell generator, `CIM_VARIANTS`, `load_cim_bitcell()`, `generate_cim_variants()`
 - `src/rekolektion/bitcell/sky130_6t_lr.py` — base 6T LR cell
-- `src/rekolektion/bitcell/base.py` — `BitcellInfo` abstraction
+- `src/rekolektion/tech/sky130.py` — PDK config (`PDK_VARIANT = "sky130B"`), design rules, centralized PDK path helpers
 - `src/rekolektion/array/tiler.py` — array tiler
 - `src/rekolektion/array/routing.py` — WL/BL/power/MBL routing
-- `src/rekolektion/macro/assembler.py` — macro assembler (needs CIM extension)
-- `src/rekolektion/macro/lef_generator.py` — LEF output (needs CIM pins)
-- `src/rekolektion/macro/liberty_generator.py` — Liberty output (needs CIM timing)
-
-SPICE characterization data (khalkulo repo):
-- `~/Git_Repos/bryan_costanich/khalkulo/conductor/projects/v1b_cim_addition/tracks/21_sram_cim_cells/spice_results_*.md`
+- `src/rekolektion/array/support_cells.py` — cell registry (includes `get_cim_peripheral()`)
+- `src/rekolektion/peripherals/cim_mwl_driver.py` — MWL driver (2-inverter buffer)
+- `src/rekolektion/peripherals/cim_mbl_precharge.py` — MBL precharge (PMOS switch)
+- `src/rekolektion/peripherals/cim_mbl_sense.py` — MBL sense buffer (NMOS source follower)
+- `src/rekolektion/macro/cim_assembler.py` — CIM macro assembler
+- `src/rekolektion/macro/lef_generator.py` — LEF output (needs CIM pin additions)
+- `src/rekolektion/macro/liberty_generator.py` — Liberty output (needs CIM timing arcs)
 
 ## Current State (as of 2026-04-14)
 
-**Phase 1 (Cell Variants): COMPLETE.** All 4 CIM cell variants DRC clean:
+**Phases 1–4: COMPLETE.**
 
-| Variant | Cap Geometry | ~fF | Pitch | Cell Area |
-|---------|-------------|-----|-------|-----------|
-| SRAM-A | 1.30 × 3.10 | 8.1 | 2.15 × 5.16 | 11.08 um² |
-| SRAM-B | 1.10 × 2.65 | 5.8 | 1.95 × 4.71 | 9.17 um² |
-| SRAM-C | 1.10 × 1.80 | 4.0 | 1.95 × 3.92 | 7.63 um² |
-| SRAM-D | 1.00 × 1.45 | 2.9 | 1.93 × 3.92 | 7.54 um² |
+| Variant | Cap | Pitch | Macro Size | Array |
+|---------|-----|-------|------------|-------|
+| SRAM-A | 1.30×3.10 (~8 fF) | 2.175×5.16 | 143.5×1323 um | 256×64 |
+| SRAM-B | 1.10×2.65 (~6 fF) | 1.95×4.71 | 129.3×1208 um | 256×64 |
+| SRAM-C | 1.10×1.80 (~4 fF) | 1.95×3.92 | 129.3×255 um | 64×64 |
+| SRAM-D | 1.00×1.45 (~3 fF) | 1.93×3.92 | 127.7×255 um | 64×64 |
 
-GDS + SPICE in `output/cim_variants/`. Rectangular caps oriented narrow-in-X.
-MIM cap minimum is 1.0um (verified from Magic DRC deck, NOT the 2.0um in old code).
+All cells, arrays, peripherals, and macros DRC clean on sky130B.
+GDS in `output/cim_variants/` (cells) and `output/cim_macros/` (assembled).
+Macros use hierarchical GDS (no flatten — gdstk flatten distorts coordinates).
 
-**Phase 2 (Array Tiler): MOSTLY COMPLETE.**
-- MWL: continuous poly across cells (no extra routing needed)
-- MBL: vertical M4 stripes via `route_mbl()` in routing.py
-- 4×4 and 64×64 arrays DRC clean (nwell.2a waivers only — same-potential)
-- Array routing module (WL/BL/power) causes M1/M2 spacing errors with CIM cells — needs adaptation for non-shared-boundary tiling
-- 256×64 array not yet tested
+**sky130B Migration: COMPLETE (Track 04 Phases 1–2)**
 
-**Phase 3–7: NOT STARTED.**
+`PDK_VARIANT = "sky130B"` in sky130.py. All cells identical between A and B.
+SPICE extraction confirms zero functional difference.
 
-## Key Design Decisions (approved)
+## Key Design Decisions (all approved)
 
-1. **T7 connects to Route 1 li1 (latched Q net)** via M1 through N-P gap. NOT to NMOS int_bot (wrong net) or shared diff (wrong node). See Decision 1.
+1. **T7 connects to Route 1 li1 (latched Q net)** via M1 through N-P gap.
+2. **Rectangular MIM caps per variant.** MIM minimum is 1.0um. Caps oriented narrow-in-X.
+3. **Per-variant tiling pitch.** SRAM-C/D fit within 6T X-pitch. SRAM-A uses separated mode (2.175).
+4. **Peripheral cells**: MWL driver (2-inv buffer), MBL precharge (PMOS switch to external VREF), MBL sense (NMOS source follower, VBIAS external).
 
-2. **Rectangular MIM caps per variant.** MIM minimum is 1.0um (not 2.0). Caps oriented narrow-in-X to minimize X-pitch. SRAM-C/D fit within 6T X-pitch. See Decision 2 (revised).
+## Known DRC Waivers
 
-3. **Per-variant tiling pitch.** X-pitch = max(cap_w + 0.84, 1.925). Y-pitch = max(NSDM, cap Y-spacing). Total array area 0.39 mm². See Decision 3 (revised).
-
-## sky130B Migration: COMPLETE (Track 04 Phases 1–2)
-
-Rekolektion now targets **sky130B**. Migration confirmed zero functional impact:
-- `PDK_VARIANT = "sky130B"` in `src/rekolektion/tech/sky130.py`
-- All cells DRC clean on sky130B (6T LR + 4 CIM variants)
-- SPICE extraction identical between sky130A and sky130B
-- Track 21 characterization data applies unchanged
-- Track 04 Phases 3–5 (macro regen, OpenLane verify, docs) blocked on Track 03 completion
+All are same-potential inter-cell issues (Magic can't resolve nets across cell boundaries):
+- **nwell.2a**: adjacent column nwells at VDD (separated mode, SRAM-A)
+- **via.2**: adjacent VPWR vias (separated mode, SRAM-A)
+- **subcell overlap**: shared boundary abutment (SRAM-B/C/D)
 
 ## Constraints
 
@@ -74,22 +69,18 @@ Rekolektion now targets **sky130B**. Migration confirmed zero functional impact:
 - Commit directly to main (single dev, no branches/PRs)
 - Never git push without asking first
 - MBL_OUT pins carry analog voltages — do NOT digitize. ADC is external.
-- Use the design decision protocol for any structural choices
+- Use the design decision protocol for structural choices
 
-## Next Steps — SEQUENCING
+## Next Steps — Phase 5+
 
-**Do Track 04 (sky130B upgrade) Phases 1–2 BEFORE finishing Track 03.**
+1. **Phase 5: LEF + Liberty generation**
+   - CIM LEF: MWL_EN[] pins (input, left edge), MBL_OUT[] pins (analog output, bottom),
+     MBL_PRE (input), VREF (inout), VBIAS (input), VDD/VSS. OBS layers from GDS.
+   - CIM Liberty: timing arcs for MWL_EN→MBL_OUT (CIM compute latency),
+     setup/hold for MBL_PRE, pin capacitances
+   - Validate with OpenSTA and OpenROAD
 
-The entire die targets sky130B. Continuing Track 03 on sky130A means
-re-doing DRC/extraction later. The upgrade is expected to be mechanical
-(FEOL identical, MIM rules identical — already verified), but confirming
-this early avoids wasted work.
+2. **Phase 6: Ring oscillators + test structures** (optional for shuttle)
 
-### Track 03 remaining work (all on sky130B)
-
-1. Phase 2 remaining: fix array routing for CIM non-shared-boundary tiling,
-   test 256×64 array
-2. Phase 3: CIM peripherals (MWL drivers, MBL precharge, MBL sense buffers)
-3. Phase 4: Macro assembly (extend assembler for CIM mode)
-4. Phase 5: LEF + Liberty generation (CIM pin definitions + timing arcs)
-5. Phases 6–7: test structures, integration test
+3. **Phase 7: Integration test** — copy to khalkulo, verify OpenLane reads LEF/Liberty,
+   floorplan test with existing v1a SRAMs

@@ -71,6 +71,26 @@ Track 04 (`conductor/projects/production_features/tracks/04_sky130B_upgrade/`) p
 - MBL_OUT pins carry analog voltages — do NOT digitize. ADC is external.
 - Use the design decision protocol for any structural choices
 
-## Next Steps
+## Next Steps — SEQUENCING
 
-Continue from Phase 2 remaining items (array routing adaptation, 256×64 test), then Phase 3 (CIM peripherals).
+**Do Track 04 (sky130B upgrade) Phases 1–2 BEFORE finishing Track 03.**
+
+The entire die targets sky130B. Continuing Track 03 on sky130A means
+re-doing DRC/extraction later. The upgrade is expected to be mechanical
+(FEOL identical, MIM rules identical — already verified), but confirming
+this early avoids wasted work.
+
+### Immediate: Track 04 Phases 1–2
+
+1. Read `conductor/projects/production_features/tracks/04_sky130B_upgrade/plan.md`
+2. Phase 1: Tech file migration — audit sky130.py, update PDK refs, diff
+   DRC rules, run unit tests. Confirm MIM cap rules unchanged (we already
+   checked — capm.1 = 1.0um in both A and B, but verify with actual DRC run).
+3. Phase 2: Regenerate all bitcells under sky130B — 6T foundry, 6T LR,
+   7T+1C CIM (all 4 variants). DRC each. Extract SPICE, compare parasitics.
+
+### Then: Track 03 remaining work (on sky130B)
+
+4. Phase 2 remaining: fix array routing for CIM tiling, test 256×64 array
+5. Phases 3–7: peripherals, macro assembly, LEF/Liberty, test structures,
+   integration test — all targeting sky130B

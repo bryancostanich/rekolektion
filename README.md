@@ -1,6 +1,6 @@
 # rekolektion
 
-Open-source SRAM macro generator for the SkyWater SKY130 130nm process.
+Open-source SRAM macro generator for the SkyWater SKY130 130nm process (sky130B).
 
 Takes bitcells (foundry-provided or custom) and generates complete, characterized SRAM macros — parameterized by size, word width, and column mux ratio.
 

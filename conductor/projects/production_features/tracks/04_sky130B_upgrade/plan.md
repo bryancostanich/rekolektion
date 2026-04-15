@@ -90,8 +90,9 @@ Regenerate all production macros.
 End-to-end check that regenerated macros work in the khalkulo flow.
 
 - [ ] Copy all regenerated macros to `khalkulo/openlane/macros/`
-- [~] Verify OpenROAD reads LEFs — running (background agent)
-- [~] Verify OpenROAD reads Liberty — running (background agent)
+- [x] Verify OpenROAD reads LEFs: all load OK (weight, activation, CIM x4)
+- [x] Verify OpenROAD reads Liberty: weight + CIM OK. Activation has
+      pre-existing STA-1149 (missing threshold params) — not from migration.
 - [x] Compare area: identical (FEOL unchanged, confirmed)
 - [x] Compare timing: zero shift — SPICE extraction identical between A and B
 - [ ] Run khalkulo Verilator tests with new behavioral models (expect: pass unchanged)

@@ -62,7 +62,18 @@ ACTIVATION_MACROS = [
     },
 ]
 
-ALL_MACROS = WEIGHT_MACROS + ACTIVATION_MACROS
+TEST_MACROS = [
+    {
+        "filename": "sram_test_tiny",
+        "macro_name": "sram_test_tiny",
+        "words": 32,
+        "bits": 8,
+        "mux_ratio": 1,
+        "description": "Tiny dev macro (32x8, 32 B) for fast LVS iteration",
+    },
+]
+
+ALL_MACROS = WEIGHT_MACROS + ACTIVATION_MACROS + TEST_MACROS
 
 
 # ---------------------------------------------------------------------------

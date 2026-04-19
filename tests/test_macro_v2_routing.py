@@ -1,7 +1,7 @@
 import gdstk
 import pytest
 
-from rekolektion.macro_v2.routing import draw_wire
+from rekolektion.macro_v2.routing import draw_via_stack, draw_wire
 from rekolektion.macro_v2.sky130_drc import GDS_LAYER, MET1_MIN_WIDTH
 
 
@@ -49,6 +49,34 @@ def test_wire_default_width_is_layer_minimum():
     assert abs((bb[1][1] - bb[0][1]) - MET1_MIN_WIDTH) < 1e-9
 
 
+def test_via_stack_met1_to_met2_creates_three_shape_types():
+    """A met1->met2 via emits: met1 landing + via cut + met2 landing."""
+    cell = gdstk.Cell("test_via12")
+    draw_via_stack(cell, from_layer="met1", to_layer="met2", position=(5.0, 5.0))
+    layers = [(p.layer, p.datatype) for p in cell.polygons]
+    assert GDS_LAYER["met1"] in layers
+    assert GDS_LAYER["via"] in layers
+    assert GDS_LAYER["met2"] in layers
+
+
+def test_via_stack_met1_to_met3_is_stacked():
+    """met1 -> met3 requires via + via2 cuts with intermediate met2 landing."""
+    cell = gdstk.Cell("test_via13")
+    draw_via_stack(cell, from_layer="met1", to_layer="met3", position=(5.0, 5.0))
+    layers = [(p.layer, p.datatype) for p in cell.polygons]
+    assert GDS_LAYER["met1"] in layers
+    assert GDS_LAYER["via"] in layers
+    assert GDS_LAYER["met2"] in layers
+    assert GDS_LAYER["via2"] in layers
+    assert GDS_LAYER["met3"] in layers
+
+
+def test_via_stack_rejects_invalid_direction():
+    cell = gdstk.Cell("test_bad_dir")
+    with pytest.raises(ValueError):
+        draw_via_stack(cell, from_layer="met3", to_layer="met1", position=(0, 0))
+
+
 @pytest.mark.magic
 def test_horizontal_wire_is_drc_clean(tmp_path):
     """Drawn wire passes Magic DRC against SKY130B deck."""
@@ -62,4 +90,22 @@ def test_horizontal_wire_is_drc_clean(tmp_path):
     lib.write_gds(str(gds))
 
     result = run_drc(gds, cell_name="test_wire", output_dir=tmp_path)
+    assert result.clean, f"DRC errors: {result.errors}"
+
+
+@pytest.mark.magic
+def test_via_stack_met1_to_met3_drc_clean(tmp_path):
+    """Via stack with wire stubs on each end passes DRC."""
+    from rekolektion.verify.drc import run_drc
+
+    lib = gdstk.Library(name="test_via13_lib")
+    cell = gdstk.Cell("test_via13")
+    draw_wire(cell, start=(0, 5), end=(10, 5), layer="met1", width=0.14)
+    draw_wire(cell, start=(5, 0), end=(5, 10), layer="met3", width=0.30)
+    draw_via_stack(cell, from_layer="met1", to_layer="met3", position=(5, 5))
+    lib.add(cell)
+    gds = tmp_path / "test_via13.gds"
+    lib.write_gds(str(gds))
+
+    result = run_drc(gds, cell_name="test_via13", output_dir=tmp_path)
     assert result.clean, f"DRC errors: {result.errors}"

@@ -79,3 +79,76 @@ def draw_wire(
 
     cell.add(rect)
     return rect
+
+
+# Via ladder steps: (lower_metal, via_layer, upper_metal, via_size_um,
+#                    lower_enclosure_um, upper_enclosure_um)
+_VIA_LADDER = [
+    ("li1",  "mcon", "met1", 0.17, 0.0,   0.030),
+    ("met1", "via",  "met2", 0.15, 0.055, 0.055),
+    ("met2", "via2", "met3", 0.20, 0.040, 0.065),
+    ("met3", "via3", "met4", 0.20, 0.060, 0.060),
+    ("met4", "via4", "met5", 0.80, 0.210, 0.310),
+]
+
+
+_METAL_ORDER = ["li1", "met1", "met2", "met3", "met4", "met5"]
+
+
+def draw_via_stack(
+    cell: gdstk.Cell,
+    *,
+    from_layer: str,
+    to_layer: str,
+    position: Point,
+) -> None:
+    """Draw a centered via stack from `from_layer` up to `to_layer` at `position`.
+
+    Emits, for each step up the ladder:
+      - lower metal landing pad (square, sized by via + enclosure)
+      - via cut on the appropriate via layer
+      - upper metal landing pad
+    Adjacent stack steps share landing pads (no duplicates emitted).
+    """
+    if from_layer not in _METAL_ORDER or to_layer not in _METAL_ORDER:
+        raise ValueError(f"unknown layer; got from={from_layer} to={to_layer}")
+    from_idx = _METAL_ORDER.index(from_layer)
+    to_idx = _METAL_ORDER.index(to_layer)
+    if to_idx <= from_idx:
+        raise ValueError(
+            f"draw_via_stack requires to_layer above from_layer; "
+            f"got {from_layer} -> {to_layer}"
+        )
+
+    cx, cy = snap(position[0]), snap(position[1])
+
+    landed_metals: set[str] = set()
+    for m_lower, via_name, m_upper, via_size, enc_lower, enc_upper in _VIA_LADDER:
+        lower_idx = _METAL_ORDER.index(m_lower)
+        upper_idx = _METAL_ORDER.index(m_upper)
+        if upper_idx <= from_idx or lower_idx >= to_idx:
+            continue
+
+        if m_lower not in landed_metals:
+            lower_size = via_size + 2 * enc_lower
+            _emit_square(cell, cx, cy, lower_size, m_lower)
+            landed_metals.add(m_lower)
+
+        _emit_square(cell, cx, cy, via_size, via_name)
+
+        if m_upper not in landed_metals:
+            upper_size = via_size + 2 * enc_upper
+            _emit_square(cell, cx, cy, upper_size, m_upper)
+            landed_metals.add(m_upper)
+
+
+def _emit_square(cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str) -> None:
+    """Emit a centered square of `size` um on `layer` at (cx, cy)."""
+    half = size / 2
+    rect = gdstk.rectangle(
+        (snap(cx - half), snap(cy - half)),
+        (snap(cx + half), snap(cy + half)),
+        layer=GDS_LAYER[layer][0],
+        datatype=GDS_LAYER[layer][1],
+    )
+    cell.add(rect)

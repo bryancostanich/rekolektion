@@ -169,3 +169,34 @@ def test_pdn_strap_drc_clean(tmp_path):
 
     result = run_drc(gds, cell_name="test_pdn", output_dir=tmp_path)
     assert result.clean, f"DRC errors: {result.errors}"
+
+
+@pytest.mark.magic
+def test_compound_cell_drc_clean(tmp_path):
+    """A cell using draw_wire + draw_via_stack + draw_pdn_strap is DRC clean."""
+    from rekolektion.verify.drc import run_drc
+
+    lib = gdstk.Library(name="test_compound_lib")
+    cell = gdstk.Cell("test_compound")
+
+    # Two parallel met1 wires spaced at min-spacing (0.14)
+    draw_wire(cell, start=(0.0, 0.0), end=(20.0, 0.0), layer="met1", width=0.14)
+    draw_wire(cell, start=(0.0, 0.28), end=(20.0, 0.28), layer="met1", width=0.14)
+
+    # Orthogonal met2 crossing both, via stack to bridge met1 to met2
+    draw_wire(cell, start=(10.0, -2.0), end=(10.0, 2.0), layer="met2", width=0.14)
+    draw_via_stack(cell, from_layer="met1", to_layer="met2", position=(10.0, 0.0))
+
+    # PDN strap running above the wires
+    draw_pdn_strap(
+        cell, orientation="horizontal",
+        center_coord=5.0, span_start=0.0, span_end=20.0,
+        layer="met4", width=1.6,
+    )
+
+    lib.add(cell)
+    gds = tmp_path / "test_compound.gds"
+    lib.write_gds(str(gds))
+
+    result = run_drc(gds, cell_name="test_compound", output_dir=tmp_path)
+    assert result.clean, f"DRC errors: {result.errors}"

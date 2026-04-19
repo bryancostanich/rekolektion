@@ -5,6 +5,7 @@ Flow:
 2. netgen compares extracted netlist against schematic/reference netlist
 """
 
+import glob
 import os
 import subprocess
 import tempfile
@@ -12,6 +13,38 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rekolektion.verify.drc import find_pdk_root
+
+
+def _find_netgen() -> str:
+    """Locate a netgen binary that supports `-batch lvs`.
+
+    The netgen in `~/.local/bin/netgen` on this machine was built without
+    Tcl/Tk batch support and hangs on a GUI console. The Nix-store netgen
+    (installed as a dependency of OpenLane) has batch support.
+
+    Resolution order:
+    1. $NETGEN env var (caller override)
+    2. ~/tools/openlane2/result/*/netgen (Nix flake symlink)
+    3. /nix/store/*/netgen/bin/netgen (any Nix-store netgen)
+    4. `netgen` on PATH (fallback, may lack batch)
+    """
+    override = os.environ.get("NETGEN")
+    if override and Path(override).is_file():
+        return override
+
+    # Prefer an OpenLane-shipped netgen
+    ol_candidates = glob.glob(str(Path.home() / "tools/openlane2/result/**/netgen"), recursive=True)
+    for c in ol_candidates:
+        if Path(c).is_file() and os.access(c, os.X_OK):
+            return c
+
+    # Any Nix-store netgen
+    nix_candidates = glob.glob("/nix/store/*-netgen*/bin/netgen")
+    for c in nix_candidates:
+        if Path(c).is_file() and os.access(c, os.X_OK):
+            return c
+
+    return "netgen"
 
 
 @dataclass
@@ -130,22 +163,27 @@ def run_lvs(
     log_path = output_dir / "lvs_results.log"
 
     subckt = cell_name or "sky130_sram_6t_bitcell"
+    netgen_bin = _find_netgen()
+    # Use absolute paths; netgen runs with cwd=output_dir so relative paths
+    # from repo root won't resolve.
+    extracted_abs = Path(extracted).resolve()
+    schematic_abs = Path(schematic_path).resolve()
     netgen_cmd = [
-        "netgen", "-batch", "lvs",
-        f"{extracted} {subckt}",
-        f"{schematic_path} {subckt}",
+        netgen_bin, "-batch", "lvs",
+        f"{extracted_abs} {subckt}",
+        f"{schematic_abs} {subckt}",
     ]
     if setup_file.exists():
-        netgen_cmd.append(str(setup_file))
-    netgen_cmd.extend(["-o", str(log_path)])
+        netgen_cmd.append(str(setup_file.resolve()))
 
     try:
         result = subprocess.run(
             netgen_cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             cwd=str(output_dir),
+            stdin=subprocess.DEVNULL,  # prevent Tk GUI on netgen builds with TkCon
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -153,9 +191,14 @@ def run_lvs(
             "http://opencircuitdesign.com/netgen/"
         )
 
+    # Save stdout+stderr to log (netgen itself doesn't write a full transcript
+    # to a log file without explicit Tcl commands; capturing the batch stdout
+    # gives us the authoritative LVS transcript).
+    log_path.write_text(result.stdout + "\n--- STDERR ---\n" + result.stderr)
+
     # Parse result
     match = False
-    output_text = result.stdout + (log_path.read_text() if log_path.exists() else "")
+    output_text = result.stdout
     if "Circuits match uniquely" in output_text:
         match = True
 

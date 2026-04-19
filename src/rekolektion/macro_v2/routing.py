@@ -7,6 +7,7 @@ import gdstk
 
 from rekolektion.macro_v2.sky130_drc import (
     GDS_LAYER,
+    layer_min_space,
     layer_min_width,
     snap,
 )
@@ -148,6 +149,94 @@ def _emit_square(cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str
     rect = gdstk.rectangle(
         (snap(cx - half), snap(cy - half)),
         (snap(cx + half), snap(cy + half)),
+        layer=GDS_LAYER[layer][0],
+        datatype=GDS_LAYER[layer][1],
+    )
+    cell.add(rect)
+
+
+def draw_via_array(
+    cell: gdstk.Cell,
+    *,
+    from_layer: str,
+    to_layer: str,
+    position: Point,
+    rows: int,
+    cols: int,
+) -> None:
+    """Draw an R×C array of via cuts between from_layer and to_layer.
+
+    Cuts are centered on `position`. Cut-to-cut pitch is the greater of
+    the via's square size and the lower/upper metal min space (conservative).
+    Landing pads on each metal layer are sized to enclose the entire cut
+    array plus per-metal enclosure on each side.
+
+    Multi-layer stacks emit parallel via arrays at each ladder step
+    (e.g. met1->met3 emits 4 via cuts + 4 via2 cuts for a 2x2).
+    """
+    if from_layer not in _METAL_ORDER or to_layer not in _METAL_ORDER:
+        raise ValueError(
+            f"unknown layer; got from={from_layer} to={to_layer}"
+        )
+    from_idx = _METAL_ORDER.index(from_layer)
+    to_idx = _METAL_ORDER.index(to_layer)
+    if to_idx <= from_idx:
+        raise ValueError(
+            f"requires to_layer above from_layer; got {from_layer} -> {to_layer}"
+        )
+    if rows < 1 or cols < 1:
+        raise ValueError(
+            f"rows and cols must be >=1; got rows={rows} cols={cols}"
+        )
+
+    cx, cy = snap(position[0]), snap(position[1])
+
+    landed: set[str] = set()
+    for m_lower, via_name, m_upper, via_size, enc_lower, enc_upper in _VIA_LADDER:
+        lower_idx = _METAL_ORDER.index(m_lower)
+        upper_idx = _METAL_ORDER.index(m_upper)
+        if upper_idx <= from_idx or lower_idx >= to_idx:
+            continue
+
+        cut_spacing = max(
+            via_size,
+            layer_min_space(m_lower),
+            layer_min_space(m_upper),
+        )
+        array_w = cols * via_size + (cols - 1) * cut_spacing
+        array_h = rows * via_size + (rows - 1) * cut_spacing
+
+        # Emit cuts — origin is lower-left corner of the array's bounding box
+        x0 = cx - array_w / 2
+        y0 = cy - array_h / 2
+        for r in range(rows):
+            for c in range(cols):
+                cx_cut = x0 + c * (via_size + cut_spacing) + via_size / 2
+                cy_cut = y0 + r * (via_size + cut_spacing) + via_size / 2
+                _emit_square(cell, cx_cut, cy_cut, via_size, via_name)
+
+        # Emit lower landing pad
+        if m_lower not in landed:
+            lower_w = array_w + 2 * enc_lower
+            lower_h = array_h + 2 * enc_lower
+            _emit_rect(cell, cx, cy, lower_w, lower_h, m_lower)
+            landed.add(m_lower)
+
+        # Emit upper landing pad
+        if m_upper not in landed:
+            upper_w = array_w + 2 * enc_upper
+            upper_h = array_h + 2 * enc_upper
+            _emit_rect(cell, cx, cy, upper_w, upper_h, m_upper)
+            landed.add(m_upper)
+
+
+def _emit_rect(
+    cell: gdstk.Cell, cx: float, cy: float, w: float, h: float, layer: str
+) -> None:
+    """Emit a centered W×H rectangle on `layer` at (cx, cy)."""
+    rect = gdstk.rectangle(
+        (snap(cx - w / 2), snap(cy - h / 2)),
+        (snap(cx + w / 2), snap(cy + h / 2)),
         layer=GDS_LAYER[layer][0],
         datatype=GDS_LAYER[layer][1],
     )

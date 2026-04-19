@@ -1,7 +1,12 @@
 import gdstk
 import pytest
 
-from rekolektion.macro_v2.routing import draw_pdn_strap, draw_via_stack, draw_wire
+from rekolektion.macro_v2.routing import (
+    draw_pdn_strap,
+    draw_via_array,
+    draw_via_stack,
+    draw_wire,
+)
 from rekolektion.macro_v2.sky130_drc import GDS_LAYER, MET1_MIN_WIDTH
 
 
@@ -108,6 +113,53 @@ def test_vertical_pdn_strap_on_met3():
     assert abs(bb[1][1] - 50.0) < 1e-9
 
 
+def test_via_array_creates_N_cuts():
+    """A 3x3 via_array between met1 and met2 produces 9 via cuts."""
+    cell = gdstk.Cell("test_via_array")
+    draw_via_array(
+        cell, from_layer="met1", to_layer="met2",
+        position=(5.0, 5.0), rows=3, cols=3,
+    )
+    via_cuts = [p for p in cell.polygons if (p.layer, p.datatype) == GDS_LAYER["via"]]
+    assert len(via_cuts) == 9
+
+
+def test_via_array_landing_encloses_all_cuts():
+    """The metal landing pad must enclose the full array of cuts."""
+    cell = gdstk.Cell("test_encl")
+    draw_via_array(
+        cell, from_layer="met1", to_layer="met2",
+        position=(0.0, 0.0), rows=4, cols=4,
+    )
+    met1_shapes = [p for p in cell.polygons if (p.layer, p.datatype) == GDS_LAYER["met1"]]
+    assert len(met1_shapes) == 1
+    met1_bb = met1_shapes[0].bounding_box()
+    via_cuts = [p for p in cell.polygons if (p.layer, p.datatype) == GDS_LAYER["via"]]
+    for cut in via_cuts:
+        cbb = cut.bounding_box()
+        assert met1_bb[0][0] <= cbb[0][0] + 1e-9
+        assert met1_bb[1][0] >= cbb[1][0] - 1e-9
+        assert met1_bb[0][1] <= cbb[0][1] + 1e-9
+        assert met1_bb[1][1] >= cbb[1][1] - 1e-9
+
+
+def test_via_array_stacks_multiple_layers():
+    """A met1->met3 via_array creates via + via2 arrays with met1/met2/met3 pads."""
+    cell = gdstk.Cell("test_stack_array")
+    draw_via_array(
+        cell, from_layer="met1", to_layer="met3",
+        position=(0, 0), rows=2, cols=2,
+    )
+    via_cuts = [p for p in cell.polygons if (p.layer, p.datatype) == GDS_LAYER["via"]]
+    via2_cuts = [p for p in cell.polygons if (p.layer, p.datatype) == GDS_LAYER["via2"]]
+    assert len(via_cuts) == 4
+    assert len(via2_cuts) == 4
+    layers = [(p.layer, p.datatype) for p in cell.polygons]
+    assert GDS_LAYER["met1"] in layers
+    assert GDS_LAYER["met2"] in layers
+    assert GDS_LAYER["met3"] in layers
+
+
 def test_pdn_strap_rejects_below_min_width():
     cell = gdstk.Cell("test_pdn_bad")
     with pytest.raises(ValueError, match="min width"):
@@ -168,6 +220,32 @@ def test_pdn_strap_drc_clean(tmp_path):
     lib.write_gds(str(gds))
 
     result = run_drc(gds, cell_name="test_pdn", output_dir=tmp_path)
+    assert result.clean, f"DRC errors: {result.errors}"
+
+
+@pytest.mark.magic
+def test_via_array_drc_clean(tmp_path):
+    """A 4×4 via array connecting met1 up to met4 is DRC clean."""
+    from rekolektion.verify.drc import run_drc
+
+    lib = gdstk.Library(name="test_via_array_lib")
+    cell = gdstk.Cell("test_via_array")
+    # PDN-style drop: met4 strap + met1 landing + 4x4 via array to connect them
+    draw_pdn_strap(
+        cell, orientation="horizontal",
+        center_coord=0.0, span_start=-10.0, span_end=10.0,
+        layer="met4", width=1.6,
+    )
+    draw_wire(cell, start=(-10, 0), end=(10, 0), layer="met1", width=1.0)
+    draw_via_array(
+        cell, from_layer="met1", to_layer="met4",
+        position=(0, 0), rows=4, cols=4,
+    )
+    lib.add(cell)
+    gds = tmp_path / "test_via_array.gds"
+    lib.write_gds(str(gds))
+
+    result = run_drc(gds, cell_name="test_via_array", output_dir=tmp_path)
     assert result.clean, f"DRC errors: {result.errors}"
 
 

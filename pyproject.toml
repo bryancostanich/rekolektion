@@ -43,6 +43,9 @@ select = ["E", "F", "W", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "magic: tests that invoke Magic (require PDK_ROOT env, slow ~10s each)",
+]
 
 [tool.mypy]
 python_version = "3.10"

@@ -2,7 +2,10 @@ import gdstk
 import pytest
 
 from rekolektion.macro_v2.routing import (
+    draw_label,
     draw_pdn_strap,
+    draw_pin,
+    draw_pin_with_label,
     draw_via_array,
     draw_via_stack,
     draw_wire,
@@ -160,6 +163,45 @@ def test_via_array_stacks_multiple_layers():
     assert GDS_LAYER["met3"] in layers
 
 
+def test_draw_pin_emits_pin_purpose_rect():
+    """draw_pin emits a rectangle on the .pin purpose (dtype 16)."""
+    cell = gdstk.Cell("test_pin")
+    draw_pin(cell, layer="met3", rect=(1.0, 2.0, 1.5, 3.0))
+    assert len(cell.polygons) == 1
+    p = cell.polygons[0]
+    assert (p.layer, p.datatype) == GDS_LAYER["met3.pin"]
+    bb = p.bounding_box()
+    assert abs(bb[0][0] - 1.0) < 1e-9
+    assert abs(bb[0][1] - 2.0) < 1e-9
+    assert abs(bb[1][0] - 1.5) < 1e-9
+    assert abs(bb[1][1] - 3.0) < 1e-9
+
+
+def test_draw_label_emits_text_on_label_purpose():
+    """draw_label emits a text annotation on the .label purpose (dtype 5)."""
+    cell = gdstk.Cell("test_label")
+    draw_label(cell, text="wl_0_5", layer="met1", position=(3.0, 1.5))
+    assert len(cell.labels) == 1
+    lbl = cell.labels[0]
+    assert lbl.text == "wl_0_5"
+    assert (lbl.layer, lbl.texttype) == GDS_LAYER["met1.label"]
+    assert abs(lbl.origin[0] - 3.0) < 1e-9
+    assert abs(lbl.origin[1] - 1.5) < 1e-9
+
+
+def test_draw_pin_with_label_helper():
+    """draw_pin_with_label emits pin rect + label at rect center."""
+    cell = gdstk.Cell("test_pinlabel")
+    draw_pin_with_label(
+        cell, text="din[0]", layer="met3",
+        rect=(10.0, 0.0, 10.14, 1.0),
+    )
+    pin_polys = [p for p in cell.polygons if (p.layer, p.datatype) == GDS_LAYER["met3.pin"]]
+    assert len(pin_polys) == 1
+    assert len(cell.labels) == 1
+    assert cell.labels[0].text == "din[0]"
+
+
 def test_pdn_strap_rejects_below_min_width():
     cell = gdstk.Cell("test_pdn_bad")
     with pytest.raises(ValueError, match="min width"):
@@ -247,6 +289,27 @@ def test_via_array_drc_clean(tmp_path):
 
     result = run_drc(gds, cell_name="test_via_array", output_dir=tmp_path)
     assert result.clean, f"DRC errors: {result.errors}"
+
+
+@pytest.mark.magic
+def test_pin_and_label_extract_as_port(tmp_path):
+    """A draw_wire + draw_pin + draw_label together extract as a named port."""
+    from rekolektion.verify.lvs import extract_netlist
+
+    lib = gdstk.Library(name="test_port_lib")
+    cell = gdstk.Cell("test_port")
+    draw_wire(cell, start=(0, 0), end=(10, 0), layer="met1", width=0.14)
+    draw_pin(cell, layer="met1", rect=(0, -0.07, 0.14, 0.07))
+    draw_label(cell, text="vin", layer="met1", position=(0.07, 0.0))
+    lib.add(cell)
+    gds = tmp_path / "test_port.gds"
+    lib.write_gds(str(gds))
+
+    sp = extract_netlist(gds, cell_name="test_port", output_dir=tmp_path)
+    txt = sp.read_text()
+    assert ".subckt test_port" in txt
+    header_line = next(l for l in txt.splitlines() if ".subckt test_port" in l)
+    assert "vin" in header_line, f"port vin missing in header: {header_line!r}"
 
 
 @pytest.mark.magic

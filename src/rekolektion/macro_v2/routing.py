@@ -243,6 +243,76 @@ def _emit_rect(
     cell.add(rect)
 
 
+def draw_pin(
+    cell: gdstk.Cell,
+    *,
+    layer: str,
+    rect: Tuple[float, float, float, float],
+) -> gdstk.Polygon:
+    """Emit a metal rectangle on the layer's .pin purpose (dtype 16).
+
+    Used to declare a LEF pin at the top level. The pin rect must overlap
+    drawn metal on the same layer for Magic to tie it to an electrical net.
+
+    Parameters
+    ----------
+    rect : (x1, y1, x2, y2) in um — the pin extent.
+    """
+    pin_layer_key = f"{layer}.pin"
+    if pin_layer_key not in GDS_LAYER:
+        raise ValueError(f"no .pin purpose defined for layer {layer}")
+    x1, y1, x2, y2 = rect
+    r = gdstk.rectangle(
+        (snap(x1), snap(y1)),
+        (snap(x2), snap(y2)),
+        layer=GDS_LAYER[pin_layer_key][0],
+        datatype=GDS_LAYER[pin_layer_key][1],
+    )
+    cell.add(r)
+    return r
+
+
+def draw_label(
+    cell: gdstk.Cell,
+    *,
+    text: str,
+    layer: str,
+    position: Point,
+) -> gdstk.Label:
+    """Emit a text label on the layer's .label purpose (dtype 5).
+
+    Magic's extractor ties the label to whatever drawn net overlaps at
+    this coordinate, naming the net after `text`. Used for per-row/col
+    WL/BL naming (decision 7) and top-level port identification.
+    """
+    label_layer_key = f"{layer}.label"
+    if label_layer_key not in GDS_LAYER:
+        raise ValueError(f"no .label purpose defined for layer {layer}")
+    lbl = gdstk.Label(
+        text,
+        (snap(position[0]), snap(position[1])),
+        layer=GDS_LAYER[label_layer_key][0],
+        texttype=GDS_LAYER[label_layer_key][1],
+    )
+    cell.add(lbl)
+    return lbl
+
+
+def draw_pin_with_label(
+    cell: gdstk.Cell,
+    *,
+    text: str,
+    layer: str,
+    rect: Tuple[float, float, float, float],
+) -> None:
+    """Convenience: emit a pin rect and a label at the rect's center."""
+    draw_pin(cell, layer=layer, rect=rect)
+    x1, y1, x2, y2 = rect
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    draw_label(cell, text=text, layer=layer, position=(cx, cy))
+
+
 def draw_pdn_strap(
     cell: gdstk.Cell,
     *,

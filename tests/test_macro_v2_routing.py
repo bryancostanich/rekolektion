@@ -1,7 +1,7 @@
 import gdstk
 import pytest
 
-from rekolektion.macro_v2.routing import draw_via_stack, draw_wire
+from rekolektion.macro_v2.routing import draw_pdn_strap, draw_via_stack, draw_wire
 from rekolektion.macro_v2.sky130_drc import GDS_LAYER, MET1_MIN_WIDTH
 
 
@@ -77,6 +77,47 @@ def test_via_stack_rejects_invalid_direction():
         draw_via_stack(cell, from_layer="met3", to_layer="met1", position=(0, 0))
 
 
+def test_horizontal_pdn_strap_on_met4():
+    cell = gdstk.Cell("test_pdn_h")
+    draw_pdn_strap(
+        cell, orientation="horizontal",
+        center_coord=10.0, span_start=0.0, span_end=100.0,
+        layer="met4", width=1.6,
+    )
+    assert len(cell.polygons) == 1
+    p = cell.polygons[0]
+    assert (p.layer, p.datatype) == GDS_LAYER["met4"]
+    bb = p.bounding_box()
+    assert abs(bb[0][0] - 0.0) < 1e-9
+    assert abs(bb[1][0] - 100.0) < 1e-9
+    assert abs(bb[0][1] - 9.2) < 1e-9
+    assert abs(bb[1][1] - 10.8) < 1e-9
+
+
+def test_vertical_pdn_strap_on_met3():
+    cell = gdstk.Cell("test_pdn_v")
+    draw_pdn_strap(
+        cell, orientation="vertical",
+        center_coord=5.0, span_start=0.0, span_end=50.0,
+        layer="met3", width=1.6,
+    )
+    bb = cell.polygons[0].bounding_box()
+    assert abs(bb[0][0] - 4.2) < 1e-9
+    assert abs(bb[1][0] - 5.8) < 1e-9
+    assert abs(bb[0][1] - 0.0) < 1e-9
+    assert abs(bb[1][1] - 50.0) < 1e-9
+
+
+def test_pdn_strap_rejects_below_min_width():
+    cell = gdstk.Cell("test_pdn_bad")
+    with pytest.raises(ValueError, match="min width"):
+        draw_pdn_strap(
+            cell, orientation="horizontal",
+            center_coord=0.0, span_start=0.0, span_end=10.0,
+            layer="met4", width=0.10,
+        )
+
+
 @pytest.mark.magic
 def test_horizontal_wire_is_drc_clean(tmp_path):
     """Drawn wire passes Magic DRC against SKY130B deck."""
@@ -108,4 +149,23 @@ def test_via_stack_met1_to_met3_drc_clean(tmp_path):
     lib.write_gds(str(gds))
 
     result = run_drc(gds, cell_name="test_via13", output_dir=tmp_path)
+    assert result.clean, f"DRC errors: {result.errors}"
+
+
+@pytest.mark.magic
+def test_pdn_strap_drc_clean(tmp_path):
+    from rekolektion.verify.drc import run_drc
+
+    lib = gdstk.Library(name="test_pdn_lib")
+    cell = gdstk.Cell("test_pdn")
+    draw_pdn_strap(
+        cell, orientation="horizontal",
+        center_coord=10.0, span_start=0.0, span_end=100.0,
+        layer="met4", width=1.6,
+    )
+    lib.add(cell)
+    gds = tmp_path / "test_pdn.gds"
+    lib.write_gds(str(gds))
+
+    result = run_drc(gds, cell_name="test_pdn", output_dir=tmp_path)
     assert result.clean, f"DRC errors: {result.errors}"

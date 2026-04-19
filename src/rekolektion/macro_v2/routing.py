@@ -152,3 +152,58 @@ def _emit_square(cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str
         datatype=GDS_LAYER[layer][1],
     )
     cell.add(rect)
+
+
+def draw_pdn_strap(
+    cell: gdstk.Cell,
+    *,
+    orientation: str,
+    center_coord: float,
+    span_start: float,
+    span_end: float,
+    layer: str,
+    width: float,
+) -> gdstk.Polygon:
+    """Draw a power-distribution strap on `layer`.
+
+    Parameters
+    ----------
+    orientation : {"horizontal", "vertical"}
+        Direction the strap runs.
+    center_coord : float
+        Perpendicular position of the strap centreline (y for horizontal,
+        x for vertical).
+    span_start, span_end : float
+        Along-axis extent of the strap.
+    layer : str
+        Metal layer name (typically "met3" or "met4").
+    width : float
+        Strap width in um. Must be >= layer minimum width.
+    """
+    if orientation not in ("horizontal", "vertical"):
+        raise ValueError(
+            f"orientation must be horizontal or vertical, got {orientation}"
+        )
+    min_w = layer_min_width(layer)
+    if width < min_w:
+        raise ValueError(
+            f"width {width} for {layer} below min width {min_w}"
+        )
+
+    half = width / 2
+    if orientation == "horizontal":
+        rect = gdstk.rectangle(
+            (snap(span_start), snap(center_coord - half)),
+            (snap(span_end), snap(center_coord + half)),
+            layer=GDS_LAYER[layer][0],
+            datatype=GDS_LAYER[layer][1],
+        )
+    else:
+        rect = gdstk.rectangle(
+            (snap(center_coord - half), snap(span_start)),
+            (snap(center_coord + half), snap(span_end)),
+            layer=GDS_LAYER[layer][0],
+            datatype=GDS_LAYER[layer][1],
+        )
+    cell.add(rect)
+    return rect

@@ -70,3 +70,33 @@ def test_wl_labels_y_within_row_bounds():
         assert y_base <= y <= y_base + cell_h, (
             f"wl_0_{i} y={y} outside row bounds [{y_base}, {y_base + cell_h}]"
         )
+
+
+def test_bl_br_labels_one_per_col():
+    """After build(), top cell has bl_0_<col> and br_0_<col> labels per column."""
+    arr = BitcellArray(rows=4, cols=4)
+    lib = arr.build()
+    top = next(c for c in lib.cells if c.name == arr.top_cell_name)
+    bl_labels = [l for l in top.labels if l.text.startswith("bl_0_")]
+    br_labels = [l for l in top.labels if l.text.startswith("br_0_")]
+    assert len(bl_labels) == 4
+    assert len(br_labels) == 4
+    assert {l.text for l in bl_labels} == {f"bl_0_{i}" for i in range(4)}
+    assert {l.text for l in br_labels} == {f"br_0_{i}" for i in range(4)}
+
+
+def test_bl_br_labels_x_within_col_bounds():
+    """Each column's BL/BR label x is inside the column's horizontal span."""
+    arr = BitcellArray(rows=4, cols=4)
+    lib = arr.build()
+    top = next(c for c in lib.cells if c.name == arr.top_cell_name)
+    cell_w = 1.31
+    for col in range(4):
+        bl = next(l for l in top.labels if l.text == f"bl_0_{col}")
+        br = next(l for l in top.labels if l.text == f"br_0_{col}")
+        x_base = col * cell_w
+        for lbl in (bl, br):
+            assert x_base <= lbl.origin[0] <= x_base + cell_w, (
+                f"{lbl.text} x={lbl.origin[0]} outside col bounds "
+                f"[{x_base}, {x_base + cell_w}]"
+            )

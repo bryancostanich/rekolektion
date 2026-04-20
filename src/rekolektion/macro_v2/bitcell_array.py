@@ -19,6 +19,13 @@ from rekolektion.macro_v2.routing import draw_label
 # LEF met2 OBS midpoint (~0.38 µm from cell bottom).
 _FOUNDRY_WL_Y_IN_CELL: float = 0.38
 
+# Foundry bitcell's BL/BR x-coordinates (cell-local, µm). From the LEF:
+# BL PIN on met1: RECT 0.000 0.705 0.085 0.875 -> x-center ≈ 0.0425
+# BR PIN on met1: RECT 1.115 0.705 1.200 0.875 -> x-center ≈ 1.1575
+_FOUNDRY_BL_X_IN_CELL: float = 0.0425
+_FOUNDRY_BR_X_IN_CELL: float = 1.1575
+_FOUNDRY_BLBR_Y_IN_CELL: float = 0.79  # near cell vertical center
+
 
 class BitcellArray:
     """R×C tiled foundry bitcell array."""
@@ -55,6 +62,7 @@ class BitcellArray:
                 top.add(ref)
 
         self._add_wl_labels(top)
+        self._add_bl_br_labels(top)
 
         lib.add(top)
         return lib
@@ -80,6 +88,25 @@ class BitcellArray:
                 layer="met1",
                 position=(self._cell_w * 0.5, wl_y),
             )
+
+    def _add_bl_br_labels(self, top: gdstk.Cell) -> None:
+        """Draw met1.label `bl_0_<col>` and `br_0_<col>` at each column's BL/BR x.
+
+        For Y-mirrored columns (col % 2 == 1), BL and BR positions swap
+        relative to the cell origin because the cell is flipped horizontally.
+        """
+        # Use bottom row's y (approximately middle of first cell) for labels
+        y = _FOUNDRY_BLBR_Y_IN_CELL
+        for col in range(self.cols):
+            col_x0 = col * self._cell_w
+            if col % 2 == 0:
+                bl_x = col_x0 + _FOUNDRY_BL_X_IN_CELL
+                br_x = col_x0 + _FOUNDRY_BR_X_IN_CELL
+            else:
+                bl_x = col_x0 + self._cell_w - _FOUNDRY_BL_X_IN_CELL
+                br_x = col_x0 + self._cell_w - _FOUNDRY_BR_X_IN_CELL
+            draw_label(top, text=f"bl_0_{col}", layer="met1", position=(bl_x, y))
+            draw_label(top, text=f"br_0_{col}", layer="met1", position=(br_x, y))
 
     def _place_bitcell(
         self, bc_cell: gdstk.Cell, row: int, col: int

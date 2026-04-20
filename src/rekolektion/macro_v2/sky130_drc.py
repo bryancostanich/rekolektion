@@ -14,7 +14,8 @@ from __future__ import annotations
 MFG_GRID: float = 0.005  # 5 nm
 
 
-# Metal minimum widths (um)
+# Metal (and poly) minimum widths (um)
+POLY_MIN_WIDTH: float = 0.15
 LI1_MIN_WIDTH: float = 0.17
 MET1_MIN_WIDTH: float = 0.14
 MET2_MIN_WIDTH: float = 0.14
@@ -22,7 +23,8 @@ MET3_MIN_WIDTH: float = 0.30
 MET4_MIN_WIDTH: float = 0.30
 MET5_MIN_WIDTH: float = 1.60  # yes — met5 has a much larger min width in SKY130
 
-# Metal minimum spacings (um)
+# Metal (and poly) minimum spacings (um)
+POLY_MIN_SPACE: float = 0.21
 LI1_MIN_SPACE: float = 0.17
 MET1_MIN_SPACE: float = 0.14
 MET2_MIN_SPACE: float = 0.14
@@ -50,7 +52,8 @@ MET5_ENCLOSURE_VIA4: float = 0.310
 
 # GDS layer numbers (SKY130)
 GDS_LAYER: dict[str, tuple[int, int]] = {
-    # Metal drawing layers (purpose 20)
+    # Poly and metal drawing layers (purpose 20)
+    "poly": (66, 20),
     "li1":  (67, 20),
     "met1": (68, 20),
     "met2": (69, 20),
@@ -64,12 +67,16 @@ GDS_LAYER: dict[str, tuple[int, int]] = {
     "via3": (70, 44),
     "via4": (71, 44),
     # Pin purpose (16) — LEF port marker
+    "poly.pin": (66, 16),
+    "li1.pin":  (67, 16),
     "met1.pin": (68, 16),
     "met2.pin": (69, 16),
     "met3.pin": (70, 16),
     "met4.pin": (71, 16),
     "met5.pin": (72, 16),
     # Label purpose (5) — text annotation tying to a net
+    "poly.label": (66, 5),
+    "li1.label":  (67, 5),
     "met1.label": (68, 5),
     "met2.label": (69, 5),
     "met3.label": (70, 5),
@@ -79,6 +86,7 @@ GDS_LAYER: dict[str, tuple[int, int]] = {
 
 
 _MIN_WIDTH: dict[str, float] = {
+    "poly": POLY_MIN_WIDTH,
     "li1":  LI1_MIN_WIDTH,
     "met1": MET1_MIN_WIDTH,
     "met2": MET2_MIN_WIDTH,
@@ -89,6 +97,7 @@ _MIN_WIDTH: dict[str, float] = {
 
 
 _MIN_SPACE: dict[str, float] = {
+    "poly": POLY_MIN_SPACE,
     "li1":  LI1_MIN_SPACE,
     "met1": MET1_MIN_SPACE,
     "met2": MET2_MIN_SPACE,

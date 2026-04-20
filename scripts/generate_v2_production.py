@@ -24,6 +24,7 @@ from pathlib import Path
 
 from rekolektion.macro_v2.assembler import MacroV2Params, assemble
 from rekolektion.macro_v2.lef_generator import generate_lef
+from rekolektion.macro_v2.liberty_generator import generate_liberty
 from rekolektion.macro_v2.spice_generator import generate_reference_spice
 
 
@@ -75,8 +76,14 @@ def _generate_one(m: ProductionMacro, output_root: Path) -> None:
     print(f"  wrote {sp_path}  ({sp_path.stat().st_size} bytes)")
 
     lef_path = cell_dir / f"{m.macro_name}.lef"
-    generate_lef(p, lef_path, macro_name=m.macro_name)
+    # uppercase_ports=True to match rekolektion's existing v1 Liberty
+    # files, which OpenLane reads alongside the LEF during P&R.
+    generate_lef(p, lef_path, macro_name=m.macro_name, uppercase_ports=True)
     print(f"  wrote {lef_path}  ({lef_path.stat().st_size} bytes)")
+
+    lib_path = cell_dir / f"{m.macro_name}.lib"
+    generate_liberty(p, lib_path, macro_name=m.macro_name)
+    print(f"  wrote {lib_path}  ({lib_path.stat().st_size} bytes)")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -224,20 +224,21 @@ add_pdn_stripe \\
     -width 0.48 -followpins \\
     -starts_with POWER
 
-# Dense met3 stripes (pitch 6 um so every macro is crossed by at
-# least 3-4 stripes of each net).
+# Very dense met3 stripes so every macro gets many connections
+# into its met2 VPWR/VGND abutment strips.  VPWR/VGND pair takes
+# 2 * (width + spacing) = 6 um per pitch; smaller pitch increases
+# grid redundancy and reduces VPWR fragmentation.
 add_pdn_stripe \\
     -grid stdcell_grid \\
     -layer met3 \\
-    -width 1.6 -pitch 6.0 -offset 2.0 -spacing 1.4 \\
+    -width 1.6 -pitch 5.0 -offset 1.0 -spacing 0.8 \\
     -starts_with POWER -extend_to_core_ring
 
-# Met4 horizontal stripes perpendicular to met3 to stitch the grid
-# together.
+# Met4 perpendicular stripes — denser pitch for better stitching.
 add_pdn_stripe \\
     -grid stdcell_grid \\
     -layer met4 \\
-    -width 1.6 -pitch 10.0 -offset 2.0 -spacing 1.4 \\
+    -width 1.6 -pitch 6.0 -offset 1.0 -spacing 0.8 \\
     -starts_with POWER -extend_to_core_ring
 
 add_pdn_connect -grid stdcell_grid -layers "met1 met2"

@@ -45,20 +45,21 @@ _ARRAY_TO_PERIPH_GAP: float = 1.0
 _DECODER_TO_ARRAY_GAP: float = 2.0
 _CONTROL_ABOVE_GAP: float = 2.0
 
-# Peripheral row heights — approximate foundry/custom cell heights.
-# Real values resolve at assemble() time from the row objects' own
-# `.height` properties; these constants exist to keep build_floorplan
-# free of gdstk I/O so pure-geometry tests stay fast.
-_PRECHARGE_H: float = 4.475
-_COLMUX_H: float = 3.37
-_SA_H: float = 3.05
-_WD_H: float = 3.05
+# Peripheral row heights — authoritative values in the row modules'
+# module-level constants (SA/WD/Precharge/ColMux). Importing the
+# .height property would require building the row, which defeats the
+# purpose of a pure-geometry floorplan. Import the constants instead.
+from rekolektion.macro_v2.sense_amp_row import _SA_HEIGHT as _SA_H  # noqa: E402
+from rekolektion.macro_v2.write_driver_row import _WD_HEIGHT as _WD_H  # noqa: E402
+from rekolektion.macro_v2.precharge_row import _PRECHARGE_HEIGHT as _PRECHARGE_H  # noqa: E402
+from rekolektion.macro_v2.column_mux_row import _COLMUX_HEIGHT as _COLMUX_H  # noqa: E402
 
 # ControlLogic stack height — DFF row + inter-row gap + NAND2 row.
 _CTRL_H: float = 7.545 + 2.0 + 2.69
 
-# Row decoder width placeholder (until C6.1 measures from the real build).
-# Derived from predecoder width (~4 NAND2 ≈ 19 um) + NAND column (~5 um).
+# Row decoder width — NAND cell width (for the narrower case) + margin.
+# For num_rows in {4, 8} the decoder is a single NAND column (~7.5 um
+# wide for NAND3); larger decoders add predecoder blocks on the left.
 _DECODER_W_ESTIMATE: float = 25.0
 
 
@@ -271,6 +272,9 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # C6.2 — wire decoder output to array WL per row.
     _route_wl(top, p, fp)
 
+    # C6.3 — extend BL/BR met1 strips through peripheral rows.
+    _route_bl(top, p, fp)
+
     lib.add(top)
     return lib
 
@@ -399,3 +403,71 @@ def _route_wl(
             top, from_layer="poly", to_layer="met1",
             position=(via_x, wl_y),
         )
+
+
+# ---------------------------------------------------------------------------
+# C6.3 — BL/BR fanout: extend array strips through peripheral rows
+# ---------------------------------------------------------------------------
+
+# Bitcell pin positions (absolute, relative to array origin at (0,0))
+# Derived from bitcell_array.py: col_x0 = col * cell_width (1.31);
+# BL at col_x0 + 0.0425, BR at col_x0 + 1.1575, strip width 0.14.
+_BITCELL_BL_X_OFFSET: float = 0.0425
+_BITCELL_BR_X_OFFSET: float = 1.1575
+_BITCELL_WIDTH: float = 1.31
+_BL_STRIP_W: float = 0.14
+
+
+def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+    """Extend the bitcell array's per-col BL/BR met1 strips up through
+    the precharge row and down through the col_mux / sense_amp /
+    write_driver rows.
+
+    The array (C3) already emits spanning met1 strips at each column's
+    BL and BR x-coordinate for y in [0, array_h]. Here we extend those
+    strips into the peripheral y-range so the peripheral cells' met1
+    BL/BR pins physically overlap the strip, giving Magic extraction a
+    shared net.
+
+    Only col-0 of each mux group connects to the peripheral pins at
+    their specific cell-local x (see D2 in autonomous_decisions.md).
+    The other 3 cols per mux group are extended to avoid DRC asymmetry
+    but remain electrically isolated from their peripheral pins.
+    """
+    array_x, array_y = fp.positions["array"]
+    array_w, array_h = fp.sizes["array"]
+
+    prec_x, prec_y = fp.positions["precharge"]
+    prec_w, prec_h = fp.sizes["precharge"]
+    prec_top = prec_y + prec_h
+
+    # Below-array stack: work out the lowest y touched by any
+    # peripheral so the downward strip reaches all of them.
+    below_y_min = min(
+        fp.positions[name][1]
+        for name in ("col_mux", "sense_amp", "write_driver")
+    )
+
+    # For each bitcell column, extend its BL/BR strips:
+    #   up   from array_y + array_h to prec_top
+    #   down from array_y down to below_y_min
+    for col in range(p.cols):
+        col_x0 = array_x + col * _BITCELL_WIDTH
+        for x_offset in (_BITCELL_BL_X_OFFSET, _BITCELL_BR_X_OFFSET):
+            strip_x = col_x0 + x_offset
+            # Up-extension: from array top into precharge row
+            draw_wire(
+                top,
+                start=(strip_x, array_y + array_h),
+                end=(strip_x, prec_top),
+                layer="met1",
+                width=_BL_STRIP_W,
+            )
+            # Down-extension: from array bottom through col_mux/SA/WD
+            draw_wire(
+                top,
+                start=(strip_x, below_y_min),
+                end=(strip_x, array_y),
+                layer="met1",
+                width=_BL_STRIP_W,
+            )

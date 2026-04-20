@@ -225,3 +225,69 @@ def test_assemble_tiny_macro_with_wl_routing_drc_clean(tmp_path):
     assert r.clean, (
         f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C6.3 — BL/BR fanout: array strip extension into peripheral rows
+# ---------------------------------------------------------------------------
+
+def test_bl_extends_strips_above_array_to_precharge():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+    fp = build_floorplan(p)
+    array_top_y = fp.positions["array"][1] + fp.sizes["array"][1]
+    prec_top_y = fp.positions["precharge"][1] + fp.sizes["precharge"][1]
+    # Count top-level met1 polygons whose bbox spans the array-top to
+    # precharge-top channel (vertical strips).
+    count = 0
+    for poly in top.polygons:
+        if (poly.layer, poly.datatype) != (68, 20):
+            continue
+        bb = poly.bounding_box()
+        if bb is None:
+            continue
+        if (bb[0][1] <= array_top_y + 0.05
+                and bb[1][1] >= prec_top_y - 0.05
+                and (bb[1][0] - bb[0][0]) < 0.3):
+            count += 1
+    # 2 strips (BL + BR) per column, 32 cols -> 64 strips minimum
+    assert count >= 2 * p.cols, (
+        f"expected >= {2 * p.cols} BL/BR up-extension strips; got {count}"
+    )
+
+
+def test_bl_extends_strips_below_array_through_peripherals():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+    fp = build_floorplan(p)
+    array_bot_y = fp.positions["array"][1]
+    wd_bot_y = fp.positions["write_driver"][1]
+    count = 0
+    for poly in top.polygons:
+        if (poly.layer, poly.datatype) != (68, 20):
+            continue
+        bb = poly.bounding_box()
+        if bb is None:
+            continue
+        if (bb[0][1] <= wd_bot_y + 0.05
+                and bb[1][1] >= array_bot_y - 0.05
+                and (bb[1][0] - bb[0][0]) < 0.3):
+            count += 1
+    assert count >= 2 * p.cols, (
+        f"expected >= {2 * p.cols} BL/BR down-extension strips; got {count}"
+    )
+
+
+@pytest.mark.magic
+def test_assemble_tiny_macro_with_bl_routing_drc_clean(tmp_path):
+    from rekolektion.verify.drc import run_drc
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    gds = tmp_path / f"{p.top_cell_name}.gds"
+    lib.write_gds(str(gds))
+    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
+    assert r.clean, (
+        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
+    )

@@ -55,3 +55,8 @@ obj/
 .DS_Store
 Thumbs.db
 comp.out
+openlane_test_v1weight/runs/
+openlane_test_v1weight/macros/sram_weight_bank_small.gds
+openlane_test_v1weight/macros/sram_weight_bank_small.lef
+openlane_test_v1weight/macros/sram_weight_bank_small.lib
+openlane_test_v1weight/macros/sram_weight_bank_small.sp

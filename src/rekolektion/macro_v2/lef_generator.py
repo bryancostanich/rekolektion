@@ -79,11 +79,18 @@ def generate_lef(
     macro_w = xs_hi - xs_lo
     macro_h = ys_hi - ys_lo
 
+    # All LEF RECT coordinates must land on the sky130 manufacturing
+    # grid (5 nm).  Un-snapped fractional coordinates trigger
+    # chip-level DRT-0416 "offgrid pin shape" errors during detailed
+    # routing when this macro is integrated into a chip.
+    def _snap(v: float, grid: float = 0.005) -> float:
+        return round(v / grid) * grid
+
     def tx(x: float) -> float:
-        return x - xs_lo
+        return _snap(x - xs_lo)
 
     def ty(y: float) -> float:
-        return y - ys_lo
+        return _snap(y - ys_lo)
 
     # Pin positions from assembler._place_top_pins (identical math)
     array_x, _ = fp.positions["array"]
@@ -131,7 +138,7 @@ def generate_lef(
 
         # Input pins
         for idx, pin_name in enumerate(input_names):
-            px = x0 + idx * step
+            px = _snap(x0 + idx * step)
             _write_pin(
                 f, pin_name, "INPUT", "SIGNAL",
                 _PIN_LAYER,
@@ -141,6 +148,7 @@ def generate_lef(
 
         # Output pins
         for pin_name, px in output_positions:
+            px = _snap(px)
             _write_pin(
                 f, pin_name, "OUTPUT", "SIGNAL",
                 _PIN_LAYER,

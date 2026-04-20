@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import gdstk
+
 
 # num_rows → (widths of each predecoder, in bits)
 # Constraint: sum(widths) = log2(num_rows); each width in {2, 3};
@@ -57,3 +59,89 @@ def num_addr_bits_for_rows(num_rows: int) -> int:
             f"{sorted(_SPLIT_TABLE.keys())}"
         )
     return sum(_SPLIT_TABLE[num_rows])
+
+
+# Horizontal gap between predecoder block and final-stage NAND column.
+_PREDECODER_TO_NAND_GAP: float = 2.0
+# Vertical gap between stacked predecoder blocks.
+_INTER_PREDECODER_GAP: float = 2.0
+
+
+class RowDecoder:
+    """Parameterized hierarchical row decoder.
+
+    Composes 2–4 `Predecoder` blocks (one per address split) with a
+    final-stage column of `num_rows` NAND_k gates, where k = number
+    of predecoders.
+
+    Structural placement only; internal wiring happens in the C6
+    assembler alongside the bitcell array.
+    """
+
+    def __init__(self, num_rows: int, name: str | None = None):
+        if num_rows not in _SPLIT_TABLE:
+            raise ValueError(
+                f"num_rows {num_rows} not supported; must be a power of 2 "
+                f"in {sorted(_SPLIT_TABLE.keys())}"
+            )
+        self.num_rows = num_rows
+        self.split = _SPLIT_TABLE[num_rows]
+        self.num_addr_bits = sum(self.split)
+        self.final_fanin = len(self.split)
+        self.top_cell_name = name or f"row_decoder_{num_rows}"
+
+    def build(self) -> gdstk.Library:
+        # Deferred import avoids circular import at module load
+        from rekolektion.macro_v2.predecoder import Predecoder
+
+        lib = gdstk.Library(name=f"{self.top_cell_name}_lib")
+        top = gdstk.Cell(self.top_cell_name)
+        seen: set[str] = set()
+
+        # Place one predecoder per address split, stacked vertically at x=0.
+        pred_block_width = 0.0
+        y = 0.0
+        for idx, k in enumerate(self.split):
+            pd = Predecoder(
+                num_inputs=k,
+                name=f"{self.top_cell_name}_predecoder{idx}_{k}to{2**k}",
+            )
+            pd_lib = pd.build()
+            for c in pd_lib.cells:
+                if c.name in seen:
+                    continue
+                lib.add(c.copy(c.name))
+                seen.add(c.name)
+            pd_cell = next(c for c in lib.cells if c.name == pd.top_cell_name)
+            top.add(gdstk.Reference(pd_cell, origin=(0.0, y)))
+            bb = pd_cell.bounding_box()
+            pd_w = bb[1][0] - bb[0][0]
+            pd_h = bb[1][1] - bb[0][1]
+            pred_block_width = max(pred_block_width, pd_w)
+            y += pd_h + _INTER_PREDECODER_GAP
+
+        # Final-stage NAND column: num_rows NAND_k cells, k = # predecoders.
+        k_final = self.final_fanin
+        if k_final not in _NAND_CELL_NAMES:
+            raise ValueError(
+                f"Final-stage fan-in {k_final} has no foundry NAND cell"
+            )
+        nand_name = _NAND_CELL_NAMES[k_final]
+        nand_src = gdstk.read_gds(str(_NAND_GDS_PATHS[k_final]))
+        for c in nand_src.cells:
+            if c.name in seen:
+                continue
+            lib.add(c.copy(c.name))
+            seen.add(c.name)
+        nand_cell = next(c for c in lib.cells if c.name == nand_name)
+        nand_bb = nand_cell.bounding_box()
+        nand_h = nand_bb[1][1] - nand_bb[0][1]
+
+        nand_x = pred_block_width + _PREDECODER_TO_NAND_GAP
+        for row in range(self.num_rows):
+            top.add(
+                gdstk.Reference(nand_cell, origin=(nand_x, row * nand_h))
+            )
+
+        lib.add(top)
+        return lib

@@ -100,3 +100,17 @@ def test_bl_br_labels_x_within_col_bounds():
                 f"{lbl.text} x={lbl.origin[0]} outside col bounds "
                 f"[{x_base}, {x_base + cell_w}]"
             )
+
+
+@pytest.mark.magic
+def test_bitcell_array_4x4_drc_clean(tmp_path):
+    """4x4 foundry bitcell array passes Magic DRC."""
+    from rekolektion.verify.drc import run_drc
+
+    arr = BitcellArray(rows=4, cols=4, name="sram_test_4x4")
+    lib = arr.build()
+    gds = tmp_path / "sram_test_4x4.gds"
+    lib.write_gds(str(gds))
+
+    result = run_drc(gds, cell_name="sram_test_4x4", output_dir=tmp_path)
+    assert result.clean, f"DRC errors: {result.errors}"

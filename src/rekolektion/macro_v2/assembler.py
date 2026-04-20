@@ -17,8 +17,16 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import gdstk
+
 from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
-from rekolektion.macro_v2.row_decoder import _SPLIT_TABLE
+from rekolektion.macro_v2.bitcell_array import BitcellArray
+from rekolektion.macro_v2.column_mux_row import ColumnMuxRow
+from rekolektion.macro_v2.control_logic import ControlLogic
+from rekolektion.macro_v2.precharge_row import PrechargeRow
+from rekolektion.macro_v2.row_decoder import RowDecoder, _SPLIT_TABLE
+from rekolektion.macro_v2.sense_amp_row import SenseAmpRow
+from rekolektion.macro_v2.write_driver_row import WriteDriverRow
 
 
 # Inter-block gaps (um). Loose initially; tightened after C6.1 DRC sweep.
@@ -170,3 +178,84 @@ def build_floorplan(p: MacroV2Params) -> Floorplan:
         sizes=sizes,
         macro_size=(macro_w, macro_h),
     )
+
+
+def _build_block_libraries(
+    p: MacroV2Params,
+) -> dict[str, tuple[object, "gdstk.Library"]]:
+    """Build each subblock once and return (block_obj, block_lib) per name.
+
+    Ordering here is the only place that knows which concrete block
+    class serves each floorplan slot.
+    """
+    name_tag = f"m{p.mux_ratio}_{p.words}x{p.bits}"
+    blocks: dict[str, tuple[object, gdstk.Library]] = {}
+
+    array = BitcellArray(
+        rows=p.rows, cols=p.cols, name=f"sram_array_{name_tag}",
+    )
+    blocks["array"] = (array, array.build())
+
+    precharge = PrechargeRow(
+        bits=p.bits, mux_ratio=p.mux_ratio, name=f"pre_{name_tag}",
+    )
+    blocks["precharge"] = (precharge, precharge.build())
+
+    col_mux = ColumnMuxRow(
+        bits=p.bits, mux_ratio=p.mux_ratio, name=f"mux_{name_tag}",
+    )
+    blocks["col_mux"] = (col_mux, col_mux.build())
+
+    sense_amp = SenseAmpRow(
+        bits=p.bits, mux_ratio=p.mux_ratio, name=f"sa_{name_tag}",
+    )
+    blocks["sense_amp"] = (sense_amp, sense_amp.build())
+
+    write_driver = WriteDriverRow(
+        bits=p.bits, mux_ratio=p.mux_ratio, name=f"wd_{name_tag}",
+    )
+    blocks["write_driver"] = (write_driver, write_driver.build())
+
+    row_decoder = RowDecoder(
+        num_rows=p.rows, name=f"row_decoder_{name_tag}",
+    )
+    blocks["row_decoder"] = (row_decoder, row_decoder.build())
+
+    control_logic = ControlLogic(
+        use_replica=True, name=f"ctrl_logic_{name_tag}",
+    )
+    blocks["control_logic"] = (control_logic, control_logic.build())
+
+    return blocks
+
+
+def assemble(p: MacroV2Params) -> gdstk.Library:
+    """Compose all C3/C4/C5 blocks into a top-level macro GDS.
+
+    C6.1 placement only — no inter-block routing. Subsequent tasks
+    (C6.2-C6.5) wire the blocks and add top-level pins + PDN.
+    """
+    fp = build_floorplan(p)
+    blocks = _build_block_libraries(p)
+
+    lib = gdstk.Library(name=f"{p.top_cell_name}_lib")
+    top = gdstk.Cell(p.top_cell_name)
+
+    # Merge every subblock's cells into the top-level library exactly once.
+    seen: set[str] = set()
+    for _, sub_lib in blocks.values():
+        for c in sub_lib.cells:
+            if c.name in seen:
+                continue
+            lib.add(c.copy(c.name))
+            seen.add(c.name)
+
+    # Place each block at its floorplan position.
+    for name, (obj, _) in blocks.items():
+        block_top_name = obj.top_cell_name
+        block_cell = next(c for c in lib.cells if c.name == block_top_name)
+        x, y = fp.positions[name]
+        top.add(gdstk.Reference(block_cell, origin=(x, y)))
+
+    lib.add(top)
+    return lib

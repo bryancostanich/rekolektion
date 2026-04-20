@@ -1,6 +1,11 @@
+import gdstk
 import pytest
 
-from rekolektion.macro_v2.assembler import MacroV2Params, build_floorplan
+from rekolektion.macro_v2.assembler import (
+    MacroV2Params,
+    assemble,
+    build_floorplan,
+)
 
 
 def test_params_rejects_mux_1():
@@ -91,3 +96,53 @@ def test_floorplan_macro_size_is_bounding_box():
     assert mw > 0 and mh > 0
     # Array alone is 32 * 1.31 = 41.92 wide; macro must be wider (has decoder)
     assert mw > 41.92
+
+
+def test_assemble_returns_library_with_top_cell():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    names = {c.name for c in lib.cells}
+    assert p.top_cell_name in names
+
+
+def test_assemble_top_cell_references_every_block():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+    ref_names = {r.cell.name for r in top.references}
+    for needle in (
+        "sram_array", "pre", "mux", "sa", "wd",
+        "row_decoder", "ctrl_logic",
+    ):
+        assert any(needle in n for n in ref_names), (
+            f"expected a reference with '{needle}' in its cell name; got {ref_names}"
+        )
+
+
+def test_assemble_block_references_at_floorplan_positions():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    fp = build_floorplan(p)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+
+    def ref_with(substring: str) -> gdstk.Reference:
+        return next(r for r in top.references if substring in r.cell.name)
+
+    # Array origin at floorplan position
+    ax, ay = fp.positions["array"]
+    array_ref = ref_with("sram_array")
+    assert abs(array_ref.origin[0] - ax) < 0.01
+    assert abs(array_ref.origin[1] - ay) < 0.01
+
+
+@pytest.mark.magic
+def test_assemble_tiny_macro_drc_clean(tmp_path):
+    from rekolektion.verify.drc import run_drc
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    gds = tmp_path / f"{p.top_cell_name}.gds"
+    lib.write_gds(str(gds))
+    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
+    assert r.clean, (
+        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
+    )

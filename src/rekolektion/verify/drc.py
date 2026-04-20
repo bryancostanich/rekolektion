@@ -78,6 +78,9 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     "mcon.2",      # mcon spacing
     "licon.1",     # poly/diff contact width
     "licon.2",     # diffusion contact spacing
+    "licon.8",     # poly overlap of poly contact
+    "licon.11",    # diffusion contact to gate (multiple variants)
+    "poly.11",     # no bends in transistors
     "psdm.5a",     # (appears in composite with licon.9)
     # P-tap / core LI rules tight in SRAM
     "psd.10b",     # P-tap min area

@@ -120,28 +120,32 @@ class RowDecoder:
             pred_block_width = max(pred_block_width, pd_w)
             y += pd_h + _INTER_PREDECODER_GAP
 
-        # Final-stage NAND column: num_rows NAND_k cells, k = # predecoders.
-        k_final = self.final_fanin
-        if k_final not in _NAND_CELL_NAMES:
-            raise ValueError(
-                f"Final-stage fan-in {k_final} has no foundry NAND cell"
-            )
-        nand_name = _NAND_CELL_NAMES[k_final]
-        nand_src = gdstk.read_gds(str(_NAND_GDS_PATHS[k_final]))
-        for c in nand_src.cells:
-            if c.name in seen:
-                continue
-            lib.add(c.copy(c.name))
-            seen.add(c.name)
-        nand_cell = next(c for c in lib.cells if c.name == nand_name)
-        nand_bb = nand_cell.bounding_box()
-        nand_h = nand_bb[1][1] - nand_bb[0][1]
+        # Final-stage NAND column — ONLY for multi-predecoder splits.
+        # For num_rows in {4, 8} the split has a single predecoder whose
+        # 2^k outputs ARE the one-hot WL lines; no final NAND is needed
+        # and final_fanin == 1 has no matching foundry NAND cell.
+        if self.final_fanin >= 2:
+            k_final = self.final_fanin
+            if k_final not in _NAND_CELL_NAMES:
+                raise ValueError(
+                    f"Final-stage fan-in {k_final} has no foundry NAND cell"
+                )
+            nand_name = _NAND_CELL_NAMES[k_final]
+            nand_src = gdstk.read_gds(str(_NAND_GDS_PATHS[k_final]))
+            for c in nand_src.cells:
+                if c.name in seen:
+                    continue
+                lib.add(c.copy(c.name))
+                seen.add(c.name)
+            nand_cell = next(c for c in lib.cells if c.name == nand_name)
+            nand_bb = nand_cell.bounding_box()
+            nand_h = nand_bb[1][1] - nand_bb[0][1]
 
-        nand_x = pred_block_width + _PREDECODER_TO_NAND_GAP
-        for row in range(self.num_rows):
-            top.add(
-                gdstk.Reference(nand_cell, origin=(nand_x, row * nand_h))
-            )
+            nand_x = pred_block_width + _PREDECODER_TO_NAND_GAP
+            for row in range(self.num_rows):
+                top.add(
+                    gdstk.Reference(nand_cell, origin=(nand_x, row * nand_h))
+                )
 
         lib.add(top)
         return lib

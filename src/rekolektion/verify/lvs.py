@@ -206,6 +206,14 @@ def run_lvs(
     lines: list[str] = []
     if pdk_setup is not None:
         lines.append(f"source {pdk_setup}")
+    # Tie body-bias pins to power pins.  sky130 std-cell netlists
+    # declare VPB (PFET body) and VNB (NFET body) as separate ports;
+    # at chip level they're globally connected to VPWR and VGND.
+    # Our reference SPICE doesn't split them, so without these
+    # equates the extracted side sees VPB/VNB as distinct nets.
+    for c1, c2 in [("VPB", "VPWR"), ("VNB", "VGND")]:
+        lines.append(f'catch {{equate nets "-circuit1 {c1}" "-circuit1 {c2}"}}')
+        lines.append(f'catch {{equate nets "-circuit2 {c1}" "-circuit2 {c2}"}}')
     for cell in flatten_cells:
         lines.append(f'catch {{flatten class "-circuit1 {cell}"}}')
         lines.append(f'catch {{flatten class "-circuit2 {cell}"}}')

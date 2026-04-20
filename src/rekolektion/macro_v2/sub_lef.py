@@ -51,6 +51,28 @@ def _snap(v: float, grid: float = 0.005) -> float:
     return round(v / grid) * grid
 
 
+# Power-stub dimensions (matches OpenRAM-style macro LEFs so
+# OpenROAD's PDN can drop a met3 stripe onto each stub directly).
+_POWER_STUB_W: float = 0.30       # met3 min width
+_POWER_STUB_LEN: float = 0.60
+_POWER_STUB_PITCH: float = 3.00   # stub-to-stub x spacing
+
+
+def power_stub_positions(
+    width: float, pitch: float = _POWER_STUB_PITCH,
+) -> list[float]:
+    """X positions of power-stub centres across the block width.
+    First stub at pitch/2, then every `pitch` um."""
+    if width <= pitch:
+        return [width / 2]
+    xs: list[float] = []
+    x = pitch / 2
+    while x + _POWER_STUB_W / 2 <= width:
+        xs.append(x)
+        x += pitch
+    return xs
+
+
 @dataclass(frozen=True)
 class LefPin:
     name: str
@@ -83,29 +105,33 @@ def emit_lef(
     f.write(f"  SIZE {width:.3f} BY {height:.3f} ;\n")
     f.write(f"  SYMMETRY X Y ;\n\n")
     if include_power:
-        # Emit VPWR + VGND as met2 horizontal strips covering the full
-        # block width at the top + bottom edges.  OpenLane/OpenROAD
-        # uses these to hook each block into the macro-level PDN.
-        for name, y_frac, use_kw in (
-            ("VPWR", 1.0, "POWER"),
-            ("VGND", 0.0, "GROUND"),
+        # OpenRAM-style: expose VPWR/VGND as many small met3 stubs
+        # along the top/bottom boundaries (one PIN entry per stub,
+        # all sharing the same name).  OpenROAD's PDN stitches each
+        # stub into a vertical met3 stripe directly, so the block's
+        # internal met2 rails become one well-connected power net.
+        for name, at_top, use_kw in (
+            ("VPWR", True, "POWER"),
+            ("VGND", False, "GROUND"),
         ):
-            y_c = y_frac * height
-            y1 = max(0.0, y_c - 0.5)
-            y2 = min(height, y_c + 0.5)
-            # snap to bounds when strip pushes outside the block
-            if y_frac == 0.0:
-                y1, y2 = 0.0, 1.0
-            elif y_frac == 1.0:
-                y1, y2 = max(0.0, height - 1.0), height
-            f.write(f"  PIN {name}\n")
-            f.write(f"    DIRECTION INOUT ;\n")
-            f.write(f"    USE {use_kw} ;\n")
-            f.write(f"    PORT\n")
-            f.write(f"      LAYER met2 ;\n")
-            f.write(f"        RECT 0.000 {y1:.3f} {width:.3f} {y2:.3f} ;\n")
-            f.write(f"    END\n")
-            f.write(f"  END {name}\n\n")
+            if at_top:
+                y1, y2 = max(0.0, height - _POWER_STUB_LEN), height
+            else:
+                y1, y2 = 0.0, min(height, _POWER_STUB_LEN)
+            for cx in power_stub_positions(width):
+                sx1 = _snap(cx - _POWER_STUB_W / 2)
+                sx2 = _snap(cx + _POWER_STUB_W / 2)
+                f.write(f"  PIN {name}\n")
+                f.write(f"    DIRECTION INOUT ;\n")
+                f.write(f"    USE {use_kw} ;\n")
+                f.write(f"    PORT\n")
+                f.write(f"      LAYER met3 ;\n")
+                f.write(
+                    f"        RECT {sx1:.3f} {_snap(y1):.3f} "
+                    f"{sx2:.3f} {_snap(y2):.3f} ;\n"
+                )
+                f.write(f"    END\n")
+                f.write(f"  END {name}\n\n")
     for pin in pins:
         f.write(f"  PIN {pin.name}\n")
         f.write(f"    DIRECTION {pin.direction} ;\n")

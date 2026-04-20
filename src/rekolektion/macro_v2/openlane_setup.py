@@ -38,7 +38,13 @@ from rekolektion.macro_v2.assembler import (
     build_floorplan,
 )
 from rekolektion.macro_v2.verilog_generator import generate_verilog
-from rekolektion.macro_v2.sub_lef import generate_sub_block_lefs, pin_escape_rects
+from rekolektion.macro_v2.sub_lef import (
+    generate_sub_block_lefs,
+    pin_escape_rects,
+    power_stub_positions,
+    _POWER_STUB_W,
+    _POWER_STUB_LEN,
+)
 
 
 # Mapping from floorplan block name -> gdstk cell name (the assembler
@@ -101,25 +107,58 @@ def _write_sub_block_gds(
             if ref.cell.name not in seen:
                 queue.append(ref.cell)
 
-    # Add met2 VPWR/VGND strips to the top cell (mirrors the LEF
-    # `include_power=True` abstracts in sub_lef.py).
+    # Power geometry for OpenROAD PDN:
+    #   - Full-width met2 rails at the block's top and bottom (these
+    #     are the "real" internal power rails).
+    #   - Met3 stubs at each LEF power-pin x, stacked via2 down to
+    #     met2.  The met3 stubs are what OpenROAD's PDN contacts;
+    #     the via2 stacks make sure every stub is electrically tied
+    #     to the full-width met2 rail so stray fragments can't form.
     top_copy = cell_copies[cell_name]
     bb = top_copy.bounding_box()
     if bb is not None:
         (x0, y0), (x1, y1) = bb
         w = x1 - x0
         h = y1 - y0
-        # met2 = GDS layer (69, 20)
-        # VGND strip at bottom (y0 .. y0 + 1.0)
+        MET2 = (69, 20)
+        MET3 = (70, 20)
+        VIA2 = (69, 44)  # via between met2 and met3
+        # Full-width met2 rails
         top_copy.add(gdstk.rectangle(
             (x0, y0), (x1, min(y1, y0 + 1.0)),
-            layer=69, datatype=20,
+            layer=MET2[0], datatype=MET2[1],
         ))
-        # VPWR strip at top (y1 - 1.0 .. y1)
         top_copy.add(gdstk.rectangle(
             (x0, max(y0, y1 - 1.0)), (x1, y1),
-            layer=69, datatype=20,
+            layer=MET2[0], datatype=MET2[1],
         ))
+        # Per-stub met3 + via2 stacks at the same positions as the
+        # LEF VPWR/VGND pins.  Positions are in *sub-block-local*
+        # coordinates; add x0 / y0 to translate to the GDS frame.
+        for cx_local in power_stub_positions(w):
+            cx = x0 + cx_local
+            for at_top in (True, False):
+                if at_top:
+                    sy1 = max(y0, y1 - _POWER_STUB_LEN)
+                    sy2 = y1
+                else:
+                    sy1 = y0
+                    sy2 = min(y1, y0 + _POWER_STUB_LEN)
+                sx1 = cx - _POWER_STUB_W / 2
+                sx2 = cx + _POWER_STUB_W / 2
+                # met3 stub
+                top_copy.add(gdstk.rectangle(
+                    (sx1, sy1), (sx2, sy2),
+                    layer=MET3[0], datatype=MET3[1],
+                ))
+                # via2 cut (centered at the stub centre, inside the
+                # overlap between met3 stub and met2 rail)
+                via_y_c = y1 - 0.5 if at_top else y0 + 0.5
+                top_copy.add(gdstk.rectangle(
+                    (cx - 0.10, via_y_c - 0.10),
+                    (cx + 0.10, via_y_c + 0.10),
+                    layer=VIA2[0], datatype=VIA2[1],
+                ))
 
     # Add met1 landing pads for each signal pin so OpenROAD's router
     # can land on met1 at each declared LEF pin.  Each pad is drawn

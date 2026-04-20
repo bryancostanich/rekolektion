@@ -39,15 +39,36 @@ VIA2_SIZE: float = 0.20   # met2 to met3
 VIA3_SIZE: float = 0.20   # met3 to met4
 VIA4_SIZE: float = 0.80   # met4 to met5 (large)
 
-# Minimum enclosure of via by adjacent metal, per direction (um)
-MET1_ENCLOSURE_VIA: float = 0.055
-MET2_ENCLOSURE_VIA: float = 0.055
-MET2_ENCLOSURE_VIA2: float = 0.040
+# Minimum symmetric (all-around) enclosure of via by adjacent metal (um).
+# Chosen to satisfy BOTH the SKY130 base-enclosure (width X/M) rule AND
+# the "directional" surround rule that requires extra overlap in at least
+# one direction — using a symmetric enclosure avoids having to track wire
+# orientation at every call site.
+#
+# Derivation per via (sky130B.tech values):
+#   mcon : base 0, +60 one direction      -> safe sym 0.060
+#   via1 : base 55, +30 one direction     -> safe sym 0.085
+#   via2 : base 40 (m2), +45 one direction -> safe sym 0.085
+#   via3 : base 60 (m3), +30 one direction -> safe sym 0.090
+#   via4 : base 190 (m4), no directional   -> safe sym 0.210
+# Upper-metal enclosures for via2/via3 only need a small "absence_illegal"
+# value (25 / 5 nm); use 0.065 for margin.
+MET1_ENCLOSURE_MCON: float = 0.060
+MET1_ENCLOSURE_VIA: float = 0.085
+MET2_ENCLOSURE_VIA: float = 0.085
+MET2_ENCLOSURE_VIA2: float = 0.085
 MET3_ENCLOSURE_VIA2: float = 0.065
-MET3_ENCLOSURE_VIA3: float = 0.060
-MET4_ENCLOSURE_VIA3: float = 0.060
+MET3_ENCLOSURE_VIA3: float = 0.090
+MET4_ENCLOSURE_VIA3: float = 0.065
 MET4_ENCLOSURE_VIA4: float = 0.210
 MET5_ENCLOSURE_VIA4: float = 0.310
+
+# Via cut-to-cut min spacing (um). sky130B.tech via.2 / via2.2 / via3.2 / via4.2.
+MCON_MIN_SPACE: float = 0.19
+VIA_MIN_SPACE: float = 0.17   # via.2 = 0.17 (updated from 0.06 which is 2*via.4a subtrahend)
+VIA2_MIN_SPACE: float = 0.20
+VIA3_MIN_SPACE: float = 0.20
+VIA4_MIN_SPACE: float = 0.80
 
 
 # GDS layer numbers (SKY130)

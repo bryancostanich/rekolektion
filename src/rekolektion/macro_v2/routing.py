@@ -82,14 +82,40 @@ def draw_wire(
     return rect
 
 
+from rekolektion.macro_v2.sky130_drc import (
+    MET1_ENCLOSURE_MCON,
+    MET1_ENCLOSURE_VIA,
+    MET2_ENCLOSURE_VIA,
+    MET2_ENCLOSURE_VIA2,
+    MET3_ENCLOSURE_VIA2,
+    MET3_ENCLOSURE_VIA3,
+    MET4_ENCLOSURE_VIA3,
+    MET4_ENCLOSURE_VIA4,
+    MET5_ENCLOSURE_VIA4,
+    MCON_SIZE,
+    VIA_SIZE,
+    VIA2_SIZE,
+    VIA3_SIZE,
+    VIA4_SIZE,
+    MCON_MIN_SPACE,
+    VIA_MIN_SPACE,
+    VIA2_MIN_SPACE,
+    VIA3_MIN_SPACE,
+    VIA4_MIN_SPACE,
+)
+
 # Via ladder steps: (lower_metal, via_layer, upper_metal, via_size_um,
-#                    lower_enclosure_um, upper_enclosure_um)
+#                    lower_enclosure_um, upper_enclosure_um, via_min_space_um)
+# Enclosures are SYMMETRIC (all-around) and chosen to satisfy both the
+# SKY130 base-enclosure (width X/M) rule AND the directional "surround
+# ... directional" rule, which requires extra overlap in at least one
+# direction. See src/rekolektion/macro_v2/sky130_drc.py for derivations.
 _VIA_LADDER = [
-    ("li1",  "mcon", "met1", 0.17, 0.0,   0.030),
-    ("met1", "via",  "met2", 0.15, 0.055, 0.055),
-    ("met2", "via2", "met3", 0.20, 0.040, 0.065),
-    ("met3", "via3", "met4", 0.20, 0.060, 0.060),
-    ("met4", "via4", "met5", 0.80, 0.210, 0.310),
+    ("li1",  "mcon", "met1", MCON_SIZE, 0.0,                 MET1_ENCLOSURE_MCON, MCON_MIN_SPACE),
+    ("met1", "via",  "met2", VIA_SIZE,  MET1_ENCLOSURE_VIA,  MET2_ENCLOSURE_VIA,  VIA_MIN_SPACE),
+    ("met2", "via2", "met3", VIA2_SIZE, MET2_ENCLOSURE_VIA2, MET3_ENCLOSURE_VIA2, VIA2_MIN_SPACE),
+    ("met3", "via3", "met4", VIA3_SIZE, MET3_ENCLOSURE_VIA3, MET4_ENCLOSURE_VIA3, VIA3_MIN_SPACE),
+    ("met4", "via4", "met5", VIA4_SIZE, MET4_ENCLOSURE_VIA4, MET5_ENCLOSURE_VIA4, VIA4_MIN_SPACE),
 ]
 
 
@@ -123,24 +149,28 @@ def draw_via_stack(
 
     cx, cy = snap(position[0]), snap(position[1])
 
-    landed_metals: set[str] = set()
-    for m_lower, via_name, m_upper, via_size, enc_lower, enc_upper in _VIA_LADDER:
+    # First pass: compute the landing-pad size needed on each metal layer
+    # (max across all via steps that touch it). A metal between two via
+    # steps (e.g. met2 between via1 and via2) must enclose BOTH vias.
+    pad_size: dict[str, float] = {}
+    for m_lower, via_name, m_upper, via_size, enc_lower, enc_upper, _ in _VIA_LADDER:
         lower_idx = _METAL_ORDER.index(m_lower)
         upper_idx = _METAL_ORDER.index(m_upper)
         if upper_idx <= from_idx or lower_idx >= to_idx:
             continue
+        pad_size[m_lower] = max(pad_size.get(m_lower, 0.0), via_size + 2 * enc_lower)
+        pad_size[m_upper] = max(pad_size.get(m_upper, 0.0), via_size + 2 * enc_upper)
 
-        if m_lower not in landed_metals:
-            lower_size = via_size + 2 * enc_lower
-            _emit_square(cell, cx, cy, lower_size, m_lower)
-            landed_metals.add(m_lower)
-
+    # Second pass: emit cuts. Landing pads are emitted ONCE per metal
+    # using the max size computed above.
+    for metal, size in pad_size.items():
+        _emit_square(cell, cx, cy, size, metal)
+    for m_lower, via_name, m_upper, via_size, _, _, _ in _VIA_LADDER:
+        lower_idx = _METAL_ORDER.index(m_lower)
+        upper_idx = _METAL_ORDER.index(m_upper)
+        if upper_idx <= from_idx or lower_idx >= to_idx:
+            continue
         _emit_square(cell, cx, cy, via_size, via_name)
-
-        if m_upper not in landed_metals:
-            upper_size = via_size + 2 * enc_upper
-            _emit_square(cell, cx, cy, upper_size, m_upper)
-            landed_metals.add(m_upper)
 
 
 def _emit_square(cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str) -> None:
@@ -191,43 +221,47 @@ def draw_via_array(
 
     cx, cy = snap(position[0]), snap(position[1])
 
-    landed: set[str] = set()
-    for m_lower, via_name, m_upper, via_size, enc_lower, enc_upper in _VIA_LADDER:
+    # First pass: per ladder step, compute array extent AND the landing-pad
+    # extent needed on each adjacent metal. Different vias produce different
+    # array sizes (via1 size 0.15 packs tighter than via2 size 0.20), so the
+    # metal between two steps must enclose the LARGER of the two requirements.
+    pad_w: dict[str, float] = {}
+    pad_h: dict[str, float] = {}
+    steps: list[tuple[str, str, str, float, float, float, float, float, float]] = []
+    for m_lower, via_name, m_upper, via_size, enc_lower, enc_upper, via_space in _VIA_LADDER:
         lower_idx = _METAL_ORDER.index(m_lower)
         upper_idx = _METAL_ORDER.index(m_upper)
         if upper_idx <= from_idx or lower_idx >= to_idx:
             continue
+        # Cut pitch: max(via_size + via_min_space, metal_min_pitch_at_via).
+        # The metal min-pitch constraint applies to the landing pad strip
+        # BETWEEN cuts (there's no metal there, so it's really about the
+        # cuts themselves). Use just via_min_space.
+        cut_gap = via_space
+        array_w = cols * via_size + (cols - 1) * cut_gap
+        array_h = rows * via_size + (rows - 1) * cut_gap
+        steps.append((
+            m_lower, via_name, m_upper, via_size, cut_gap, array_w, array_h,
+            enc_lower, enc_upper,
+        ))
+        pad_w[m_lower] = max(pad_w.get(m_lower, 0.0), array_w + 2 * enc_lower)
+        pad_h[m_lower] = max(pad_h.get(m_lower, 0.0), array_h + 2 * enc_lower)
+        pad_w[m_upper] = max(pad_w.get(m_upper, 0.0), array_w + 2 * enc_upper)
+        pad_h[m_upper] = max(pad_h.get(m_upper, 0.0), array_h + 2 * enc_upper)
 
-        cut_spacing = max(
-            via_size,
-            layer_min_space(m_lower),
-            layer_min_space(m_upper),
-        )
-        array_w = cols * via_size + (cols - 1) * cut_spacing
-        array_h = rows * via_size + (rows - 1) * cut_spacing
+    # Second pass: emit one landing pad per metal (sized to the max).
+    for metal in pad_w:
+        _emit_rect(cell, cx, cy, pad_w[metal], pad_h[metal], metal)
 
-        # Emit cuts — origin is lower-left corner of the array's bounding box
+    # Third pass: emit cuts at each step's own pitch.
+    for m_lower, via_name, m_upper, via_size, cut_gap, array_w, array_h, _, _ in steps:
         x0 = cx - array_w / 2
         y0 = cy - array_h / 2
         for r in range(rows):
             for c in range(cols):
-                cx_cut = x0 + c * (via_size + cut_spacing) + via_size / 2
-                cy_cut = y0 + r * (via_size + cut_spacing) + via_size / 2
+                cx_cut = x0 + c * (via_size + cut_gap) + via_size / 2
+                cy_cut = y0 + r * (via_size + cut_gap) + via_size / 2
                 _emit_square(cell, cx_cut, cy_cut, via_size, via_name)
-
-        # Emit lower landing pad
-        if m_lower not in landed:
-            lower_w = array_w + 2 * enc_lower
-            lower_h = array_h + 2 * enc_lower
-            _emit_rect(cell, cx, cy, lower_w, lower_h, m_lower)
-            landed.add(m_lower)
-
-        # Emit upper landing pad
-        if m_upper not in landed:
-            upper_w = array_w + 2 * enc_upper
-            upper_h = array_h + 2 * enc_upper
-            _emit_rect(cell, cx, cy, upper_w, upper_h, m_upper)
-            landed.add(m_upper)
 
 
 def _emit_rect(

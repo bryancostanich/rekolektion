@@ -320,9 +320,12 @@ def test_compound_cell_drc_clean(tmp_path):
     lib = gdstk.Library(name="test_compound_lib")
     cell = gdstk.Cell("test_compound")
 
-    # Two parallel met1 wires spaced at min-spacing (0.14)
+    # Two parallel met1 wires. Center-to-center spacing 0.60 um leaves
+    # enough clearance for the via1 landing pad (0.32 um with required
+    # 0.085 directional enclosure) plus met1 min-spacing (0.14 um) on
+    # each side: 0.16 pad-half + 0.14 gap + 0.07 wire-half = 0.37 (use 0.30).
     draw_wire(cell, start=(0.0, 0.0), end=(20.0, 0.0), layer="met1", width=0.14)
-    draw_wire(cell, start=(0.0, 0.28), end=(20.0, 0.28), layer="met1", width=0.14)
+    draw_wire(cell, start=(0.0, 0.60), end=(20.0, 0.60), layer="met1", width=0.14)
 
     # Orthogonal met2 crossing both, via stack to bridge met1 to met2
     draw_wire(cell, start=(10.0, -2.0), end=(10.0, 2.0), layer="met2", width=0.14)

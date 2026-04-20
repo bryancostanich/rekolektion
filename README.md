@@ -159,6 +159,14 @@ export PDK_ROOT=$HOME/.volare
 bash scripts/run_drc.sh output/my_sram.gds
 ```
 
+## DRC — important caveats
+
+Two things to remember before trusting a DRC pass on this repo:
+
+**1. Use the fixed wrapper, not `drc count`.** Magic's `drc count` only reports errors in the currently loaded cell's *own* geometry. Any top cell composed purely of references (bitcell arrays, integration stacks, macro tops) has zero direct tiles and looks spuriously clean — while child cells can hold thousands of errors. `src/rekolektion/verify/drc.py` counts via `drc listall why`, which walks the full hierarchy. Don't regress this.
+
+**2. Foundry SRAM cells carry known COREID waivers.** `sky130_fd_bd_sram__sram_sp_cell_opt1` (our default bitcell) reports ~283 DRC errors standalone under stock sky130 rules — all from the COREID-waivered SRAM ruleset (tighter `li`, narrow transistor, relaxed nwell spacing). These are foundry-approved in silicon. A 512×32 weight macro logs ~4.2M such tiles; every variant of this cell trips the same rules. `DRCResult` must separate `real_error_count` from `waiver_error_count` — `clean` means zero *real* errors, not zero total. Known-waiver rule IDs: `li.1`, `li.3`, `li.c1`, `diff/tap.1`, `diff/tap.2`, `diff/tap.8`, `diff/tap.9`, `nwell.1`, `nwell.2a` (same-potential), `dnwell.2`, `poly.4`, transistor-width. This list is maintained in `src/rekolektion/verify/drc.py::_KNOWN_WAIVER_RULES`.
+
 ## Documentation
 
 - [`docs/power_gating_integration.md`](docs/power_gating_integration.md) — Chip-level power gating integration guide (sequencing, isolation, SKY130 cells)

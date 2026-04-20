@@ -41,6 +41,7 @@ from rekolektion.macro_v2.routing import (
     draw_wire,
 )
 from rekolektion.macro_v2.sense_amp_row import SenseAmpRow
+from rekolektion.macro_v2.wl_driver_row import WlDriverRow
 from rekolektion.macro_v2.write_driver_row import WriteDriverRow
 
 
@@ -166,10 +167,20 @@ def build_floorplan(p: MacroV2Params) -> Floorplan:
         sizes[name] = (array_w, h)
         y -= _ARRAY_TO_PERIPH_GAP
 
-    # Row decoder to the left of the array, bottom aligned to y=0.
+    # WL driver column sits immediately left of the array (needs to
+    # align row-by-row). Width estimate from the WlDriverRow class —
+    # NAND3 (7.51) + VDD rail + clearance ≈ 9.81 µm.
+    wld_w = 9.81
+    positions["wl_driver"] = (
+        -(wld_w + _DECODER_TO_ARRAY_GAP),
+        0.0,
+    )
+    sizes["wl_driver"] = (wld_w, array_h)
+
+    # Row decoder to the left of the WL driver.
     dec_w = _DECODER_W_ESTIMATE
     positions["row_decoder"] = (
-        -(dec_w + _DECODER_TO_ARRAY_GAP),
+        -(wld_w + _DECODER_TO_ARRAY_GAP + dec_w + _DECODER_TO_ARRAY_GAP),
         0.0,
     )
     sizes["row_decoder"] = (dec_w, array_h)
@@ -241,6 +252,11 @@ def _build_block_libraries(
         use_replica=True, name=f"ctrl_logic_{name_tag}",
     )
     blocks["control_logic"] = (control_logic, control_logic.build())
+
+    wl_driver = WlDriverRow(
+        num_rows=p.rows, name=f"wl_driver_{name_tag}",
+    )
+    blocks["wl_driver"] = (wl_driver, wl_driver.build())
 
     return blocks
 
@@ -359,64 +375,81 @@ def _route_wl(
     p: MacroV2Params,
     fp: Floorplan,
 ) -> None:
-    """Wire row-decoder NAND output to array WL poly for every row.
+    """Wire each row:  decoder Z → wl_driver A → wl_driver Z → array WL.
 
-    Route per row:
-      1. li1→met1 via stack at NAND output pin.
-      2. Horizontal met1 run at NAND-output y across the decoder-array channel.
-      3. Short vertical met1 jog to the array WL y (rows alternate up/down).
-      4. met1→li1→poly via stack at (array_left - gap, array_wl_y) to
-         land on the array's spanning WL poly strip.
+    The wl_driver (NAND3 w/ B,C tied to VDD) inverts the active-low
+    decoder output into an active-high WL.  Without it the bitcell
+    access transistors never turn on.
     """
     dec_origin = fp.positions["row_decoder"]
-    dec_size = fp.sizes["row_decoder"]
+    wld_origin = fp.positions["wl_driver"]
     array_origin = fp.positions["array"]
 
-    # Which NAND column inside the decoder? For a single-predecoder split
-    # it sits at x=0 inside the decoder top cell; otherwise it sits after
-    # the predecoder block at x = pred_block_width + _PREDECODER_TO_NAND_GAP.
-    # For tiny (rows=8, split=(3,)) the NAND column is at x=0.
+    # Decoder NAND column inside row_decoder
     if len(_SPLIT_TABLE[p.rows]) == 1:
         nand_x_in_dec = 0.0
         k_fanin = _SPLIT_TABLE[p.rows][0]
     else:
-        # Multi-predecoder case: conservative estimate 4 NAND2 widths for
-        # the widest predecoder + gap. Refined when we exercise larger N.
         nand_x_in_dec = 4 * 4.77 + 2.0
         k_fanin = len(_SPLIT_TABLE[p.rows])
 
+    # WL driver row (WlDriverRow) places one NAND3_dec per row at
+    # (0, row*1.58) cell-local, with X-mirror on odd rows (same pattern
+    # as the row decoder). Get pin positions from the class.
+    wld = WlDriverRow(num_rows=p.rows)
+
     array_left = array_origin[0]
-    via_x = array_left - _WL_VIA_ARRAY_GAP
+    via_x_at_array = array_left - _WL_VIA_ARRAY_GAP
 
     for row in range(p.rows):
-        nand_out_x, nand_out_y = _nand_output_absolute(
+        # --- Segment 1: decoder Z → WL driver A ---
+        dec_out_x, dec_out_y = _nand_output_absolute(
             dec_origin, nand_x_in_dec, k_fanin, row,
         )
-        wl_y = _array_wl_y_absolute(array_origin[1], row)
+        wld_a_local = wld.a_pin_absolute(row)
+        wld_a_x = wld_origin[0] + wld_a_local[0]
+        wld_a_y = wld_origin[1] + wld_a_local[1]
 
-        # (1) li1 → met1 via stack at NAND output
         draw_via_stack(
             top, from_layer="li1", to_layer="met1",
-            position=(nand_out_x, nand_out_y),
+            position=(dec_out_x, dec_out_y),
         )
-
-        # (2) Horizontal met1 run at NAND-output y
         draw_wire(
-            top, start=(nand_out_x, nand_out_y),
-            end=(via_x, nand_out_y), layer="met1",
+            top, start=(dec_out_x, dec_out_y),
+            end=(wld_a_x, dec_out_y), layer="met1",
+        )
+        if abs(wld_a_y - dec_out_y) > 1e-6:
+            draw_wire(
+                top, start=(wld_a_x, dec_out_y),
+                end=(wld_a_x, wld_a_y), layer="met1",
+            )
+        draw_via_stack(
+            top, from_layer="li1", to_layer="met1",
+            position=(wld_a_x, wld_a_y),
         )
 
-        # (3) Vertical met1 jog to the array WL y (only if different)
-        if abs(wl_y - nand_out_y) > 1e-6:
-            draw_wire(
-                top, start=(via_x, nand_out_y),
-                end=(via_x, wl_y), layer="met1",
-            )
+        # --- Segment 2: WL driver Z → array WL poly ---
+        wld_z_local = wld.z_pin_absolute(row)
+        wld_z_x = wld_origin[0] + wld_z_local[0]
+        wld_z_y = wld_origin[1] + wld_z_local[1]
+        wl_y = _array_wl_y_absolute(array_origin[1], row)
 
-        # (4) met1 → poly via stack at array edge
+        draw_via_stack(
+            top, from_layer="li1", to_layer="met1",
+            position=(wld_z_x, wld_z_y),
+        )
+        draw_wire(
+            top, start=(wld_z_x, wld_z_y),
+            end=(via_x_at_array, wld_z_y), layer="met1",
+        )
+        if abs(wl_y - wld_z_y) > 1e-6:
+            draw_wire(
+                top, start=(via_x_at_array, wld_z_y),
+                end=(via_x_at_array, wl_y), layer="met1",
+            )
         draw_via_stack(
             top, from_layer="poly", to_layer="met1",
-            position=(via_x, wl_y),
+            position=(via_x_at_array, wl_y),
         )
 
 

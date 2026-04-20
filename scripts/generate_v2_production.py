@@ -38,7 +38,9 @@ class ProductionMacro:
 
 PRODUCTION_MACROS: tuple[ProductionMacro, ...] = (
     ProductionMacro("sram_weight_bank_small", 512, 32, 4),
-    ProductionMacro("sram_activation_bank", 256, 64, 4),
+    # activation_bank reverts to the spec's mux=2 now that D4 Option B
+    # landed (per-pair peripheral generators at bitcell pitch fit).
+    ProductionMacro("sram_activation_bank", 256, 64, 2),
 )
 
 

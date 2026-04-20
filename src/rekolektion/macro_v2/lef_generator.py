@@ -32,12 +32,31 @@ def generate_lef(
     p: MacroV2Params,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
 ) -> Path:
-    """Emit a LEF file for the assembled macro."""
+    """Emit a LEF file for the assembled macro.
+
+    `uppercase_ports=True` matches the convention used by rekolektion's
+    v1 Liberty files (ADDR/DIN/DOUT/CLK/WE/CS instead of lowercase) so
+    the same .lib files can be paired with the v2 .lef at P&R time.
+    """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     name = macro_name or p.top_cell_name
     fp = build_floorplan(p)
+
+    def fmt_addr(i: int) -> str:
+        return f"ADDR[{i}]" if uppercase_ports else f"addr[{i}]"
+
+    def fmt_din(i: int) -> str:
+        return f"DIN[{i}]" if uppercase_ports else f"din[{i}]"
+
+    def fmt_dout(i: int) -> str:
+        return f"DOUT[{i}]" if uppercase_ports else f"dout[{i}]"
+
+    def fmt_ctrl(name: str) -> str:
+        return name.upper() if uppercase_ports else name
 
     # Macro bounding box in assembler coordinates. Must include the
     # PDN straps AND the pin stubs (which extend _PIN_STUB_LEN above
@@ -80,10 +99,10 @@ def generate_lef(
 
     input_names: list[str] = []
     for i in range(p.num_addr_bits):
-        input_names.append(f"addr[{i}]")
-    input_names += ["clk", "we", "cs"]
+        input_names.append(fmt_addr(i))
+    input_names += [fmt_ctrl("clk"), fmt_ctrl("we"), fmt_ctrl("cs")]
     for i in range(p.bits):
-        input_names.append(f"din[{i}]")
+        input_names.append(fmt_din(i))
 
     total_inputs = len(input_names)
     x0 = array_x + 1.0
@@ -94,7 +113,7 @@ def generate_lef(
     for i in range(p.bits):
         step_b = (x_end - x0) / max(p.bits - 1, 1) if p.bits > 1 else 0.0
         output_positions.append(
-            (f"dout[{i}]", x0 + i * step_b)
+            (fmt_dout(i), x0 + i * step_b)
         )
 
     # Power strap y-coords
@@ -129,16 +148,50 @@ def generate_lef(
                  tx(px + _PIN_STUB_W / 2), ty(pins_bot_y + _PIN_STUB_LEN)),
             )
 
-        # Power/Ground as met4 horizontal straps spanning the macro.
+        # Power/Ground as discrete met2 pin stubs at the top and bottom
+        # edges of the macro. Matches rekolektion v1's LEF convention
+        # (4 pin declarations per net: 2 top + 2 bottom). OpenROAD's
+        # PDN router ties met4 horizontal straps to these via an
+        # auto-computed via stack.
+        #
+        # Each stub is a small vertical rectangle (0.14 x 0.28 um)
+        # extending 0.14 um above/below the macro edge.
+        vpwr_y_top = ty(ys_hi - 0.14)   # slight inset from true top
+        vpwr_y_bot = ty(ys_lo + 0.14)
+        stub_w = 0.14
+        stub_h = 0.28
+        # Position two pins on each edge at 1/3 and 2/3 of the inner
+        # signal-pin x-range.
+        inner_x0 = x0
+        inner_x1 = x_end
+        vpwr_x1 = tx(inner_x0 + (inner_x1 - inner_x0) * 1.0 / 4.0)
+        vpwr_x2 = tx(inner_x0 + (inner_x1 - inner_x0) * 3.0 / 4.0)
+        vgnd_x1 = tx(inner_x0 + (inner_x1 - inner_x0) * 2.0 / 4.0)
+        vgnd_x2 = tx(inner_x0 + (inner_x1 - inner_x0) * 4.5 / 6.0)
+
+        # VPWR top
         _write_pin(
-            f, "VPWR", "INOUT", "POWER", "met4",
-            (tx(xs_lo), ty(vpwr_y - _PDN_STRAP_W / 2),
-             tx(xs_hi), ty(vpwr_y + _PDN_STRAP_W / 2)),
+            f, "VPWR", "INOUT", "POWER", "met2",
+            (vpwr_x1 - stub_w/2, vpwr_y_top - stub_h/2,
+             vpwr_x1 + stub_w/2, vpwr_y_top + stub_h/2),
         )
+        # VPWR bottom
         _write_pin(
-            f, "VGND", "INOUT", "GROUND", "met4",
-            (tx(xs_lo), ty(vgnd_y - _PDN_STRAP_W / 2),
-             tx(xs_hi), ty(vgnd_y + _PDN_STRAP_W / 2)),
+            f, "VPWR", "INOUT", "POWER", "met2",
+            (vpwr_x2 - stub_w/2, vpwr_y_bot - stub_h/2,
+             vpwr_x2 + stub_w/2, vpwr_y_bot + stub_h/2),
+        )
+        # VGND top
+        _write_pin(
+            f, "VGND", "INOUT", "GROUND", "met2",
+            (vgnd_x1 - stub_w/2, vpwr_y_top - stub_h/2,
+             vgnd_x1 + stub_w/2, vpwr_y_top + stub_h/2),
+        )
+        # VGND bottom
+        _write_pin(
+            f, "VGND", "INOUT", "GROUND", "met2",
+            (vgnd_x2 - stub_w/2, vpwr_y_bot - stub_h/2,
+             vgnd_x2 + stub_w/2, vpwr_y_bot + stub_h/2),
         )
 
         f.write(f"END {name}\n\n")

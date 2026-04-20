@@ -56,12 +56,13 @@ def test_lef_signal_pins_on_met3(tiny_lef):
                 )
 
 
-def test_lef_power_pins_on_met4(tiny_lef):
-    # VPWR/VGND must be on met4
+def test_lef_power_pins_on_met2(tiny_lef):
+    # VPWR/VGND on met2 as discrete access stubs (v1 convention so
+    # OpenROAD's PDN router can tap met4 straps into them).
     lines = tiny_lef.splitlines()
     current_pin: str | None = None
     current_use: str | None = None
-    seen: dict[str, str] = {}
+    seen: dict[str, set[str]] = {}
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("PIN "):
@@ -72,9 +73,20 @@ def test_lef_power_pins_on_met4(tiny_lef):
         elif stripped.startswith("LAYER ") and current_pin is not None:
             layer = stripped[len("LAYER "):].rstrip(" ;")
             if current_use in ("POWER", "GROUND"):
-                seen[current_pin] = layer
-    assert seen.get("VPWR") == "met4"
-    assert seen.get("VGND") == "met4"
+                seen.setdefault(current_pin, set()).add(layer)
+    assert seen.get("VPWR") == {"met2"}
+    assert seen.get("VGND") == {"met2"}
+
+
+def test_lef_has_multiple_power_pin_declarations(tiny_lef):
+    # v1 convention: multiple PIN VPWR / PIN VGND blocks (one per
+    # access stub).
+    n_vpwr = sum(1 for line in tiny_lef.splitlines()
+                 if line.strip() == "PIN VPWR")
+    n_vgnd = sum(1 for line in tiny_lef.splitlines()
+                 if line.strip() == "PIN VGND")
+    assert n_vpwr >= 2
+    assert n_vgnd >= 2
 
 
 def test_lef_ends_library(tiny_lef):

@@ -335,32 +335,32 @@ def _write_write_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"ctrl_logic_{_tag(p)}"
     f.write(
-        f"* ---- {name} (cells placed, no internal wiring yet — matches "
-        "GDS reality in C5.3) ----\n"
+        f"* ---- {name} (wiring matches assembler _route_ctrl_internal) ----\n"
     )
-    # Subckt ports match the block-level interface, but internally all
-    # signal pins on the DFFs/NAND2s float to unique per-instance nets
-    # so the reference matches Magic's extraction of the unwired GDS.
     f.write(
         f".subckt {name} clk we cs clk_buf wl_en p_en_bar s_en w_en "
         "VPWR VGND\n"
     )
-    # 4 DFFs — every signal pin dangles on its own internal net.
-    # Port order: CLK D Q Q_N GND VDD
+    # NAND2 outputs drive DFF D inputs:
+    #   NAND2_0.Z -> DFF_0.D, DFF_1.D  (via z0 rail)
+    #   NAND2_1.Z -> DFF_2.D, DFF_3.D  (via z1 rail)
+    # DFF Q outputs drive the ctrl_logic block outputs.
+    dff_q_nets = ("clk_buf", "p_en_bar", "s_en", "w_en")
+    dff_d_nets = ("nand0_z", "nand0_z", "nand1_z", "nand1_z")
+    # DFF port order from the cached (port-patched) subckt:
+    # CLK D Q Q_N GND VDD.  Q_N has no label in the foundry GDS so
+    # Magic will NOT promote it to a port in the assembled netlist;
+    # we leave it on a per-instance floating net here.
     for i in range(4):
         f.write(
-            f"Xdff{i} "
-            f"dff{i}_clk dff{i}_d dff{i}_q dff{i}_qn "
+            f"Xdff{i} clk {dff_d_nets[i]} {dff_q_nets[i]} dff{i}_qn "
             f"VGND VPWR {_DFF_NAME}\n"
         )
-    # 2 NAND2s — same treatment.
-    # Port order: A B Z GND VDD
+    # NAND2: A=we, B=cs, Z=nandi_z (per _route_ctrl_internal).
     nand2, _ = _NAND_BY_FANIN[2]
     for i in range(2):
         f.write(
-            f"Xnand{i} "
-            f"nand{i}_a nand{i}_b nand{i}_z "
-            f"VGND VPWR {nand2}\n"
+            f"Xnand{i} we cs nand{i}_z VGND VPWR {nand2}\n"
         )
     f.write(f".ends {name}\n\n")
 

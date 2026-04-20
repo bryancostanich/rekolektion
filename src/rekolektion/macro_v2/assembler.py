@@ -303,6 +303,9 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # as ports on each cell during LVS extraction.
     _route_ctrl_internal(top, p, fp)
 
+    # C6.4c — addr fan-in to row_decoder NAND_dec inputs.
+    _route_addr(top, p, fp)
+
     # C6.5 — top-level signal pins + proper macro PDN (FIX-A).
     # _place_power_grid drew met4 straps for an old design that
     # isn't compatible with chip-level PDN; _draw_power_network
@@ -774,12 +777,21 @@ def _route_ctrl_internal(
     positions, pins_top_y, _pins_bot_y = _top_pin_layout(p, fp)
 
     # Top-of-pin-stub y (pin stubs span [pins_top_y, pins_top_y+stub]).
-    # Trunks for top-sourced signals sit above this line with enough
-    # pitch for min met3 spacing.
+    # Rails are allocated in ascending y above the pin stubs.  Later-
+    # rail signals have pins that are *east* of earlier-rail signals'
+    # pins (trunks extend west-to-east, clipped at their own pin_x),
+    # so a higher y keeps a trunk clear of every later feeder.
+    #
+    # Pin-layout order is: addr[0..N-1], clk, we, cs, din[0..B-1].
+    # addr[*] pins are westmost; clk/we/cs come after them.  We
+    # therefore place ctrl rails ABOVE addr rails — otherwise a
+    # west-extending clk/we/cs trunk would pass over the still-rising
+    # addr[*] feeders and short to them.
     top_stub_top_y = pins_top_y + _PIN_STUB_LEN
-    # First trunk sits one pitch above the pin stub top.  Staggered by
-    # pitch so adjacent trunks don't violate min met3 spacing.
-    trunk_y_clk = top_stub_top_y + _CTRL_TRUNK_PITCH
+
+    # Slots 0..(N_addr-1): addr rails.  Slots N_addr..N_addr+2: ctrl.
+    addr_slots = p.num_addr_bits if len(_SPLIT_TABLE[p.rows]) == 1 else 0
+    trunk_y_clk = top_stub_top_y + (addr_slots + 1) * _CTRL_TRUNK_PITCH
     trunk_y_we = trunk_y_clk + _CTRL_TRUNK_PITCH
     trunk_y_cs = trunk_y_we + _CTRL_TRUNK_PITCH
 
@@ -799,11 +811,8 @@ def _route_ctrl_internal(
         pin_x: float,
         rail_y: float,
         dests: list[tuple[float, float, str]],
+        drop_x_offset: float = 0.0,
     ) -> None:
-        # Feeder: vertical met3 from the top of the pin stub up to the
-        # trunk.  Extend slightly above rail_y so the feeder overlaps
-        # the full trunk strip at the T-junction (prevents a 0.15-wide
-        # notch along the feeder's upper edges).
         draw_wire(
             top,
             start=(pin_x, top_stub_top_y),
@@ -811,11 +820,10 @@ def _route_ctrl_internal(
             layer="met3",
             width=_CTRL_TRUNK_W,
         )
-        # Trunk: from leftmost dest_x (minus half-width) to pin_x
-        # (plus half-width).  Clipped so the trunk never extends past
-        # the feeder, which would collide with other signals' feeders
-        # further east.
-        west = min(dest_x for dest_x, _, _ in dests) - _CTRL_TRUNK_HALF_W
+        # Trunk must span far enough west to cover the drop columns
+        # (dest_x + offset) not just the pin positions themselves.
+        west_x = min(dest_x + drop_x_offset for dest_x, _, _ in dests)
+        west = west_x - _CTRL_TRUNK_HALF_W
         draw_wire(
             top,
             start=(west, rail_y),
@@ -824,7 +832,7 @@ def _route_ctrl_internal(
             width=_CTRL_TRUNK_W,
         )
         for dest_x, dest_y, dest_layer in dests:
-            _drop_to_dest(dest_x, dest_y, dest_layer, rail_y)
+            _drop_to_dest(dest_x, dest_y, dest_layer, rail_y, drop_x_offset)
 
     def _route_internal_trunk(
         src_x: float,
@@ -833,6 +841,7 @@ def _route_ctrl_internal(
         rail_y: float,
         dests: list[tuple[float, float, str]],
         feeder_jog_x: float | None = None,
+        drop_x_offset: float = 0.0,
     ) -> None:
         """Route source pin via met3 up to rail_y, fan out to dests.
 
@@ -869,7 +878,7 @@ def _route_ctrl_internal(
             layer="met3",
             width=_CTRL_TRUNK_W,
         )
-        all_xs = [feeder_x] + [d[0] for d in dests]
+        all_xs = [feeder_x] + [d[0] + drop_x_offset for d in dests]
         west = min(all_xs) - _CTRL_TRUNK_HALF_W
         east = max(all_xs) + _CTRL_TRUNK_HALF_W
         draw_wire(
@@ -880,43 +889,60 @@ def _route_ctrl_internal(
             width=_CTRL_TRUNK_W,
         )
         for dest_x, dest_y, dest_layer in dests:
-            _drop_to_dest(dest_x, dest_y, dest_layer, rail_y)
+            _drop_to_dest(dest_x, dest_y, dest_layer, rail_y, drop_x_offset)
 
     def _drop_to_dest(
         dest_x: float,
         dest_y: float,
         dest_layer: str,
         rail_y: float,
+        drop_x_offset: float = 0.0,
     ) -> None:
-        """Drop from met3 rail at (dest_x, rail_y) down to a pin at
-        (dest_x, dest_y) on `dest_layer`.  Uses a met3 vertical + a
-        via stack terminating on the pin layer at the pin itself."""
-        # Via stack at the rail landing — connects met3 rail down to
-        # met2 (or met1, for li1 destinations).
-        intermediate = "met2" if dest_layer == "met2" else "met1"
+        """Drop from met3 rail at (dest_x+offset, rail_y) down to a
+        pin at (dest_x, dest_y) on `dest_layer`.
+
+        Always uses met2 as the intermediate vertical layer.  NAND2_dec
+        cells use met1 internally for VDD/GND power pins; running a
+        met1 vertical at any x inside a NAND2 cell footprint would
+        merge with those power pins (observed shorting cs->VPWR and
+        we->VGND).  Met2 has no NAND2 internal geometry, so met2
+        verticals pass through safely.  A final via stack at the pin
+        (li1->met2) provides the local connection.
+        """
+        drop_x = dest_x + drop_x_offset
         draw_via_stack(
-            top, from_layer=intermediate, to_layer="met3",
-            position=(dest_x, rail_y),
+            top, from_layer="met2", to_layer="met3",
+            position=(drop_x, rail_y),
         )
-        # Vertical on the intermediate layer from rail_y down to dest_y.
-        # Extend by half intermediate-min-width past both ends so we
-        # don't create an under-min-width stub at the pin overlap.
         from rekolektion.macro_v2.sky130_drc import layer_min_width
-        half = layer_min_width(intermediate) / 2
-        lo_y = min(dest_y, rail_y) - half
-        hi_y = max(dest_y, rail_y) + half
+        half_m2 = layer_min_width("met2") / 2
+        lo_y = min(dest_y, rail_y) - half_m2
+        hi_y = max(dest_y, rail_y) + half_m2
         draw_wire(
             top,
-            start=(dest_x, lo_y),
-            end=(dest_x, hi_y),
-            layer=intermediate,
+            start=(drop_x, lo_y),
+            end=(drop_x, hi_y),
+            layer="met2",
         )
-        # For li1 pins (NAND2), drop a final via from met1 to li1 at
-        # the pin coordinate.  For met2 pins (DFF), the met2 wire
-        # already overlaps the pin — no further via needed.
+        if drop_x_offset != 0.0:
+            jog_lo = min(drop_x, dest_x) - half_m2
+            jog_hi = max(drop_x, dest_x) + half_m2
+            draw_wire(
+                top,
+                start=(jog_lo, dest_y),
+                end=(jog_hi, dest_y),
+                layer="met2",
+            )
         if dest_layer == "li1":
             draw_via_stack(
-                top, from_layer="li1", to_layer="met1",
+                top, from_layer="li1", to_layer="met2",
+                position=(dest_x, dest_y),
+            )
+        elif dest_layer == "met2":
+            pass  # met2 vertical already overlaps the pin
+        else:
+            draw_via_stack(
+                top, from_layer=dest_layer, to_layer="met2",
                 position=(dest_x, dest_y),
             )
 
@@ -927,21 +953,25 @@ def _route_ctrl_internal(
     ]
     _route_from_top_pin(clk_pin_x, trunk_y_clk, clk_dests)
 
-    # we → NAND2_0.A, NAND2_1.B ------------------------------------------
+    # we → both NAND2 A pins; cs → both NAND2 B pins.  NAND2 A and B
+    # share cell-local x (0.405), so without a lateral offset the
+    # we and cs met1 drops would overlap at every NAND2 column and
+    # short the two nets.  We stagger: we drops +0.8 east, cs drops
+    # -0.8 west, with short met1 jogs on the pin layer to reach the
+    # actual pin coordinate.
     we_pin_x, _ = positions["we"]
     we_dests = [
         (*_nand2_pin_absolute(ctrl_origin, 0, "A"), "li1"),
-        (*_nand2_pin_absolute(ctrl_origin, 1, "B"), "li1"),
+        (*_nand2_pin_absolute(ctrl_origin, 1, "A"), "li1"),
     ]
-    _route_from_top_pin(we_pin_x, trunk_y_we, we_dests)
+    _route_from_top_pin(we_pin_x, trunk_y_we, we_dests, drop_x_offset=+0.8)
 
-    # cs → NAND2_0.B, NAND2_1.A ------------------------------------------
     cs_pin_x, _ = positions["cs"]
     cs_dests = [
         (*_nand2_pin_absolute(ctrl_origin, 0, "B"), "li1"),
-        (*_nand2_pin_absolute(ctrl_origin, 1, "A"), "li1"),
+        (*_nand2_pin_absolute(ctrl_origin, 1, "B"), "li1"),
     ]
-    _route_from_top_pin(cs_pin_x, trunk_y_cs, cs_dests)
+    _route_from_top_pin(cs_pin_x, trunk_y_cs, cs_dests, drop_x_offset=-0.8)
 
     # NAND2_0.Z → DFF_0.D, DFF_1.D ---------------------------------------
     z0_x, z0_y = _nand2_pin_absolute(ctrl_origin, 0, "Z")
@@ -965,6 +995,169 @@ def _route_ctrl_internal(
         z1_x, z1_y, "li1", z1_rail_y, z1_dests,
         feeder_jog_x=z1_feeder_jog,
     )
+
+
+# ---------------------------------------------------------------------------
+# C6.4c — Address fan-in to the row_decoder NAND3 column
+# ---------------------------------------------------------------------------
+#
+# For the single-predecoder case (rows <= 8, split = (k,)) the row
+# decoder is just a vertical column of num_rows NAND_k cells — each
+# NAND takes k address-bit inputs on its A/B/C/D pins.  The structural
+# SPICE reference ties all instances' inputs to the same addr[0..k-1]
+# lines (simplified decoder; real selection happens downstream).  We
+# mirror that in GDS by driving all A pins with addr[0], all B with
+# addr[1], all C with addr[2].
+#
+# NAND_dec pins (A, B, C) are on li1 at cell-local positions that are
+# 0.55 um apart in x and 0.36 um apart in y — too tight to run three
+# met3 landings at each pin.  The route therefore goes:
+#
+#   top-pin (met3) -> high trunk (met3) -> sidebar vertical (met3 at
+#   x < row_decoder.left) -> per-row via stack met3->li1 -> short li1
+#   horizontal east into the NAND_dec pin.
+#
+# NAND_dec pin cell-local coords (LEF / label dump):
+#   A: (1.265, 0.410)   B: (0.715, 0.770)   C: (0.165, 1.130)
+# X-mirror on odd rows (matching bitcell / wl_driver tiling).
+_NAND_DEC_A_X_LOCAL: float = 1.265
+_NAND_DEC_A_Y_LOCAL: float = 0.410
+_NAND_DEC_B_X_LOCAL: float = 0.715
+_NAND_DEC_B_Y_LOCAL: float = 0.770
+_NAND_DEC_C_X_LOCAL: float = 0.165
+_NAND_DEC_C_Y_LOCAL: float = 1.130
+
+# Sidebar rail x-offsets (west of row_decoder's left edge).  Each addr
+# signal gets a unique vertical rail, spaced > _CTRL_TRUNK_PITCH apart.
+_ADDR_SIDEBAR_X_OFFSETS: tuple[float, ...] = (1.5, 3.0, 4.5)
+
+
+def _nand_dec_pin_absolute(
+    dec_origin: tuple[float, float],
+    row: int,
+    pin: str,
+    k_fanin: int,
+) -> tuple[float, float]:
+    """Return absolute (x, y) of the NAND_k input pin label on the
+    NAND cell for `row` in a vertically-tiled NAND column at `dec_origin`.
+
+    Honours the X-mirror applied to odd rows (same tiling convention
+    used in the wl_driver and row_decoder row_decoder NAND column).
+    Only A/B/C inputs are supported (this helper is for addr fan-in).
+    """
+    if pin not in ("A", "B", "C"):
+        raise ValueError(f"unsupported NAND input pin {pin!r}")
+    x_local, y_local = {
+        "A": (_NAND_DEC_A_X_LOCAL, _NAND_DEC_A_Y_LOCAL),
+        "B": (_NAND_DEC_B_X_LOCAL, _NAND_DEC_B_Y_LOCAL),
+        "C": (_NAND_DEC_C_X_LOCAL, _NAND_DEC_C_Y_LOCAL),
+    }[pin]
+    dec_x, dec_y = dec_origin
+    if row % 2 == 0:
+        abs_y = dec_y + row * _NAND_DEC_PITCH + y_local
+    else:
+        abs_y = dec_y + (row + 1) * _NAND_DEC_PITCH - y_local
+    return (dec_x + x_local, abs_y)
+
+
+def _route_addr(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Route top-level addr[0..k-1] pins to NAND_dec A/B/C inputs for
+    a single-predecoder row decoder.  Skipped for multi-predecoder
+    configs (rows > 8), where the full decoder already has its own
+    internal wiring."""
+    split = _SPLIT_TABLE[p.rows]
+    if len(split) != 1:
+        # Multi-predecoder not wired yet — LVS for those macros will
+        # fall short of closure until the predecoder fan-in is routed.
+        # Tracked separately from sram_test_tiny (rows=8).
+        return
+    k = split[0]
+    if k not in (2, 3):
+        return  # NAND4 unsupported here (no 4-pin routing)
+
+    positions, pins_top_y, _ = _top_pin_layout(p, fp)
+    dec_origin = fp.positions["row_decoder"]
+    dec_x, _dec_y = dec_origin
+
+    top_stub_top_y = pins_top_y + _PIN_STUB_LEN
+    # Addr trunks sit BELOW the ctrl_logic clk/we/cs stack (closer to
+    # the pin row).  Because addr[*] pins are westmost in the pin
+    # layout, the addr trunks extend east only to addr_pin_x+half,
+    # never crossing clk/we/cs feeders that rise at higher x.  Putting
+    # ctrl trunks above them avoids the inverse conflict.
+    addr_trunk_y_base = top_stub_top_y + _CTRL_TRUNK_PITCH
+
+    # Sidebar rails live just west of the row_decoder's left edge.
+    # One x per addr signal, all met3, spaced so via-stack landing pads
+    # don't collide.
+    pin_names = ["A", "B", "C"][:k]
+    for i, pin_name in enumerate(pin_names):
+        addr_pin_key = f"addr[{i}]"
+        addr_pin_x, _ = positions[addr_pin_key]
+        rail_y = addr_trunk_y_base + i * _CTRL_TRUNK_PITCH
+        sidebar_x = dec_x - _ADDR_SIDEBAR_X_OFFSETS[i]
+
+        # Pin-y list across all rows for this address input
+        per_row_pin_ys = [
+            _nand_dec_pin_absolute(dec_origin, r, pin_name, k)[1]
+            for r in range(p.rows)
+        ]
+        # Pin-x is the same for every row (cell-local x constant)
+        nand_pin_x = _nand_dec_pin_absolute(dec_origin, 0, pin_name, k)[0]
+
+        # --- (1) met3 feeder from top pin up to the addr trunk -------
+        draw_wire(
+            top,
+            start=(addr_pin_x, top_stub_top_y),
+            end=(addr_pin_x, rail_y + _CTRL_TRUNK_HALF_W),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        # --- (2) met3 trunk from addr_pin_x LEFT to sidebar_x --------
+        trunk_west = sidebar_x - _CTRL_TRUNK_HALF_W
+        trunk_east = addr_pin_x + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(trunk_west, rail_y),
+            end=(trunk_east, rail_y),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        # --- (3) sidebar vertical on met3 covering all pin y's -------
+        rail_bot = min(per_row_pin_ys) - _CTRL_TRUNK_HALF_W
+        rail_top = rail_y + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(sidebar_x, rail_bot),
+            end=(sidebar_x, rail_top),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        # --- (4)(5) per-row: via stack + li1 horizontal into pin -----
+        for r, pin_y in enumerate(per_row_pin_ys):
+            draw_via_stack(
+                top, from_layer="li1", to_layer="met3",
+                position=(sidebar_x, pin_y),
+            )
+            # li1 horizontal from sidebar to pin
+            li_lo = sidebar_x - layer_min_width_half("li1")
+            li_hi = nand_pin_x + layer_min_width_half("li1")
+            draw_wire(
+                top,
+                start=(li_lo, pin_y),
+                end=(li_hi, pin_y),
+                layer="li1",
+            )
+
+
+def layer_min_width_half(layer: str) -> float:
+    """Half the min width for a layer (for endpoint extension)."""
+    from rekolektion.macro_v2.sky130_drc import layer_min_width
+    return layer_min_width(layer) / 2
 
 
 # ---------------------------------------------------------------------------

@@ -71,6 +71,12 @@ class ControlLogic:
             "ctrl_logic_rbl" if use_replica else "ctrl_logic_delay"
         )
 
+    @property
+    def height(self) -> float:
+        """Total stack height: DFF row + inter-row gap + NAND2 row."""
+        # DFF height = 7.545, NAND2 height = 2.69 (measured at C5.3).
+        return 7.545 + _INTER_ROW_GAP + 2.69
+
     def build(self) -> gdstk.Library:
         lib = gdstk.Library(name=f"{self.top_cell_name}_lib")
         top = gdstk.Cell(self.top_cell_name)

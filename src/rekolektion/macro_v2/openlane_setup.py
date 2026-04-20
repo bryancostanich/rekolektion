@@ -38,7 +38,7 @@ from rekolektion.macro_v2.assembler import (
     build_floorplan,
 )
 from rekolektion.macro_v2.verilog_generator import generate_verilog
-from rekolektion.macro_v2.sub_lef import generate_sub_block_lefs
+from rekolektion.macro_v2.sub_lef import generate_sub_block_lefs, pin_escape_rects
 
 
 # Mapping from floorplan block name -> gdstk cell name (the assembler
@@ -74,6 +74,7 @@ def _write_sub_block_gds(
     assembled_lib: gdstk.Library,
     cell_name: str,
     output_path: Path,
+    pin_escape_rects: list[tuple[float, float, float, float]] | None = None,
 ) -> None:
     """Extract a single sub-block's cell (and its dependents) from the
     assembled library and write it as a standalone GDS.
@@ -119,6 +120,32 @@ def _write_sub_block_gds(
             (x0, max(y0, y1 - 1.0)), (x1, y1),
             layer=69, datatype=20,
         ))
+
+    # Add met1 landing pads for each signal pin so OpenROAD's router
+    # can land on met1 at each declared LEF pin.  Each pad is drawn
+    # at the same (enlarged) RECT used in the LEF, with a stack of
+    # li1 + mcon + met1 so the existing li1 pin geometry beneath is
+    # electrically connected to the met1 pad.
+    if pin_escape_rects:
+        # layer ids
+        LI1 = (67, 20)
+        MCON = (67, 44)
+        MET1 = (68, 20)
+        for x1p, y1p, x2p, y2p in pin_escape_rects:
+            top_copy.add(gdstk.rectangle(
+                (x1p, y1p), (x2p, y2p), layer=LI1[0], datatype=LI1[1],
+            ))
+            # mcon array: minimum 0.17 x 0.17 cut
+            mcx = (x1p + x2p) / 2
+            mcy = (y1p + y2p) / 2
+            top_copy.add(gdstk.rectangle(
+                (mcx - 0.085, mcy - 0.085), (mcx + 0.085, mcy + 0.085),
+                layer=MCON[0], datatype=MCON[1],
+            ))
+            top_copy.add(gdstk.rectangle(
+                (x1p, y1p), (x2p, y2p), layer=MET1[0], datatype=MET1[1],
+            ))
+
     out_lib.write_gds(str(output_path))
 
 
@@ -132,13 +159,18 @@ def _write_macro_placement_cfg(
        instance_name x y orient
     Coordinates are in the macro's DIE_AREA (lower-left = 0,0),
     plus `margin` to leave space for std cell rows at the perimeter.
+
+    Placements are snapped to the sky130 std-cell site grid
+    (0.46 x 2.72) so that macro-interior pin positions fall on met1
+    routing tracks (met1 has tracks on a 0.34 pitch which is a
+    factor of 0.46; y tracks on 0.34 which is a factor of 2.72).
+    Un-snapped placements cause DRT-0418 / DRT-0419 "no routing
+    tracks pass through pin" warnings that leave pins unconnectable.
     """
+    site_w = 0.46
+    site_h = 2.72
+
     fp = build_floorplan(p)
-    # Shift floorplan so lower-left is (margin, margin).  The assembler
-    # places array at (0, 0) with negative-x decoder/ctrl and negative-y
-    # peripherals — we need a uniform shift so all block origins are
-    # positive in the macro DEF frame, with a perimeter margin for
-    # std cell rows (required by OpenROAD PDN generation).
     xs_lo = min(x for x, _ in fp.positions.values()) - margin
     ys_lo = min(y for _, y in fp.positions.values()) - margin
 
@@ -158,6 +190,9 @@ def _write_macro_placement_cfg(
         inst = instance_by_fp_key[fp_key]
         xl = x - xs_lo
         yl = y - ys_lo
+        # Snap to site grid
+        xl = round(xl / site_w) * site_w
+        yl = round(yl / site_h) * site_h
         lines.append(f"{inst} {xl:.3f} {yl:.3f} N")
 
     output_path.write_text("\n".join(lines) + "\n")
@@ -221,7 +256,12 @@ def _write_openlane_config(
         "PDK": "sky130B",
         "STD_CELL_LIBRARY": "sky130_fd_sc_hd",
         "RUN_KLAYOUT_XOR": False,
-        "RUN_MAGIC_DRC": True,
+        # Skip Magic DRC at the macro level — the foundry cells we
+        # compose emit DRC rules that require SRAM-COREID waivers
+        # (applied by rekolektion.verify.drc but not OpenLane's
+        # vanilla Magic flow).  Run rekolektion.verify.drc on the
+        # produced GDS separately.
+        "RUN_MAGIC_DRC": False,
         "RUN_LVS": True,
         # Custom PDN — macros expose met2 power pins, connect via
         # met3 stripes.  See _CUSTOM_PDN_CFG at top of this module.
@@ -264,17 +304,25 @@ def prepare_openlane_run(
     generate_verilog(p, verilog_path)
 
     # 2. Sub-block LEFs.
-    sub_lef_paths = generate_sub_block_lefs(p, run_dir / "macros")
+    sub_lef_paths, pins_by_block = generate_sub_block_lefs(
+        p, run_dir / "macros", return_pins=True,
+    )
+    escapes = pin_escape_rects(pins_by_block)
 
     # 3. Sub-block GDSes — assemble the macro once and extract each
-    #    sub-block cell.
+    #    sub-block cell.  Add li1 + mcon + met1 landing pads at each
+    #    LEF-declared li1 pin location so the OpenROAD router can
+    #    land on met1.
     assembled = assemble(p)
     cell_names = _sub_block_cell_names(p)
     sub_gds_paths: dict[str, Path] = {}
     for fp_key, lef_key in _FP_TO_LEF_KEY.items():
         cell_name = cell_names[fp_key]
         gds_path = run_dir / "macros" / f"{cell_name}.gds"
-        _write_sub_block_gds(assembled, cell_name, gds_path)
+        _write_sub_block_gds(
+            assembled, cell_name, gds_path,
+            pin_escape_rects=escapes.get(lef_key, []),
+        )
         sub_gds_paths[fp_key] = gds_path
 
     # 4. Macro placement cfg.

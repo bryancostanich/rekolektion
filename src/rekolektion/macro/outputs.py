@@ -26,6 +26,22 @@ from pathlib import Path
 from rekolektion.macro.assembler import MacroParams
 
 
+def _pn(name: str, upper: bool) -> str:
+    """Convert pin name to uppercase if requested.
+
+    Handles bus notation: ``addr[3]`` → ``ADDR[3]``.
+    Already-uppercase names (``VPWR``, ``VGND``) pass through unchanged.
+    """
+    if not upper:
+        return name
+    idx = name.find('[')
+    if idx >= 0:
+        return name[:idx].upper() + name[idx:]
+    if name == name.upper():
+        return name
+    return name.upper()
+
+
 def _macro_name(params: MacroParams, name: str | None = None) -> str:
     """Derive a consistent macro/module name."""
     if name:
@@ -38,6 +54,9 @@ def generate_all_outputs(
     output_dir: str | Path,
     stem: str,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
+    include_power_pins: bool = True,
 ) -> dict[str, Path]:
     """Generate all output files (SPICE, Verilog, LEF, Liberty) for a macro.
 
@@ -51,6 +70,10 @@ def generate_all_outputs(
         Base filename (without extension).
     macro_name : str, optional
         Override macro/cell name (default: sram_{words}x{bits}_mux{mux}).
+    uppercase_ports : bool
+        Use UPPERCASE pin names (CLK, ADDR, etc.) instead of lowercase.
+    include_power_pins : bool
+        Include VPWR/VGND in Verilog outputs.
 
     Returns
     -------
@@ -66,13 +89,20 @@ def generate_all_outputs(
     mn = _macro_name(params, macro_name)
 
     paths: dict[str, Path] = {}
-    paths["sp"] = generate_spice(params, out_dir / f"{stem}.sp", macro_name=mn)
-    paths["v"] = generate_verilog(params, out_dir / f"{stem}.v", macro_name=mn)
+    paths["sp"] = generate_spice(params, out_dir / f"{stem}.sp", macro_name=mn,
+                                 uppercase_ports=uppercase_ports)
+    paths["v"] = generate_verilog(params, out_dir / f"{stem}.v", macro_name=mn,
+                                  uppercase_ports=uppercase_ports,
+                                  include_power_pins=include_power_pins)
     paths["bb_v"] = generate_verilog_blackbox(
         params, out_dir / f"{stem}_bb.v", macro_name=mn,
+        uppercase_ports=uppercase_ports,
+        include_power_pins=include_power_pins,
     )
-    paths["lef"] = generate_lef(params, out_dir / f"{stem}.lef", macro_name=mn)
-    paths["lib"] = generate_liberty(params, out_dir / f"{stem}.lib", macro_name=mn)
+    paths["lef"] = generate_lef(params, out_dir / f"{stem}.lef", macro_name=mn,
+                                uppercase_ports=uppercase_ports)
+    paths["lib"] = generate_liberty(params, out_dir / f"{stem}.lib", macro_name=mn,
+                                    uppercase_ports=uppercase_ports)
     return paths
 
 
@@ -80,20 +110,23 @@ def generate_spice(
     params: MacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
 ) -> Path:
     """Generate a behavioral SPICE model for the SRAM macro."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     mn = _macro_name(params, macro_name)
+    p = uppercase_ports
     addr_bits = params.num_addr_bits
     data_bits = params.bits
     ben_bits = params.num_ben_bits
     scan = params.scan_chain
 
-    addr_pins = " ".join(f"addr[{i}]" for i in range(addr_bits))
-    din_pins = " ".join(f"din[{i}]" for i in range(data_bits))
-    dout_pins = " ".join(f"dout[{i}]" for i in range(data_bits))
+    addr_pins = " ".join(_pn(f"addr[{i}]", p) for i in range(addr_bits))
+    din_pins = " ".join(_pn(f"din[{i}]", p) for i in range(data_bits))
+    dout_pins = " ".join(_pn(f"dout[{i}]", p) for i in range(data_bits))
 
     lines = [
         f"* Behavioral SPICE model for {mn}",
@@ -101,25 +134,25 @@ def generate_spice(
         f"* Array: {params.rows} rows x {params.cols} columns",
         f"*",
         f".subckt {mn}",
-        f"+  clk we cs",
+        f"+  {_pn('clk', p)} {_pn('we', p)} {_pn('cs', p)}",
         f"+  {addr_pins}",
         f"+  {din_pins}",
         f"+  {dout_pins}",
     ]
     if ben_bits:
-        ben_pins = " ".join(f"ben[{i}]" for i in range(ben_bits))
+        ben_pins = " ".join(_pn(f"ben[{i}]", p) for i in range(ben_bits))
         lines.append(f"+  {ben_pins}")
     if scan:
-        lines.append(f"+  scan_in scan_out scan_en")
+        lines.append(f"+  {_pn('scan_in', p)} {_pn('scan_out', p)} {_pn('scan_en', p)}")
     extra_pins = []
     if params.clock_gating:
-        extra_pins.append("cen")
+        extra_pins.append(_pn("cen", p))
     if params.power_gating:
-        extra_pins.append("sleep")
+        extra_pins.append(_pn("sleep", p))
     if params.wl_switchoff:
-        extra_pins.append("wl_off")
+        extra_pins.append(_pn("wl_off", p))
     if params.burn_in:
-        extra_pins.append("tm")
+        extra_pins.append(_pn("tm", p))
     if extra_pins:
         lines.append(f"+  {' '.join(extra_pins)}")
     lines += [
@@ -139,18 +172,26 @@ def generate_verilog(
     params: MacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
+    include_power_pins: bool = True,
 ) -> Path:
     """Generate a behavioral Verilog model for the SRAM macro."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     mn = _macro_name(params, macro_name)
+    up = uppercase_ports
     w = params.words
     b = params.bits
     addr_bits = params.num_addr_bits
     ben_bits = params.num_ben_bits
     scan = params.scan_chain
     num_scan = params.num_scan_flops
+
+    # Pin names
+    CLK = _pn('clk', up); WE = _pn('we', up); CS = _pn('cs', up)
+    ADDR = _pn('addr', up); DIN = _pn('din', up); DOUT = _pn('dout', up)
 
     lines = [
         f"// Behavioral Verilog model for {mn}",
@@ -165,32 +206,38 @@ def generate_verilog(
     lines += [
         f"",
         f"module {mn} (",
-        f"    input  wire               clk,",
-        f"    input  wire               we,",
-        f"    input  wire               cs,",
-        f"    input  wire [{addr_bits-1}:0]  addr,",
-        f"    input  wire [{b-1}:0]  din,",
-        f"    output reg  [{b-1}:0]  dout,",
+        f"    input  wire               {CLK},",
+        f"    input  wire               {WE},",
+        f"    input  wire               {CS},",
+        f"    input  wire [{addr_bits-1}:0]  {ADDR},",
+        f"    input  wire [{b-1}:0]  {DIN},",
+        f"    output reg  [{b-1}:0]  {DOUT},",
     ]
     if ben_bits:
-        lines.append(f"    input  wire [{ben_bits-1}:0]  ben,")
+        lines.append(f"    input  wire [{ben_bits-1}:0]  {_pn('ben', up)},")
     if scan:
         lines += [
-            f"    input  wire              scan_in,",
-            f"    output wire              scan_out,",
-            f"    input  wire              scan_en,",
+            f"    input  wire              {_pn('scan_in', up)},",
+            f"    output wire              {_pn('scan_out', up)},",
+            f"    input  wire              {_pn('scan_en', up)},",
         ]
     if params.clock_gating:
-        lines.append(f"    input  wire              cen,")
+        lines.append(f"    input  wire              {_pn('cen', up)},")
     if params.power_gating:
-        lines.append(f"    input  wire              sleep,")
+        lines.append(f"    input  wire              {_pn('sleep', up)},")
     if params.wl_switchoff:
-        lines.append(f"    input  wire              wl_off,")
+        lines.append(f"    input  wire              {_pn('wl_off', up)},")
     if params.burn_in:
-        lines.append(f"    input  wire              tm,  // physical stress mode — no behavioral effect")
+        lines.append(f"    input  wire              {_pn('tm', up)},  // physical stress mode — no behavioral effect")
+    if include_power_pins:
+        lines += [
+            f"    inout  wire              VPWR,",
+            f"    inout  wire              VGND",
+        ]
+    else:
+        # Remove trailing comma from last port
+        lines[-1] = lines[-1].rstrip(',')
     lines += [
-        f"    inout  wire              VPWR,",
-        f"    inout  wire              VGND",
         f");",
         f"",
     ]
@@ -198,17 +245,18 @@ def generate_verilog(
         lines += [
             f"    // tm (test mode) controls physical wordline stress — no behavioral model needed",
             f"    /* verilator lint_off UNUSEDSIGNAL */",
-            f"    wire _unused_tm = tm;",
+            f"    wire _unused_tm = {_pn('tm', up)};",
             f"    /* verilator lint_on UNUSEDSIGNAL */",
             f"",
         ]
 
     if scan:
+        SCAN_IN = _pn('scan_in', up); SCAN_OUT = _pn('scan_out', up); SCAN_EN = _pn('scan_en', up)
         # Scan flop chain: addr[0..N-1], we, cs, din[0..B-1], [ben[0..M-1]]
         lines += [
             f"    // Scan chain registers ({num_scan} flops)",
             f"    reg [{num_scan-1}:0] scan_chain;",
-            f"    assign scan_out = scan_chain[{num_scan-1}];",
+            f"    assign {SCAN_OUT} = scan_chain[{num_scan-1}];",
             f"",
             f"    // Muxed functional inputs",
             f"    wire [{addr_bits-1}:0] addr_int;",
@@ -223,22 +271,23 @@ def generate_verilog(
         # Assign internal signals from scan chain or functional inputs
         # Chain bit mapping: addr[0..N-1], we, cs, din[0..B-1], [ben[0..M-1]]
         offset = 0
-        lines.append(f"    assign addr_int = scan_en ? scan_chain[{offset + addr_bits - 1}:{offset}] : addr;")
+        lines.append(f"    assign addr_int = {SCAN_EN} ? scan_chain[{offset + addr_bits - 1}:{offset}] : {ADDR};")
         offset += addr_bits
-        lines.append(f"    assign we_int   = scan_en ? scan_chain[{offset}] : we;")
+        lines.append(f"    assign we_int   = {SCAN_EN} ? scan_chain[{offset}] : {WE};")
         offset += 1
-        lines.append(f"    assign cs_int   = scan_en ? scan_chain[{offset}] : cs;")
+        lines.append(f"    assign cs_int   = {SCAN_EN} ? scan_chain[{offset}] : {CS};")
         offset += 1
-        lines.append(f"    assign din_int  = scan_en ? scan_chain[{offset + b - 1}:{offset}] : din;")
+        lines.append(f"    assign din_int  = {SCAN_EN} ? scan_chain[{offset + b - 1}:{offset}] : {DIN};")
         offset += b
         if ben_bits:
-            lines.append(f"    assign ben_int  = scan_en ? scan_chain[{offset + ben_bits - 1}:{offset}] : ben;")
+            BEN = _pn('ben', up)
+            lines.append(f"    assign ben_int  = {SCAN_EN} ? scan_chain[{offset + ben_bits - 1}:{offset}] : {BEN};")
         lines += [
             f"",
             f"    // Scan shift register",
-            f"    always @(posedge clk) begin",
-            f"        if (scan_en)",
-            f"            scan_chain <= {{scan_chain[{num_scan-2}:0], scan_in}};",
+            f"    always @(posedge {CLK}) begin",
+            f"        if ({SCAN_EN})",
+            f"            scan_chain <= {{scan_chain[{num_scan-2}:0], {SCAN_IN}}};",
             f"    end",
             f"",
         ]
@@ -249,27 +298,28 @@ def generate_verilog(
         din_sig = "din_int"
         ben_sig = "ben_int"
     else:
-        addr_sig = "addr"
-        we_sig = "we"
-        cs_sig = "cs"
-        din_sig = "din"
-        ben_sig = "ben"
+        addr_sig = ADDR
+        we_sig = WE
+        cs_sig = CS
+        din_sig = DIN
+        ben_sig = _pn('ben', up)
 
     # Clock gating: ICG (latch-based, glitch-free)
+    CEN = _pn('cen', up)
     if params.clock_gating:
         lines += [
             f"    // ICG — latch CEN on CLK low, AND with CLK",
             f"    wire clk_gated;",
             f"    reg cen_latched;",
             f"    /* verilator lint_off LATCH */",
-            f"    always_latch if (!clk) cen_latched = cen;",
+            f"    always_latch if (!{CLK}) cen_latched = {CEN};",
             f"    /* verilator lint_on LATCH */",
-            f"    assign clk_gated = clk & cen_latched;",
+            f"    assign clk_gated = {CLK} & cen_latched;",
             f"",
         ]
         clk_sig = "clk_gated"
     else:
-        clk_sig = "clk"
+        clk_sig = CLK
 
     # Build active condition: cs [&& !wl_off] [&& !sleep]
     active_conds = ["cs_reg"]
@@ -315,9 +365,9 @@ def generate_verilog(
     if ben_bits:
         lines.append(f"        ben_reg  = {ben_sig};")
     if params.wl_switchoff:
-        lines.append(f"        wl_off_reg = wl_off;")
+        lines.append(f"        wl_off_reg = {_pn('wl_off', up)};")
     if params.power_gating:
-        lines.append(f"        sleep_reg = sleep;")
+        lines.append(f"        sleep_reg = {_pn('sleep', up)};")
     lines += [
         f"    end",
         f"    /* verilator lint_on BLKSEQ */",
@@ -350,7 +400,7 @@ def generate_verilog(
         f"    // Block 3: Read at negedge (DOUT valid before next posedge)",
         f"    always @(negedge {clk_sig}) begin",
         f"        if ({active_expr} && !we_reg)",
-        f"            dout <= mem[addr_reg];",
+        f"            {DOUT} <= mem[addr_reg];",
         f"    end",
         f"",
         f"endmodule",
@@ -365,6 +415,9 @@ def generate_verilog_blackbox(
     params: MacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
+    include_power_pins: bool = True,
 ) -> Path:
     """Generate a blackbox Verilog stub for the SRAM macro.
 
@@ -376,6 +429,7 @@ def generate_verilog_blackbox(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     mn = _macro_name(params, macro_name)
+    up = uppercase_ports
     b = params.bits
     addr_bits = params.num_addr_bits
     ben_bits = params.num_ben_bits
@@ -387,32 +441,38 @@ def generate_verilog_blackbox(
         f"",
         f"(* blackbox *)",
         f"module {mn} (",
-        f"    input  wire               clk,",
-        f"    input  wire               we,",
-        f"    input  wire               cs,",
-        f"    input  wire [{addr_bits-1}:0]  addr,",
-        f"    input  wire [{b-1}:0]  din,",
-        f"    output wire [{b-1}:0]  dout,",
+        f"    input  wire               {_pn('clk', up)},",
+        f"    input  wire               {_pn('we', up)},",
+        f"    input  wire               {_pn('cs', up)},",
+        f"    input  wire [{addr_bits-1}:0]  {_pn('addr', up)},",
+        f"    input  wire [{b-1}:0]  {_pn('din', up)},",
+        f"    output wire [{b-1}:0]  {_pn('dout', up)},",
     ]
     if ben_bits:
-        lines.append(f"    input  wire [{ben_bits-1}:0]  ben,")
+        lines.append(f"    input  wire [{ben_bits-1}:0]  {_pn('ben', up)},")
     if scan:
         lines += [
-            f"    input  wire              scan_in,",
-            f"    output wire              scan_out,",
-            f"    input  wire              scan_en,",
+            f"    input  wire              {_pn('scan_in', up)},",
+            f"    output wire              {_pn('scan_out', up)},",
+            f"    input  wire              {_pn('scan_en', up)},",
         ]
     if params.clock_gating:
-        lines.append(f"    input  wire              cen,")
+        lines.append(f"    input  wire              {_pn('cen', up)},")
     if params.power_gating:
-        lines.append(f"    input  wire              sleep,")
+        lines.append(f"    input  wire              {_pn('sleep', up)},")
     if params.wl_switchoff:
-        lines.append(f"    input  wire              wl_off,")
+        lines.append(f"    input  wire              {_pn('wl_off', up)},")
     if params.burn_in:
-        lines.append(f"    input  wire              tm,")
+        lines.append(f"    input  wire              {_pn('tm', up)},")
+    if include_power_pins:
+        lines += [
+            f"    inout  wire              VPWR,",
+            f"    inout  wire              VGND",
+        ]
+    else:
+        # Remove trailing comma from last port
+        lines[-1] = lines[-1].rstrip(',')
     lines += [
-        f"    inout  wire              VPWR,",
-        f"    inout  wire              VGND",
         f");",
         f"endmodule",
         "",

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rekolektion.macro.assembler import MacroParams
+from rekolektion.macro.outputs import _pn
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,12 @@ _CLK_SKEW_NS = 0.1
 # Capacitance estimates
 _INPUT_CAP_PF = 0.005   # input pin capacitance (gate load of decoder)
 _CLK_CAP_PF = 0.010     # clock pin capacitance (drives decoder + control)
-_OUTPUT_CAP_PF = 0.020   # max output capacitance (sense amp drive strength)
+_OUTPUT_CAP_PF = 0.470   # max output capacitance (sense amp DOUT driver)
+# Computed from OpenRAM sense amp extraction (sky130_fd_bd_sram__openram_sense_amp):
+#   DOUT PFET: W=1.26um L=0.15um → Id_sat=452uA → C_max=0.471pF (rise-limited)
+#   DOUT NFET: W=0.65um L=0.15um → Id_sat=1004uA → C_max=1.046pF (fall)
+# Conservative value: PFET-limited = 0.471 pF (comparable to SKY130 buf_4 at 0.561 pF).
+# Previous value (0.020 pF) was 23x too low, causing 120K+ unnecessary buffer insertions.
 
 # Operating conditions
 _NOM_PROCESS = 1.0
@@ -204,6 +210,8 @@ def generate_liberty(
     params: MacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = False,
 ) -> Path:
     """Generate a Liberty timing model for the SRAM macro.
 
@@ -247,6 +255,16 @@ def generate_liberty(
         f'  pulling_resistance_unit : "1kohm" ;',
         f'  leakage_power_unit : "1nW" ;',
         f'',
+        f'  /* Threshold parameters required by OpenSTA */',
+        f'  input_threshold_pct_rise : 50 ;',
+        f'  input_threshold_pct_fall : 50 ;',
+        f'  output_threshold_pct_rise : 50 ;',
+        f'  output_threshold_pct_fall : 50 ;',
+        f'  slew_lower_threshold_pct_rise : 20 ;',
+        f'  slew_upper_threshold_pct_rise : 80 ;',
+        f'  slew_lower_threshold_pct_fall : 20 ;',
+        f'  slew_upper_threshold_pct_fall : 80 ;',
+        f'',
         f'  nom_process : {_NOM_PROCESS:.1f} ;',
         f'  nom_voltage : {_NOM_VOLTAGE:.1f} ;',
         f'  nom_temperature : {_NOM_TEMPERATURE:.1f} ;',
@@ -260,6 +278,34 @@ def generate_liberty(
         f'',
     ]
 
+    up = uppercase_ports
+    CLK = _pn('clk', up)
+    ADDR = _pn('addr', up)
+    DIN = _pn('din', up)
+    DOUT = _pn('dout', up)
+
+    # Bus type definitions (required before cell for bus() groups)
+    bus_types = [
+        (ADDR, addr_bits),
+        (DIN, data_bits),
+        (DOUT, data_bits),
+    ]
+    ben_bits_val = params.num_ben_bits
+    if ben_bits_val:
+        BEN = _pn('ben', up)
+        bus_types.append((BEN, ben_bits_val))
+    for bname, bwidth in bus_types:
+        lines += [
+            f'  type ({bname}_type) {{',
+            f'    base_type : array ;',
+            f'    data_type : bit ;',
+            f'    bit_width : {bwidth} ;',
+            f'    bit_from : 0 ;',
+            f'    bit_to : {bwidth - 1} ;',
+            f'  }}',
+            f'',
+        ]
+
     # Cell definition
     lines += [
         f'  cell ({cell_name}) {{',
@@ -271,7 +317,7 @@ def generate_liberty(
 
     # clk pin
     lines += [
-        f'    pin (clk) {{',
+        f'    pin ({CLK}) {{',
         f'      direction : input ;',
         f'      capacitance : {_CLK_CAP_PF} ;',
         f'      clock : true ;',
@@ -280,39 +326,39 @@ def generate_liberty(
     ]
 
     # we pin
-    lines += _input_pin_with_timing("we", timing.t_setup_ns, timing.t_hold_ns)
+    lines += _input_pin_with_timing(_pn("we", up), timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
     lines.append('')
 
     # cs pin
-    lines += _input_pin_with_timing("cs", timing.t_setup_ns, timing.t_hold_ns)
+    lines += _input_pin_with_timing(_pn("cs", up), timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
     lines.append('')
 
-    # Address pins
-    for i in range(addr_bits):
-        lines += _input_pin_with_timing(f"addr[{i}]", timing.t_setup_ns, timing.t_hold_ns)
-        lines.append('')
+    # Address bus
+    ADDR = _pn("addr", up)
+    lines += _input_bus_with_timing(ADDR, addr_bits, timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
+    lines.append('')
 
-    # Data-in pins
-    for i in range(data_bits):
-        lines += _input_pin_with_timing(f"din[{i}]", timing.t_setup_ns, timing.t_hold_ns)
-        lines.append('')
+    # Data-in bus
+    DIN = _pn("din", up)
+    lines += _input_bus_with_timing(DIN, data_bits, timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
+    lines.append('')
 
-    # Byte-enable pins
+    # Byte-enable bus
     ben_bits = params.num_ben_bits
     if ben_bits:
-        for i in range(ben_bits):
-            lines += _input_pin_with_timing(f"ben[{i}]", timing.t_setup_ns, timing.t_hold_ns)
-            lines.append('')
+        BEN = _pn("ben", up)
+        lines += _input_bus_with_timing(BEN, ben_bits, timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
+        lines.append('')
 
     # Scan chain pins
     if params.scan_chain:
-        lines += _input_pin_with_timing("scan_in", timing.t_setup_ns, timing.t_hold_ns)
+        lines += _input_pin_with_timing(_pn("scan_in", up), timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
         lines.append('')
-        lines += _input_pin_with_timing("scan_en", timing.t_setup_ns, timing.t_hold_ns)
+        lines += _input_pin_with_timing(_pn("scan_en", up), timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
         lines.append('')
         lines += _output_pin_with_timing(
-            "scan_out", timing.t_clk_to_q_ns,
-            timing.t_rise_ns, timing.t_fall_ns,
+            _pn("scan_out", up), timing.t_clk_to_q_ns,
+            timing.t_rise_ns, timing.t_fall_ns, clk_pin=CLK,
         )
         lines.append('')
 
@@ -324,16 +370,14 @@ def generate_liberty(
         (params.burn_in, "tm"),
     ]:
         if feat_flag:
-            lines += _input_pin_with_timing(pin_name, timing.t_setup_ns, timing.t_hold_ns)
+            lines += _input_pin_with_timing(_pn(pin_name, up), timing.t_setup_ns, timing.t_hold_ns, clk_pin=CLK)
             lines.append('')
 
-    # Data-out pins
-    for i in range(data_bits):
-        lines += _output_pin_with_timing(
-            f"dout[{i}]", timing.t_clk_to_q_ns,
-            timing.t_rise_ns, timing.t_fall_ns,
-        )
-        lines.append('')
+    # Data-out bus
+    DOUT = _pn("dout", up)
+    lines += _output_bus_with_timing(DOUT, data_bits, timing.t_clk_to_q_ns,
+                                     timing.t_rise_ns, timing.t_fall_ns, clk_pin=CLK)
+    lines.append('')
 
     # Power pins
     lines += [
@@ -364,13 +408,13 @@ def generate_liberty(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _input_pin_with_timing(name: str, setup_ns: float, hold_ns: float) -> list[str]:
+def _input_pin_with_timing(name: str, setup_ns: float, hold_ns: float, *, clk_pin: str = "clk") -> list[str]:
     return [
         f'    pin ({name}) {{',
         f'      direction : input ;',
         f'      capacitance : {_INPUT_CAP_PF} ;',
         f'      timing () {{',
-        f'        related_pin : "clk" ;',
+        f'        related_pin : "{clk_pin}" ;',
         f'        timing_type : setup_rising ;',
         f'        rise_constraint (scalar) {{',
         f'          values ("{setup_ns:.4f}") ;',
@@ -380,7 +424,7 @@ def _input_pin_with_timing(name: str, setup_ns: float, hold_ns: float) -> list[s
         f'        }}',
         f'      }}',
         f'      timing () {{',
-        f'        related_pin : "clk" ;',
+        f'        related_pin : "{clk_pin}" ;',
         f'        timing_type : hold_rising ;',
         f'        rise_constraint (scalar) {{',
         f'          values ("{hold_ns:.4f}") ;',
@@ -396,13 +440,14 @@ def _input_pin_with_timing(name: str, setup_ns: float, hold_ns: float) -> list[s
 def _output_pin_with_timing(
     name: str, clk_to_q_ns: float,
     rise_ns: float, fall_ns: float,
+    *, clk_pin: str = "clk",
 ) -> list[str]:
     return [
         f'    pin ({name}) {{',
         f'      direction : output ;',
         f'      max_capacitance : {_OUTPUT_CAP_PF} ;',
         f'      timing () {{',
-        f'        related_pin : "clk" ;',
+        f'        related_pin : "{clk_pin}" ;',
         f'        timing_type : rising_edge ;',
         f'        cell_rise (scalar) {{',
         f'          values ("{clk_to_q_ns:.4f}") ;',
@@ -419,3 +464,56 @@ def _output_pin_with_timing(
         f'      }}',
         f'    }}',
     ]
+
+
+def _input_bus_with_timing(
+    name: str, width: int, setup_ns: float, hold_ns: float, *, clk_pin: str = "clk",
+) -> list[str]:
+    """Generate a Liberty bus() group for an input bus with timing."""
+    lines = [
+        f'    bus ({name}) {{',
+        f'      bus_type : {name}_type ;',
+        f'      direction : input ;',
+        f'      capacitance : {_INPUT_CAP_PF} ;',
+        f'      timing () {{',
+        f'        related_pin : "{clk_pin}" ;',
+        f'        timing_type : setup_rising ;',
+        f'        rise_constraint (scalar) {{ values ("{setup_ns:.4f}") ; }}',
+        f'        fall_constraint (scalar) {{ values ("{setup_ns:.4f}") ; }}',
+        f'      }}',
+        f'      timing () {{',
+        f'        related_pin : "{clk_pin}" ;',
+        f'        timing_type : hold_rising ;',
+        f'        rise_constraint (scalar) {{ values ("{hold_ns:.4f}") ; }}',
+        f'        fall_constraint (scalar) {{ values ("{hold_ns:.4f}") ; }}',
+        f'      }}',
+    ]
+    for i in range(width):
+        lines.append(f'      pin ({name}[{i}]) {{ }}')
+    lines.append(f'    }}')
+    return lines
+
+
+def _output_bus_with_timing(
+    name: str, width: int, clk_to_q_ns: float,
+    rise_ns: float, fall_ns: float, *, clk_pin: str = "clk",
+) -> list[str]:
+    """Generate a Liberty bus() group for an output bus with timing."""
+    lines = [
+        f'    bus ({name}) {{',
+        f'      bus_type : {name}_type ;',
+        f'      direction : output ;',
+        f'      max_capacitance : {_OUTPUT_CAP_PF} ;',
+        f'      timing () {{',
+        f'        related_pin : "{clk_pin}" ;',
+        f'        timing_type : rising_edge ;',
+        f'        cell_rise (scalar) {{ values ("{clk_to_q_ns:.4f}") ; }}',
+        f'        cell_fall (scalar) {{ values ("{clk_to_q_ns:.4f}") ; }}',
+        f'        rise_transition (scalar) {{ values ("{rise_ns:.4f}") ; }}',
+        f'        fall_transition (scalar) {{ values ("{fall_ns:.4f}") ; }}',
+        f'      }}',
+    ]
+    for i in range(width):
+        lines.append(f'      pin ({name}[{i}]) {{ }}')
+    lines.append(f'    }}')
+    return lines

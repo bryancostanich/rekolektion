@@ -60,6 +60,23 @@ class LefPin:
     use: str = "SIGNAL"              # SIGNAL / POWER / GROUND
 
 
+def lef_pin_escape_rect(pin: LefPin) -> tuple[str, tuple[float, float, float, float]]:
+    """Return the enlarged RECT for a pin, matching what emit_lef()
+    writes into the LEF.  Used by openlane_setup to add matching
+    metal pads into the sub-block GDS so LEF and GDS agree on pin
+    extent.  Returns (layer, (x1, y1, x2, y2))."""
+    x1, y1, x2, y2 = pin.rect
+    x1, y1, x2, y2 = _snap(x1), _snap(y1), _snap(x2), _snap(y2)
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    min_ext = 0.30
+    ex1 = _snap(min(x1, cx - min_ext))
+    ey1 = _snap(min(y1, cy - min_ext))
+    ex2 = _snap(max(x2, cx + min_ext))
+    ey2 = _snap(max(y2, cy + min_ext))
+    return pin.layer, (ex1, ey1, ex2, ey2)
+
+
 def emit_lef(
     f: TextIO,
     macro_name: str,
@@ -103,10 +120,29 @@ def emit_lef(
         f.write(f"    DIRECTION {pin.direction} ;\n")
         f.write(f"    USE {pin.use} ;\n")
         f.write(f"    PORT\n")
-        f.write(f"      LAYER {pin.layer} ;\n")
         x1, y1, x2, y2 = pin.rect
         x1, y1, x2, y2 = _snap(x1), _snap(y1), _snap(x2), _snap(y2)
-        f.write(f"        RECT {x1:.3f} {y1:.3f} {x2:.3f} {y2:.3f} ;\n")
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+        # Enlarge the pin rect to 0.6 x 0.6 um minimum so a met1
+        # routing track (pitch 0.34) is guaranteed to intersect —
+        # routers otherwise warn DRT-0419 "no routing track passes
+        # through pin center".  Keep the original rect position,
+        # just grow outward.
+        min_ext = 0.30  # half-width of enlarged rect
+        ex1 = _snap(min(x1, cx - min_ext))
+        ey1 = _snap(min(y1, cy - min_ext))
+        ex2 = _snap(max(x2, cx + min_ext))
+        ey2 = _snap(max(y2, cy + min_ext))
+        # For li1 pins, also emit a met1 escape rect of the same
+        # (enlarged) extent so OpenROAD's router can land on met1.
+        # The matching met1 geometry is drawn into the sub-block
+        # GDS by openlane_setup._write_sub_block_gds().
+        f.write(f"      LAYER {pin.layer} ;\n")
+        f.write(f"        RECT {ex1:.3f} {ey1:.3f} {ex2:.3f} {ey2:.3f} ;\n")
+        if pin.layer == "li1":
+            f.write(f"      LAYER met1 ;\n")
+            f.write(f"        RECT {ex1:.3f} {ey1:.3f} {ex2:.3f} {ey2:.3f} ;\n")
         f.write(f"    END\n")
         f.write(f"  END {pin.name}\n\n")
     f.write(f"END {macro_name}\n\n")
@@ -379,6 +415,7 @@ def lef_bitcell_array(p: MacroV2Params, arr_size: tuple[float, float]) -> tuple[
 def generate_sub_block_lefs(
     p: MacroV2Params,
     output_dir: str | Path,
+    return_pins: bool = False,
 ) -> dict[str, Path]:
     """Write one LEF file per sub-block into output_dir.
 
@@ -414,6 +451,7 @@ def generate_sub_block_lefs(
     }
 
     results: dict[str, Path] = {}
+    pins_by_block: dict[str, list[LefPin]] = {}
     for block, (gen, size) in generators.items():
         macro_name, pins = gen(p, size)
         lef_path = out / f"{macro_name}.lef"
@@ -421,4 +459,26 @@ def generate_sub_block_lefs(
             emit_lef_header(f)
             emit_lef(f, macro_name, size[0], size[1], pins)
         results[block] = lef_path
+        pins_by_block[block] = pins
+    if return_pins:
+        return results, pins_by_block  # type: ignore[return-value]
     return results
+
+
+def pin_escape_rects(
+    pins_by_block: dict[str, list[LefPin]],
+) -> dict[str, list[tuple[float, float, float, float]]]:
+    """Return per-block list of (x1, y1, x2, y2) RECTs where the LEF
+    declared li1 pins — so openlane_setup can add matching li1 + mcon
+    + met1 pads to the sub-block GDS.  Only li1 pins need escape
+    pads (met1 and met2 pins are already routable)."""
+    result: dict[str, list[tuple[float, float, float, float]]] = {}
+    for block, pins in pins_by_block.items():
+        rects: list[tuple[float, float, float, float]] = []
+        for pin in pins:
+            if pin.layer != "li1":
+                continue
+            _, rect = lef_pin_escape_rect(pin)
+            rects.append(rect)
+        result[block] = rects
+    return result

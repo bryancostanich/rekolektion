@@ -10,6 +10,14 @@ from __future__ import annotations
 import gdstk
 
 from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
+from rekolektion.macro_v2.routing import draw_label
+
+
+# Foundry bitcell's internal WL y-coordinate (cell-local, µm). The opt1 cell
+# does not declare WL as a LEF pin; the WL runs horizontally on met1 near
+# the cell's vertical center. Value derived from v1 tiler's analysis of the
+# LEF met2 OBS midpoint (~0.38 µm from cell bottom).
+_FOUNDRY_WL_Y_IN_CELL: float = 0.38
 
 
 class BitcellArray:
@@ -46,8 +54,32 @@ class BitcellArray:
                 ref = self._place_bitcell(bc_cell, row, col)
                 top.add(ref)
 
+        self._add_wl_labels(top)
+
         lib.add(top)
         return lib
+
+    def _add_wl_labels(self, top: gdstk.Cell) -> None:
+        """Draw a met1.label `wl_0_<row>` at each row's WL y-coordinate.
+
+        For un-mirrored rows (row % 2 == 0), the bitcell's internal WL is at
+        y = row_origin + _FOUNDRY_WL_Y_IN_CELL. For X-mirrored rows (odd),
+        the cell flips so the WL ends up at
+            row_origin + cell_height - _FOUNDRY_WL_Y_IN_CELL.
+        """
+        for row in range(self.rows):
+            row_y0 = row * self._cell_h
+            if row % 2 == 0:
+                wl_y = row_y0 + _FOUNDRY_WL_Y_IN_CELL
+            else:
+                wl_y = row_y0 + self._cell_h - _FOUNDRY_WL_Y_IN_CELL
+            # Place label inside column 0 of the row (small x offset)
+            draw_label(
+                top,
+                text=f"wl_0_{row}",
+                layer="met1",
+                position=(self._cell_w * 0.5, wl_y),
+            )
 
     def _place_bitcell(
         self, bc_cell: gdstk.Cell, row: int, col: int

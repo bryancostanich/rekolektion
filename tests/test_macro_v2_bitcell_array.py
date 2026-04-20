@@ -37,3 +37,36 @@ def test_bitcell_array_has_NxM_references():
     lib = arr.build()
     top = next(c for c in lib.cells if c.name == arr.top_cell_name)
     assert len(top.references) == 3 * 4
+
+
+def test_wl_labels_one_per_row():
+    """After build(), top cell has a met1.label for each row."""
+    arr = BitcellArray(rows=4, cols=4)
+    lib = arr.build()
+    top = next(c for c in lib.cells if c.name == arr.top_cell_name)
+    wl_labels = [
+        l for l in top.labels
+        if (l.layer, l.texttype) == (68, 5)
+        and l.text.startswith("wl_0_")
+    ]
+    assert len(wl_labels) == 4
+    names = {l.text for l in wl_labels}
+    assert names == {"wl_0_0", "wl_0_1", "wl_0_2", "wl_0_3"}
+
+
+def test_wl_labels_y_within_row_bounds():
+    """Each row's WL label y is inside the row's vertical span."""
+    arr = BitcellArray(rows=4, cols=4)
+    lib = arr.build()
+    top = next(c for c in lib.cells if c.name == arr.top_cell_name)
+    wl_labels = sorted(
+        [l for l in top.labels if l.text.startswith("wl_0_")],
+        key=lambda l: int(l.text.split("_")[-1])
+    )
+    cell_h = 1.58
+    for i, lbl in enumerate(wl_labels):
+        y_base = i * cell_h
+        y = lbl.origin[1]
+        assert y_base <= y <= y_base + cell_h, (
+            f"wl_0_{i} y={y} outside row bounds [{y_base}, {y_base + cell_h}]"
+        )

@@ -66,6 +66,13 @@ _PREDECODER_TO_NAND_GAP: float = 2.0
 # Vertical gap between stacked predecoder blocks.
 _INTER_PREDECODER_GAP: float = 2.0
 
+# Foundry NAND_dec cells are LEF-pitch-matched to the SRAM bitcell
+# (SIZE 1.580 um per the LEF, even though the GDS extent is ~2.69 um
+# due to shared-boundary overhang into adjacent cells' power rails).
+# Tiling at this pitch — not the raw GDS bbox height — makes the NAND
+# column's rows align 1:1 with bitcell-array rows.
+_NAND_DEC_PITCH: float = 1.58
+
 
 class RowDecoder:
     """Parameterized hierarchical row decoder.
@@ -98,7 +105,20 @@ class RowDecoder:
         top = gdstk.Cell(self.top_cell_name)
         seen: set[str] = set()
 
-        # Place one predecoder per address split, stacked vertically at x=0.
+        # Single-predecoder case (num_rows in {4, 8}): skip the intermediate
+        # Predecoder block entirely — we just need a vertical column of
+        # num_rows NAND_k cells tiled at array-row pitch, where k = the
+        # single predecoder's input width. Each NAND_k takes the k address
+        # bits (or their inversions) as inputs; the NAND output IS the WL.
+        if len(self.split) == 1:
+            k = self.split[0]
+            self._emit_vertical_nand_column(lib, top, seen, k_fanin=k, x=0.0)
+            lib.add(top)
+            return lib
+
+        # Multi-predecoder case: 2-4 predecoder blocks stacked vertically
+        # at the left, followed by a column of num_rows NAND_k cells
+        # where k = number of predecoders (final-stage fan-in).
         pred_block_width = 0.0
         y = 0.0
         for idx, k in enumerate(self.split):
@@ -120,32 +140,47 @@ class RowDecoder:
             pred_block_width = max(pred_block_width, pd_w)
             y += pd_h + _INTER_PREDECODER_GAP
 
-        # Final-stage NAND column — ONLY for multi-predecoder splits.
-        # For num_rows in {4, 8} the split has a single predecoder whose
-        # 2^k outputs ARE the one-hot WL lines; no final NAND is needed
-        # and final_fanin == 1 has no matching foundry NAND cell.
-        if self.final_fanin >= 2:
-            k_final = self.final_fanin
-            if k_final not in _NAND_CELL_NAMES:
-                raise ValueError(
-                    f"Final-stage fan-in {k_final} has no foundry NAND cell"
-                )
-            nand_name = _NAND_CELL_NAMES[k_final]
-            nand_src = gdstk.read_gds(str(_NAND_GDS_PATHS[k_final]))
-            for c in nand_src.cells:
-                if c.name in seen:
-                    continue
-                lib.add(c.copy(c.name))
-                seen.add(c.name)
-            nand_cell = next(c for c in lib.cells if c.name == nand_name)
-            nand_bb = nand_cell.bounding_box()
-            nand_h = nand_bb[1][1] - nand_bb[0][1]
-
-            nand_x = pred_block_width + _PREDECODER_TO_NAND_GAP
-            for row in range(self.num_rows):
-                top.add(
-                    gdstk.Reference(nand_cell, origin=(nand_x, row * nand_h))
-                )
+        nand_x = pred_block_width + _PREDECODER_TO_NAND_GAP
+        self._emit_vertical_nand_column(
+            lib, top, seen, k_fanin=self.final_fanin, x=nand_x,
+        )
 
         lib.add(top)
         return lib
+
+    def _emit_vertical_nand_column(
+        self,
+        lib: gdstk.Library,
+        top: gdstk.Cell,
+        seen: set[str],
+        *,
+        k_fanin: int,
+        x: float,
+    ) -> None:
+        """Import NAND_k and tile num_rows of them vertically at nand_h pitch."""
+        if k_fanin not in _NAND_CELL_NAMES:
+            raise ValueError(
+                f"fan-in {k_fanin} has no foundry NAND cell"
+            )
+        nand_name = _NAND_CELL_NAMES[k_fanin]
+        nand_src = gdstk.read_gds(str(_NAND_GDS_PATHS[k_fanin]))
+        for c in nand_src.cells:
+            if c.name in seen:
+                continue
+            lib.add(c.copy(c.name))
+            seen.add(c.name)
+        nand_cell = next(c for c in lib.cells if c.name == nand_name)
+        # X-mirror odd rows so adjacent cells share power rails — this
+        # is the standard dec-family tiling pattern (same as the bitcell
+        # array) and is what keeps the layout DRC-clean at pitch 1.58.
+        for row in range(self.num_rows):
+            if row % 2 == 0:
+                top.add(gdstk.Reference(
+                    nand_cell, origin=(x, row * _NAND_DEC_PITCH),
+                ))
+            else:
+                top.add(gdstk.Reference(
+                    nand_cell,
+                    origin=(x, (row + 1) * _NAND_DEC_PITCH),
+                    x_reflection=True,
+                ))

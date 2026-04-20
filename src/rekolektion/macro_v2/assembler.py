@@ -20,11 +20,22 @@ from dataclasses import dataclass, field
 import gdstk
 
 from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
-from rekolektion.macro_v2.bitcell_array import BitcellArray
+from rekolektion.macro_v2.bitcell_array import (
+    BitcellArray,
+    _FOUNDRY_WL_LABEL_Y,
+)
 from rekolektion.macro_v2.column_mux_row import ColumnMuxRow
 from rekolektion.macro_v2.control_logic import ControlLogic
 from rekolektion.macro_v2.precharge_row import PrechargeRow
-from rekolektion.macro_v2.row_decoder import RowDecoder, _SPLIT_TABLE
+from rekolektion.macro_v2.row_decoder import (
+    RowDecoder,
+    _NAND_DEC_PITCH,
+    _SPLIT_TABLE,
+)
+from rekolektion.macro_v2.routing import (
+    draw_via_stack,
+    draw_wire,
+)
 from rekolektion.macro_v2.sense_amp_row import SenseAmpRow
 from rekolektion.macro_v2.write_driver_row import WriteDriverRow
 
@@ -257,5 +268,134 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
         x, y = fp.positions[name]
         top.add(gdstk.Reference(block_cell, origin=(x, y)))
 
+    # C6.2 — wire decoder output to array WL per row.
+    _route_wl(top, p, fp)
+
     lib.add(top)
     return lib
+
+
+# ---------------------------------------------------------------------------
+# C6.2 — WL fanout: decoder NAND output (li1) -> array WL poly strip
+# ---------------------------------------------------------------------------
+
+# NAND3 Z-pin wide li1 strip is at cell-local y=[0.200, 0.370], centred at
+# y=0.285, extending x=[1.610, 7.510]. NAND2 and NAND4 Z pins share the
+# same y geometry (bottom-of-cell horizontal strip at y~0.285). We drop
+# the li1→met1 via near the cell's right edge where the strip is at its
+# widest.
+_NAND_OUTPUT_Y_CELL_LOCAL: float = 0.285
+# x offset from NAND cell right edge at which to drop the li1→met1 via.
+# Placed 0.5 um inside the cell so the mcon + met1 pad sit entirely on
+# the existing li1 output strip.
+_NAND_OUTPUT_X_OFFSET_FROM_RIGHT: float = 0.5
+# Clearance between the array's left edge and the met1→poly via stack
+# we drop to reach the array's WL poly strip.
+_WL_VIA_ARRAY_GAP: float = 0.3
+
+
+def _nand_right_edge_x_local(k_fanin: int) -> float:
+    """Return the NAND_k cell's right-edge x in cell-local coords."""
+    # Matched to the GDS bbox right edge of each NAND_dec cell.
+    return {2: 4.770, 3: 7.510, 4: 9.685}[k_fanin]
+
+
+def _nand_output_absolute(
+    dec_origin: tuple[float, float],
+    nand_x_in_dec: float,
+    k_fanin: int,
+    row: int,
+) -> tuple[float, float]:
+    """Absolute (x, y) where a li1→met1 mcon can be dropped on NAND_k's
+    output li1 strip for the given row (honouring the X-mirror tiling)."""
+    dec_x, dec_y = dec_origin
+    right_edge = _nand_right_edge_x_local(k_fanin)
+    out_x_local = right_edge - _NAND_OUTPUT_X_OFFSET_FROM_RIGHT
+    abs_x = dec_x + nand_x_in_dec + out_x_local
+    if row % 2 == 0:
+        abs_y = dec_y + row * _NAND_DEC_PITCH + _NAND_OUTPUT_Y_CELL_LOCAL
+    else:
+        # Row origin = (row+1)*pitch with x_reflection; cell-local y=0.285
+        # reflects to -0.285, absolute = (row+1)*pitch - 0.285.
+        abs_y = dec_y + (row + 1) * _NAND_DEC_PITCH - _NAND_OUTPUT_Y_CELL_LOCAL
+    return abs_x, abs_y
+
+
+def _array_wl_y_absolute(array_origin_y: float, row: int) -> float:
+    """Absolute y of the array's poly WL strip for the given row.
+
+    Matches BitcellArray._add_wl_labels:
+      even row (unmirrored):  row*cell_h + _FOUNDRY_WL_LABEL_Y
+      odd row (X-mirrored):   row*cell_h + (cell_h - _FOUNDRY_WL_LABEL_Y)
+    """
+    cell_h = 1.58
+    row_y0 = array_origin_y + row * cell_h
+    if row % 2 == 0:
+        return row_y0 + _FOUNDRY_WL_LABEL_Y
+    return row_y0 + cell_h - _FOUNDRY_WL_LABEL_Y
+
+
+def _route_wl(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Wire row-decoder NAND output to array WL poly for every row.
+
+    Route per row:
+      1. li1→met1 via stack at NAND output pin.
+      2. Horizontal met1 run at NAND-output y across the decoder-array channel.
+      3. Short vertical met1 jog to the array WL y (rows alternate up/down).
+      4. met1→li1→poly via stack at (array_left - gap, array_wl_y) to
+         land on the array's spanning WL poly strip.
+    """
+    dec_origin = fp.positions["row_decoder"]
+    dec_size = fp.sizes["row_decoder"]
+    array_origin = fp.positions["array"]
+
+    # Which NAND column inside the decoder? For a single-predecoder split
+    # it sits at x=0 inside the decoder top cell; otherwise it sits after
+    # the predecoder block at x = pred_block_width + _PREDECODER_TO_NAND_GAP.
+    # For tiny (rows=8, split=(3,)) the NAND column is at x=0.
+    if len(_SPLIT_TABLE[p.rows]) == 1:
+        nand_x_in_dec = 0.0
+        k_fanin = _SPLIT_TABLE[p.rows][0]
+    else:
+        # Multi-predecoder case: conservative estimate 4 NAND2 widths for
+        # the widest predecoder + gap. Refined when we exercise larger N.
+        nand_x_in_dec = 4 * 4.77 + 2.0
+        k_fanin = len(_SPLIT_TABLE[p.rows])
+
+    array_left = array_origin[0]
+    via_x = array_left - _WL_VIA_ARRAY_GAP
+
+    for row in range(p.rows):
+        nand_out_x, nand_out_y = _nand_output_absolute(
+            dec_origin, nand_x_in_dec, k_fanin, row,
+        )
+        wl_y = _array_wl_y_absolute(array_origin[1], row)
+
+        # (1) li1 → met1 via stack at NAND output
+        draw_via_stack(
+            top, from_layer="li1", to_layer="met1",
+            position=(nand_out_x, nand_out_y),
+        )
+
+        # (2) Horizontal met1 run at NAND-output y
+        draw_wire(
+            top, start=(nand_out_x, nand_out_y),
+            end=(via_x, nand_out_y), layer="met1",
+        )
+
+        # (3) Vertical met1 jog to the array WL y (only if different)
+        if abs(wl_y - nand_out_y) > 1e-6:
+            draw_wire(
+                top, start=(via_x, nand_out_y),
+                end=(via_x, wl_y), layer="met1",
+            )
+
+        # (4) met1 → poly via stack at array edge
+        draw_via_stack(
+            top, from_layer="poly", to_layer="met1",
+            position=(via_x, wl_y),
+        )

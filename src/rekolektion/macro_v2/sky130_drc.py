@@ -63,6 +63,18 @@ MET4_ENCLOSURE_VIA3: float = 0.065
 MET4_ENCLOSURE_VIA4: float = 0.210
 MET5_ENCLOSURE_VIA4: float = 0.310
 
+# Poly contact (pc) = licon on poly. sky130B.tech:
+#   width pc/li 170                              -> pc size 0.17
+#   surround pc/a *poly  50 absence_illegal      -> poly enc 0.05 all sides (base)
+#   surround pc/a *poly  80 directional          -> +0.08 in one direction
+#     => safe symmetric poly enclosure = 0.13 (0.05 + 0.08)
+#   surround pc/li *li   80 directional          -> li enc 0.08 in one direction
+#     => safe symmetric li enclosure = 0.08 all sides
+PC_SIZE: float = 0.17
+POLY_ENCLOSURE_PC: float = 0.13
+LI1_ENCLOSURE_PC: float = 0.08
+PC_MIN_SPACE: float = 0.17   # licon.2 equivalent for poly contacts
+
 # Via cut-to-cut min spacing (um). sky130B.tech via.2 / via2.2 / via3.2 / via4.2.
 MCON_MIN_SPACE: float = 0.19
 VIA_MIN_SPACE: float = 0.17   # via.2 = 0.17 (updated from 0.06 which is 2*via.4a subtrahend)
@@ -82,11 +94,16 @@ GDS_LAYER: dict[str, tuple[int, int]] = {
     "met4": (71, 20),
     "met5": (72, 20),
     # Via layers (cut purpose 44)
-    "mcon": (67, 44),
+    "pc":   (66, 44),   # licon1 on poly (poly contact -> li1)
+    "mcon": (67, 44),   # li1 -> met1
     "via":  (68, 44),
     "via2": (69, 44),
     "via3": (70, 44),
     "via4": (71, 44),
+    # NPC (Nitride Poly Cut) is required around every pc contact;
+    # Magic's tech computes it via `cifout` from drawn pc, but raw GDS
+    # emitted by us must include it explicitly.
+    "npc":  (95, 20),
     # Pin purpose (16) — LEF port marker
     "poly.pin": (66, 16),
     "li1.pin":  (67, 16),

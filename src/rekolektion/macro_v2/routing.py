@@ -92,12 +92,16 @@ from rekolektion.macro_v2.sky130_drc import (
     MET4_ENCLOSURE_VIA3,
     MET4_ENCLOSURE_VIA4,
     MET5_ENCLOSURE_VIA4,
+    POLY_ENCLOSURE_PC,
+    LI1_ENCLOSURE_PC,
     MCON_SIZE,
+    PC_SIZE,
     VIA_SIZE,
     VIA2_SIZE,
     VIA3_SIZE,
     VIA4_SIZE,
     MCON_MIN_SPACE,
+    PC_MIN_SPACE,
     VIA_MIN_SPACE,
     VIA2_MIN_SPACE,
     VIA3_MIN_SPACE,
@@ -110,7 +114,12 @@ from rekolektion.macro_v2.sky130_drc import (
 # SKY130 base-enclosure (width X/M) rule AND the directional "surround
 # ... directional" rule, which requires extra overlap in at least one
 # direction. See src/rekolektion/macro_v2/sky130_drc.py for derivations.
+#
+# pc (poly contact) connects poly to li1. mcon connects li1 to met1.
+# Stacking poly → li1 (via pc) → met1 (via mcon) gives a full met1→poly
+# via stack for row-decoder WL drive and similar.
 _VIA_LADDER = [
+    ("poly", "pc",   "li1",  PC_SIZE,   POLY_ENCLOSURE_PC,   LI1_ENCLOSURE_PC,    PC_MIN_SPACE),
     ("li1",  "mcon", "met1", MCON_SIZE, 0.0,                 MET1_ENCLOSURE_MCON, MCON_MIN_SPACE),
     ("met1", "via",  "met2", VIA_SIZE,  MET1_ENCLOSURE_VIA,  MET2_ENCLOSURE_VIA,  VIA_MIN_SPACE),
     ("met2", "via2", "met3", VIA2_SIZE, MET2_ENCLOSURE_VIA2, MET3_ENCLOSURE_VIA2, VIA2_MIN_SPACE),
@@ -119,7 +128,7 @@ _VIA_LADDER = [
 ]
 
 
-_METAL_ORDER = ["li1", "met1", "met2", "met3", "met4", "met5"]
+_METAL_ORDER = ["poly", "li1", "met1", "met2", "met3", "met4", "met5"]
 
 
 def draw_via_stack(

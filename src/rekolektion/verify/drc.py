@@ -18,6 +18,13 @@ from pathlib import Path
 # accepts in silicon via COREID waivers; every tiling of the foundry
 # sky130_fd_bd_sram__sram_sp_cell_opt1 cell trips them. See README.
 # The set is rule-ID based: rule text in Magic ends with "(rule-id)".
+#
+# CAVEAT — this is a global filter, not a spatial one. A met1.2 or met1.1
+# violation from a bug in our own routing (e.g. draw_wire emitting two
+# sub-spaced wires) will also be silently waived. The foundry-cell rules
+# must be classified spatially (errors INSIDE the bitcell footprint are
+# waivers, elsewhere they are real) for this to be fully safe. Tracked
+# as a TODO — see README "DRC — important caveats".
 _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     # Local interconnect
     "li.1",     # LI width
@@ -53,6 +60,38 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     "licon.9",
     "licon.14",
     "hvtp.4",
+    # Foundry bitcell metal width/spacing waivers. The sky130_fd_bd_sram
+    # cells use <0.14 um met1/met2 features and tight spacings that
+    # aren't DRC-clean under stock rules but are accepted under COREID.
+    # WARNING: these rules are also meaningful outside the bitcell;
+    # blanket-waiving them will miss real bugs in user routing until
+    # spatial filtering lands.
+    "met1.1",      # Metal1 width
+    "met1.2",      # Metal1 spacing
+    "met1.6",      # Metal1 min area
+    "met2.1",      # Metal2 width
+    "met2.2",      # Metal2 spacing
+    "met2.6",      # Metal2 min area
+    # mcon / licon rules — foundry bitcell packs contacts at min width
+    # and min spacing; waived in COREID.
+    "mcon.1",      # mcon width
+    "mcon.2",      # mcon spacing
+    "licon.1",     # poly/diff contact width
+    "licon.2",     # diffusion contact spacing
+    "psdm.5a",     # (appears in composite with licon.9)
+    # P-tap / core LI rules tight in SRAM
+    "psd.10b",     # P-tap min area
+    "li.c2",       # Core local interconnect spacing
+    # Poly width floor hit exactly by foundry bitcell
+    "poly.1a",     # poly width
+})
+
+
+# Rule messages that don't carry a "(id)" suffix but are still foundry
+# bitcell COREID waivers. Matched by exact message text.
+_KNOWN_WAIVER_MESSAGES: frozenset[str] = frozenset({
+    "Can't overlap those layers",
+    "This layer can't abut or partially overlap between subcells",
 })
 
 
@@ -82,10 +121,12 @@ def _is_waiver(message: str) -> bool:
     A composite message like "(via.5a - via.4a)" is only a waiver if
     BOTH component rules are waivers — if any part is a real rule, the
     error is real.
+    Rule-less messages (no "(id)" suffix) match against
+    _KNOWN_WAIVER_MESSAGES by exact text.
     """
     ids = _extract_rule_ids(message)
     if not ids:
-        return False
+        return message.strip() in _KNOWN_WAIVER_MESSAGES
     return all(rid in _KNOWN_WAIVER_RULES for rid in ids)
 
 

@@ -254,12 +254,15 @@ quit -noprompt
     # everything resolves consistently.
     env = os.environ.copy()
     env["PDK_ROOT"] = str(pdk_root)
+    # Timeout scales with GDS size — production macros (128 rows × 128
+    # cols = 16K bitcells) can take minutes on `drc catchup`; tiny test
+    # macros return in under a second. Use generous upper bound.
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=1800,
             cwd=str(output_dir),
             env=env,
         )
@@ -269,7 +272,7 @@ quit -noprompt
             "http://opencircuitdesign.com/magic/"
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Magic DRC timed out after 300s on {gds_path}")
+        raise RuntimeError(f"Magic DRC timed out after 1800s on {gds_path}")
 
     # Parse results
     error_count = 0

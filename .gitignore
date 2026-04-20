@@ -17,6 +17,9 @@ output/
 *.spice
 *.sp
 
+# Allow committed foundry-cell port-patched subckts (D3 LVS cache)
+!src/rekolektion/peripherals/cells/extracted_subckt/*.subckt.sp
+
 # Magic
 *.ext
 *.sim

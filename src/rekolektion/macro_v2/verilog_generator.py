@@ -148,6 +148,9 @@ def _write_top_module(f: TextIO, p: MacroV2Params) -> None:
     top_ports += [f"addr_{i}" for i in range(p.num_addr_bits)]
     top_ports += [f"din_{i}" for i in range(p.bits)]
     top_ports += [f"dout_{i}" for i in range(p.bits)]
+    # col_sel is exposed as top-level input pins (one per mux position)
+    # so external decode logic drives them at chip level.
+    top_ports += [f"col_sel_{s}" for s in range(p.mux_ratio)]
     top_ports += ["VPWR", "VGND"]
 
     f.write(f"module {p.top_cell_name} (\n")
@@ -159,13 +162,12 @@ def _write_top_module(f: TextIO, p: MacroV2Params) -> None:
     f.write(f"    input  {', '.join(f'addr_{i}' for i in range(p.num_addr_bits))};\n")
     f.write(f"    input  {', '.join(f'din_{i}' for i in range(p.bits))};\n")
     f.write(f"    output {', '.join(f'dout_{i}' for i in range(p.bits))};\n")
+    f.write(f"    input  {', '.join(f'col_sel_{s}' for s in range(p.mux_ratio))};\n")
     f.write(f"    inout  VPWR, VGND;\n\n")
 
     # Internal signal wires
     f.write(f"    wire nand0_z, nand1_z;\n")
-    f.write(f"    wire clk_buf, wl_en, p_en_bar, s_en, w_en;\n")
-    col_sel = [f"col_sel_{s}" for s in range(p.mux_ratio)]
-    f.write(f"    wire {', '.join(col_sel)};\n\n")
+    f.write(f"    wire clk_buf, wl_en, p_en_bar, s_en, w_en;\n\n")
 
     # --- ctrl_logic: wire each DFF CLK to clk, D to shared Z net, Q
     #     to named output; NAND A/B to we/cs, Z to the shared net.

@@ -45,6 +45,12 @@ from rekolektion.macro_v2.row_decoder import _SPLIT_TABLE, _NAND_DEC_PITCH
 # ---------------------------------------------------------------------------
 
 
+def _snap(v: float, grid: float = 0.005) -> float:
+    """Snap a coordinate to the 5-nm manufacturing grid (all LEF
+    RECT coordinates must land on this grid or DRT-0416 rejects)."""
+    return round(v / grid) * grid
+
+
 @dataclass(frozen=True)
 class LefPin:
     name: str
@@ -60,6 +66,7 @@ def emit_lef(
     width: float,
     height: float,
     pins: list[LefPin],
+    include_power: bool = True,
 ) -> None:
     f.write(f"MACRO {macro_name}\n")
     f.write(f"  CLASS BLOCK ;\n")
@@ -67,6 +74,30 @@ def emit_lef(
     f.write(f"  ORIGIN 0 0 ;\n")
     f.write(f"  SIZE {width:.3f} BY {height:.3f} ;\n")
     f.write(f"  SYMMETRY X Y ;\n\n")
+    if include_power:
+        # Emit VPWR + VGND as met2 horizontal strips covering the full
+        # block width at the top + bottom edges.  OpenLane/OpenROAD
+        # uses these to hook each block into the macro-level PDN.
+        for name, y_frac, use_kw in (
+            ("VPWR", 1.0, "POWER"),
+            ("VGND", 0.0, "GROUND"),
+        ):
+            y_c = y_frac * height
+            y1 = max(0.0, y_c - 0.5)
+            y2 = min(height, y_c + 0.5)
+            # snap to bounds when strip pushes outside the block
+            if y_frac == 0.0:
+                y1, y2 = 0.0, 1.0
+            elif y_frac == 1.0:
+                y1, y2 = max(0.0, height - 1.0), height
+            f.write(f"  PIN {name}\n")
+            f.write(f"    DIRECTION INOUT ;\n")
+            f.write(f"    USE {use_kw} ;\n")
+            f.write(f"    PORT\n")
+            f.write(f"      LAYER met2 ;\n")
+            f.write(f"        RECT 0.000 {y1:.3f} {width:.3f} {y2:.3f} ;\n")
+            f.write(f"    END\n")
+            f.write(f"  END {name}\n\n")
     for pin in pins:
         f.write(f"  PIN {pin.name}\n")
         f.write(f"    DIRECTION {pin.direction} ;\n")
@@ -74,6 +105,7 @@ def emit_lef(
         f.write(f"    PORT\n")
         f.write(f"      LAYER {pin.layer} ;\n")
         x1, y1, x2, y2 = pin.rect
+        x1, y1, x2, y2 = _snap(x1), _snap(y1), _snap(x2), _snap(y2)
         f.write(f"        RECT {x1:.3f} {y1:.3f} {x2:.3f} {y2:.3f} ;\n")
         f.write(f"    END\n")
         f.write(f"  END {pin.name}\n\n")

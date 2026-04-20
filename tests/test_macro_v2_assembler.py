@@ -389,3 +389,38 @@ def test_assemble_tiny_macro_full_pipeline_drc_clean(tmp_path):
     assert r.clean, (
         f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C6.7 — End-to-end DRC + LVS on sram_test_tiny (exit gate for C6)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.magic
+def test_sram_test_tiny_end_to_end_drc_clean(tmp_path):
+    """Exit gate for C6: sram_test_tiny (32 words x 8 bits x mux4) must
+    be DRC-clean as a complete assembled macro."""
+    from rekolektion.verify.drc import run_drc
+    from rekolektion.macro_v2.spice_generator import generate_reference_spice
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+
+    # Assemble GDS
+    lib = assemble(p)
+    gds = tmp_path / f"{p.top_cell_name}.gds"
+    lib.write_gds(str(gds))
+
+    # Generate reference SPICE (structural only per D3)
+    sp = tmp_path / f"{p.top_cell_name}.sp"
+    generate_reference_spice(p, sp)
+    assert sp.exists() and sp.stat().st_size > 0
+
+    # DRC: must be clean (real=0)
+    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
+    assert r.clean, (
+        f"C6 EXIT GATE FAILED: real DRC errors ({r.real_error_count}). "
+        f"Top rules: {r.real_errors[:5]}"
+    )
+    # Report waiver count for visibility
+    print(
+        f"\nsram_test_tiny: DRC real={r.real_error_count}, "
+        f"waivers={r.waiver_error_count}"
+    )

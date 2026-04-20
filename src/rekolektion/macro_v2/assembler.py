@@ -275,6 +275,9 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # C6.3 — extend BL/BR met1 strips through peripheral rows.
     _route_bl(top, p, fp)
 
+    # C6.4 — route control signals from control_logic to peripherals.
+    _route_control(top, p, fp)
+
     lib.add(top)
     return lib
 
@@ -471,3 +474,122 @@ def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
                 layer="met1",
                 width=_BL_STRIP_W,
             )
+
+
+# ---------------------------------------------------------------------------
+# C6.4 — Control signal fanout: control_logic DFF outputs -> peripheral EN pins
+# ---------------------------------------------------------------------------
+
+# DFF Q output pin (cell-local, met2). From DFF LEF:
+#   PIN Q  met2 RECT 5.410 3.045 5.740 3.305
+_DFF_Q_X_LOCAL: float = 5.575
+_DFF_Q_Y_LOCAL: float = 3.175
+
+# Peripheral EN pin positions (cell-local).
+# Precharge p_en_bar: met2 at (1.560, 0.125)
+_PRECHARGE_EN_X_LOCAL: float = 1.560
+_PRECHARGE_EN_Y_LOCAL: float = 0.125
+# Sense-amp EN: met1 at (0.615, 10.97) (centre of the RECT)
+_SA_EN_X_LOCAL: float = 0.615
+_SA_EN_Y_LOCAL: float = 10.970
+# Write-driver EN: met1 at (1.498, 0.625) (centre of the main RECT)
+_WD_EN_X_LOCAL: float = 1.498
+_WD_EN_Y_LOCAL: float = 0.625
+
+# ControlLogic DFF placement (from control_logic.py): DFFs at x=0, 6.2,
+# 12.4, 18.6 (width 6.2, gap=0 per abutting std-cell convention).
+_DFF_W: float = 6.2
+
+# Assign DFF index -> control signal name. The control block emits 4
+# DFF-clocked output signals; we wire Q of each to its peripheral.
+_CONTROL_SIGNAL_BY_DFF: dict[int, str] = {
+    0: "clk_buf",   # DFF 0 Q — clk buffer, left unrouted for now (no sink
+                    # in SA/WD/precharge in this minimal topology)
+    1: "p_en_bar",  # DFF 1 Q -> precharge EN pins
+    2: "s_en",      # DFF 2 Q -> sense-amp EN pins
+    3: "w_en",      # DFF 3 Q -> write-driver EN pins
+}
+
+
+def _dff_q_absolute(
+    ctrl_origin: tuple[float, float], dff_idx: int,
+) -> tuple[float, float]:
+    return (
+        ctrl_origin[0] + dff_idx * _DFF_W + _DFF_Q_X_LOCAL,
+        ctrl_origin[1] + _DFF_Q_Y_LOCAL,
+    )
+
+
+def _route_control(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Route p_en_bar, s_en, w_en from control_logic DFF outputs to each
+    bit's peripheral EN pin.
+
+    Per signal:
+      1. Start met2 at the DFF Q pin.
+      2. L-shape run: vertical to a "rail y", then horizontal across the
+         macro width to just past the last bit.
+      3. Per bit: vertical met2 stub down/up to the peripheral pin x,
+         then a via stack if the peripheral pin is on met1 (SA, WD).
+
+    clk_buf has no destination in this topology (our SA/WD/precharge
+    don't currently gate on clk); the DFF Q is left as an isolated pin.
+    """
+    ctrl_origin = fp.positions["control_logic"]
+    prec_x, prec_y = fp.positions["precharge"]
+    sa_x, sa_y = fp.positions["sense_amp"]
+    wd_x, wd_y = fp.positions["write_driver"]
+
+    mux_pitch = p.mux_ratio * _BITCELL_WIDTH
+
+    # --- p_en_bar: met2 end to end ------------------------------------
+    dff_q = _dff_q_absolute(ctrl_origin, 1)
+    # Rail runs through the precharge row's lower band (empty of
+    # internal met2 below the en_bar pin centre at y=0.125 local).
+    rail_y = prec_y + _PRECHARGE_EN_Y_LOCAL + 0.2  # 0.2 um above pin centre
+    # Vertical run up from DFF Q to rail
+    draw_wire(top, start=dff_q, end=(dff_q[0], rail_y), layer="met2")
+    # Horizontal run to last bit + margin
+    rail_x_end = prec_x + (p.bits - 1) * mux_pitch + _PRECHARGE_EN_X_LOCAL + 1.0
+    draw_wire(top, start=(dff_q[0], rail_y), end=(rail_x_end, rail_y),
+              layer="met2")
+    for bit in range(p.bits):
+        pin_x = prec_x + bit * mux_pitch + _PRECHARGE_EN_X_LOCAL
+        pin_y = prec_y + _PRECHARGE_EN_Y_LOCAL
+        draw_wire(top, start=(pin_x, rail_y), end=(pin_x, pin_y),
+                  layer="met2")
+
+    # --- s_en: met2 rail, via stack to met1 at each SA EN pin ---------
+    dff_q = _dff_q_absolute(ctrl_origin, 2)
+    rail_y_s = sa_y + _SA_EN_Y_LOCAL + 0.3
+    draw_wire(top, start=dff_q, end=(dff_q[0], rail_y_s), layer="met2")
+    rail_x_end_s = sa_x + (p.bits - 1) * mux_pitch + _SA_EN_X_LOCAL + 1.0
+    draw_wire(top, start=(dff_q[0], rail_y_s),
+              end=(rail_x_end_s, rail_y_s), layer="met2")
+    for bit in range(p.bits):
+        pin_x = sa_x + bit * mux_pitch + _SA_EN_X_LOCAL
+        pin_y = sa_y + _SA_EN_Y_LOCAL
+        draw_wire(top, start=(pin_x, rail_y_s), end=(pin_x, pin_y),
+                  layer="met2")
+        # met2 -> met1 via stack to reach SA EN pin (met1)
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(pin_x, pin_y))
+
+    # --- w_en: met2 rail, via stack to met1 at each WD EN pin ---------
+    dff_q = _dff_q_absolute(ctrl_origin, 3)
+    rail_y_w = wd_y + _WD_EN_Y_LOCAL - 0.3   # rail below pin
+    # Vertical down from DFF Q to rail (DFF is above WD)
+    draw_wire(top, start=dff_q, end=(dff_q[0], rail_y_w), layer="met2")
+    rail_x_end_w = wd_x + (p.bits - 1) * mux_pitch + _WD_EN_X_LOCAL + 1.0
+    draw_wire(top, start=(dff_q[0], rail_y_w),
+              end=(rail_x_end_w, rail_y_w), layer="met2")
+    for bit in range(p.bits):
+        pin_x = wd_x + bit * mux_pitch + _WD_EN_X_LOCAL
+        pin_y = wd_y + _WD_EN_Y_LOCAL
+        draw_wire(top, start=(pin_x, rail_y_w), end=(pin_x, pin_y),
+                  layer="met2")
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(pin_x, pin_y))

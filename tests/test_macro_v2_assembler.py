@@ -291,3 +291,45 @@ def test_assemble_tiny_macro_with_bl_routing_drc_clean(tmp_path):
     assert r.clean, (
         f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C6.4 — control signal fanout
+# ---------------------------------------------------------------------------
+
+def test_control_routing_adds_met2_rails():
+    """Three long horizontal met2 rails (p_en_bar, s_en, w_en) crossing
+    the macro at peripheral y-positions."""
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+    fp = build_floorplan(p)
+    array_w = fp.sizes["array"][0]
+    long_met2_wires = []
+    for poly in top.polygons:
+        if (poly.layer, poly.datatype) != (69, 20):  # met2 drawing
+            continue
+        bb = poly.bounding_box()
+        if bb is None:
+            continue
+        w = bb[1][0] - bb[0][0]
+        h = bb[1][1] - bb[0][1]
+        # Horizontal rail: wide (~array_w) and thin
+        if w > array_w * 0.8 and h < 0.3:
+            long_met2_wires.append(poly)
+    assert len(long_met2_wires) >= 3, (
+        f"expected >= 3 control rails; got {len(long_met2_wires)}"
+    )
+
+
+@pytest.mark.magic
+def test_assemble_tiny_macro_with_control_routing_drc_clean(tmp_path):
+    from rekolektion.verify.drc import run_drc
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    gds = tmp_path / f"{p.top_cell_name}.gds"
+    lib.write_gds(str(gds))
+    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
+    assert r.clean, (
+        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
+    )

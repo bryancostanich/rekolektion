@@ -62,8 +62,20 @@ class WriteDriverRow:
 
     def _import_cell(self, lib: gdstk.Library) -> gdstk.Cell:
         src = gdstk.read_gds(str(_WD_GDS))
-        imported: dict[str, gdstk.Cell] = {}
+        # Foundry write_driver GDS ships with duplicate cell-name
+        # entries (an empty placeholder + the real populated cell).
+        # Keep the populated one per name so we don't end up with a
+        # 0-polygon placeholder in the assembled macro.
+        by_name: dict[str, gdstk.Cell] = {}
         for c in src.cells:
+            existing = by_name.get(c.name)
+            if existing is None:
+                by_name[c.name] = c
+                continue
+            if existing.bounding_box() is None and c.bounding_box() is not None:
+                by_name[c.name] = c
+        imported: dict[str, gdstk.Cell] = {}
+        for c in by_name.values():
             copy = c.copy(c.name)
             imported[c.name] = copy
             lib.add(copy)

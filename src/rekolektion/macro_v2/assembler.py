@@ -298,6 +298,11 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # C6.4 — route control signals from control_logic to peripherals.
     _route_control(top, p, fp)
 
+    # C6.4b — wire top-level clk/we/cs into ctrl_logic DFFs/NAND2s and
+    # NAND2 outputs back to DFF D inputs so Magic promotes CLK/D/A/B/Z
+    # as ports on each cell during LVS extraction.
+    _route_ctrl_internal(top, p, fp)
+
     # C6.5 — top-level signal pins + proper macro PDN (FIX-A).
     # _place_power_grid drew met4 straps for an old design that
     # isn't compatible with chip-level PDN; _draw_power_network
@@ -544,6 +549,23 @@ _WD_EN_Y_LOCAL: float = 0.625
 # ControlLogic DFF placement (from control_logic.py): DFFs at x=0, 6.2,
 # 12.4, 18.6 (width 6.2, gap=0 per abutting std-cell convention).
 _DFF_W: float = 6.2
+# DFF CLK / D / Q pin positions (cell-local, all on met2). Q_N isn't
+# labelled in the foundry GDS, so Magic never promotes it to a port.
+_DFF_CLK_X_LOCAL: float = 1.980
+_DFF_CLK_Y_LOCAL: float = 3.620
+_DFF_D_X_LOCAL: float = 0.850
+_DFF_D_Y_LOCAL: float = 2.820
+
+# NAND2 pin positions (cell-local, all on li1). NAND2 placement inside
+# ctrl_logic: NAND2_0 at (0, 9.545), NAND2_1 at (4.770, 9.545).
+_NAND2_W: float = 4.770
+_NAND2_ROW_Y: float = 9.545
+_NAND2_A_X_LOCAL: float = 0.405
+_NAND2_A_Y_LOCAL: float = 1.095
+_NAND2_B_X_LOCAL: float = 0.405
+_NAND2_B_Y_LOCAL: float = 0.555
+_NAND2_Z_X_LOCAL: float = 2.635
+_NAND2_Z_Y_LOCAL: float = 1.255
 
 # Assign DFF index -> control signal name. The control block emits 4
 # DFF-clocked output signals; we wire Q of each to its peripheral.
@@ -562,6 +584,41 @@ def _dff_q_absolute(
     return (
         ctrl_origin[0] + dff_idx * _DFF_W + _DFF_Q_X_LOCAL,
         ctrl_origin[1] + _DFF_Q_Y_LOCAL,
+    )
+
+
+def _dff_clk_absolute(
+    ctrl_origin: tuple[float, float], dff_idx: int,
+) -> tuple[float, float]:
+    return (
+        ctrl_origin[0] + dff_idx * _DFF_W + _DFF_CLK_X_LOCAL,
+        ctrl_origin[1] + _DFF_CLK_Y_LOCAL,
+    )
+
+
+def _dff_d_absolute(
+    ctrl_origin: tuple[float, float], dff_idx: int,
+) -> tuple[float, float]:
+    return (
+        ctrl_origin[0] + dff_idx * _DFF_W + _DFF_D_X_LOCAL,
+        ctrl_origin[1] + _DFF_D_Y_LOCAL,
+    )
+
+
+def _nand2_pin_absolute(
+    ctrl_origin: tuple[float, float],
+    nand_idx: int,
+    pin: str,
+) -> tuple[float, float]:
+    """Return absolute (x,y) of NAND2 pin label. `pin` in {'A','B','Z'}."""
+    x_off, y_off = {
+        "A": (_NAND2_A_X_LOCAL, _NAND2_A_Y_LOCAL),
+        "B": (_NAND2_B_X_LOCAL, _NAND2_B_Y_LOCAL),
+        "Z": (_NAND2_Z_X_LOCAL, _NAND2_Z_Y_LOCAL),
+    }[pin]
+    return (
+        ctrl_origin[0] + nand_idx * _NAND2_W + x_off,
+        ctrl_origin[1] + _NAND2_ROW_Y + y_off,
     )
 
 
@@ -641,6 +698,276 @@ def _route_control(
 
 
 # ---------------------------------------------------------------------------
+# C6.4b — Control logic internal wiring
+# ---------------------------------------------------------------------------
+#
+# Connects top-level `clk`/`we`/`cs` into ctrl_logic's DFFs and NAND2s
+# and wires NAND2 outputs back to DFF D inputs. Goal: give every DFF /
+# NAND2 signal pin an external net so Magic promotes them to subckt
+# ports at LVS extraction time.
+#
+# Mapping (driven by the partial "one-cycle latch" function the cell
+# composition naturally implements; details don't matter for LVS so
+# long as every pin has a unique net):
+#   clk -> DFF0.CLK, DFF1.CLK, DFF2.CLK, DFF3.CLK
+#   we  -> NAND2_0.A, NAND2_1.B
+#   cs  -> NAND2_0.B, NAND2_1.A
+#   NAND2_0.Z -> DFF0.D, DFF1.D
+#   NAND2_1.Z -> DFF2.D, DFF3.D
+#
+# Routing strategy: a met3 trunk well above the ctrl_logic block for
+# each signal (clk / we / cs / nand0_z / nand1_z), with via stacks down
+# to the pin layer at each destination. Met3 sits above both the DFF
+# row (y < 7.545) and the NAND2 row (9.545 < y < 12.235), so routes
+# don't intersect internal cell metals.
+
+# Met3 width for horizontal trunks (sky130 met3 min width = 0.30 um,
+# min spacing = 0.30 um).  Via2 landing pads are 0.33 um wide, so pitch
+# must cover pad_w + min_space = 0.33 + 0.30 = 0.63.  We use 0.80 for
+# margin and to allow adjacent trunks to host via stacks on the same
+# x without pad-to-pad DRC.
+_CTRL_TRUNK_W: float = 0.30
+_CTRL_TRUNK_PITCH: float = 0.80
+
+# Half-width used to extend trunk endpoints past feeder/dest x so the
+# vertical feeder doesn't protrude past the horizontal trunk (which
+# would create a 0.15-wide notch and fail met3.1 width check).
+_CTRL_TRUNK_HALF_W: float = _CTRL_TRUNK_W / 2
+
+# Z-source rails (NAND2 outputs to DFF D) live in the 2 um gap between
+# the ctrl_logic top edge and the bitcell array bottom edge.  Separated
+# by full pitch to stay DRC-clean against each other.
+_CTRL_Z0_RAIL_Y_ABOVE_CTRL: float = 0.5
+_CTRL_Z1_RAIL_Y_ABOVE_CTRL: float = 1.3
+
+
+def _route_ctrl_internal(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Wire clk/we/cs into ctrl_logic and NAND2 Z back to DFF D.
+
+    Topology — all horizontal trunks are on met3, all vertical feeders
+    and dest drops are on met3 with via stacks terminating on the
+    destination pin's native layer (met2 for DFFs, li1 for NAND2s).
+
+      - clk/we/cs: trunk at a unique y ABOVE the top input pin row
+        (y > pins_top_y + stub_len).  Each trunk extends only from the
+        leftmost destination to its own feeder x, so trunks do not
+        overlap feeders of later signals.  The top-level pin stub (met3
+        at pin_x) feeds into the trunk via a short vertical extension.
+
+      - NAND2_Z -> DFF_D: trunks in the ctrl_logic / array gap, placed
+        above the ctrl_logic bbox and below the array.  Feeders via
+        stack up from li1 (NAND2 Z) to met3; dest drops via stack down
+        to met2 (DFF D).
+
+    Long vertical descents on met3 pass through row_decoder / wl_driver
+    regions, which contain only NAND3 / bitcell cells (no internal
+    met3), so no layer conflict.
+    """
+    ctrl_origin = fp.positions["control_logic"]
+    ctrl_x, ctrl_y = ctrl_origin
+    ctrl_w, ctrl_h = fp.sizes["control_logic"]
+
+    positions, pins_top_y, _pins_bot_y = _top_pin_layout(p, fp)
+
+    # Top-of-pin-stub y (pin stubs span [pins_top_y, pins_top_y+stub]).
+    # Trunks for top-sourced signals sit above this line with enough
+    # pitch for min met3 spacing.
+    top_stub_top_y = pins_top_y + _PIN_STUB_LEN
+    # First trunk sits one pitch above the pin stub top.  Staggered by
+    # pitch so adjacent trunks don't violate min met3 spacing.
+    trunk_y_clk = top_stub_top_y + _CTRL_TRUNK_PITCH
+    trunk_y_we = trunk_y_clk + _CTRL_TRUNK_PITCH
+    trunk_y_cs = trunk_y_we + _CTRL_TRUNK_PITCH
+
+    # Z rails in the ctrl_logic/array gap.
+    ctrl_top_y = ctrl_y + ctrl_h
+    z0_rail_y = ctrl_top_y + _CTRL_Z0_RAIL_Y_ABOVE_CTRL
+    z1_rail_y = ctrl_top_y + _CTRL_Z1_RAIL_Y_ABOVE_CTRL
+
+    # ------------------------------------------------------------------
+    # Helper: connect a top-level met3 pin at (pin_x, pins_top_y) up to
+    # a horizontal met3 trunk at rail_y, then back DOWN on met3 verticals
+    # at each dest_x, landing on the pin layer via via stack.
+    # Trunk is clipped on the right at pin_x so it doesn't cross any
+    # feeder for a signal that is farther right.
+    # ------------------------------------------------------------------
+    def _route_from_top_pin(
+        pin_x: float,
+        rail_y: float,
+        dests: list[tuple[float, float, str]],
+    ) -> None:
+        # Feeder: vertical met3 from the top of the pin stub up to the
+        # trunk.  Extend slightly above rail_y so the feeder overlaps
+        # the full trunk strip at the T-junction (prevents a 0.15-wide
+        # notch along the feeder's upper edges).
+        draw_wire(
+            top,
+            start=(pin_x, top_stub_top_y),
+            end=(pin_x, rail_y + _CTRL_TRUNK_HALF_W),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        # Trunk: from leftmost dest_x (minus half-width) to pin_x
+        # (plus half-width).  Clipped so the trunk never extends past
+        # the feeder, which would collide with other signals' feeders
+        # further east.
+        west = min(dest_x for dest_x, _, _ in dests) - _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(west, rail_y),
+            end=(pin_x + _CTRL_TRUNK_HALF_W, rail_y),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        for dest_x, dest_y, dest_layer in dests:
+            _drop_to_dest(dest_x, dest_y, dest_layer, rail_y)
+
+    def _route_internal_trunk(
+        src_x: float,
+        src_y: float,
+        src_layer: str,
+        rail_y: float,
+        dests: list[tuple[float, float, str]],
+        feeder_jog_x: float | None = None,
+    ) -> None:
+        """Route source pin via met3 up to rail_y, fan out to dests.
+
+        If `feeder_jog_x` is given, the feeder first jogs horizontally
+        from src_x to feeder_jog_x at the src_y level (on met3), then
+        rises vertically at the jogged x.  Use this to keep the feeder
+        clear of other rails' landing pads that sit directly above the
+        src pin.
+        """
+        # Via stack at src pin up to met3.
+        draw_via_stack(
+            top, from_layer=src_layer, to_layer="met3",
+            position=(src_x, src_y),
+        )
+        # Optional horizontal jog on met3 at src_y to move the feeder
+        # column to a safe x before rising to the trunk.
+        feeder_x = feeder_jog_x if feeder_jog_x is not None else src_x
+        if feeder_jog_x is not None and feeder_jog_x != src_x:
+            x_lo = min(src_x, feeder_jog_x) - _CTRL_TRUNK_HALF_W
+            x_hi = max(src_x, feeder_jog_x) + _CTRL_TRUNK_HALF_W
+            draw_wire(
+                top,
+                start=(x_lo, src_y),
+                end=(x_hi, src_y),
+                layer="met3",
+                width=_CTRL_TRUNK_W,
+            )
+        lo_y = min(src_y, rail_y) - _CTRL_TRUNK_HALF_W
+        hi_y = max(src_y, rail_y) + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(feeder_x, lo_y),
+            end=(feeder_x, hi_y),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        all_xs = [feeder_x] + [d[0] for d in dests]
+        west = min(all_xs) - _CTRL_TRUNK_HALF_W
+        east = max(all_xs) + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(west, rail_y),
+            end=(east, rail_y),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        for dest_x, dest_y, dest_layer in dests:
+            _drop_to_dest(dest_x, dest_y, dest_layer, rail_y)
+
+    def _drop_to_dest(
+        dest_x: float,
+        dest_y: float,
+        dest_layer: str,
+        rail_y: float,
+    ) -> None:
+        """Drop from met3 rail at (dest_x, rail_y) down to a pin at
+        (dest_x, dest_y) on `dest_layer`.  Uses a met3 vertical + a
+        via stack terminating on the pin layer at the pin itself."""
+        # Via stack at the rail landing — connects met3 rail down to
+        # met2 (or met1, for li1 destinations).
+        intermediate = "met2" if dest_layer == "met2" else "met1"
+        draw_via_stack(
+            top, from_layer=intermediate, to_layer="met3",
+            position=(dest_x, rail_y),
+        )
+        # Vertical on the intermediate layer from rail_y down to dest_y.
+        # Extend by half intermediate-min-width past both ends so we
+        # don't create an under-min-width stub at the pin overlap.
+        from rekolektion.macro_v2.sky130_drc import layer_min_width
+        half = layer_min_width(intermediate) / 2
+        lo_y = min(dest_y, rail_y) - half
+        hi_y = max(dest_y, rail_y) + half
+        draw_wire(
+            top,
+            start=(dest_x, lo_y),
+            end=(dest_x, hi_y),
+            layer=intermediate,
+        )
+        # For li1 pins (NAND2), drop a final via from met1 to li1 at
+        # the pin coordinate.  For met2 pins (DFF), the met2 wire
+        # already overlaps the pin — no further via needed.
+        if dest_layer == "li1":
+            draw_via_stack(
+                top, from_layer="li1", to_layer="met1",
+                position=(dest_x, dest_y),
+            )
+
+    # clk → DFF[0..3].CLK -------------------------------------------------
+    clk_pin_x, _ = positions["clk"]
+    clk_dests = [
+        (*_dff_clk_absolute(ctrl_origin, i), "met2") for i in range(4)
+    ]
+    _route_from_top_pin(clk_pin_x, trunk_y_clk, clk_dests)
+
+    # we → NAND2_0.A, NAND2_1.B ------------------------------------------
+    we_pin_x, _ = positions["we"]
+    we_dests = [
+        (*_nand2_pin_absolute(ctrl_origin, 0, "A"), "li1"),
+        (*_nand2_pin_absolute(ctrl_origin, 1, "B"), "li1"),
+    ]
+    _route_from_top_pin(we_pin_x, trunk_y_we, we_dests)
+
+    # cs → NAND2_0.B, NAND2_1.A ------------------------------------------
+    cs_pin_x, _ = positions["cs"]
+    cs_dests = [
+        (*_nand2_pin_absolute(ctrl_origin, 0, "B"), "li1"),
+        (*_nand2_pin_absolute(ctrl_origin, 1, "A"), "li1"),
+    ]
+    _route_from_top_pin(cs_pin_x, trunk_y_cs, cs_dests)
+
+    # NAND2_0.Z → DFF_0.D, DFF_1.D ---------------------------------------
+    z0_x, z0_y = _nand2_pin_absolute(ctrl_origin, 0, "Z")
+    z0_dests = [
+        (*_dff_d_absolute(ctrl_origin, 0), "met2"),
+        (*_dff_d_absolute(ctrl_origin, 1), "met2"),
+    ]
+    _route_internal_trunk(z0_x, z0_y, "li1", z0_rail_y, z0_dests)
+
+    # NAND2_1.Z → DFF_2.D, DFF_3.D ---------------------------------------
+    # Jog the feeder ~1 um west so the vertical column doesn't run
+    # within spacing distance of z0's DFF_1.D landing pad at
+    # (ctrl_x + 7.05, z0_rail_y).
+    z1_x, z1_y = _nand2_pin_absolute(ctrl_origin, 1, "Z")
+    z1_feeder_jog = z1_x + 1.0
+    z1_dests = [
+        (*_dff_d_absolute(ctrl_origin, 2), "met2"),
+        (*_dff_d_absolute(ctrl_origin, 3), "met2"),
+    ]
+    _route_internal_trunk(
+        z1_x, z1_y, "li1", z1_rail_y, z1_dests,
+        feeder_jog_x=z1_feeder_jog,
+    )
+
+
+# ---------------------------------------------------------------------------
 # C6.5 — Top-level pins + power grid
 # ---------------------------------------------------------------------------
 
@@ -659,6 +986,45 @@ _PDN_STRAP_LAYER: str = "met4"
 _PDN_STRAP_MARGIN: float = 2.0    # gap between PDN strap and nearest block
 
 
+def _top_pin_layout(
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> tuple[dict[str, tuple[float, float]], float, float]:
+    """Compute the (x, y) of each top-level input/output pin.
+
+    Returns (name -> position, pins_top_y, pins_bot_y).  Positions point
+    at the *bottom* of the met3 stub (i.e. the tip facing the macro
+    interior), which is the natural route entry point.
+    """
+    array_x, _ = fp.positions["array"]
+    array_w, _ = fp.sizes["array"]
+    prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
+    prec_top = prec_y + prec_h
+    pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
+    wd_bot = fp.positions["write_driver"][1]
+    pins_bot_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+
+    input_names: list[str] = []
+    for i in range(p.num_addr_bits):
+        input_names.append(f"addr[{i}]")
+    input_names += ["clk", "we", "cs"]
+    for i in range(p.bits):
+        input_names.append(f"din[{i}]")
+
+    x0 = array_x + 1.0
+    x_end = array_x + array_w - 1.0
+    step = (x_end - x0) / max(len(input_names) - 1, 1) if len(input_names) > 1 else 0.0
+    positions: dict[str, tuple[float, float]] = {}
+    for i, name in enumerate(input_names):
+        positions[name] = (x0 + i * step, pins_top_y)
+
+    x0b = array_x + 1.0
+    stepb = (x_end - x0b) / max(p.bits - 1, 1) if p.bits > 1 else 0.0
+    for i in range(p.bits):
+        positions[f"dout[{i}]"] = (x0b + i * stepb, pins_bot_y)
+    return positions, pins_top_y, pins_bot_y
+
+
 def _place_top_pins(
     top: gdstk.Cell,
     p: MacroV2Params,
@@ -667,39 +1033,17 @@ def _place_top_pins(
     """Place LEF-style met3 pins for addr, din, dout, clk, we, cs at
     the top (inputs) and bottom (outputs) of the macro.
     """
-    array_x, array_y = fp.positions["array"]
-    array_w, array_h = fp.sizes["array"]
-    prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
-    prec_top = prec_y + prec_h
+    positions, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
 
-    # y positions for top-of-macro and bottom-of-macro pin rows
-    pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
-    wd_bot = fp.positions["write_driver"][1]
-    pins_bot_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
-
-    # Layout of input pins on the top row, left to right.
-    # Order: addr[0..N-1], clk, we, cs, din[0..B-1]
-    input_names: list[str] = []
-    for i in range(p.num_addr_bits):
-        input_names.append(f"addr[{i}]")
-    input_names += ["clk", "we", "cs"]
-    for i in range(p.bits):
-        input_names.append(f"din[{i}]")
-
-    # Place inputs evenly across the array's x-span
-    total_inputs = len(input_names)
-    x0 = array_x + 1.0
-    x_end = array_x + array_w - 1.0
-    step = (x_end - x0) / max(total_inputs - 1, 1) if total_inputs > 1 else 0.0
-    for i, name in enumerate(input_names):
-        px = x0 + i * step
+    for name, (px, _) in positions.items():
+        if name.startswith("dout"):
+            continue
         rect = (
             px - _PIN_STUB_W / 2,
             pins_top_y,
             px + _PIN_STUB_W / 2,
             pins_top_y + _PIN_STUB_LEN,
         )
-        # drawing met3 rect
         draw_wire(
             top,
             start=(px, pins_top_y),
@@ -709,11 +1053,8 @@ def _place_top_pins(
         )
         draw_pin_with_label(top, text=name, layer=_PIN_LAYER, rect=rect)
 
-    # Outputs (dout[0..B-1]) on the bottom row
-    x0b = array_x + 1.0
-    stepb = (x_end - x0b) / max(p.bits - 1, 1) if p.bits > 1 else 0.0
     for i in range(p.bits):
-        px = x0b + i * stepb
+        px, _ = positions[f"dout[{i}]"]
         rect = (
             px - _PIN_STUB_W / 2,
             pins_bot_y,

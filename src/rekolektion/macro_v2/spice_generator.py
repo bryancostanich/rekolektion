@@ -146,46 +146,46 @@ def _write_top_subckt(f: TextIO, p: MacroV2Params) -> None:
     addr_args = " ".join(f"addr{i}" for i in range(p.num_addr_bits))
     dec_args = " ".join(dec_nets)
     f.write(
-        f"Xdecoder {addr_args} {dec_args} wl_en VPWR VGND row_decoder_{p.rows}\n"
+        f"Xdecoder {addr_args} {dec_args} wl_en VPWR VGND row_decoder_{_tag(p)}\n"
     )
 
     f.write("\n* WL driver row: dec_out (low-active) -> WL (high-active)\n")
     f.write(
         f"Xwl_driver {' '.join(dec_nets)} {' '.join(wl_nets)} VPWR VGND "
-        f"wl_driver_row_{p.rows}\n"
+        f"wl_driver_{_tag(p)}\n"
     )
 
     f.write("\n* Bitcell array: rows x cols cells\n")
     f.write(
         f"Xarray {' '.join(wl_nets)} {' '.join(bl_nets)} {' '.join(br_nets)} "
-        f"VPWR VGND sram_array_{p.rows}x{p.cols}\n"
+        f"VPWR VGND sram_array_{_tag(p)}\n"
     )
 
     f.write("\n* Precharge row\n")
     f.write(
         f"Xprecharge {' '.join(bl_nets)} {' '.join(br_nets)} p_en_bar VPWR "
-        f"precharge_row_{p.bits}_mux{p.mux_ratio}\n"
+        f"pre_{_tag(p)}\n"
     )
 
     f.write("\n* Column mux row\n")
     f.write(
         f"Xcolmux {' '.join(bl_nets)} {' '.join(br_nets)} "
         f"{' '.join(muxed_bl)} {' '.join(muxed_br)} col_sel VPWR VGND "
-        f"column_mux_row_{p.bits}_mux{p.mux_ratio}\n"
+        f"mux_{_tag(p)}\n"
     )
 
     f.write("\n* Sense amp row (one per bit on muxed output)\n")
     dout_args = " ".join(f"dout{i}" for i in range(p.bits))
     f.write(
         f"Xsa {' '.join(muxed_bl)} {' '.join(muxed_br)} s_en {dout_args} "
-        f"VPWR VGND sense_amp_row_{p.bits}_mux{p.mux_ratio}\n"
+        f"VPWR VGND sa_{_tag(p)}\n"
     )
 
     f.write("\n* Write driver row (one per bit on muxed output)\n")
     din_args = " ".join(f"din{i}" for i in range(p.bits))
     f.write(
         f"Xwd {din_args} w_en {' '.join(muxed_bl)} {' '.join(muxed_br)} "
-        f"VPWR VGND write_driver_row_{p.bits}_mux{p.mux_ratio}\n"
+        f"VPWR VGND wd_{_tag(p)}\n"
     )
 
     f.write(f"\n.ends {p.top_cell_name}\n\n")
@@ -200,7 +200,7 @@ def _tag(p: MacroV2Params) -> str:
 # ---------------------------------------------------------------------------
 
 def _write_bitcell_array_subckt(f: TextIO, p: MacroV2Params) -> None:
-    name = f"sram_array_{p.rows}x{p.cols}"
+    name = f"sram_array_{_tag(p)}"
     wl_ports = [f"wl{r}" for r in range(p.rows)]
     bl_ports = [f"bl{c}" for c in range(p.cols)]
     br_ports = [f"br{c}" for c in range(p.cols)]
@@ -225,7 +225,7 @@ def _write_bitcell_array_subckt(f: TextIO, p: MacroV2Params) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
-    name = f"row_decoder_{p.rows}"
+    name = f"row_decoder_{_tag(p)}"
     addr_ports = [f"addr{i}" for i in range(p.num_addr_bits)]
     dec_out_ports = [f"dec_out_{r}" for r in range(p.rows)]
     ports = addr_ports + dec_out_ports + ["wl_en", "VPWR", "VGND"]
@@ -261,7 +261,7 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_wl_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
-    name = f"wl_driver_row_{p.rows}"
+    name = f"wl_driver_{_tag(p)}"
     in_ports = [f"dec_out_{r}" for r in range(p.rows)]
     out_ports = [f"wl_{r}" for r in range(p.rows)]
     ports = in_ports + out_ports + ["VPWR", "VGND"]
@@ -285,7 +285,7 @@ def _write_wl_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_sense_amp_row_subckt(f: TextIO, p: MacroV2Params) -> None:
-    name = f"sense_amp_row_{p.bits}_mux{p.mux_ratio}"
+    name = f"sa_{_tag(p)}"
     mbl = [f"muxed_bl{i}" for i in range(p.bits)]
     mbr = [f"muxed_br{i}" for i in range(p.bits)]
     dout = [f"dout{i}" for i in range(p.bits)]
@@ -309,7 +309,7 @@ def _write_sense_amp_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_write_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
-    name = f"write_driver_row_{p.bits}_mux{p.mux_ratio}"
+    name = f"wd_{_tag(p)}"
     din = [f"din{i}" for i in range(p.bits)]
     mbl = [f"muxed_bl{i}" for i in range(p.bits)]
     mbr = [f"muxed_br{i}" for i in range(p.bits)]
@@ -334,20 +334,34 @@ def _write_write_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 
 def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"ctrl_logic_{_tag(p)}"
-    f.write(f"* ---- {name} (skeleton, internal wiring TBD) ----\n")
+    f.write(
+        f"* ---- {name} (cells placed, no internal wiring yet — matches "
+        "GDS reality in C5.3) ----\n"
+    )
+    # Subckt ports match the block-level interface, but internally all
+    # signal pins on the DFFs/NAND2s float to unique per-instance nets
+    # so the reference matches Magic's extraction of the unwired GDS.
     f.write(
         f".subckt {name} clk we cs clk_buf wl_en p_en_bar s_en w_en "
         "VPWR VGND\n"
     )
-    # 4 DFFs — D input floats for now (skeleton)
-    for i, out in enumerate(("clk_buf", "p_en_bar", "s_en", "w_en")):
+    # 4 DFFs — every signal pin dangles on its own internal net.
+    # Port order: CLK D Q Q_N GND VDD
+    for i in range(4):
         f.write(
-            f"Xdff{i} clk clk {out} dff{i}_QN VGND VPWR {_DFF_NAME}\n"
+            f"Xdff{i} "
+            f"dff{i}_clk dff{i}_d dff{i}_q dff{i}_qn "
+            f"VGND VPWR {_DFF_NAME}\n"
         )
-    # 2 NAND2s — floating for now
+    # 2 NAND2s — same treatment.
+    # Port order: A B Z GND VDD
     nand2, _ = _NAND_BY_FANIN[2]
-    f.write(f"Xnand_a we cs wl_en VGND VPWR {nand2}\n")
-    f.write(f"Xnand_b we cs w_en VGND VPWR {nand2}\n")
+    for i in range(2):
+        f.write(
+            f"Xnand{i} "
+            f"nand{i}_a nand{i}_b nand{i}_z "
+            f"VGND VPWR {nand2}\n"
+        )
     f.write(f".ends {name}\n\n")
 
 
@@ -356,7 +370,7 @@ def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_precharge_row_stub(f: TextIO, p: MacroV2Params) -> None:
-    name = f"precharge_row_{p.bits}_mux{p.mux_ratio}"
+    name = f"pre_{_tag(p)}"
     bl = [f"bl{c}" for c in range(p.cols)]
     br = [f"br{c}" for c in range(p.cols)]
     ports = bl + br + ["p_en_bar", "VPWR"]
@@ -367,7 +381,7 @@ def _write_precharge_row_stub(f: TextIO, p: MacroV2Params) -> None:
 
 
 def _write_column_mux_row_stub(f: TextIO, p: MacroV2Params) -> None:
-    name = f"column_mux_row_{p.bits}_mux{p.mux_ratio}"
+    name = f"mux_{_tag(p)}"
     bl = [f"bl{c}" for c in range(p.cols)]
     br = [f"br{c}" for c in range(p.cols)]
     mbl = [f"muxed_bl{i}" for i in range(p.bits)]

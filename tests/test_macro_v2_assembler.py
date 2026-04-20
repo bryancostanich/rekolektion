@@ -333,3 +333,59 @@ def test_assemble_tiny_macro_with_control_routing_drc_clean(tmp_path):
     assert r.clean, (
         f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C6.5 — Top-level pins + power grid
+# ---------------------------------------------------------------------------
+
+def test_top_level_has_pin_labels_for_every_signal():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+    pin_labels = {lbl.text for lbl in top.labels}
+    # Expect every primary I/O port
+    required = {"clk", "we", "cs", "VPWR", "VGND"}
+    for i in range(p.num_addr_bits):
+        required.add(f"addr[{i}]")
+    for i in range(p.bits):
+        required.add(f"din[{i}]")
+        required.add(f"dout[{i}]")
+    missing = required - pin_labels
+    assert not missing, f"missing top-level pin labels: {missing}"
+
+
+def test_top_level_has_met4_power_straps():
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    top = next(c for c in lib.cells if c.name == p.top_cell_name)
+    # Count met4 (71, 20) horizontal polygons
+    met4_horizontal = []
+    for poly in top.polygons:
+        if (poly.layer, poly.datatype) != (71, 20):
+            continue
+        bb = poly.bounding_box()
+        if bb is None:
+            continue
+        w = bb[1][0] - bb[0][0]
+        h = bb[1][1] - bb[0][1]
+        if w > 10 * h:
+            met4_horizontal.append(poly)
+    assert len(met4_horizontal) >= 2, (
+        f"expected >=2 met4 PDN straps (VPWR, VGND); got "
+        f"{len(met4_horizontal)}"
+    )
+
+
+@pytest.mark.magic
+def test_assemble_tiny_macro_full_pipeline_drc_clean(tmp_path):
+    """Full assembler stack (C6.0-C6.5) DRC-clean for sram_test_tiny."""
+    from rekolektion.verify.drc import run_drc
+    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    lib = assemble(p)
+    gds = tmp_path / f"{p.top_cell_name}.gds"
+    lib.write_gds(str(gds))
+    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
+    assert r.clean, (
+        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
+    )

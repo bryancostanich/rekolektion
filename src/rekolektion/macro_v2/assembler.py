@@ -33,6 +33,10 @@ from rekolektion.macro_v2.row_decoder import (
     _SPLIT_TABLE,
 )
 from rekolektion.macro_v2.routing import (
+    draw_label,
+    draw_pdn_strap,
+    draw_pin,
+    draw_pin_with_label,
     draw_via_stack,
     draw_wire,
 )
@@ -277,6 +281,10 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
 
     # C6.4 — route control signals from control_logic to peripherals.
     _route_control(top, p, fp)
+
+    # C6.5 — top-level pins + power grid.
+    _place_top_pins(top, p, fp)
+    _place_power_grid(top, p, fp)
 
     lib.add(top)
     return lib
@@ -593,3 +601,143 @@ def _route_control(
                   layer="met2")
         draw_via_stack(top, from_layer="met1", to_layer="met2",
                        position=(pin_x, pin_y))
+
+
+# ---------------------------------------------------------------------------
+# C6.5 — Top-level pins + power grid
+# ---------------------------------------------------------------------------
+
+# OpenLane/OpenROAD reads LEF pins at their drawn rectangles. We follow
+# the OpenRAM convention for SRAM macros: signal pins on met3 as short
+# vertical stubs at interior x-positions, at the top (inputs) and
+# bottom (outputs) edges of the macro. Power (VPWR/VGND) on met4 as
+# horizontal straps spanning the full width.
+_PIN_LAYER: str = "met3"
+_PIN_STUB_LEN: float = 0.9        # vertical extent of a pin stub (um)
+_PIN_STUB_W: float = 0.30         # met3 min width
+_PIN_PITCH: float = 1.0           # min centre-to-centre between pins
+
+_PDN_STRAP_W: float = 1.6         # met4 power strap width
+_PDN_STRAP_LAYER: str = "met4"
+_PDN_STRAP_MARGIN: float = 2.0    # gap between PDN strap and nearest block
+
+
+def _place_top_pins(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Place LEF-style met3 pins for addr, din, dout, clk, we, cs at
+    the top (inputs) and bottom (outputs) of the macro.
+    """
+    array_x, array_y = fp.positions["array"]
+    array_w, array_h = fp.sizes["array"]
+    prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
+    prec_top = prec_y + prec_h
+
+    # y positions for top-of-macro and bottom-of-macro pin rows
+    pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
+    wd_bot = fp.positions["write_driver"][1]
+    pins_bot_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+
+    # Layout of input pins on the top row, left to right.
+    # Order: addr[0..N-1], clk, we, cs, din[0..B-1]
+    input_names: list[str] = []
+    for i in range(p.num_addr_bits):
+        input_names.append(f"addr[{i}]")
+    input_names += ["clk", "we", "cs"]
+    for i in range(p.bits):
+        input_names.append(f"din[{i}]")
+
+    # Place inputs evenly across the array's x-span
+    total_inputs = len(input_names)
+    x0 = array_x + 1.0
+    x_end = array_x + array_w - 1.0
+    step = (x_end - x0) / max(total_inputs - 1, 1) if total_inputs > 1 else 0.0
+    for i, name in enumerate(input_names):
+        px = x0 + i * step
+        rect = (
+            px - _PIN_STUB_W / 2,
+            pins_top_y,
+            px + _PIN_STUB_W / 2,
+            pins_top_y + _PIN_STUB_LEN,
+        )
+        # drawing met3 rect
+        draw_wire(
+            top,
+            start=(px, pins_top_y),
+            end=(px, pins_top_y + _PIN_STUB_LEN),
+            layer=_PIN_LAYER,
+            width=_PIN_STUB_W,
+        )
+        draw_pin_with_label(top, text=name, layer=_PIN_LAYER, rect=rect)
+
+    # Outputs (dout[0..B-1]) on the bottom row
+    x0b = array_x + 1.0
+    stepb = (x_end - x0b) / max(p.bits - 1, 1) if p.bits > 1 else 0.0
+    for i in range(p.bits):
+        px = x0b + i * stepb
+        rect = (
+            px - _PIN_STUB_W / 2,
+            pins_bot_y,
+            px + _PIN_STUB_W / 2,
+            pins_bot_y + _PIN_STUB_LEN,
+        )
+        draw_wire(
+            top,
+            start=(px, pins_bot_y),
+            end=(px, pins_bot_y + _PIN_STUB_LEN),
+            layer=_PIN_LAYER,
+            width=_PIN_STUB_W,
+        )
+        draw_pin_with_label(top, text=f"dout[{i}]", layer=_PIN_LAYER, rect=rect)
+
+
+def _place_power_grid(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Two horizontal met4 straps — VPWR at top, VGND at bottom —
+    spanning the entire macro width. Each strap is pinned and labeled.
+    """
+    # Macro x-extent: from leftmost (row_decoder / control_logic) to
+    # rightmost (array right edge).
+    xs_lo = min(x for x, _ in fp.positions.values())
+    xs_hi = max(
+        fp.positions[n][0] + fp.sizes[n][0] for n in fp.positions
+    )
+    strap_x0 = xs_lo - 1.0
+    strap_x1 = xs_hi + 1.0
+
+    # VPWR: above precharge top
+    prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
+    vpwr_y = prec_y + prec_h + _PDN_STRAP_MARGIN + _PDN_STRAP_W / 2
+    draw_pdn_strap(
+        top, orientation="horizontal",
+        center_coord=vpwr_y,
+        span_start=strap_x0, span_end=strap_x1,
+        layer=_PDN_STRAP_LAYER, width=_PDN_STRAP_W,
+    )
+    vpwr_rect = (
+        strap_x0, vpwr_y - _PDN_STRAP_W / 2,
+        strap_x0 + 1.0, vpwr_y + _PDN_STRAP_W / 2,
+    )
+    draw_pin_with_label(top, text="VPWR", layer=_PDN_STRAP_LAYER,
+                        rect=vpwr_rect)
+
+    # VGND: below write_driver bottom
+    wd_bot = fp.positions["write_driver"][1]
+    vgnd_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W / 2
+    draw_pdn_strap(
+        top, orientation="horizontal",
+        center_coord=vgnd_y,
+        span_start=strap_x0, span_end=strap_x1,
+        layer=_PDN_STRAP_LAYER, width=_PDN_STRAP_W,
+    )
+    vgnd_rect = (
+        strap_x0, vgnd_y - _PDN_STRAP_W / 2,
+        strap_x0 + 1.0, vgnd_y + _PDN_STRAP_W / 2,
+    )
+    draw_pin_with_label(top, text="VGND", layer=_PDN_STRAP_LAYER,
+                        rect=vgnd_rect)

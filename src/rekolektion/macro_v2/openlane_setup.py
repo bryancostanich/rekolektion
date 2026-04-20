@@ -200,13 +200,11 @@ def _write_macro_placement_cfg(
 
 _CUSTOM_PDN_CFG = """\
 # Custom PDN config for rekolektion macro-flow runs.
-# Our sub-block macros expose VPWR/VGND on met2 only (no met4/5
-# power rails inside).  The stdcell_grid below lays met3 stripes
-# across the whole die; where a stripe overlaps a macro's met2
-# power pin, add_pdn_connect creates the via2 contact automatically.
-# We deliberately do NOT define a -macro grid, which would require
-# the macro to already contain two metal layers for
-# add_pdn_connect to link.
+# Sub-block macros expose VPWR/VGND on met2 (top/bottom strips); the
+# stdcell_grid below lays tight met3 stripes that contact each macro
+# at several points, plus met1 follow-pins rails on std-cell rows,
+# so the perimeter std-cell area and the macro-internal area are on
+# a single connected VPWR / VGND net.
 source $::env(SCRIPTS_DIR)/openroad/common/set_global_connections.tcl
 set_global_connections
 
@@ -216,22 +214,35 @@ define_pdn_grid \\
     -name stdcell_grid \\
     -starts_with POWER \\
     -voltage_domain CORE \\
-    -pins "met2 met3"
+    -pins "met2 met3 met4"
 
-add_pdn_stripe \\
-    -grid stdcell_grid \\
-    -layer met3 \\
-    -width 1.6 -pitch 30.0 -offset 5.0 -spacing 1.7 \\
-    -starts_with POWER -extend_to_core_ring
-
+# Met1 follow-pins on std-cell rows so decap/fill/tap cells get
+# power from the same net as the macros.
 add_pdn_stripe \\
     -grid stdcell_grid \\
     -layer met1 \\
     -width 0.48 -followpins \\
     -starts_with POWER
 
+# Dense met3 stripes (pitch 6 um so every macro is crossed by at
+# least 3-4 stripes of each net).
+add_pdn_stripe \\
+    -grid stdcell_grid \\
+    -layer met3 \\
+    -width 1.6 -pitch 6.0 -offset 2.0 -spacing 1.4 \\
+    -starts_with POWER -extend_to_core_ring
+
+# Met4 horizontal stripes perpendicular to met3 to stitch the grid
+# together.
+add_pdn_stripe \\
+    -grid stdcell_grid \\
+    -layer met4 \\
+    -width 1.6 -pitch 10.0 -offset 2.0 -spacing 1.4 \\
+    -starts_with POWER -extend_to_core_ring
+
 add_pdn_connect -grid stdcell_grid -layers "met1 met2"
 add_pdn_connect -grid stdcell_grid -layers "met2 met3"
+add_pdn_connect -grid stdcell_grid -layers "met3 met4"
 """
 
 

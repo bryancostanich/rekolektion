@@ -61,20 +61,11 @@ class LefPin:
 
 
 def lef_pin_escape_rect(pin: LefPin) -> tuple[str, tuple[float, float, float, float]]:
-    """Return the enlarged RECT for a pin, matching what emit_lef()
-    writes into the LEF.  Used by openlane_setup to add matching
-    metal pads into the sub-block GDS so LEF and GDS agree on pin
-    extent.  Returns (layer, (x1, y1, x2, y2))."""
+    """Return the LEF RECT for a pin (grid-snapped, no enlargement).
+    Used by openlane_setup to add matching metal pads into the
+    sub-block GDS so LEF and GDS agree on pin extent."""
     x1, y1, x2, y2 = pin.rect
-    x1, y1, x2, y2 = _snap(x1), _snap(y1), _snap(x2), _snap(y2)
-    cx = (x1 + x2) / 2
-    cy = (y1 + y2) / 2
-    min_ext = 0.30
-    ex1 = _snap(min(x1, cx - min_ext))
-    ey1 = _snap(min(y1, cy - min_ext))
-    ex2 = _snap(max(x2, cx + min_ext))
-    ey2 = _snap(max(y2, cy + min_ext))
-    return pin.layer, (ex1, ey1, ex2, ey2)
+    return pin.layer, (_snap(x1), _snap(y1), _snap(x2), _snap(y2))
 
 
 def emit_lef(
@@ -122,27 +113,19 @@ def emit_lef(
         f.write(f"    PORT\n")
         x1, y1, x2, y2 = pin.rect
         x1, y1, x2, y2 = _snap(x1), _snap(y1), _snap(x2), _snap(y2)
-        cx = (x1 + x2) / 2
-        cy = (y1 + y2) / 2
-        # Enlarge the pin rect to 0.6 x 0.6 um minimum so a met1
-        # routing track (pitch 0.34) is guaranteed to intersect —
-        # routers otherwise warn DRT-0419 "no routing track passes
-        # through pin center".  Keep the original rect position,
-        # just grow outward.
-        min_ext = 0.30  # half-width of enlarged rect
-        ex1 = _snap(min(x1, cx - min_ext))
-        ey1 = _snap(min(y1, cy - min_ext))
-        ex2 = _snap(max(x2, cx + min_ext))
-        ey2 = _snap(max(y2, cy + min_ext))
-        # For li1 pins, also emit a met1 escape rect of the same
-        # (enlarged) extent so OpenROAD's router can land on met1.
-        # The matching met1 geometry is drawn into the sub-block
-        # GDS by openlane_setup._write_sub_block_gds().
+        # Emit the pin at its original extent (already grid-snapped).
+        # For li1 pins we also emit a matching met1 RECT so
+        # OpenROAD's router can land on met1; openlane_setup adds
+        # corresponding li1 + mcon + met1 geometry to the sub-block
+        # GDS at the same position.  Enlarging the rect to catch a
+        # routing track causes shorts between closely-spaced pins
+        # (NAND A/B only 0.36 um apart) — rely on OpenROAD's pin-
+        # access logic instead.
         f.write(f"      LAYER {pin.layer} ;\n")
-        f.write(f"        RECT {ex1:.3f} {ey1:.3f} {ex2:.3f} {ey2:.3f} ;\n")
+        f.write(f"        RECT {x1:.3f} {y1:.3f} {x2:.3f} {y2:.3f} ;\n")
         if pin.layer == "li1":
             f.write(f"      LAYER met1 ;\n")
-            f.write(f"        RECT {ex1:.3f} {ey1:.3f} {ex2:.3f} {ey2:.3f} ;\n")
+            f.write(f"        RECT {x1:.3f} {y1:.3f} {x2:.3f} {y2:.3f} ;\n")
         f.write(f"    END\n")
         f.write(f"  END {pin.name}\n\n")
     f.write(f"END {macro_name}\n\n")

@@ -244,6 +244,13 @@ quit -noprompt
         cmd.extend(["-rcfile", str(magicrc)])
     cmd.append(str(tcl_path))
 
+    # sky130B.magicrc's fallback PDK_ROOT is a build-machine path that
+    # doesn't exist on other systems. Even though we pass `tech load`
+    # explicitly in Tcl (which would work), the rcfile also sources a
+    # sky130B.tcl that uses $PDK_ROOT. Keep the env var populated so
+    # everything resolves consistently.
+    env = os.environ.copy()
+    env["PDK_ROOT"] = str(pdk_root)
     try:
         result = subprocess.run(
             cmd,
@@ -251,6 +258,7 @@ quit -noprompt
             text=True,
             timeout=300,
             cwd=str(output_dir),
+            env=env,
         )
     except FileNotFoundError:
         raise RuntimeError(

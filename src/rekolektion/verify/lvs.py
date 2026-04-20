@@ -107,9 +107,16 @@ quit -noprompt
         cmd.extend(["-rcfile", str(magicrc)])
     cmd.append(str(tcl_path.resolve()))
 
+    # sky130B.magicrc resolves $env(PDK_ROOT) -> tech file; if unset, it
+    # falls back to a hard-coded build-machine path that doesn't exist
+    # on any other machine. Guarantee the env var is set so the rcfile
+    # can locate the tech file.
+    env = os.environ.copy()
+    env["PDK_ROOT"] = str(pdk_root)
+
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=300,
-        cwd=str(output_dir),
+        cwd=str(output_dir), env=env,
     )
 
     # Write Magic log for debugging

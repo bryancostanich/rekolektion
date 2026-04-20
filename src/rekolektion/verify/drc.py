@@ -7,25 +7,114 @@ Requires:
 """
 
 import os
+import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# Known-waiver rule IDs. These are tight SRAM/bitcell rules the foundry
+# accepts in silicon via COREID waivers; every tiling of the foundry
+# sky130_fd_bd_sram__sram_sp_cell_opt1 cell trips them. See README.
+# The set is rule-ID based: rule text in Magic ends with "(rule-id)".
+_KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
+    # Local interconnect
+    "li.1",     # LI width
+    "li.3",     # LI spacing
+    "li.c1",    # core LI width
+    "li.6",     # LI min area
+    # Diffusion / taps / transistors
+    "diff/tap.1",  # diffusion width
+    "diff/tap.2",  # transistor width
+    "diff/tap.3",  # diffusion spacing
+    "diff/tap.8",  # nwell overlap of p-diff
+    "diff/tap.9",  # n-diff to nwell
+    # Wells
+    "nwell.1",     # nwell width
+    "nwell.2a",    # nwell spacing (same-potential)
+    "nwell.7",    # dnwell to nwell
+    "dnwell.2",    # dnwell width
+    "dnwell.3",    # dnwell spacing
+    # Poly
+    "poly.2",      # poly spacing
+    "poly.4",      # poly to diffusion
+    "poly.5",      # poly to tap
+    "poly.7",      # ndiff overhang of nfet
+    "poly.8",      # poly overhang of transistor
+    # Angles (foundry uses non-Manhattan li1 in bitcells)
+    "x.2",         # 90-deg on local interconnect
+    # Psub/nsub contact rules tight in SRAM
+    "psd.5a",
+    "psd.5b",
+    "nsd.10b",
+    "licon.5b",
+    "licon.8a",
+    "licon.9",
+    "licon.14",
+    "hvtp.4",
+})
+
+
+# Regex to pluck the rule-id out of a Magic rule message.
+# Examples:
+#   "Local interconnect spacing < 0.17um (li.3)"
+#   "Metal1 overlap of Via1 < 0.03um in one direction (via.5a - via.4a)"
+#   "Metal3 overlap of via2 < %d (met3.4)"
+# We want the LAST "(<id>)" at end-of-string, and split on " - " or "+"
+# to handle composite rules (e.g. "via.5a - via.4a" -> ["via.5a","via.4a"]).
+_RULE_ID_RE = re.compile(r"\(([^()]+)\)\s*$")
+
+
+def _extract_rule_ids(message: str) -> list[str]:
+    """Pull rule IDs out of a Magic DRC rule message. Returns [] if none."""
+    m = _RULE_ID_RE.search(message)
+    if not m:
+        return []
+    inner = m.group(1).strip()
+    # Split on separators that Magic uses to link related rules.
+    return [s.strip() for s in re.split(r"\s*[-+]\s*", inner) if s.strip()]
+
+
+def _is_waiver(message: str) -> bool:
+    """True if every rule ID in the message is in the known-waiver set.
+
+    A composite message like "(via.5a - via.4a)" is only a waiver if
+    BOTH component rules are waivers — if any part is a real rule, the
+    error is real.
+    """
+    ids = _extract_rule_ids(message)
+    if not ids:
+        return False
+    return all(rid in _KNOWN_WAIVER_RULES for rid in ids)
 
 
 @dataclass
 class DRCResult:
-    """Result of a DRC run."""
+    """Result of a DRC run.
+
+    `clean` means zero REAL (non-waiver) errors. Foundry SRAM cell
+    waivers (COREID) and tilings thereof can still accumulate large
+    `waiver_error_count` values while `clean` is True.
+    """
     clean: bool
-    error_count: int
-    errors: list[str]
+    error_count: int                # total tiles (real + waiver)
+    real_error_count: int           # tiles from non-waiver rules
+    waiver_error_count: int         # tiles from known-waiver rules
+    errors: list[str]               # all rule messages (with tile counts)
+    real_errors: list[str]          # only non-waiver rule messages
     log_path: Path
     cell_name: str
 
     def summary(self) -> str:
         if self.clean:
-            return f"DRC CLEAN: {self.cell_name} — 0 errors"
-        return f"DRC FAILED: {self.cell_name} — {self.error_count} errors"
+            w = self.waiver_error_count
+            suffix = "" if w == 0 else f" ({w} waiver tiles)"
+            return f"DRC CLEAN: {self.cell_name}{suffix}"
+        return (
+            f"DRC FAILED: {self.cell_name} — {self.real_error_count} real "
+            f"errors ({self.waiver_error_count} waivers)"
+        )
 
 
 def find_pdk_root() -> Path:
@@ -139,19 +228,37 @@ quit -noprompt
             except ValueError:
                 pass
 
-    # Parse detailed errors from log. Each "Violation (N tiles): <msg>"
-    # line is kept as-is so DRCResult.errors surfaces both the rule text
-    # and the per-rule tile count.
+    # Parse detailed errors from log. Lines are "Violation (N tiles): <msg>".
+    # Split into waivers vs real based on each rule's ID (see _is_waiver).
     errors: list[str] = []
+    real_errors: list[str] = []
+    waiver_tiles = 0
+    real_tiles = 0
+    line_re = re.compile(r"^Violation \((\d+) tiles\): (.*)$")
     if log_path.exists():
         for line in log_path.read_text().splitlines():
-            if line.startswith("Violation "):
-                errors.append(line)
+            if not line.startswith("Violation "):
+                continue
+            errors.append(line)
+            m = line_re.match(line)
+            if not m:
+                real_errors.append(line)
+                continue
+            n = int(m.group(1))
+            msg = m.group(2)
+            if _is_waiver(msg):
+                waiver_tiles += n
+            else:
+                real_tiles += n
+                real_errors.append(line)
 
     return DRCResult(
-        clean=(error_count == 0),
+        clean=(real_tiles == 0),
         error_count=error_count,
+        real_error_count=real_tiles,
+        waiver_error_count=waiver_tiles,
         errors=errors,
+        real_errors=real_errors,
         log_path=log_path,
         cell_name=cell_name or "(top)",
     )

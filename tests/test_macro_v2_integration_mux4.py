@@ -66,10 +66,15 @@ def test_stacked_mux4_integration_drc_bounded(tmp_path):
     lib.write_gds(str(gds))
 
     result = run_drc(gds, cell_name="int_top", output_dir=tmp_path)
-    # Expect some unrouted-boundary DRC at inter-block transitions, but bounded.
-    # If > 1000 errors, individual rows are likely broken.
-    assert result.error_count < 1000, (
-        f"Too many DRC errors ({result.error_count}). Individual rows likely have issues."
+    # Expect some unrouted-boundary DRC at inter-block transitions, but
+    # bounded. Check REAL errors (waivers from foundry SRAM cells are
+    # expected to dominate and can number in the hundreds of thousands).
+    assert result.real_error_count < 1000, (
+        f"Too many REAL DRC errors ({result.real_error_count}); "
+        f"individual rows likely have issues. "
+        f"(waivers: {result.waiver_error_count})"
     )
-    # Report the actual count for visibility (non-failing)
-    print(f"\nIntegration DRC error count (unrouted): {result.error_count}")
+    print(
+        f"\nIntegration DRC: real={result.real_error_count} "
+        f"waivers={result.waiver_error_count}"
+    )

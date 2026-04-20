@@ -340,12 +340,14 @@ def test_assemble_tiny_macro_with_control_routing_drc_clean(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_top_level_has_pin_labels_for_every_signal():
+    """Signal pins carry top-level GDS labels so Magic extraction
+    identifies the nets. Power pins (VPWR/VGND) are declared only in
+    the LEF as met2 edge stubs; the GDS has met2 rails but no label."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
     lib = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     pin_labels = {lbl.text for lbl in top.labels}
-    # Expect every primary I/O port
-    required = {"clk", "we", "cs", "VPWR", "VGND"}
+    required = {"clk", "we", "cs"}
     for i in range(p.num_addr_bits):
         required.add(f"addr[{i}]")
     for i in range(p.bits):
@@ -355,25 +357,28 @@ def test_top_level_has_pin_labels_for_every_signal():
     assert not missing, f"missing top-level pin labels: {missing}"
 
 
-def test_top_level_has_met4_power_straps():
+def test_top_level_has_met2_power_rails():
+    """The macro's PDN is two full-width met2 rails — VPWR at the top,
+    VGND at the bottom — with LEF pin stubs straddling each edge."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
     lib = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
-    # Count met4 (71, 20) horizontal polygons
-    met4_horizontal = []
+    # Count met2 (69, 20) polygons that span most of the macro width.
+    fp = build_floorplan(p)
+    macro_w_est = fp.macro_size[0]
+    long_met2 = []
     for poly in top.polygons:
-        if (poly.layer, poly.datatype) != (71, 20):
+        if (poly.layer, poly.datatype) != (69, 20):
             continue
         bb = poly.bounding_box()
         if bb is None:
             continue
         w = bb[1][0] - bb[0][0]
         h = bb[1][1] - bb[0][1]
-        if w > 10 * h:
-            met4_horizontal.append(poly)
-    assert len(met4_horizontal) >= 2, (
-        f"expected >=2 met4 PDN straps (VPWR, VGND); got "
-        f"{len(met4_horizontal)}"
+        if w > 0.8 * macro_w_est and h < 1.0:
+            long_met2.append(poly)
+    assert len(long_met2) >= 2, (
+        f"expected >=2 full-width met2 power rails; got {len(long_met2)}"
     )
 
 

@@ -148,50 +148,44 @@ def generate_lef(
                  tx(px + _PIN_STUB_W / 2), ty(pins_bot_y + _PIN_STUB_LEN)),
             )
 
-        # Power/Ground as discrete met2 pin stubs at the top and bottom
-        # edges of the macro. Matches rekolektion v1's LEF convention
-        # (4 pin declarations per net: 2 top + 2 bottom). OpenROAD's
-        # PDN router ties met4 horizontal straps to these via an
-        # auto-computed via stack.
-        #
-        # Each stub is a small vertical rectangle (0.14 x 0.28 um)
-        # extending 0.14 um above/below the macro edge.
-        vpwr_y_top = ty(ys_hi - 0.14)   # slight inset from true top
-        vpwr_y_bot = ty(ys_lo + 0.14)
+        # Power/Ground as met2 pin stubs straddling the macro edges.
+        # BOTH VPWR pins sit on the top rail (VPWR net); BOTH VGND
+        # pins sit on the bottom rail (VGND net). Different nets MUST
+        # use different rails to avoid a short in the extracted GDS.
+        # Two pins per rail gives the chip-level PDN router two
+        # access points per net.
         stub_w = 0.14
         stub_h = 0.28
-        # Position two pins on each edge at 1/3 and 2/3 of the inner
-        # signal-pin x-range.
+        bot_y = 0.0          # LEF macro_h=0 bottom edge
+        top_y = macro_h      # LEF macro_h top edge
         inner_x0 = x0
         inner_x1 = x_end
-        vpwr_x1 = tx(inner_x0 + (inner_x1 - inner_x0) * 1.0 / 4.0)
-        vpwr_x2 = tx(inner_x0 + (inner_x1 - inner_x0) * 3.0 / 4.0)
-        vgnd_x1 = tx(inner_x0 + (inner_x1 - inner_x0) * 2.0 / 4.0)
-        vgnd_x2 = tx(inner_x0 + (inner_x1 - inner_x0) * 4.5 / 6.0)
+        vpwr_x_left = tx(inner_x0 + (inner_x1 - inner_x0) * 1.0 / 3.0)
+        vpwr_x_right = tx(inner_x0 + (inner_x1 - inner_x0) * 2.0 / 3.0)
+        vgnd_x_left = tx(inner_x0 + (inner_x1 - inner_x0) * 1.0 / 3.0)
+        vgnd_x_right = tx(inner_x0 + (inner_x1 - inner_x0) * 2.0 / 3.0)
 
-        # VPWR top
+        # VPWR pins — both on the top rail (VPWR net)
         _write_pin(
             f, "VPWR", "INOUT", "POWER", "met2",
-            (vpwr_x1 - stub_w/2, vpwr_y_top - stub_h/2,
-             vpwr_x1 + stub_w/2, vpwr_y_top + stub_h/2),
+            (vpwr_x_left - stub_w/2, top_y - stub_h/2,
+             vpwr_x_left + stub_w/2, top_y + stub_h/2),
         )
-        # VPWR bottom
         _write_pin(
             f, "VPWR", "INOUT", "POWER", "met2",
-            (vpwr_x2 - stub_w/2, vpwr_y_bot - stub_h/2,
-             vpwr_x2 + stub_w/2, vpwr_y_bot + stub_h/2),
+            (vpwr_x_right - stub_w/2, top_y - stub_h/2,
+             vpwr_x_right + stub_w/2, top_y + stub_h/2),
         )
-        # VGND top
+        # VGND pins — both on the bottom rail (VGND net)
         _write_pin(
             f, "VGND", "INOUT", "GROUND", "met2",
-            (vgnd_x1 - stub_w/2, vpwr_y_top - stub_h/2,
-             vgnd_x1 + stub_w/2, vpwr_y_top + stub_h/2),
+            (vgnd_x_left - stub_w/2, bot_y - stub_h/2,
+             vgnd_x_left + stub_w/2, bot_y + stub_h/2),
         )
-        # VGND bottom
         _write_pin(
             f, "VGND", "INOUT", "GROUND", "met2",
-            (vgnd_x2 - stub_w/2, vpwr_y_bot - stub_h/2,
-             vgnd_x2 + stub_w/2, vpwr_y_bot + stub_h/2),
+            (vgnd_x_right - stub_w/2, bot_y - stub_h/2,
+             vgnd_x_right + stub_w/2, bot_y + stub_h/2),
         )
 
         f.write(f"END {name}\n\n")

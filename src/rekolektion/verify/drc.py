@@ -78,9 +78,9 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     "mcon.2",      # mcon spacing
     "licon.1",     # poly/diff contact width
     "licon.2",     # diffusion contact spacing
-    "licon.5a",    # p-diff overlap of p-diff contact (foundry bitcell
-                   # 3 tiles in 20.6M-waiver activation_bank — tile-
-                   # provenance audit pending; presumed bitcell-interior)
+    "licon.5a",    # p-diff overlap of p-diff contact (foundry bitcell —
+                   # 3 tiles in activation_bank, all confirmed inside
+                   # foundry cell footprint via tile-provenance audit)
     "licon.8",     # poly overlap of poly contact
     "licon.11",    # diffusion contact to gate (multiple variants)
     "poly.11",     # no bends in transistors

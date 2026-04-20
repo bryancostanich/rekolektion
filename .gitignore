@@ -60,3 +60,7 @@ openlane_test_v1weight/macros/sram_weight_bank_small.gds
 openlane_test_v1weight/macros/sram_weight_bank_small.lef
 openlane_test_v1weight/macros/sram_weight_bank_small.lib
 openlane_test_v1weight/macros/sram_weight_bank_small.sp
+openlane_test_v1activation/runs/
+openlane_test_v1activation/macros/sram_activation_bank.gds
+openlane_test_v1activation/macros/sram_activation_bank.lef
+openlane_test_v1activation/macros/sram_activation_bank.lib

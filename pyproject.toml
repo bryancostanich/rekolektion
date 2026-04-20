@@ -45,6 +45,7 @@ select = ["E", "F", "W", "I"]
 testpaths = ["tests"]
 markers = [
     "magic: tests that invoke Magic (require PDK_ROOT env, slow ~10s each)",
+    "openlane: tests that run a full OpenLane chip flow (require nix-store yosys/openroad/klayout/netgen on PATH via scripts/openlane_env.sh)",
 ]
 
 [tool.mypy]

@@ -28,6 +28,7 @@ from typing import Dict, List, Tuple
 import gdstk
 
 from rekolektion.bitcell.base import PinInfo
+from rekolektion.tech.sky130 import LAYERS
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +165,9 @@ def _make_placeholder_gds(
     """Create a minimal placeholder GDS with a boundary rectangle."""
     lib = gdstk.Library(name=f"{cell_name}_lib")
     cell = gdstk.Cell(cell_name)
-    # Boundary on layer 235 (text/boundary — won't conflict with routing)
-    cell.add(gdstk.rectangle((0, 0), (width, height), layer=235, datatype=0))
+    # Boundary on sky130 prBoundary (235/4) so Magic's sky130B tech recognises it.
+    bl, bd = LAYERS.BOUNDARY.as_tuple
+    cell.add(gdstk.rectangle((0, 0), (width, height), layer=bl, datatype=bd))
     lib.add(cell)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lib.write_gds(str(output_path))

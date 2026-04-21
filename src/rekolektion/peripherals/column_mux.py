@@ -60,7 +60,7 @@ _LI1 = LAYERS.LI1.as_tuple
 _MCON_L = LAYERS.MCON.as_tuple
 _MET1 = LAYERS.MET1.as_tuple
 _NSDM = LAYERS.NSDM.as_tuple
-_BOUNDARY = (235, 0)
+_BOUNDARY = LAYERS.BOUNDARY.as_tuple  # (235, 4) — sky130 prBoundary
 
 
 def _snap(v: float, grid: float = 0.005) -> float:

@@ -100,3 +100,58 @@ def test_lef_macro_size_positive(tiny_lef):
     w = float(m.group(1))
     h = float(m.group(2))
     assert w > 10 and h > 10, f"macro size suspiciously small: {w} x {h}"
+
+
+def test_lef_has_obs_block(tiny_lef):
+    # Issue #5: LEF must emit OBS so OpenROAD's cut_rows sees the
+    # macro as a placement blockage and tapcell doesn't insert cells
+    # inside the footprint.
+    assert "\n  OBS\n" in tiny_lef, "missing OBS block"
+
+
+def test_lef_obs_blocks_met1_met2_full_size(tiny_lef):
+    import re
+    size = re.search(r"SIZE\s+([\d.]+)\s+BY\s+([\d.]+)", tiny_lef)
+    w = float(size.group(1))
+    h = float(size.group(2))
+    obs = re.search(r"\n  OBS\n(.*?)\n  END\n", tiny_lef, re.DOTALL).group(1)
+    # met1 and met2 must each have a full-SIZE rect
+    for layer in ("met1", "met2"):
+        pattern = (
+            rf"LAYER {layer}\s*;\s*"
+            rf"RECT\s+0\.000\s+0\.000\s+{w:.3f}\s+{h:.3f}\s*;"
+        )
+        assert re.search(pattern, obs), (
+            f"{layer} OBS must be full-SIZE {w:.3f} x {h:.3f}"
+        )
+
+
+def test_lef_obs_met3_band_excludes_pin_strips(tiny_lef):
+    # met3 OBS must be a band in the middle — not touching y=0 or y=h.
+    # This keeps the top and bottom pin strips OBS-free so the router
+    # can access signal pins.
+    import re
+    size = re.search(r"SIZE\s+([\d.]+)\s+BY\s+([\d.]+)", tiny_lef)
+    h = float(size.group(2))
+    obs = re.search(r"\n  OBS\n(.*?)\n  END\n", tiny_lef, re.DOTALL).group(1)
+    m = re.search(
+        r"LAYER met3\s*;\s*"
+        r"RECT\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*;",
+        obs,
+    )
+    assert m, "met3 OBS rect missing"
+    y0 = float(m.group(2))
+    y1 = float(m.group(4))
+    assert y0 > 0.0, f"met3 OBS touches bottom pin strip (y0={y0})"
+    assert y1 < h, f"met3 OBS touches top pin strip (y1={y1}, h={h})"
+    assert y1 > y0, "met3 OBS band has non-positive height"
+
+
+def test_lef_obs_omits_met4_and_li1(tiny_lef):
+    # met4 is fully declared via VPWR/VGND PORTs; adding OBS there
+    # would fight chip PDN merges. li1 is bitcell-internal and
+    # unreachable once met1 is blocked.
+    import re
+    obs = re.search(r"\n  OBS\n(.*?)\n  END\n", tiny_lef, re.DOTALL).group(1)
+    assert "LAYER met4" not in obs, "OBS must not declare met4"
+    assert "LAYER li1" not in obs, "OBS must not declare li1"

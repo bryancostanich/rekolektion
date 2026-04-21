@@ -315,7 +315,45 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     _draw_power_network(top, p, fp)
 
     lib.add(top)
+
+    # Shift the top cell so its bounding-box lower-left lands at (0, 0),
+    # matching the LEF ORIGIN 0 0 convention.  Without this shift the
+    # GDS shapes sit at negative assembler-frame coords (e.g. xs_lo =
+    # -39.81, ys_lo = -37.875) while the LEF declares pin PORT RECTs
+    # in 0-origin macro-local space via `lef_generator.tx/ty`.
+    # OpenROAD's PDN generator then can't find GDS metal at the
+    # LEF-declared pin position and emits PDN-0232 "macro does not
+    # contain any shapes or vias" for every macro instance.
+    _shift_top_to_zero_origin(top, p, fp)
+
     return lib
+
+
+def _shift_top_to_zero_origin(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Translate every shape in `top` by (-xs_lo, -ys_lo) so the cell's
+    bounding box begins at (0, 0).  Uses the same xs_lo/ys_lo formulas
+    the LEF generator uses, so the GDS and LEF agree on coordinates."""
+    xs_lo = min(x for x, _ in fp.positions.values()) - 1.0
+    prec_top = fp.positions["precharge"][1] + fp.sizes["precharge"][1]
+    wd_bot = fp.positions["write_driver"][1]
+    pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
+    pins_bot_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+    ys_lo = pins_bot_y - 0.5
+    dx, dy = -xs_lo, -ys_lo
+    for poly in top.polygons:
+        poly.translate(dx, dy)
+    for path in top.paths:
+        path.translate(dx, dy)
+    for lbl in top.labels:
+        lx, ly = lbl.origin
+        lbl.origin = (lx + dx, ly + dy)
+    for ref in top.references:
+        ox, oy = ref.origin
+        ref.origin = (ox + dx, oy + dy)
 
 
 # ---------------------------------------------------------------------------
@@ -1361,9 +1399,25 @@ def _draw_power_network(
         wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
     )
     # LEF coord ys_hi = pins_top_y + pin_stub_len + 0.5 (assembler frame);
-    # ys_lo = pins_bot_y - 0.5. The LEF power pin straddles ys_hi / ys_lo.
-    top_rail_y = pins_top_y + _PIN_STUB_LEN + 0.5
-    bot_rail_y = pins_bot_y - 0.5
+    # ys_lo = pins_bot_y - 0.5.
+    # Snap the top rail y UP to the nearest sky130_fd_sc_hd stdcell row
+    # pitch (2.72 μm) so the LEF macro's top edge — and the met2 VPWR
+    # pin that sits on it — align with a chip-level stdcell row
+    # boundary (keeps `lef_generator._snap_macro_h_to_row_pitch` in
+    # sync). Without this snap, 81/81 macro VPWRs come up PSM-0069
+    # "Unconnected instance" at chip-level PDN.
+    import math as _math
+    _ROW_PITCH = 2.72
+    _ys_lo = pins_bot_y - 0.5
+    _ys_hi_tight = pins_top_y + _PIN_STUB_LEN + 0.5
+    _macro_h_snapped = _math.ceil((_ys_hi_tight - _ys_lo) / _ROW_PITCH) * _ROW_PITCH
+    # Offset rails inward by strap_half so the 1.6-μm-wide met4 PDN
+    # straps sit FULLY INSIDE the macro bbox (required by OpenROAD's
+    # PDN-0232 check — the default macro grid template looks for
+    # shapes within the macro body, not straddling its boundary).
+    _strap_half = _PDN_STRAP_W / 2
+    top_rail_y = _ys_lo + _macro_h_snapped - _strap_half
+    bot_rail_y = _ys_lo + _strap_half
 
     rail_half = _PDN_MET2_RAIL_W / 2
     from rekolektion.macro_v2.sky130_drc import GDS_LAYER
@@ -1384,13 +1438,62 @@ def _draw_power_network(
         layer=met2_l, datatype=met2_d,
     ))
 
-    # NOTE: vertical met3 straps between the top and bottom rails were
-    # prototyped but conflict with peripheral-row internal met3 usage
-    # (col_mux has GND on met3). For now the PDN consists of only the
-    # two horizontal met2 edge rails; every VPWR pin is on the top
-    # rail, every VGND pin on the bottom — OpenROAD's chip-level PDN
-    # drops met4 straps that tap both via auto-via stacks. Internal
-    # IR-drop distribution will be revisited when a real SPICE PVT
-    # characterisation pass runs (see phase_c8_plan.md).
+    # Vertical met4 straps — chip-PDN interface layer.
+    #
+    # Why vertical (not horizontal): chip PDN has met4 vstripes +
+    # met5 hstripes.  OpenROAD's default macro grid template has
+    # exactly one `add_pdn_connect -layers "met4 met5"` rule, and
+    # `Grid::getIntersections` (OpenROAD src/pdn/src/grid.cpp:521)
+    # creates a via wherever a met4 shape overlaps a met5 shape on
+    # the same net.  A horizontal met4 strap is only 1.6 μm tall in
+    # y; chip met5 hstripes at 153.18 μm pitch almost never fall
+    # within that narrow band, so no intersections → no vias → every
+    # macro comes up PDN-0232 "does not contain any shapes or vias"
+    # (observed 81/81 on RUN_2026-04-20_*).
+    #
+    # Full-height vertical straps are crossed by every chip met5
+    # hstripe whose y falls inside the macro's y range — guaranteed
+    # intersections → guaranteed vias.  Matches OpenRAM sky130 SRAM
+    # reference LEF pattern.
+    #
+    # Strap distribution (OpenRAM-inspired):
+    #   - 1 VPWR vertical strap at macro x-center, via-connected only
+    #     to the top met2 VPWR rail at y=top_rail_y.  Does NOT via
+    #     to bottom met2 rail (would short VPWR to VGND).
+    #   - 2 VGND vertical straps at left + right edges, each via-
+    #     connected only to the bottom met2 VGND rail at y=bot_rail_y.
+    #
+    # The floating end of each strap is physically met4 crossing the
+    # wrong-net met2 rail in space, but different layers with no via
+    # = no electrical connection = no short.
+    macro_w = xs_hi - xs_lo
+    strap_half = _PDN_STRAP_W / 2
+    edge_margin = strap_half + 0.5
+    vpwr_xs = [xs_lo + macro_w / 2]
+    vgnd_xs = [xs_lo + edge_margin, xs_hi - edge_margin]
+
+    for vx in vpwr_xs:
+        draw_pdn_strap(
+            top, orientation="vertical",
+            center_coord=vx,
+            span_start=bot_rail_y, span_end=top_rail_y,
+            layer="met4", width=_PDN_STRAP_W,
+        )
+        draw_via_stack(
+            top, from_layer="met2", to_layer="met4",
+            position=(vx, top_rail_y),
+        )
+
+    for vx in vgnd_xs:
+        draw_pdn_strap(
+            top, orientation="vertical",
+            center_coord=vx,
+            span_start=bot_rail_y, span_end=top_rail_y,
+            layer="met4", width=_PDN_STRAP_W,
+        )
+        draw_via_stack(
+            top, from_layer="met2", to_layer="met4",
+            position=(vx, bot_rail_y),
+        )
 
 

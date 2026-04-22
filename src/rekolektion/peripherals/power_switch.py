@@ -206,29 +206,29 @@ def generate_power_switches(
 
     # Place PMOS header switches evenly across width
     switch_spacing = width / (num_switches + 1)
+    hw = _W_P / 2.0
+    hl = _L / 2.0
+
+    # Single shared gate poly across ALL switches (all PMOS gates are
+    # on SLEEP). Spans from the leftmost switch's left edge (-overhang)
+    # to the rightmost switch's right edge (+overhang), at y = pg_y.
+    # No per-switch poly extensions / heads — eliminates the spurious
+    # transistor Magic carves out of adjacent-switch poly overlaps.
+    leftmost_cx = switch_spacing
+    rightmost_cx = switch_spacing * num_switches
+    poly_left = leftmost_cx - hw - _POLY_OVH
+    poly_right = rightmost_cx + hw + _POLY_OVH
+    _rect(cell, _POLY, poly_left, pg_y - hl, poly_right, pg_y + hl)
 
     for i in range(num_switches):
         cx = switch_spacing * (i + 1)
 
-        hw = _W_P / 2.0
-        hl = _L / 2.0
-
-        # Diff vertical, poly horizontal across channel
+        # Diff vertical per switch.
         _rect(cell, _DIFF,
               cx - hw, diff_bot, cx + hw, diff_top)
         _rect(cell, _PSDM,
               cx - hw - _PSDM_ENC, diff_bot - _PSDM_ENC,
               cx + hw + _PSDM_ENC, diff_top + _PSDM_ENC)
-        # Poly gate spans diff + overhang, extending further right to a
-        # head where the licon tap lands (clear of diff y range).
-        poly_left = cx - hw - _POLY_OVH
-        poly_right = cx + hw + _POLY_OVH + 0.60    # extension for head
-        _rect(cell, _POLY, poly_left, pg_y - hl, poly_right, pg_y + hl)
-        # Poly head at the right end — widened square so a licon fits
-        # with full poly enclosure.
-        head_cx = poly_right - _POLY_LICON_ENC - _LICON / 2
-        head_size = _LICON + 2 * _POLY_LICON_ENC   # 0.33
-        _sq(cell, _POLY, head_cx, pg_y, head_size)
 
         # Source (top) diff contact → VDD_REAL rail
         _diff_contact(cell, cx, src_y)
@@ -238,36 +238,49 @@ def generate_power_switches(
         _diff_contact(cell, cx, drn_y)
         _tap_to_met3(cell, cx, drn_y, vdd_rail_y)
 
-        # Gate poly head → SLEEP rail
-        _gate_tap_to_met3(cell, head_cx, pg_y, sleep_rail_y)
-
-    # N-well taps tie the body to VDD_REAL. Place one tap per switch,
-    # at the switch's x but displaced vertically to a dedicated row
-    # above the PMOS diff (between diff_top and VDD_REAL rail).
+    # N-well taps tie the body to VDD_REAL. Place them at the cell
+    # *ends* (outside every switch's P+ diff region) so they never
+    # collide with switches or the shared gate tap regardless of
+    # num_switches / switch spacing.
     tap_y = (diff_top + vdd_real_rail_y) / 2      # midway
-    for i in range(num_switches):
-        cx = switch_spacing * (i + 1)
-        tap_x = cx - _W_P / 2 - 0.40              # LEFT of diff, in nwell
-        # Tap diff (N+ in nwell = n-tap)
+    nw_tap_xs = [
+        0.80,                     # left cell edge, clear of switch 0 diff
+        _snap(width - 0.80),      # right cell edge
+    ]
+    for nw_tap_x in nw_tap_xs:
         _rect(cell, _TAP,
-              tap_x - _TAP_W / 2, tap_y - _TAP_W / 2,
-              tap_x + _TAP_W / 2, tap_y + _TAP_W / 2)
+              nw_tap_x - _TAP_W / 2, tap_y - _TAP_W / 2,
+              nw_tap_x + _TAP_W / 2, tap_y + _TAP_W / 2)
         _rect(cell, _NSDM,
-              tap_x - _TAP_W / 2 - _PSDM_ENC, tap_y - _TAP_W / 2 - _PSDM_ENC,
-              tap_x + _TAP_W / 2 + _PSDM_ENC, tap_y + _TAP_W / 2 + _PSDM_ENC)
-        _sq(cell, _LICON1, tap_x, tap_y, _LICON)
-        _sq(cell, _LI1, tap_x, tap_y, _LI_PAD)
-        _sq(cell, _MCON_L, tap_x, tap_y, _MCON)
+              nw_tap_x - _TAP_W / 2 - _PSDM_ENC, tap_y - _TAP_W / 2 - _PSDM_ENC,
+              nw_tap_x + _TAP_W / 2 + _PSDM_ENC, tap_y + _TAP_W / 2 + _PSDM_ENC)
+        _sq(cell, _LICON1, nw_tap_x, tap_y, _LICON)
+        _sq(cell, _LI1, nw_tap_x, tap_y, _LI_PAD)
+        _sq(cell, _MCON_L, nw_tap_x, tap_y, _MCON)
         half = 0.15
         y_lo = tap_y - half
         y_hi = vdd_real_rail_y + half
-        _rect(cell, _MET1, tap_x - half, y_lo, tap_x + half, y_hi)
-        _sq(cell, _VIA_L, tap_x, vdd_real_rail_y, _VIA1)
-        _sq(cell, _MET2, tap_x, vdd_real_rail_y, 0.30)
-        _sq(cell, _MET2, tap_x, vdd_real_rail_y,
+        _rect(cell, _MET1, nw_tap_x - half, y_lo, nw_tap_x + half, y_hi)
+        _sq(cell, _VIA_L, nw_tap_x, vdd_real_rail_y, _VIA1)
+        _sq(cell, _MET2, nw_tap_x, vdd_real_rail_y, 0.30)
+        _sq(cell, _MET2, nw_tap_x, vdd_real_rail_y,
             _VIA2 + 2 * _VIA2_ENC_MET2_OTHER)
-        _sq(cell, _VIA2_L, tap_x, vdd_real_rail_y, _VIA2)
-        _sq(cell, _MET3, tap_x, vdd_real_rail_y, _VIA2 + 2 * _VIA2_ENC_MET3)
+        _sq(cell, _VIA2_L, nw_tap_x, vdd_real_rail_y, _VIA2)
+        _sq(cell, _MET3, nw_tap_x, vdd_real_rail_y, _VIA2 + 2 * _VIA2_ENC_MET3)
+
+    # Single gate tap to SLEEP rail — one licon+stack on the shared
+    # poly. Extend the shared poly to the right by +1.0 µm past the
+    # last switch so the tap + its met1/met2 stacks sit well clear of
+    # every switch's diff, source/drain via, and the right-edge nw tap.
+    extension = 1.0
+    ext_poly_right = rightmost_cx + hw + _POLY_OVH + extension
+    _rect(cell, _POLY,
+          poly_right - 0.001, pg_y - hl,
+          ext_poly_right, pg_y + hl)
+    tap_x = _snap(rightmost_cx + hw + _POLY_OVH + 0.70)
+    head_size = _LICON + 2 * _POLY_LICON_ENC   # 0.33
+    _sq(cell, _POLY, tap_x, pg_y, head_size)
+    _gate_tap_to_met3(cell, tap_x, pg_y, sleep_rail_y)
 
     if output_path:
         out = Path(output_path)

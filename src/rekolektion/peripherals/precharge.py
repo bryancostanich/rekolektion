@@ -129,6 +129,13 @@ _MET3 = LAYERS.MET3.as_tuple
 _NWELL = LAYERS.NWELL.as_tuple
 _PSDM = LAYERS.PSDM.as_tuple
 _BOUNDARY = LAYERS.BOUNDARY.as_tuple
+_COREID = LAYERS.COREID.as_tuple      # (81, 2) — sky130 SRAM core marker:
+                                       # relaxes met1/li1/poly spacing to the
+                                       # sub-min values needed at 1.310 µm
+                                       # pair pitch (adjacent BL/BR stubs sit
+                                       # 0.055 µm apart — way below the 0.14
+                                       # µm general met1.2 rule, but allowed
+                                       # under the SRAM core exception).
 
 
 def _snap(v: float, grid: float = 0.005) -> float:
@@ -175,10 +182,31 @@ def _mcon_pad(cell: gdstk.Cell, cx: float, cy: float,
 
 
 def _via1_stack(cell: gdstk.Cell, cx: float, cy: float) -> None:
-    pad = _VIA1 + 2 * _VIA1_ENC
+    """Via1 with 0.30 µm symmetric pads on met1 and met2.
+
+    Pad 0.30 µm meets via.4a (≥0.055 symmetric), via.5a (≥0.06 in one
+    direction), and met1.6 min area (0.09 > 0.083 µm²) standalone.
+    Caller must ensure any overlapping met1/met2 already present at
+    (cx, cy) either matches the 0.30 µm footprint or is contained in
+    it — Magic checks encl on each source polygon, not just the union.
+    """
+    pad = 0.30
     _sq(cell, _MET1, cx, cy, pad)
     _sq(cell, _VIA_L, cx, cy, _VIA1)
     _sq(cell, _MET2, cx, cy, pad)
+
+
+def _tap_stack(cell: gdstk.Cell, cx: float, cy: float, poly: bool = False) -> None:
+    """Full stack for a tap point on a poly or diff terminal:
+    licon → li1 → mcon → met1 → via1 → met2, with a single 0.30 µm
+    met1 pad so Magic sees one polygon for via1 encl.
+    """
+    _sq(cell, _LICON1, cx, cy, _LICON)
+    _sq(cell, _LI1, cx, cy, _LICON + 2 * _LI_ENC)
+    _sq(cell, _MCON_L, cx, cy, _MCON)
+    _sq(cell, _MET1, cx, cy, 0.30)
+    _sq(cell, _VIA_L, cx, cy, _VIA1)
+    _sq(cell, _MET2, cx, cy, 0.30)
 
 
 def _via2_stack(cell: gdstk.Cell, cx: float, cy: float) -> None:
@@ -262,27 +290,35 @@ def _gate_tap_to_rail(
 
     Assumes tap_x lies on a poly back-bar that is already drawn.
     """
-    _poly_contact(cell, tap_x, bar_y)
-    _mcon_pad(cell, tap_x, bar_y)
-    _via1_stack(cell, tap_x, bar_y)
-    # Met2 riser from (tap_x, bar_y) down to rail_y.
-    riser_half = (_VIA1 + 2 * _VIA1_ENC) / 2.0
+    _tap_stack(cell, tap_x, bar_y, poly=True)
+    # Met2 riser from (tap_x, bar_y) down to rail_y. Width 0.30 µm to
+    # match via1/via2 met2 pads at the stack and via2 pad at the rail.
+    half = 0.15
     _rect(cell, _MET2,
-          tap_x - riser_half, rail_y,
-          tap_x + riser_half, bar_y + riser_half)
+          tap_x - half, rail_y,
+          tap_x + half, bar_y + half)
     _via2_stack(cell, tap_x, rail_y)
 
 
 def _src_tap_to_rail(
     cell: gdstk.Cell, tap_x: float, diff_y: float, rail_y: float,
 ) -> None:
-    """From a diff contact at (tap_x, diff_y), drop a stack up to the
-    met3 rail at y=rail_y. Includes mcon, via1, via2 at the rail."""
-    _mcon_pad(cell, tap_x, diff_y)
-    riser_half = (_VIA1 + 2 * _VIA1_ENC) / 2.0
+    """From a shared-source diff contact at (tap_x, diff_y), drop a
+    stack up to the met3 VDD rail at y=rail_y.
+
+    Structure: licon+li1 at diff (drawn by caller via _diff_contact),
+    mcon + 0.30 µm met1 stub from diff_y up to rail_y, via1 + via2 at
+    (tap_x, rail_y).
+
+    Stub width 0.30 µm matches via1/via2 met2 pads; Magic sees one met1
+    polygon covering both the diff mcon and the via1 contact with
+    consistent ≥0.075 µm enclosure everywhere.
+    """
+    _sq(cell, _MCON_L, tap_x, diff_y, _MCON)
+    half = 0.15
     _rect(cell, _MET1,
-          tap_x - riser_half, diff_y,
-          tap_x + riser_half, rail_y + _RAIL_W / 2)
+          tap_x - half, diff_y - half,
+          tap_x + half, rail_y + half)
     _via1_stack(cell, tap_x, rail_y)
     _via2_stack(cell, tap_x, rail_y)
 
@@ -344,14 +380,12 @@ def _mp3_equalizer(
     _rect(cell, _POLY,
           poly_cx - stub_half, mp3_stub_bot,
           poly_cx + stub_half, poly_bot)
-    _poly_contact(cell, poly_cx, mp3_tap_y)
-    _mcon_pad(cell, poly_cx, mp3_tap_y)
-    _via1_stack(cell, poly_cx, mp3_tap_y)
+    _tap_stack(cell, poly_cx, mp3_tap_y, poly=True)
     # Met2 riser from (poly_cx, mp3_tap_y) down to rail.
-    riser_half = (_VIA1 + 2 * _VIA1_ENC) / 2.0
+    half = 0.15
     _rect(cell, _MET2,
-          poly_cx - riser_half, rail_y,
-          poly_cx + riser_half, mp3_tap_y + riser_half)
+          poly_cx - half, rail_y,
+          poly_cx + half, mp3_tap_y + half)
     _via2_stack(cell, poly_cx, rail_y)
 
 

@@ -1305,6 +1305,29 @@ def _place_top_pins(
         )
         draw_pin_with_label(top, text=f"dout[{i}]", layer=_PIN_LAYER, rect=rect)
 
+    # col_sel_{k} pins — labeled on the col_mux cell's existing sel_{k}
+    # met3 rails at the macro's WEST edge. The rails already span the
+    # full col_mux width (= approx macro width), so the pin is just a
+    # labeled portion of the rail near the west edge. No additional
+    # routing is needed; external SoC routing drives the rail directly.
+    col_mux_x, col_mux_y = fp.positions["col_mux"]
+    # sel rail y in col_mux cell-local coords: sel_first_y + k*sel_pitch
+    # (column_mux.py: sel_first_y=2.425, sel_pitch=0.80, rail_w=0.40)
+    _COLMUX_SEL_FIRST_Y: float = 2.425
+    _COLMUX_SEL_PITCH: float = 0.80
+    _COLMUX_RAIL_W: float = 0.40
+    for k in range(p.mux_ratio):
+        rail_y_abs = col_mux_y + _COLMUX_SEL_FIRST_Y + k * _COLMUX_SEL_PITCH
+        # Pin rect: 0.30 µm × rail width, inside the rail near west edge.
+        rect = (
+            col_mux_x + 0.10,
+            rail_y_abs - _COLMUX_RAIL_W / 2,
+            col_mux_x + 0.40,
+            rail_y_abs + _COLMUX_RAIL_W / 2,
+        )
+        draw_pin_with_label(top, text=f"col_sel[{k}]",
+                            layer=_PIN_LAYER, rect=rect)
+
 
 def _place_power_grid(
     top: gdstk.Cell,

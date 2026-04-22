@@ -685,59 +685,168 @@ def _route_control(
     don't currently gate on clk); the DFF Q is left as an isolated pin.
     """
     ctrl_origin = fp.positions["control_logic"]
+    ctrl_x, ctrl_y = ctrl_origin
+    ctrl_w, ctrl_h = fp.sizes["control_logic"]
     prec_x, prec_y = fp.positions["precharge"]
     sa_x, sa_y = fp.positions["sense_amp"]
     wd_x, wd_y = fp.positions["write_driver"]
 
     mux_pitch = p.mux_ratio * _BITCELL_WIDTH
 
-    # --- p_en_bar: met2 feeder from DFF Q, one via2 drop onto the
-    # precharge cell's full-width met3 p_en_bar rail.
+    # Routing convention (sky130 preferred directions):
+    #   met2 = vertical  (used for short drops to cell pins)
+    #   met3 = horizontal (used for long trunks across the macro)
+    #   met4 = vertical (PDN straps only)
     #
-    # The new precharge (Option II) exposes p_en_bar as a continuous
-    # met3 rail spanning the entire cell width. A single via2 at any
-    # safe x on that rail fans out to every column internally — no
-    # per-bit stubs needed.
-    dff_q = _dff_q_absolute(ctrl_origin, 1)
-    drop_x = prec_x + _PRECHARGE_EN_X_LOCAL
-    rail_y = prec_y + _PRECHARGE_EN_Y_LOCAL
-    # Met2 from DFF Q to (drop_x, rail_y): L-shape (horizontal, vertical).
-    draw_wire(top, start=dff_q, end=(drop_x, dff_q[1]), layer="met2")
-    draw_wire(top, start=(drop_x, dff_q[1]), end=(drop_x, rail_y),
-              layer="met2")
-    # Via2 drop from met2 onto the met3 rail.
-    draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(drop_x, rail_y))
+    # For each control signal we do:
+    #   1. DFF Q (met2 pin) -> vertical met2 UP to a trunk y
+    #      above/below the ctrl_logic block (never sideways on met2).
+    #   2. Via stack met2->met3 at the trunk.
+    #   3. Horizontal met3 trunk from DFF column to target x.
+    #   4. Vertical met2 down to target pin; via stack to pin layer.
+    #
+    # The trunk y's are chosen so no horizontal met3 rail passes
+    # through any cell's internal met3 rail (cells use met3 at
+    # cell-local y's listed below; trunk y's are offset from those).
 
-    # --- s_en: met2 rail, via stack to met1 at each SA EN pin ---------
-    dff_q = _dff_q_absolute(ctrl_origin, 2)
-    rail_y_s = sa_y + _SA_EN_Y_LOCAL + 0.3
-    draw_wire(top, start=dff_q, end=(dff_q[0], rail_y_s), layer="met2")
+    # Safe trunk y's for the three signals:
+    #   p_en_bar: below the ctrl_logic block (room: wd_y < y < ctrl_y)
+    #   s_en:     between sense_amp and col_mux (EN pin at sa_y+10.97)
+    #   w_en:     below write_driver (wd_y + 0.3)
+    # NOTE: the precharge p_en_bar rail at prec_y+0.28 is above the
+    # array, so the DFF-to-precharge trunk must traverse the full
+    # macro height on met3.
+    #
+    # Helper: run vertical met2 up from DFF Q to trunk_y, horizontal
+    # met3 from feeder_x to target_x, vertical met2 down to dest_y.
+    def _wire_dff_to_pin(
+        dff_idx: int,
+        trunk_y: float,
+        target_x: float,
+        target_y: float,
+        target_layer: str,
+    ) -> None:
+        dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, dff_idx)
+        # 1. Vertical met2 from DFF Q to trunk y
+        draw_wire(top, start=(dff_q_x, dff_q_y),
+                  end=(dff_q_x, trunk_y), layer="met2")
+        # 2. Via stack met2 -> met3 at the trunk
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(dff_q_x, trunk_y))
+        # 3. Horizontal met3 trunk
+        draw_wire(top, start=(dff_q_x, trunk_y),
+                  end=(target_x, trunk_y), layer="met3")
+        # 4. Via stack met3 -> met2 at target column
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(target_x, trunk_y))
+        # 5. Vertical met2 from trunk down (or up) to target pin
+        draw_wire(top, start=(target_x, trunk_y),
+                  end=(target_x, target_y), layer="met2")
+        # 6. Via stack met2 -> target_layer (met1 or met3)
+        if target_layer == "met1":
+            draw_via_stack(top, from_layer="met1", to_layer="met2",
+                           position=(target_x, target_y))
+        elif target_layer == "met3":
+            draw_via_stack(top, from_layer="met2", to_layer="met3",
+                           position=(target_x, target_y))
+        # met2 target: no via needed (met2 already)
+
+    # Trunk y's. Control signals route from ctrl_logic (which sits
+    # below the row_decoder, x < 0) across to the peripheral rows
+    # (x >= 0). The horizontal trunk must clear both ctrl_logic's
+    # top (ctrl_y + ctrl_h = -2.0) and any met3 feature in the row
+    # between ctrl_logic and the peripheral rows.
+    #
+    # Use y = ctrl_y + ctrl_h + margin for trunks that head UP to
+    # precharge (crosses through empty space above ctrl_logic, below
+    # the array).
+    # Use y = ctrl_y - 0.6 for trunks that head DOWN to sense_amp and
+    # write_driver (empty space below ctrl_logic).
+    trunk_y_up = ctrl_y + ctrl_h + 0.3          # just above ctrl_logic
+    trunk_y_dn = ctrl_y - 0.6                    # just below ctrl_logic
+    # Separate the three signals' trunk y's so they don't merge:
+    trunk_y_p_en_bar = trunk_y_up                # DFF1 -> precharge (up)
+    trunk_y_s_en = trunk_y_dn                    # DFF2 -> sense_amp (down)
+    trunk_y_w_en = trunk_y_dn - 0.8              # DFF3 -> write_driver (farther down)
+
+    # --- p_en_bar (DFF 1 Q -> precharge met3 rail) ---------------------
+    # Precharge p_en_bar is a full-width met3 rail at prec_y+0.28.
+    # Routing constraint: a horizontal met3 trunk at y=trunk_y_p_en_bar
+    # (≈ -1.7) that enters col_mux x-range (>=0) would overlap col_sel
+    # rails (full-width met3 at y={-3.54, -2.74, -1.94, -1.14} inside
+    # col_mux). We keep the met3 trunk WEST of col_mux (x<0) and use a
+    # vertical met2 riser in the empty gap between wl_driver (ends
+    # x=-2.0) and array (starts x=0) to reach the precharge rail y.
+    # From there a short met3 jog enters the rail's x-range.
+    dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 1)
+    p_rail_y = prec_y + _PRECHARGE_EN_Y_LOCAL
+    # Riser column: between wl_driver east edge (x=-2.0) and array x=0.
+    riser_x = -0.5
+    # Landing x: just inside the rail's x-range.
+    landing_x = 0.3
+    # 1. DFF Q (met2) -> vertical met2 up to trunk y
+    draw_wire(top, start=(dff_q_x, dff_q_y),
+              end=(dff_q_x, trunk_y_p_en_bar), layer="met2")
+    draw_via_stack(top, from_layer="met2", to_layer="met3",
+                   position=(dff_q_x, trunk_y_p_en_bar))
+    # 2. Met3 trunk from DFF column EAST to riser_x (outside col_mux)
+    draw_wire(top, start=(dff_q_x, trunk_y_p_en_bar),
+              end=(riser_x, trunk_y_p_en_bar), layer="met3")
+    # 3. Via met3->met2 at riser bottom
+    draw_via_stack(top, from_layer="met2", to_layer="met3",
+                   position=(riser_x, trunk_y_p_en_bar))
+    # 4. Met2 vertical from riser bottom UP to rail y (in empty gap)
+    draw_wire(top, start=(riser_x, trunk_y_p_en_bar),
+              end=(riser_x, p_rail_y), layer="met2")
+    # 5. Via met2->met3 at riser top (rail y)
+    draw_via_stack(top, from_layer="met2", to_layer="met3",
+                   position=(riser_x, p_rail_y))
+    # 6. Short met3 jog from riser into the precharge rail
+    draw_wire(top, start=(riser_x, p_rail_y),
+              end=(landing_x, p_rail_y), layer="met3")
+
+    # --- s_en (DFF 2 Q -> sense_amp EN pins, one per bit) -------------
+    # Per-bit SA EN pin is met1 at (sa_x + bit*mux_pitch + 0.615,
+    # sa_y + 10.97). Trunk at trunk_y_s_en (below ctrl_logic); for
+    # each bit we drop met2 from trunk down to the pin, then via
+    # to met1.
+    dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 2)
+    # DFF Q (met2) -> vertical met2 DOWN to the trunk y (trunk below)
+    draw_wire(top, start=(dff_q_x, dff_q_y),
+              end=(dff_q_x, trunk_y_s_en), layer="met2")
+    draw_via_stack(top, from_layer="met2", to_layer="met3",
+                   position=(dff_q_x, trunk_y_s_en))
+    # Trunk extends from DFF column east to last bit's SA EN x + margin.
     rail_x_end_s = sa_x + (p.bits - 1) * mux_pitch + _SA_EN_X_LOCAL + 1.0
-    draw_wire(top, start=(dff_q[0], rail_y_s),
-              end=(rail_x_end_s, rail_y_s), layer="met2")
+    draw_wire(top, start=(dff_q_x, trunk_y_s_en),
+              end=(rail_x_end_s, trunk_y_s_en), layer="met3")
+    # Per-bit drop: trunk -> met2 vertical -> met1 SA EN pin
     for bit in range(p.bits):
         pin_x = sa_x + bit * mux_pitch + _SA_EN_X_LOCAL
         pin_y = sa_y + _SA_EN_Y_LOCAL
-        draw_wire(top, start=(pin_x, rail_y_s), end=(pin_x, pin_y),
-                  layer="met2")
-        # met2 -> met1 via stack to reach SA EN pin (met1)
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(pin_x, trunk_y_s_en))
+        draw_wire(top, start=(pin_x, trunk_y_s_en),
+                  end=(pin_x, pin_y), layer="met2")
         draw_via_stack(top, from_layer="met1", to_layer="met2",
                        position=(pin_x, pin_y))
 
-    # --- w_en: met2 rail, via stack to met1 at each WD EN pin ---------
-    dff_q = _dff_q_absolute(ctrl_origin, 3)
-    rail_y_w = wd_y + _WD_EN_Y_LOCAL - 0.3   # rail below pin
-    # Vertical down from DFF Q to rail (DFF is above WD)
-    draw_wire(top, start=dff_q, end=(dff_q[0], rail_y_w), layer="met2")
+    # --- w_en (DFF 3 Q -> write_driver EN pins, one per bit) ---------
+    dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 3)
+    draw_wire(top, start=(dff_q_x, dff_q_y),
+              end=(dff_q_x, trunk_y_w_en), layer="met2")
+    draw_via_stack(top, from_layer="met2", to_layer="met3",
+                   position=(dff_q_x, trunk_y_w_en))
     rail_x_end_w = wd_x + (p.bits - 1) * mux_pitch + _WD_EN_X_LOCAL + 1.0
-    draw_wire(top, start=(dff_q[0], rail_y_w),
-              end=(rail_x_end_w, rail_y_w), layer="met2")
+    draw_wire(top, start=(dff_q_x, trunk_y_w_en),
+              end=(rail_x_end_w, trunk_y_w_en), layer="met3")
     for bit in range(p.bits):
         pin_x = wd_x + bit * mux_pitch + _WD_EN_X_LOCAL
         pin_y = wd_y + _WD_EN_Y_LOCAL
-        draw_wire(top, start=(pin_x, rail_y_w), end=(pin_x, pin_y),
-                  layer="met2")
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(pin_x, trunk_y_w_en))
+        draw_wire(top, start=(pin_x, trunk_y_w_en),
+                  end=(pin_x, pin_y), layer="met2")
         draw_via_stack(top, from_layer="met1", to_layer="met2",
                        position=(pin_x, pin_y))
 
@@ -1398,21 +1507,16 @@ def _draw_power_network(
 ) -> None:
     """Build the macro's internal power distribution network.
 
-    Two horizontal met2 rails (VPWR top, VGND bottom) span the full
-    macro width at the positions that match the LEF pin stub Y. A
-    sequence of vertical met3 straps tie the rails together across
-    the macro; li1→met2 via stacks drop into the bitcell array every
-    few mux groups so foundry-cell internal rails are anchored.
+    Vertical met4 straps (VPWR at center, VGND at edges) span the
+    macro's interior height between the LEF pin anchors. Each strap
+    gets a local met2 pad at its top/bottom anchor so the LEF's
+    met2 PORT rect has matching GDS metal (for PSM).
 
-    The goal: every LEF VPWR/VGND pin has at least one continuous
-    metal path to every other same-net pin in the macro (what PSM
-    checks). Full IR-drop fidelity requires more straps and is
-    future work; this covers macro-level connectivity.
+    Previous version drew full-width horizontal met2 rails; those
+    passed through every vertical met2 drop in `_route_ctrl_internal`
+    and caused cs/we/clk/addr[2] to merge. Replaced with per-strap
+    local pads.
     """
-    # Macro extent in assembler coords — matches what the LEF
-    # generator uses so the met2 rails sit exactly at the LEF power
-    # pin stub Y (assembler_ys_hi for top pins, assembler_ys_lo for
-    # bottom pins).
     xs_lo = min(x for x, _ in fp.positions.values()) - 1.0
     xs_hi = max(
         fp.positions[n][0] + fp.sizes[n][0] for n in fp.positions
@@ -1425,45 +1529,30 @@ def _draw_power_network(
     pins_bot_y = (
         wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
     )
-    # LEF coord ys_hi = pins_top_y + pin_stub_len + 0.5 (assembler frame);
-    # ys_lo = pins_bot_y - 0.5.
-    # Snap the top rail y UP to the nearest sky130_fd_sc_hd stdcell row
-    # pitch (2.72 μm) so the LEF macro's top edge — and the met2 VPWR
-    # pin that sits on it — align with a chip-level stdcell row
-    # boundary (keeps `lef_generator._snap_macro_h_to_row_pitch` in
-    # sync). Without this snap, 81/81 macro VPWRs come up PSM-0069
-    # "Unconnected instance" at chip-level PDN.
     import math as _math
     _ROW_PITCH = 2.72
     _ys_lo = pins_bot_y - 0.5
     _ys_hi_tight = pins_top_y + _PIN_STUB_LEN + 0.5
     _macro_h_snapped = _math.ceil((_ys_hi_tight - _ys_lo) / _ROW_PITCH) * _ROW_PITCH
-    # Offset rails inward by strap_half so the 1.6-μm-wide met4 PDN
-    # straps sit FULLY INSIDE the macro bbox (required by OpenROAD's
-    # PDN-0232 check — the default macro grid template looks for
-    # shapes within the macro body, not straddling its boundary).
     _strap_half = _PDN_STRAP_W / 2
     top_rail_y = _ys_lo + _macro_h_snapped - _strap_half
     bot_rail_y = _ys_lo + _strap_half
 
-    rail_half = _PDN_MET2_RAIL_W / 2
     from rekolektion.macro_v2.sky130_drc import GDS_LAYER
     met2_l, met2_d = GDS_LAYER["met2"]
-    met3_l, met3_d = GDS_LAYER["met3"]
 
-    # Top met2 rail (VPWR net). Pin stubs straddle the macro boundary;
-    # the rail sits centred on the pin Y. Full width for connectivity.
-    top.add(gdstk.rectangle(
-        (xs_lo, top_rail_y - rail_half),
-        (xs_hi, top_rail_y + rail_half),
-        layer=met2_l, datatype=met2_d,
-    ))
-    # Bottom met2 rail (VGND net)
-    top.add(gdstk.rectangle(
-        (xs_lo, bot_rail_y - rail_half),
-        (xs_hi, bot_rail_y + rail_half),
-        layer=met2_l, datatype=met2_d,
-    ))
+    # Per-strap local met2 pad size. Wide enough to back the LEF met2
+    # PORT rect and host the via2 stack, small enough to not cross
+    # any signal met2 feature elsewhere in the macro.
+    _PAD_HALF_X: float = _PDN_STRAP_W / 2 + 0.3      # ~1.1 µm wide
+    _PAD_HALF_Y: float = _PDN_MET2_RAIL_W / 2        # 0.20 µm tall
+
+    def _draw_local_met2_pad(cx: float, cy: float) -> None:
+        top.add(gdstk.rectangle(
+            (cx - _PAD_HALF_X, cy - _PAD_HALF_Y),
+            (cx + _PAD_HALF_X, cy + _PAD_HALF_Y),
+            layer=met2_l, datatype=met2_d,
+        ))
 
     # Vertical met4 straps — chip-PDN interface layer.
     #
@@ -1506,6 +1595,7 @@ def _draw_power_network(
             span_start=bot_rail_y, span_end=top_rail_y,
             layer="met4", width=_PDN_STRAP_W,
         )
+        _draw_local_met2_pad(vx, top_rail_y)
         draw_via_stack(
             top, from_layer="met2", to_layer="met4",
             position=(vx, top_rail_y),
@@ -1518,6 +1608,7 @@ def _draw_power_network(
             span_start=bot_rail_y, span_end=top_rail_y,
             layer="met4", width=_PDN_STRAP_W,
         )
+        _draw_local_met2_pad(vx, bot_rail_y)
         draw_via_stack(
             top, from_layer="met2", to_layer="met4",
             position=(vx, bot_rail_y),

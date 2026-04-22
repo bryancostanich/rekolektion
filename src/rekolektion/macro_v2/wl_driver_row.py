@@ -121,30 +121,36 @@ class WlDriverRow:
               vdd_x - _VDD_RAIL_W / 2, 0.0,
               vdd_x + _VDD_RAIL_W / 2, self.num_rows * _NAND_PITCH)
 
-        # Tie B + C to VDD for every row — short horizontal li1 stubs
-        # from each pin x to the VDD rail, then a li1→met1 via stack.
+        # Tie B + C to VDD for every row.
+        # NAND3_dec has internal met1 VDD rails at x=[4.26,4.50] and
+        # x=[6.42,6.66], and a met1 GND rail at x=[1.79,2.02]. A met1
+        # horizontal tie stub at the B/C pin y would CUT THROUGH both
+        # the GND and VDD rails on met1, shorting them together (and
+        # chaining through adjacent NAND3s via abutted rails).
+        # NAND3 has no internal met2, so use met2 for the horizontal
+        # tie stub and via stack up from li1 at the pin.
         for row in range(self.num_rows):
             for pin_local_x, pin_local_y in ((_B_X, _B_Y), (_C_X, _C_Y)):
                 if row % 2 == 0:
                     pin_y = row * _NAND_PITCH + pin_local_y
                 else:
                     pin_y = (row + 1) * _NAND_PITCH - pin_local_y
-                # li1 horizontal jog from the pin (cell-local x < 1.3)
-                # out to the VDD rail x. The NAND3 Z output lives in
-                # y=0.200-0.370 band — B/C pins are at y≈0.77/1.13 in
-                # the cell, well clear of Z. But routing across the
-                # cell's interior may hit other li1 features.
-                # Use met1 instead, with a via down to li1 at each pin.
+                # li1 -> met2 via stack at the pin
                 draw_via_stack(
-                    top, from_layer="li1", to_layer="met1",
+                    top, from_layer="li1", to_layer="met2",
                     position=(pin_local_x, pin_y),
                 )
-                # met1 horizontal from pin to VDD rail
+                # met2 horizontal from pin to VDD rail x
                 draw_wire(
                     top,
                     start=(pin_local_x, pin_y),
                     end=(vdd_x, pin_y),
-                    layer="met1",
+                    layer="met2",
+                )
+                # met2 -> met1 via stack at the VDD rail
+                draw_via_stack(
+                    top, from_layer="met1", to_layer="met2",
+                    position=(vdd_x, pin_y),
                 )
 
         lib.add(top)

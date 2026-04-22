@@ -256,15 +256,21 @@ def generate_lef(
         met4_strap_y0 = bot_rail_y_lef
         met4_strap_y1 = top_rail_y_lef
 
+        # Per-strap local met2 pads (match GDS `_draw_power_network`).
+        # Full-width met2 rails caused signal/signal shorts at macro
+        # level; pads only need to back the via2 stack under each
+        # met4 strap terminal.
+        pad_half_x = met4_half + 0.3   # 1.1 µm
+        pad_half_y = rail_half         # 0.20 µm
         _write_pin_ports(
             f, "VPWR", "INOUT", "POWER", abutment=True,
             ports=[
-                # Horizontal met2 rail (internal distribution, top)
-                ("met2", (tx(xs_lo), top_rail_y_lef - rail_half,
-                          tx(xs_hi), top_rail_y_lef + rail_half)),
-                # Vertical met4 strap at center — chip met5 hstripes
-                # crossing it create the vias OpenROAD's macro grid
-                # needs to close PDN-0232.
+                # Local met2 pad at VPWR strap's top anchor
+                ("met2", (vpwr_strap_x_center - pad_half_x,
+                          top_rail_y_lef - pad_half_y,
+                          vpwr_strap_x_center + pad_half_x,
+                          top_rail_y_lef + pad_half_y)),
+                # Vertical met4 strap at center
                 ("met4", (vpwr_strap_x_center - met4_half, met4_strap_y0,
                           vpwr_strap_x_center + met4_half, met4_strap_y1)),
             ],
@@ -272,9 +278,15 @@ def generate_lef(
         _write_pin_ports(
             f, "VGND", "INOUT", "GROUND", abutment=True,
             ports=[
-                # Horizontal met2 rail (internal distribution, bottom)
-                ("met2", (tx(xs_lo), bot_rail_y_lef - rail_half,
-                          tx(xs_hi), bot_rail_y_lef + rail_half)),
+                # Local met2 pads at VGND straps' bottom anchors
+                ("met2", (vgnd_strap_x_left - pad_half_x,
+                          bot_rail_y_lef - pad_half_y,
+                          vgnd_strap_x_left + pad_half_x,
+                          bot_rail_y_lef + pad_half_y)),
+                ("met2", (vgnd_strap_x_right - pad_half_x,
+                          bot_rail_y_lef - pad_half_y,
+                          vgnd_strap_x_right + pad_half_x,
+                          bot_rail_y_lef + pad_half_y)),
                 # Vertical met4 straps at left + right edges
                 ("met4", (vgnd_strap_x_left - met4_half, met4_strap_y0,
                           vgnd_strap_x_left + met4_half, met4_strap_y1)),

@@ -116,6 +116,7 @@ def _top_ports(p: MacroV2Params) -> list[str]:
     ports += [f"addr{i}" for i in range(p.num_addr_bits)]
     ports += [f"din{i}" for i in range(p.bits)]
     ports += [f"dout{i}" for i in range(p.bits)]
+    ports += [f"col_sel_{k}" for k in range(p.mux_ratio)]
     ports += ["VPWR", "VGND"]
     return ports
 
@@ -168,9 +169,11 @@ def _write_top_subckt(f: TextIO, p: MacroV2Params) -> None:
     )
 
     f.write("\n* Column mux row\n")
+    col_sel_nets = [f"col_sel_{k}" for k in range(p.mux_ratio)]
     f.write(
         f"Xcolmux {' '.join(bl_nets)} {' '.join(br_nets)} "
-        f"{' '.join(muxed_bl)} {' '.join(muxed_br)} col_sel VPWR VGND "
+        f"{' '.join(muxed_bl)} {' '.join(muxed_br)} "
+        f"{' '.join(col_sel_nets)} VPWR VGND "
         f"mux_{_tag(p)}\n"
     )
 
@@ -286,8 +289,8 @@ def _write_wl_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 
 def _write_sense_amp_row_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"sa_{_tag(p)}"
-    mbl = [f"muxed_bl{i}" for i in range(p.bits)]
-    mbr = [f"muxed_br{i}" for i in range(p.bits)]
+    mbl = [f"muxed_bl_{i}" for i in range(p.bits)]
+    mbr = [f"muxed_br_{i}" for i in range(p.bits)]
     dout = [f"dout{i}" for i in range(p.bits)]
     ports = mbl + mbr + ["s_en"] + dout + ["VPWR", "VGND"]
 
@@ -311,8 +314,8 @@ def _write_sense_amp_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 def _write_write_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"wd_{_tag(p)}"
     din = [f"din{i}" for i in range(p.bits)]
-    mbl = [f"muxed_bl{i}" for i in range(p.bits)]
-    mbr = [f"muxed_br{i}" for i in range(p.bits)]
+    mbl = [f"muxed_bl_{i}" for i in range(p.bits)]
+    mbr = [f"muxed_br_{i}" for i in range(p.bits)]
     ports = din + ["w_en"] + mbl + mbr + ["VPWR", "VGND"]
 
     f.write(f"* ---- {name} ----\n")
@@ -371,8 +374,8 @@ def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
 
 def _write_precharge_row_stub(f: TextIO, p: MacroV2Params) -> None:
     name = f"pre_{_tag(p)}"
-    bl = [f"bl{c}" for c in range(p.cols)]
-    br = [f"br{c}" for c in range(p.cols)]
+    bl = [f"bl_{c}" for c in range(p.cols)]
+    br = [f"br_{c}" for c in range(p.cols)]
     ports = bl + br + ["p_en_bar", "VPWR"]
     f.write(f"* ---- {name} (stub; body via Magic-extract at build time) ----\n")
     f.write(f".subckt {name}\n")
@@ -382,11 +385,12 @@ def _write_precharge_row_stub(f: TextIO, p: MacroV2Params) -> None:
 
 def _write_column_mux_row_stub(f: TextIO, p: MacroV2Params) -> None:
     name = f"mux_{_tag(p)}"
-    bl = [f"bl{c}" for c in range(p.cols)]
-    br = [f"br{c}" for c in range(p.cols)]
-    mbl = [f"muxed_bl{i}" for i in range(p.bits)]
-    mbr = [f"muxed_br{i}" for i in range(p.bits)]
-    ports = bl + br + mbl + mbr + ["col_sel", "VPWR", "VGND"]
+    bl = [f"bl_{c}" for c in range(p.cols)]
+    br = [f"br_{c}" for c in range(p.cols)]
+    mbl = [f"muxed_bl_{i}" for i in range(p.bits)]
+    mbr = [f"muxed_br_{i}" for i in range(p.bits)]
+    col_sel = [f"col_sel_{k}" for k in range(p.mux_ratio)]
+    ports = bl + br + mbl + mbr + col_sel + ["VPWR", "VGND"]
     f.write(f"* ---- {name} (stub; body via Magic-extract at build time) ----\n")
     f.write(f".subckt {name}\n")
     _wrap_ports(f, ports)

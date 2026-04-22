@@ -262,7 +262,7 @@ def generate_column_mux(
         sel_y.append(y)
         _rect(cell, _MET3, 0, y - _RAIL_W / 2, cell_w, y + _RAIL_W / 2)
         cell.add(gdstk.Label(
-            f"sel[{k}]",
+            f"col_sel_{k}",
             (_snap(min(0.5, cell_w / 2)), _snap(y)),
             layer=_MET3[0], texttype=_MET3[1]))
 
@@ -281,11 +281,11 @@ def generate_column_mux(
         # Full-height BL[i] / BR[i] met1 stubs.
         _rect(cell, _MET1, x_bl - met1_half, 0.0, x_bl + met1_half, cell_h)
         cell.add(gdstk.Label(
-            f"BL[{i}]", (_snap(x_bl), _snap(cell_h - 0.15)),
+            f"bl_{i}", (_snap(x_bl), _snap(cell_h - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
         _rect(cell, _MET1, x_br - met1_half, 0.0, x_br + met1_half, cell_h)
         cell.add(gdstk.Label(
-            f"BR[{i}]", (_snap(x_br), _snap(cell_h - 0.15)),
+            f"br_{i}", (_snap(x_br), _snap(cell_h - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
 
         # BL pass-gate at x_mp1, BR pass-gate at x_mp2. Vertical NMOS.
@@ -375,7 +375,7 @@ def generate_column_mux(
               mbl_x + met1_half, mux_band_BL_y)
         _via1_stack(cell, mbl_x, mux_band_BL_y)
         cell.add(gdstk.Label(
-            f"muxed_BL[{bit}]", (_snap(mbl_x), _snap(0.14)),
+            f"muxed_bl_{bit}", (_snap(mbl_x), _snap(0.14)),
             layer=_MET1[0], texttype=_MET1[1]))
 
         _rect(cell, _MET1,
@@ -383,7 +383,7 @@ def generate_column_mux(
               mbr_x + met1_half, mux_band_BR_y)
         _via1_stack(cell, mbr_x, mux_band_BR_y)
         cell.add(gdstk.Label(
-            f"muxed_BR[{bit}]", (_snap(mbr_x), _snap(0.14)),
+            f"muxed_br_{bit}", (_snap(mbr_x), _snap(0.14)),
             layer=_MET1[0], texttype=_MET1[1]))
 
     if output_path is not None:

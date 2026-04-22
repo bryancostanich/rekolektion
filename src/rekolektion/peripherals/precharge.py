@@ -430,12 +430,17 @@ def generate_precharge(
     # Met3 rails.
     _rect(cell, _MET3, 0, _VDD_RAIL_Y - _RAIL_W / 2,
           cell_w, _VDD_RAIL_Y + _RAIL_W / 2)
-    cell.add(gdstk.Label("VDD",
+    # Labels match the rekolektion macro-level convention:
+    #   VPWR     — positive supply
+    #   p_en_bar — precharge enable, active-low (PMOS gate = low
+    #              enables pull-up). The control-logic DFF output that
+    #              drives this is already 'p_en_bar' in control_logic.
+    cell.add(gdstk.Label("VPWR",
                          (_snap(cell_w / 2), _snap(_VDD_RAIL_Y)),
                          layer=_MET3[0], texttype=_MET3[1]))
     _rect(cell, _MET3, 0, _EN_RAIL_Y - _RAIL_W / 2,
           cell_w, _EN_RAIL_Y + _RAIL_W / 2)
-    cell.add(gdstk.Label("precharge_en",
+    cell.add(gdstk.Label("p_en_bar",
                          (_snap(min(0.5, cell_w / 2)), _snap(_EN_RAIL_Y)),
                          layer=_MET3[0], texttype=_MET3[1]))
 
@@ -448,12 +453,12 @@ def generate_precharge(
         _rect(cell, _MET1, x_bl - met1_half, 0.0,
               x_bl + met1_half, _CELL_H)
         cell.add(gdstk.Label(
-            f"BL[{i}]", (_snap(x_bl), _snap(_CELL_H - 0.15)),
+            f"bl_{i}", (_snap(x_bl), _snap(_CELL_H - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
         _rect(cell, _MET1, x_br - met1_half, 0.0,
               x_br + met1_half, _CELL_H)
         cell.add(gdstk.Label(
-            f"BR[{i}]", (_snap(x_br), _snap(_CELL_H - 0.15)),
+            f"br_{i}", (_snap(x_br), _snap(_CELL_H - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
 
     # --- Per-block: Rows A, B, C transistors ------------------------------

@@ -577,9 +577,12 @@ _DFF_Q_X_LOCAL: float = 5.575
 _DFF_Q_Y_LOCAL: float = 3.175
 
 # Peripheral EN pin positions (cell-local).
-# Precharge p_en_bar: met2 at (1.560, 0.125)
-_PRECHARGE_EN_X_LOCAL: float = 1.560
-_PRECHARGE_EN_Y_LOCAL: float = 0.125
+# Precharge p_en_bar: horizontal met3 rail, full cell width, centred at
+# y = 0.28 µm in cell-local coords. Any x on the rail is a valid landing
+# point (pick a position clear of BL/BR bitline stubs and the MP3 per-
+# pair via2 drops at eq_poly_cx = 0.60 + k*pitch).
+_PRECHARGE_EN_X_LOCAL: float = 0.50      # inside first pair's BL-BR gap
+_PRECHARGE_EN_Y_LOCAL: float = 0.28      # met3 rail centre y
 # Sense-amp EN: met1 at (0.615, 10.97) (centre of the RECT)
 _SA_EN_X_LOCAL: float = 0.615
 _SA_EN_Y_LOCAL: float = 10.970
@@ -688,22 +691,23 @@ def _route_control(
 
     mux_pitch = p.mux_ratio * _BITCELL_WIDTH
 
-    # --- p_en_bar: met2 end to end ------------------------------------
+    # --- p_en_bar: met2 feeder from DFF Q, one via2 drop onto the
+    # precharge cell's full-width met3 p_en_bar rail.
+    #
+    # The new precharge (Option II) exposes p_en_bar as a continuous
+    # met3 rail spanning the entire cell width. A single via2 at any
+    # safe x on that rail fans out to every column internally — no
+    # per-bit stubs needed.
     dff_q = _dff_q_absolute(ctrl_origin, 1)
-    # Rail runs through the precharge row's lower band (empty of
-    # internal met2 below the en_bar pin centre at y=0.125 local).
-    rail_y = prec_y + _PRECHARGE_EN_Y_LOCAL + 0.2  # 0.2 um above pin centre
-    # Vertical run up from DFF Q to rail
-    draw_wire(top, start=dff_q, end=(dff_q[0], rail_y), layer="met2")
-    # Horizontal run to last bit + margin
-    rail_x_end = prec_x + (p.bits - 1) * mux_pitch + _PRECHARGE_EN_X_LOCAL + 1.0
-    draw_wire(top, start=(dff_q[0], rail_y), end=(rail_x_end, rail_y),
+    drop_x = prec_x + _PRECHARGE_EN_X_LOCAL
+    rail_y = prec_y + _PRECHARGE_EN_Y_LOCAL
+    # Met2 from DFF Q to (drop_x, rail_y): L-shape (horizontal, vertical).
+    draw_wire(top, start=dff_q, end=(drop_x, dff_q[1]), layer="met2")
+    draw_wire(top, start=(drop_x, dff_q[1]), end=(drop_x, rail_y),
               layer="met2")
-    for bit in range(p.bits):
-        pin_x = prec_x + bit * mux_pitch + _PRECHARGE_EN_X_LOCAL
-        pin_y = prec_y + _PRECHARGE_EN_Y_LOCAL
-        draw_wire(top, start=(pin_x, rail_y), end=(pin_x, pin_y),
-                  layer="met2")
+    # Via2 drop from met2 onto the met3 rail.
+    draw_via_stack(top, from_layer="met2", to_layer="met3",
+                   position=(drop_x, rail_y))
 
     # --- s_en: met2 rail, via stack to met1 at each SA EN pin ---------
     dff_q = _dff_q_absolute(ctrl_origin, 2)

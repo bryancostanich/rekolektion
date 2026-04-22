@@ -118,8 +118,10 @@ class SKY130Layers:
     LI1_LABEL = Layer(67, 5)
     MET1_LABEL = Layer(68, 5)
     MET2_LABEL = Layer(69, 5)
+    MET3_LABEL = Layer(70, 5)
     MET1_PIN = Layer(68, 16)
     MET2_PIN = Layer(69, 16)
+    MET3_PIN = Layer(70, 16)
 
     # Area IDs
     COREID = Layer(81, 2)       # SRAM core cell marker — enables relaxed li1 rules
@@ -235,6 +237,16 @@ class SKY130Rules:
     MET2_MIN_WIDTH = 0.14
     MET2_MIN_SPACING = 0.14
 
+    # --- VIA2 (met2 to met3) ---
+    VIA2_SIZE = 0.20
+    VIA2_SPACING = 0.20
+    MET2_ENCLOSURE_OF_VIA2 = 0.04   # one direction; 0.085 other direction
+    MET3_ENCLOSURE_OF_VIA2 = 0.065  # one direction; 0.095 other direction
+
+    # --- Metal 3 ---
+    MET3_MIN_WIDTH = 0.30
+    MET3_MIN_SPACING = 0.30
+
     # --- Derived pitches (useful for cell sizing) ---
     @property
     def poly_pitch(self) -> float:
@@ -255,6 +267,11 @@ class SKY130Rules:
     def met2_pitch(self) -> float:
         """Minimum center-to-center met2 pitch."""
         return self.MET2_MIN_WIDTH + self.MET2_MIN_SPACING  # 0.28 μm
+
+    @property
+    def met3_pitch(self) -> float:
+        """Minimum center-to-center met3 pitch."""
+        return self.MET3_MIN_WIDTH + self.MET3_MIN_SPACING  # 0.60 μm
 
     @property
     def licon_pitch(self) -> float:

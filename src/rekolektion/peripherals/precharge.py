@@ -1,29 +1,38 @@
-"""Per-BL/BR-pair SRAM precharge cell generator.
+"""SRAM precharge cell generator — Option II: shared-diffusion N=2 blocks.
 
-Emits DRC-clean precharge cells at bitcell pitch (1.31 µm per BL/BR pair).
-Each pair column houses three PMOS:
-  MP1  — VDD → BL  (BL precharge),   gate on `precharge_en`
-  MP2  — VDD → BR  (BR precharge),   gate on `precharge_en`
-  MP3  — BL ↔ BR   (equalizer),      gate on `precharge_en`
+Extraction-clean per-column precharge at bitcell pitch (1.310 µm per
+BL/BR pair), using shared source diffusion across 2-column blocks to
+relieve the geometric pressure that makes a fully per-pair layout
+infeasible at sky130 design rules.
 
-Layout per pair (cell-local coords):
-  - BL and BR vertical met1 stubs at cell-local x = 0.0425 / 1.1575,
-    matching `bitcell_array._BITCELL_BL_X_OFFSET` / `_BR_X_OFFSET`.
-  - MP1 and MP2 transistors have to sit INSIDE the cell (diff at
-    0.42 µm W doesn't fit under the bitline track at x=0.0425),
-    so they're offset inward; short met1 jogs connect each
-    transistor's drain to its bitline track.
-  - Three distinct Y-rows so the MP1 / MP2 / MP3 diffs don't collide
-    even when MP1 and MP2 x-centres are close.
+Per N=2 block (2 pairs = 2.62 µm):
+  Row A — shared-source PMOS pair (horizontal diff strip):
+    MP1[2k], MP1[2k+1] — drains at BL[2k], BL[2k+1]; shared VDD source
+    between them. One source via-stack per block, centred at x=0.6975
+    (well clear of every BL/BR stub).
+  Row B — same pattern for MP2s (BR precharge), drains at BR[2k],
+    BR[2k+1]; shared VDD source at x=1.8125.
+  Row C — per-pair MP3 equalizers (BL ↔ BR), gates tap precharge_en
+    through a poly stub below each MP3.
 
-Rows, bottom → top:
-    precharge_en rail (met1, horizontal)
-    Row C : MP3 equalizer      (horizontal PMOS diff, poly vertical)
-    Row B : MP2 (BR precharge) (vertical PMOS, offset right)
-    Row A : MP1 (BL precharge) (vertical PMOS, offset left)
-    VDD rail (met1, horizontal)
+Gates:
+  Row A and Row B gate lines are continuous horizontal poly back-bars
+  above their diff strips, with vertical stems crossing each transistor
+  diff. Each back-bar is tapped to precharge_en once per cell.
 
-Shared nwell spans the full cell; PSDM wraps each diff.
+Rails (canonical sky130 / OpenRAM):
+  VDD — horizontal met3 at the top
+  precharge_en — horizontal met3 at the bottom
+  BL/BR vertical met1 stubs cross rails without shorting (different
+  masks; via stacks only where intentional taps land).
+
+Why N=2:
+  At 1.310 µm pair pitch, per-pair via stacks for MP1/MP2 source AND
+  per-pair gate taps fight for the same narrow inter-pair gap (~22 nm
+  valid x window once BL/BR 0.14 met1 spacing is enforced). Shared
+  diffusion moves source tapping to block centers, freeing the gap.
+  N=2 is the smallest refactor that achieves this — one diff break per
+  two pairs is the minimum novelty.
 """
 from __future__ import annotations
 
@@ -32,71 +41,79 @@ from typing import Tuple
 
 import gdstk
 
-from rekolektion.tech.sky130 import LAYERS, RULES
+from rekolektion.tech.sky130 import LAYERS
 
 
 # --- device + rule constants ------------------------------------------------
-_W: float = 0.42           # PMOS channel width (diff X extent)
-_L: float = 0.15           # channel length
-_SD_EXT: float = 0.35      # diff past gate in current direction
-                           # Must satisfy:
-                           #   (a) licon.11  — licon half (0.085) + 0.055
-                           #       clearance to gate edge => SD_EXT >= 0.28
-                           #   (b) li.3      — S/D li1 pads on same diff
-                           #       must be >= 0.17 apart.  Source y at
-                           #       diff_top - SD_EXT/2, drain y at
-                           #       diff_bot + SD_EXT/2, pads 0.33 tall.
-                           #       Gap = (L + 2*SD_EXT) - 0.63. For gap
-                           #       >= 0.17 need SD_EXT >= 0.325.
-                           # Use 0.35 for 25 nm margin over both.
-_POLY_OVH: float = 0.13    # poly overhang of transistor (poly.8)
-_GATE_EXT: float = 0.13    # poly extension for gate contact (same as OVH; contact on poly overhang)
-_LICON: float = 0.17       # licon contact side
-_LI_ENC: float = 0.08      # li1 enclosure of licon (li.5 dir)
-_PSDM_ENC: float = 0.125   # PSDM diff enclosure
-_NWELL_ENC: float = 0.18   # nwell enclosure of p-diff
-_MCON: float = 0.17        # mcon contact side
-_MCON_MET1_ENC: float = 0.085  # met1 enclosure of mcon (safe sym, covers via.5a)
-_MET1_WIDTH: float = 0.14  # met1 min width
+_W: float = 0.42            # PMOS channel width (extent along y for horiz PMOS)
+_L: float = 0.15            # channel length (poly width)
+_SD_EXT: float = 0.35       # diff past gate (licon.11 + li.3 satisfied)
+_POLY_OVH: float = 0.13     # poly overhang past diff (poly.8)
+_LICON: float = 0.17
+_LI_ENC: float = 0.08
+_PSDM_ENC: float = 0.125
+_NWELL_ENC: float = 0.18
+_MCON: float = 0.17
+_MET1_WIDTH: float = 0.14
 
-_DIFF_SPACING_SAME: float = 0.27   # diff/tap.3
-_POLY_SPACING: float = 0.21        # poly.2
+_VIA1: float = 0.15
+_VIA1_ENC: float = 0.055
+_VIA2: float = 0.20
+_VIA2_ENC_MET2_OTHER: float = 0.085
+_VIA2_ENC_MET3: float = 0.065
 
-# Bitline x-positions within a 1.31 µm pair cell — match bitcell_array.
+_POLY_LICON_ENC: float = 0.08
+
+# Bitline / block geometry.
 _BL_X: float = 0.0425
 _BR_X: float = 1.1575
-
 _MIN_PAIR_PITCH: float = 1.31
 
-# Transistor x-offsets from the bitline tracks (pushed INWARD so the
-# 0.42 µm-wide diffs don't poke outside the cell boundary).
-_MP1_X_OFFSET: float = 0.345 - _BL_X   # MP1 at x = 0.345
-_MP2_X_OFFSET: float = _BR_X - 0.345   # wait — want MP2 at x = 0.965
-# Use explicit absolute x instead of offsets for clarity.
-_MP1_X: float = 0.345
-_MP2_X: float = 0.965
+# Row A shared-source block x (block 0, pair 0 = BL[0], pair 1 = BL[1]):
+#   Drain MP1[0]  at x = 0.0425          (BL[0])
+#   Gate  MP1[0]  at x = 0.0425 + 0.25 = 0.2925
+#   Gate  MP1[1]  at x = 1.3525 - 0.25 = 1.1025
+#   Drain MP1[1]  at x = 1.3525          (BL[1])
+#   Shared source contact centred at (0.2925 + 1.1025)/2 = 0.6975
+_MP1_GATE_REL: tuple[float, float] = (0.2925, 1.1025)
+_MP1_SRC_TAP_X: float = 0.6975
 
-# Row Y centres — computed from stacking W+SD extents + spacing.
-_DIFF_HALF: float = _W / 2.0                 # 0.21
-_DIFF_Y_HALF: float = _L / 2.0 + _SD_EXT     # 0.325
+# Row B (MP2): same topology shifted by 1.115 µm (BL → BR offset within a pair).
+_MP2_GATE_REL: tuple[float, float] = (1.4075, 2.2175)
+_MP2_SRC_TAP_X: float = 1.8125
 
-# Row spacing: need diff-to-diff ≥ 0.27 AND poly-to-poly ≥ 0.21.
-# Use 0.40 between diff edges as margin.
+_DIFF_HALF: float = _W / 2.0          # 0.21 — horizontal-PMOS y half-extent
 _INTER_ROW_GAP: float = 0.40
+_POLY_DIFF_SPACE: float = 0.075        # poly.5 — poly end to diff edge
 
-# Rail widths
-_RAIL_W: float = 0.28
+_RAIL_W: float = 0.40                  # met3 rail width
 
-# Build the Y layout bottom up.
-_EN_RAIL_Y: float = 0.14 + _RAIL_W / 2                    # 0.28
-# Row C (MP3) horizontal diff: W in Y, top & bottom at y ± W/2.
-_ROW_C_Y: float = _EN_RAIL_Y + _RAIL_W / 2 + _INTER_ROW_GAP + _DIFF_HALF  # 1.17
-# Row B (MP2 vertical) — diff extends ± (L/2 + SD_EXT) = 0.325
-_ROW_B_Y: float = _ROW_C_Y + _DIFF_HALF + _INTER_ROW_GAP + _DIFF_Y_HALF   # 2.295
-# Row A (MP1 vertical)
-_ROW_A_Y: float = _ROW_B_Y + _DIFF_Y_HALF + _INTER_ROW_GAP + _DIFF_Y_HALF # 3.345
-_VDD_RAIL_Y: float = _ROW_A_Y + _DIFF_Y_HALF + _INTER_ROW_GAP + _RAIL_W / 2  # 4.21
-_CELL_H: float = _VDD_RAIL_Y + _RAIL_W / 2 + 0.14         # 4.49
+# Back-bar thickness (widened enough to enclose a 0.17 µm licon with
+# 0.08 µm poly-encl on all sides).
+_BAR_H: float = _LICON + 2 * _POLY_LICON_ENC    # 0.33
+
+# Y layout, bottom → top. Back-bars are 0.33 µm tall (LICON + 2·encl),
+# not the 0.15 µm poly min-width; otherwise licon doesn't fit on the bar.
+_EN_RAIL_Y: float = 0.28
+# Row C (MP3 equalizers — per-pair; gates tapped below their diff, no
+# back-bar needed for Row C).
+_ROW_C_Y: float = _EN_RAIL_Y + _RAIL_W / 2 + _INTER_ROW_GAP + _DIFF_HALF    # 1.09
+_ROW_C_POLY_TOP: float = _ROW_C_Y + _DIFF_HALF + _POLY_OVH                  # 1.43
+# Row B (MP2 shared-source)
+_ROW_B_DIFF_BOT: float = _ROW_C_POLY_TOP + _POLY_DIFF_SPACE                 # 1.505
+_ROW_B_Y: float = _ROW_B_DIFF_BOT + _DIFF_HALF                               # 1.715
+_ROW_B_POLY_TOP: float = _ROW_B_Y + _DIFF_HALF + _POLY_OVH                   # 2.055
+_ROW_B_BAR_Y: float = _ROW_B_POLY_TOP + _BAR_H / 2                           # 2.22
+_ROW_B_BAR_TOP: float = _ROW_B_BAR_Y + _BAR_H / 2                            # 2.385
+# Row A (MP1 shared-source)
+_ROW_A_DIFF_BOT: float = _ROW_B_BAR_TOP + _POLY_DIFF_SPACE                   # 2.46
+_ROW_A_Y: float = _ROW_A_DIFF_BOT + _DIFF_HALF                               # 2.67
+_ROW_A_POLY_TOP: float = _ROW_A_Y + _DIFF_HALF + _POLY_OVH                   # 3.01
+_ROW_A_BAR_Y: float = _ROW_A_POLY_TOP + _BAR_H / 2                           # 3.175
+_ROW_A_BAR_TOP: float = _ROW_A_BAR_Y + _BAR_H / 2                            # 3.34
+# VDD rail above Row A back-bar.
+_VDD_RAIL_Y: float = _ROW_A_BAR_TOP + 0.10 + _RAIL_W / 2                      # 3.64
+_CELL_H: float = _VDD_RAIL_Y + _RAIL_W / 2 + 0.14                             # 3.98
 
 # Layer shortcuts
 _DIFF = LAYERS.DIFF.as_tuple
@@ -105,9 +122,13 @@ _LICON1 = LAYERS.LICON1.as_tuple
 _LI1 = LAYERS.LI1.as_tuple
 _MCON_L = LAYERS.MCON.as_tuple
 _MET1 = LAYERS.MET1.as_tuple
+_VIA_L = LAYERS.VIA.as_tuple
+_MET2 = LAYERS.MET2.as_tuple
+_VIA2_L = LAYERS.VIA2.as_tuple
+_MET3 = LAYERS.MET3.as_tuple
 _NWELL = LAYERS.NWELL.as_tuple
 _PSDM = LAYERS.PSDM.as_tuple
-_BOUNDARY = LAYERS.BOUNDARY.as_tuple  # (235, 4) — sky130 prBoundary
+_BOUNDARY = LAYERS.BOUNDARY.as_tuple
 
 
 def _snap(v: float, grid: float = 0.005) -> float:
@@ -128,89 +149,210 @@ def _sq(cell: gdstk.Cell, layer: tuple[int, int],
     _rect(cell, layer, cx - h, cy - h, cx + h, cy + h)
 
 
-def _contact_stack(cell: gdstk.Cell, cx: float, cy: float) -> None:
-    """Emit one licon (diff contact) with a matching li1 pad."""
+def _rect_hw(cell: gdstk.Cell, layer: tuple[int, int],
+             cx: float, cy: float, w: float, h: float) -> None:
+    _rect(cell, layer, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+
+def _diff_contact(cell: gdstk.Cell, cx: float, cy: float) -> None:
     _sq(cell, _LICON1, cx, cy, _LICON)
-    pad = _LICON + 2 * _LI_ENC
-    _rect(cell, _LI1,
-          cx - pad / 2, cy - pad / 2,
-          cx + pad / 2, cy + pad / 2)
+    _sq(cell, _LI1, cx, cy, _LICON + 2 * _LI_ENC)
 
 
-def _mcon_stack(cell: gdstk.Cell, cx: float, cy: float) -> None:
-    """Emit one mcon (li1→met1 via) with both li1 and met1 pads."""
-    # Need li1 under the mcon (to land on an existing li1 contact stack,
-    # but also draw a small pad here in case no li1 overlaps elsewhere).
+def _poly_contact(cell: gdstk.Cell, cx: float, cy: float) -> None:
+    _sq(cell, _LICON1, cx, cy, _LICON)
+    _sq(cell, _LI1, cx, cy, _LICON + 2 * _LI_ENC)
+
+
+def _mcon_pad(cell: gdstk.Cell, cx: float, cy: float,
+              met1_w: float = None, met1_h: float = None) -> None:
+    """Mcon + met1 pad with asymmetric enclosure by default (0.23 wide
+    in x, 0.29 tall in y — the sky130 asymmetric mcon encl rule)."""
     _sq(cell, _MCON_L, cx, cy, _MCON)
-    met1_pad = _MCON + 2 * _MCON_MET1_ENC    # 0.34
-    _rect(cell, _MET1,
-          cx - met1_pad / 2, cy - met1_pad / 2,
-          cx + met1_pad / 2, cy + met1_pad / 2)
+    w = met1_w if met1_w is not None else (_MCON + 2 * 0.03)
+    h = met1_h if met1_h is not None else (_MCON + 2 * 0.06)
+    _rect_hw(cell, _MET1, cx, cy, w, h)
 
 
-def _vertical_pmos(cell: gdstk.Cell, x_center: float, y_center: float):
-    """Draw one vertical-current-flow PMOS at (x_center, y_center).
+def _via1_stack(cell: gdstk.Cell, cx: float, cy: float) -> None:
+    pad = _VIA1 + 2 * _VIA1_ENC
+    _sq(cell, _MET1, cx, cy, pad)
+    _sq(cell, _VIA_L, cx, cy, _VIA1)
+    _sq(cell, _MET2, cx, cy, pad)
 
-    Source at top, drain at bottom.  Poly is horizontal across the
-    channel.  Returns (x_center, drain_y, src_y).
+
+def _via2_stack(cell: gdstk.Cell, cx: float, cy: float) -> None:
+    _sq(cell, _MET2, cx, cy, _VIA2 + 2 * _VIA2_ENC_MET2_OTHER)
+    _sq(cell, _VIA2_L, cx, cy, _VIA2)
+    _sq(cell, _MET3, cx, cy, _VIA2 + 2 * _VIA2_ENC_MET3)
+
+
+def _shared_source_pair(
+    cell: gdstk.Cell, y_center: float, x_offset: float,
+    gate_xs: tuple[float, float], drain_xs: tuple[float, float],
+    src_tap_x: float,
+) -> None:
+    """Emit a shared-source horizontal PMOS pair at row y_center.
+
+    x_offset is the block's cell-origin offset; all x parameters are
+    interpreted relative to x_offset.
+
+    Diff: continuous horizontal strip from just left of drain[0] to just
+    right of drain[1]. Poly stems at each gate x. Drain contacts at
+    drain_xs; one shared source contact at src_tap_x (between gates).
     """
-    # Diff extent
-    diff_left = x_center - _W / 2.0
-    diff_right = x_center + _W / 2.0
-    diff_bot = y_center - _L / 2.0 - _SD_EXT
-    diff_top = y_center + _L / 2.0 + _SD_EXT
+    xg0 = x_offset + gate_xs[0]
+    xg1 = x_offset + gate_xs[1]
+    xd0 = x_offset + drain_xs[0]
+    xd1 = x_offset + drain_xs[1]
+    xs = x_offset + src_tap_x
+
+    diff_left = xd0 - _SD_EXT / 2.0
+    diff_right = xd1 + _SD_EXT / 2.0
+    diff_bot = y_center - _W / 2.0
+    diff_top = y_center + _W / 2.0
 
     _rect(cell, _DIFF, diff_left, diff_bot, diff_right, diff_top)
     _rect(cell, _PSDM,
           diff_left - _PSDM_ENC, diff_bot - _PSDM_ENC,
           diff_right + _PSDM_ENC, diff_top + _PSDM_ENC)
 
-    # Poly gate — horizontal across diff at channel y.
-    poly_bot = y_center - _L / 2.0
-    poly_top = y_center + _L / 2.0
-    poly_left = diff_left - _POLY_OVH
-    poly_right = diff_right + _POLY_OVH
-    _rect(cell, _POLY, poly_left, poly_bot, poly_right, poly_top)
+    # Vertical poly stems at each gate x (poly overhangs past diff).
+    poly_bot = diff_bot - _POLY_OVH
+    poly_top = diff_top + _POLY_OVH
+    for xg in (xg0, xg1):
+        _rect(cell, _POLY,
+              xg - _L / 2.0, poly_bot,
+              xg + _L / 2.0, poly_top)
 
-    # Source (top) + drain (bottom) contacts
-    src_y = diff_top - _SD_EXT / 2.0
-    drn_y = diff_bot + _SD_EXT / 2.0
-    _contact_stack(cell, x_center, src_y)
-    _contact_stack(cell, x_center, drn_y)
-
-    return x_center, drn_y, src_y
+    # Drain contacts at each BL/BR x.
+    _diff_contact(cell, xd0, y_center)
+    _diff_contact(cell, xd1, y_center)
+    # Shared source contact in the middle.
+    _diff_contact(cell, xs, y_center)
 
 
-def _horizontal_pmos(cell: gdstk.Cell, x_left: float, x_right: float,
-                     y_center: float):
-    """Draw one horizontal-current-flow PMOS (equalizer).
+def _row_back_bar(
+    cell: gdstk.Cell, y_center: float, x_left: float, x_right: float,
+    gate_xs_list: list[float],
+) -> None:
+    """Horizontal poly back-bar connecting every gate stem's upper end,
+    plus vertical extensions from each gate-stem top into the bar so
+    poly stays one connected polygon.
 
-    Source on left, drain on right.  Poly is vertical at channel x.
-    Returns (poly_cx, left_contact_x, right_contact_x).
+    gate_xs_list: list of absolute (cell-level) x positions of every
+    vertical gate stem that must merge into this bar.
     """
-    poly_cx = (x_left + x_right) / 2.0
+    # Back-bar (horizontal poly strip).
+    _rect(cell, _POLY, x_left, y_center - _L / 2.0,
+          x_right, y_center + _L / 2.0)
+    # (The per-stem poly rectangles already reach y = diff_top + POLY_OVH,
+    # which is exactly y_center - _L/2; they merge with the bar at the
+    # bottom edge of the bar by construction.)
+    # (Nothing else to draw here if stem tops align with bar bottom.)
+    _ = gate_xs_list
+
+
+def _gate_tap_to_rail(
+    cell: gdstk.Cell, tap_x: float, bar_y: float, rail_y: float,
+) -> None:
+    """From a poly back-bar at (tap_x, bar_y), drop a stack
+    licon → li1 → mcon → met1 → via1 → met2 → ... → via2 → met3
+    landing on the precharge_en rail at y=rail_y.
+
+    Assumes tap_x lies on a poly back-bar that is already drawn.
+    """
+    _poly_contact(cell, tap_x, bar_y)
+    _mcon_pad(cell, tap_x, bar_y)
+    _via1_stack(cell, tap_x, bar_y)
+    # Met2 riser from (tap_x, bar_y) down to rail_y.
+    riser_half = (_VIA1 + 2 * _VIA1_ENC) / 2.0
+    _rect(cell, _MET2,
+          tap_x - riser_half, rail_y,
+          tap_x + riser_half, bar_y + riser_half)
+    _via2_stack(cell, tap_x, rail_y)
+
+
+def _src_tap_to_rail(
+    cell: gdstk.Cell, tap_x: float, diff_y: float, rail_y: float,
+) -> None:
+    """From a diff contact at (tap_x, diff_y), drop a stack up to the
+    met3 rail at y=rail_y. Includes mcon, via1, via2 at the rail."""
+    _mcon_pad(cell, tap_x, diff_y)
+    riser_half = (_VIA1 + 2 * _VIA1_ENC) / 2.0
+    _rect(cell, _MET1,
+          tap_x - riser_half, diff_y,
+          tap_x + riser_half, rail_y + _RAIL_W / 2)
+    _via1_stack(cell, tap_x, rail_y)
+    _via2_stack(cell, tap_x, rail_y)
+
+
+def _mp3_equalizer(
+    cell: gdstk.Cell, x_offset: float, y_center: float, rail_y: float,
+    x_bl_rel: float = _BL_X, x_br_rel: float = _BR_X,
+) -> None:
+    """Per-pair MP3 equalizer: horizontal PMOS with source at BL, drain
+    at BR, gate on precharge_en.
+
+    Diff bracketed to leave clearance from BL/BR met1 stubs and from
+    any pair-neighbour features at the cell boundary."""
+    x_bl = x_offset + x_bl_rel
+    x_br = x_offset + x_br_rel
+
+    # MP3 diff needs width ≥ 2·SD_EXT + L = 0.85 to fit a transistor.
+    # Leave 0.10 margin from BL / BR mcon pad edges.
+    eq_left = x_bl + 0.10
+    eq_right = x_br - 0.10
     diff_bot = y_center - _W / 2.0
     diff_top = y_center + _W / 2.0
 
-    _rect(cell, _DIFF, x_left, diff_bot, x_right, diff_top)
+    _rect(cell, _DIFF, eq_left, diff_bot, eq_right, diff_top)
     _rect(cell, _PSDM,
-          x_left - _PSDM_ENC, diff_bot - _PSDM_ENC,
-          x_right + _PSDM_ENC, diff_top + _PSDM_ENC)
+          eq_left - _PSDM_ENC, diff_bot - _PSDM_ENC,
+          eq_right + _PSDM_ENC, diff_top + _PSDM_ENC)
 
-    # Poly gate — vertical across the channel.
-    poly_left = poly_cx - _L / 2.0
-    poly_right = poly_cx + _L / 2.0
+    # Vertical poly gate, centred.
+    poly_cx = (eq_left + eq_right) / 2.0
+    poly_bot = diff_bot - _POLY_OVH
+    poly_top = diff_top + _POLY_OVH
     _rect(cell, _POLY,
-          poly_left, diff_bot - _POLY_OVH,
-          poly_right, diff_top + _POLY_OVH)
+          poly_cx - _L / 2.0, poly_bot,
+          poly_cx + _L / 2.0, poly_top)
 
-    # Source (left) + drain (right)
-    src_cx = x_left + _SD_EXT / 2.0
-    drn_cx = x_right - _SD_EXT / 2.0
-    _contact_stack(cell, src_cx, y_center)
-    _contact_stack(cell, drn_cx, y_center)
+    # Source contact (left, BL side) + jog to BL stub.
+    src_x = eq_left + _SD_EXT / 2.0
+    drn_x = eq_right - _SD_EXT / 2.0
+    _diff_contact(cell, src_x, y_center)
+    _mcon_pad(cell, src_x, y_center)
+    _rect(cell, _MET1,
+          x_bl - _MET1_WIDTH / 2, y_center - _MET1_WIDTH / 2,
+          src_x + _MET1_WIDTH / 2, y_center + _MET1_WIDTH / 2)
 
-    return poly_cx, src_cx, drn_cx
+    _diff_contact(cell, drn_x, y_center)
+    _mcon_pad(cell, drn_x, y_center)
+    _rect(cell, _MET1,
+          drn_x - _MET1_WIDTH / 2, y_center - _MET1_WIDTH / 2,
+          x_br + _MET1_WIDTH / 2, y_center + _MET1_WIDTH / 2)
+
+    # MP3 gate tap: extend poly below the transistor to a poly head,
+    # place licon + via stack dropping straight to precharge_en rail.
+    stub_half = (_LICON + 2 * _POLY_LICON_ENC) / 2.0
+    # Safely below MP3 poly bottom so the licon's poly enclosure is clean,
+    # while staying above the precharge_en rail's top edge.
+    mp3_tap_y = poly_bot - 0.10 - stub_half        # poly head y centre
+    mp3_stub_bot = mp3_tap_y - stub_half - 0.01
+    _rect(cell, _POLY,
+          poly_cx - stub_half, mp3_stub_bot,
+          poly_cx + stub_half, poly_bot)
+    _poly_contact(cell, poly_cx, mp3_tap_y)
+    _mcon_pad(cell, poly_cx, mp3_tap_y)
+    _via1_stack(cell, poly_cx, mp3_tap_y)
+    # Met2 riser from (poly_cx, mp3_tap_y) down to rail.
+    riser_half = (_VIA1 + 2 * _VIA1_ENC) / 2.0
+    _rect(cell, _MET2,
+          poly_cx - riser_half, rail_y,
+          poly_cx + riser_half, mp3_tap_y + riser_half)
+    _via2_stack(cell, poly_cx, rail_y)
 
 
 def generate_precharge(
@@ -219,106 +361,136 @@ def generate_precharge(
     cell_name: str | None = None,
     output_path: str | Path | None = None,
 ) -> Tuple[gdstk.Cell, gdstk.Library]:
-    """Emit a DRC-clean multi-pair precharge cell.
+    """Emit an extraction-clean precharge cell using N=2 shared-diff blocks.
 
-    num_pairs  : number of BL/BR pair columns
-    pair_pitch : horizontal cell pitch per pair (min 1.31 µm)
+    num_pairs must be even (≥ 2). Blocks are 2 pairs wide; the cell
+    contains num_pairs / 2 blocks.
     """
     if pair_pitch < _MIN_PAIR_PITCH - 1e-9:
+        raise ValueError(f"pair_pitch {pair_pitch} < min {_MIN_PAIR_PITCH}")
+    if num_pairs < 2 or num_pairs % 2 != 0:
         raise ValueError(
-            f"pair_pitch {pair_pitch} < min {_MIN_PAIR_PITCH}"
+            f"num_pairs must be even and >= 2 for N=2 block layout; "
+            f"got {num_pairs}"
         )
-    if num_pairs < 1:
-        raise ValueError(f"num_pairs must be >= 1; got {num_pairs}")
 
     name = cell_name or (
-        f"precharge_{num_pairs}pairs_p{int(pair_pitch * 1000)}nm"
+        f"precharge_{num_pairs}pairs_p{int(pair_pitch * 1000)}nm_n2"
     )
-    cell_w = _snap(num_pairs * pair_pitch)
+    block_width = _snap(2 * pair_pitch)
+    num_blocks = num_pairs // 2
+    cell_w = _snap(num_blocks * block_width)
 
     lib = gdstk.Library(name=f"{name}_lib")
     cell = gdstk.Cell(name)
     lib.add(cell)
     _rect(cell, _BOUNDARY, 0, 0, cell_w, _CELL_H)
 
-    # nwell covers all PMOS rows + enclosure margin.
+    # Nwell spans Rows A/B only (no PMOS in Row C — wait MP3 IS PMOS too).
+    # Actually all three rows have PMOS in the precharge. Nwell spans all.
     nw_bot = _ROW_C_Y - _W / 2.0 - _NWELL_ENC
-    nw_top = _ROW_A_Y + _DIFF_Y_HALF + _NWELL_ENC
+    nw_top = _ROW_A_Y + _W / 2.0 + _NWELL_ENC
     _rect(cell, _NWELL, -_NWELL_ENC, nw_bot,
           cell_w + _NWELL_ENC, nw_top)
 
-    # VDD rail (met1, horizontal)
-    _rect(cell, _MET1, 0, _VDD_RAIL_Y - _RAIL_W / 2,
+    # Met3 rails.
+    _rect(cell, _MET3, 0, _VDD_RAIL_Y - _RAIL_W / 2,
           cell_w, _VDD_RAIL_Y + _RAIL_W / 2)
-    cell.add(gdstk.Label("VDD", (_snap(cell_w / 2), _snap(_VDD_RAIL_Y)),
-                         layer=_MET1[0], texttype=_MET1[1]))
-
-    # precharge_en rail (met1, horizontal)
-    _rect(cell, _MET1, 0, _EN_RAIL_Y - _RAIL_W / 2,
+    cell.add(gdstk.Label("VDD",
+                         (_snap(cell_w / 2), _snap(_VDD_RAIL_Y)),
+                         layer=_MET3[0], texttype=_MET3[1]))
+    _rect(cell, _MET3, 0, _EN_RAIL_Y - _RAIL_W / 2,
           cell_w, _EN_RAIL_Y + _RAIL_W / 2)
-    cell.add(gdstk.Label("precharge_en", (_snap(0.5), _snap(_EN_RAIL_Y)),
-                         layer=_MET1[0], texttype=_MET1[1]))
+    cell.add(gdstk.Label("precharge_en",
+                         (_snap(min(0.5, cell_w / 2)), _snap(_EN_RAIL_Y)),
+                         layer=_MET3[0], texttype=_MET3[1]))
 
-    met1_stub_half = _MET1_WIDTH / 2.0
+    met1_half = _MET1_WIDTH / 2.0
 
+    # --- BL / BR stubs (per pair) -----------------------------------------
     for i in range(num_pairs):
-        x_offset = i * pair_pitch
-        x_bl_abs = x_offset + _BL_X
-        x_br_abs = x_offset + _BR_X
-        x_mp1_abs = x_offset + _MP1_X
-        x_mp2_abs = x_offset + _MP2_X
-
-        # BL and BR full-height met1 stubs
-        _rect(cell, _MET1, x_bl_abs - met1_stub_half, 0,
-              x_bl_abs + met1_stub_half, _CELL_H)
+        x_bl = i * pair_pitch + _BL_X
+        x_br = i * pair_pitch + _BR_X
+        _rect(cell, _MET1, x_bl - met1_half, 0.0,
+              x_bl + met1_half, _CELL_H)
         cell.add(gdstk.Label(
-            f"BL[{i}]", (_snap(x_bl_abs), _snap(_CELL_H - 0.15)),
+            f"BL[{i}]", (_snap(x_bl), _snap(_CELL_H - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
-        _rect(cell, _MET1, x_br_abs - met1_stub_half, 0,
-              x_br_abs + met1_stub_half, _CELL_H)
+        _rect(cell, _MET1, x_br - met1_half, 0.0,
+              x_br + met1_half, _CELL_H)
         cell.add(gdstk.Label(
-            f"BR[{i}]", (_snap(x_br_abs), _snap(_CELL_H - 0.15)),
+            f"BR[{i}]", (_snap(x_br), _snap(_CELL_H - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
 
-        # MP1 (BL precharge) at Row A
-        _, mp1_drn_y, mp1_src_y = _vertical_pmos(cell, x_mp1_abs, _ROW_A_Y)
-        # MP1 source (top)  → VDD rail
-        _mcon_stack(cell, x_mp1_abs, mp1_src_y)
-        _rect(cell, _MET1, x_mp1_abs - met1_stub_half, mp1_src_y,
-              x_mp1_abs + met1_stub_half, _VDD_RAIL_Y)
-        # MP1 drain (bottom) → BL stub via met1 jog
-        _mcon_stack(cell, x_mp1_abs, mp1_drn_y)
-        # jog from x_mp1 at mp1_drn_y to x_bl at same y
-        _rect(cell, _MET1, x_bl_abs - met1_stub_half, mp1_drn_y - met1_stub_half,
-              x_mp1_abs + met1_stub_half, mp1_drn_y + met1_stub_half)
+    # --- Per-block: Rows A, B, C transistors ------------------------------
+    for b in range(num_blocks):
+        x_block = b * block_width
 
-        # MP2 (BR precharge) at Row B
-        _, mp2_drn_y, mp2_src_y = _vertical_pmos(cell, x_mp2_abs, _ROW_B_Y)
-        _mcon_stack(cell, x_mp2_abs, mp2_src_y)
-        # MP2 source → VDD (reach up past Row A; route in met1 clear of MP1
-        # diff by going at x_mp2 column, well separated from x_mp1 column).
-        _rect(cell, _MET1, x_mp2_abs - met1_stub_half, mp2_src_y,
-              x_mp2_abs + met1_stub_half, _VDD_RAIL_Y)
-        _mcon_stack(cell, x_mp2_abs, mp2_drn_y)
-        _rect(cell, _MET1, x_mp2_abs - met1_stub_half, mp2_drn_y - met1_stub_half,
-              x_br_abs + met1_stub_half, mp2_drn_y + met1_stub_half)
+        # Row A: shared-source MP1 pair. Drain x positions (within block):
+        # BL[0]=0.0425 and BL[1]=1.3525 (pair-local; pair[1] in block is
+        # at pair_pitch + BL_X = 1.3525 within the block).
+        drain_xs_A = (_BL_X, pair_pitch + _BL_X)
+        _shared_source_pair(
+            cell, _ROW_A_Y, x_block, _MP1_GATE_REL, drain_xs_A,
+            _MP1_SRC_TAP_X,
+        )
+        # Drain met1 jogs to the BL stubs (trivial — drain is at BL x).
+        for di in range(2):
+            x_drain = x_block + drain_xs_A[di]
+            _mcon_pad(cell, x_drain, _ROW_A_Y)
+            # drain mcon's met1 pad already overlaps the BL stub directly
+            # because the drain is centered at x_bl and the BL stub
+            # passes through (x_bl ± 0.07) at every y.
+        # Shared source to VDD rail.
+        _src_tap_to_rail(
+            cell, x_block + _MP1_SRC_TAP_X, _ROW_A_Y, _VDD_RAIL_Y,
+        )
 
-        # MP3 equalizer at Row C, between MP1 drain x and MP2 drain x.
-        eq_left = x_mp1_abs + _W / 2.0 + _DIFF_SPACING_SAME  # spacing from MP1 diff
-        eq_right = x_mp2_abs - _W / 2.0 - _DIFF_SPACING_SAME
-        # Clamp equalizer diff to BL/BR track range so its drain connects.
-        eq_left = max(eq_left, x_bl_abs + 0.10)
-        eq_right = min(eq_right, x_br_abs - 0.10)
-        if eq_right - eq_left >= 2 * _SD_EXT + _L:
-            _, eq_src, eq_drn = _horizontal_pmos(cell, eq_left, eq_right, _ROW_C_Y)
-            # eq_src (left) → BL stub
-            _mcon_stack(cell, eq_src, _ROW_C_Y)
-            _rect(cell, _MET1, x_bl_abs - met1_stub_half, _ROW_C_Y - met1_stub_half,
-                  eq_src + met1_stub_half, _ROW_C_Y + met1_stub_half)
-            # eq_drn (right) → BR stub
-            _mcon_stack(cell, eq_drn, _ROW_C_Y)
-            _rect(cell, _MET1, eq_drn - met1_stub_half, _ROW_C_Y - met1_stub_half,
-                  x_br_abs + met1_stub_half, _ROW_C_Y + met1_stub_half)
+        # Row B: shared-source MP2 pair (drains at BR[0]=1.1575 and
+        # BR[1]=2.4675 within block).
+        drain_xs_B = (_BR_X, pair_pitch + _BR_X)
+        _shared_source_pair(
+            cell, _ROW_B_Y, x_block, _MP2_GATE_REL, drain_xs_B,
+            _MP2_SRC_TAP_X,
+        )
+        for di in range(2):
+            x_drain = x_block + drain_xs_B[di]
+            _mcon_pad(cell, x_drain, _ROW_B_Y)
+        _src_tap_to_rail(
+            cell, x_block + _MP2_SRC_TAP_X, _ROW_B_Y, _VDD_RAIL_Y,
+        )
+
+        # Row C: per-pair MP3 equalizers (2 per block).
+        _mp3_equalizer(cell, x_block, _ROW_C_Y, _EN_RAIL_Y)
+        _mp3_equalizer(cell, x_block + pair_pitch, _ROW_C_Y, _EN_RAIL_Y)
+
+    # --- Row A / Row B back-bars (continuous 0.33 µm-tall poly) ------------
+    # Back-bars span the full cell and merge with each vertical gate stem
+    # (each stem's top edge touches the bar's bottom edge).
+    _rect(cell, _POLY, 0.0, _ROW_A_BAR_Y - _BAR_H / 2.0,
+          cell_w, _ROW_A_BAR_Y + _BAR_H / 2.0)
+    _rect(cell, _POLY, 0.0, _ROW_B_BAR_Y - _BAR_H / 2.0,
+          cell_w, _ROW_B_BAR_Y + _BAR_H / 2.0)
+
+    # Single gate tap for all gate lines — placed on Row B's back-bar.
+    #
+    # Why one tap (not two): Row A gate stems extend from y=ROW_A_Y-0.34
+    # down to y=ROW_B_BAR_Y+0.055 (overlap with Row B back-bar), so all
+    # Row A + Row B gates merge into one poly polygon. A single tap on
+    # Row B's bar drives every gate.
+    #
+    # Why Row B's bar, not Row A's: Row A's bar sits at y ≈ 3.18,
+    # INSIDE the MP1 source met1 stub y-range ([2.67, 3.84]); a gate tap
+    # there is guaranteed to overlap the stub and short precharge_en to
+    # VDD. Row B's bar at y ≈ 2.22 is BELOW that y-range (gap 0.32 µm),
+    # so the gate tap pad clears all source stubs in 2D.
+    #
+    # x window: bitline-clear gap at x=0.6 (between BL[0]=0.0425 and
+    # BR[0]=1.1575, ~0.43 µm-wide safe window). Happens to align with
+    # MP3 pair-0 poly_cx so the gate-tap met2 riser merges with the
+    # MP3 tap riser (same net, no conflict).
+    tap_x = _snap(0.6)
+    _gate_tap_to_rail(cell, tap_x, _ROW_B_BAR_Y, _EN_RAIL_Y)
 
     if output_path is not None:
         out = Path(output_path)

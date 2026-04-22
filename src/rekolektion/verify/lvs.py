@@ -66,10 +66,21 @@ def extract_netlist(
     cell_name: str = "",
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
+    make_ports: bool = False,
+    timeout: int = 300,
 ) -> Path:
     """Extract SPICE netlist from GDS using Magic.
 
     Returns path to the extracted .spice file.
+
+    make_ports: if True, promote every label attached to geometry into a
+    subckt port via `port makeall`. Required for downstream PVT SPICE
+    where the subckt must expose named ports (bitlines, enables, power).
+    Default False keeps the LVS call site unchanged (LVS relies on
+    schematic-side port declarations, not extracted ones).
+
+    timeout: Magic subprocess timeout in seconds. Default 300 s suffices
+    for the LVS flow on small cells; full-macro extractions need more.
     """
     gds_path = Path(gds_path)
     if pdk_root is None:
@@ -90,11 +101,13 @@ def extract_netlist(
 
     # Magic writes .ext files relative to CWD, so we run from output_dir
     # and use absolute paths for GDS and output.
+    port_make_line = "port makeall" if make_ports else ""
     tcl_script = f"""\
 gds read {gds_path}
 {"" if not cell_name else f"load {cell_name}"}
 select top cell
 extract all
+{port_make_line}
 ext2spice lvs
 ext2spice -o {extracted_spice.resolve()}
 quit -noprompt
@@ -115,7 +128,7 @@ quit -noprompt
     env["PDK_ROOT"] = str(pdk_root)
 
     result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=300,
+        cmd, capture_output=True, text=True, timeout=timeout,
         cwd=str(output_dir), env=env,
     )
 

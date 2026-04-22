@@ -16,11 +16,10 @@ from rekolektion.peripherals.precharge import generate_precharge
 
 
 _BITCELL_WIDTH: float = 1.31
-# Height is determined by the precharge generator at bitcell pitch.
-# Derived empirically from a DRC-clean build; kept as a module constant
-# so the assembler's floorplan doesn't have to build the cell to get
-# its height.
-_PRECHARGE_HEIGHT: float = 4.56
+# Height for the Option II shared-diffusion precharge (rails on met3,
+# 3-row PMOS stack with back-bars). Matches cell_h in peripherals/
+# precharge.py: VDD_RAIL_Y + RAIL_W/2 + 0.14 = 3.98 µm.
+_PRECHARGE_HEIGHT: float = 3.98
 
 
 class PrechargeRow:

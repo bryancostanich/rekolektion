@@ -45,6 +45,14 @@ _Z_X: float = 7.0
 _Z_Y: float = 0.285
 _NAND3_RIGHT_EDGE_X: float = 7.510
 
+# NAND3 internal met1 VDD rail.  The cell declares two "VDD" m1 ports;
+# the one at x=[4.26, 4.50] extends slightly past both cell edges in y
+# (−0.035 to 1.735 µm) so abutted cells share it continuously.  This
+# rail carries the PFET sources (the actual power pin, NOT the B/C
+# gate ties), so it must be bonded to the wl_driver's external VPWR
+# net to close LVS.  x_center = 4.38.
+_NAND3_VDD_RAIL_X_CENTER: float = 4.38
+
 # VDD rail runs vertically right of the NAND3 cell column; B + C pins
 # tie to it via short horizontal stubs. Placed far enough right that
 # poly / li1 spacing rules pass.
@@ -158,6 +166,32 @@ class WlDriverRow:
                     end=(vdd_x, pin_y),
                     layer="met2",
                 )
+
+        # Bond NAND3 PFET-source rail to external VPWR.
+        # The B/C stubs above only tie the NAND3 *input gates* high;
+        # they do not connect the cell's VDD port (the PFET sources).
+        # Without this bridge, hierarchical LVS sees a 1-net gap —
+        # every NAND3 instance's merged VDD rail ("VDD" port, met1 at
+        # x=[4.26,4.50]) is electrically floating from the wl_driver's
+        # "VPWR" rail at x=vdd_x.  Since port 1's y-extent [-0.035,
+        # 1.735] overlaps between abutted cells, all 128 rails fuse
+        # into ONE net — so a single via + bridge is sufficient.
+        #
+        # Placed in row 0 at local y=1.45 (between C stub at 1.130 and
+        # cell top at 1.580).  The horizontal met2 crosses the second
+        # internal VDD rail at x=[6.42,6.66] on a different layer — no
+        # via, and even accidental via-ing is same-net, so safe.
+        bridge_y = 1.45
+        draw_via_stack(
+            top, from_layer="met1", to_layer="met2",
+            position=(_NAND3_VDD_RAIL_X_CENTER, bridge_y),
+        )
+        draw_wire(
+            top,
+            start=(_NAND3_VDD_RAIL_X_CENTER, bridge_y),
+            end=(vdd_x, bridge_y),
+            layer="met2",
+        )
 
         lib.add(top)
         return lib

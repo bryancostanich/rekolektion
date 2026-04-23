@@ -356,7 +356,11 @@ def _shift_top_to_zero_origin(
     prec_top = fp.positions["precharge"][1] + fp.sizes["precharge"][1]
     wd_bot = fp.positions["write_driver"][1]
     pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
-    pins_bot_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+    pins_bot_y = (
+        wd_bot
+        - _DIN_BAND_EXTENSION
+        - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+    )
     ys_lo = pins_bot_y - 0.5
     dx, dy = -xs_lo, -ys_lo
     for poly in top.polygons:
@@ -714,25 +718,34 @@ _BIT_TRUNK_PITCH: float = 0.60  # 0.30 met3 width + 0.30 spacing
 def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
     """Route top-level din[i] pins to WD[i].DIN.
 
-    Path per bit (top to bottom):
-      din pin (met3)
-        -> via3 -> met4 short vertical down to trunk_y (above precharge)
-        -> via4 -> met3 horizontal trunk at trunk_y from din_pin_x to drop_x
-        -> via3 -> met4 long vertical from trunk_y down to bit_y_below_wd
-        -> via stack met4->met1 at (drop_x, bit_y_below_wd)
-        -> met1 jog from drop_x to wd_din_x (if drop_x != wd_din_x)
-        -> met1 short vertical UP to WD DIN pin
+    Per-bit path (top to bottom):
+      din[i] pin (met3 stub at pins_top_y)
+        -> via3 -> met4 short vertical to trunk_y[i] (above precharge)
+        -> via3 -> met3 horizontal trunk trunk_y[i] from din_pin_x[i] to drop_x[i]
+        -> via3 -> met4 long vertical from trunk_y[i] down to drop_y[i]
+        -> via stack met4->met1 at (drop_x[i], drop_y[i])
+        -> met1 horizontal jog from drop_x[i] to wd_din_x[i] at drop_y[i]
+        -> via met1->met2 at (wd_din_x[i], drop_y[i])
+        -> met2 vertical up at wd_din_x[i] from drop_y[i] to wd_din_y_abs
+        -> via met2->met1 at (wd_din_x[i], wd_din_y_abs) onto WD DIN pin
 
-    Two trunk bands:
-      trunk_y (per-bit, above precharge) — horizontal met3 jogs
-        from din_pin_x to the bit's drop_x. 8 bits stacked at 0.60
-        pitch between prec_top (17.62) and top pin stubs (24.12).
-      bit_y_below_wd (shared) — all bits drop to the SAME y at their
-        per-bit drop_x. No conflict because drop_x differs per bit.
+    Two per-bit y bands (pitch 0.60, 8 tracks each):
+      trunk_y[i] (above precharge) — horizontal met3 trunks.
+      drop_y[i]  (below DOUT band, below WD) — horizontal met1 jogs.
 
-    The "drop x" is chosen to avoid the central VPWR met4 strap
-    (x=[0.755, 2.355]) — for bit 0 wd_din_x=1.425 is INSIDE the strap,
-    so drop_x is shifted east. Other bits drop at wd_din_x directly.
+    Both bands use staircased per-bit y's so each bit owns unique
+    horizontal runs.  The met1 horizontal at drop_y[i] and met2
+    vertical at wd_din_x[i] are on different layers, so they can
+    cross other bits' runs in space without shorting.
+
+    drop_x[i] is chosen to avoid:
+      - PDN straps (VPWR centre, VGND left/right) with keepout
+        covering both the met4 long vertical and its via pad.
+      - Every din_pin_x[j] (met4 pad collision at the upper trunk
+        end) with _DROP_MARGIN clearance.
+      - Collision-neighbour wd_din_x[j] (so bit i's jog doesn't cross
+        bit j's met2 vertical at (wd_din_x[j], drop_y[i]) — they are
+        different layers, so no short, but also cheaper to avoid).
     """
     wd_x, wd_y = fp.positions["write_driver"]
     prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
@@ -741,66 +754,140 @@ def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
     positions, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
     mux_pitch = p.mux_ratio * _BITCELL_WIDTH
 
-    # VPWR strap x-range (must match `_draw_power_network`).
+    # PDN strap x-ranges (must match `_draw_power_network`).
     xs_lo = min(x for x, _ in fp.positions.values()) - 1.0
     xs_hi = max(fp.positions[n][0] + fp.sizes[n][0] for n in fp.positions) + 1.0
-    vpwr_x_center = xs_lo + (xs_hi - xs_lo) / 2
-    vpwr_x_hi = vpwr_x_center + _PDN_STRAP_W / 2
+    macro_w = xs_hi - xs_lo
+    strap_half = _PDN_STRAP_W / 2
+    edge_margin = strap_half + 0.5
+    strap_x_centers = [
+        xs_lo + macro_w / 2,        # VPWR centre
+        xs_lo + edge_margin,        # VGND left
+        xs_hi - edge_margin,        # VGND right
+    ]
 
     _MET4_PAD_HALF: float = 0.60
-    _VPWR_KEEPOUT: float = _MET4_PAD_HALF + 0.30
-    # Offset drop_x east of wd_din_x so bit j's met4 long vertical
-    # doesn't pass through bit i's trunk-end via pad at din_pin_x_i.
-    # Uniform 1.5 µm offset clears every bit's neighbor with > 0.6 µm
-    # margin (enough for 0.30 met4 min spacing + pad half-widths).
-    _DIN_DROP_OFFSET: float = 1.5
+    _STRAP_KEEPOUT: float = _MET4_PAD_HALF + 0.30
+    _DROP_MARGIN: float = 0.70
 
-    # Trunk y band sits in the 5.6 µm gap above precharge.
+    # Collect clearance targets.
+    din_pin_xs = [positions[f"din[{b}]"][0] for b in range(p.bits)]
+    dout_pin_xs = [positions[f"dout[{b}]"][0] for b in range(p.bits)]
+    wd_din_xs = [wd_x + b * mux_pitch + _WD_DIN_X_LOCAL for b in range(p.bits)]
+    sa_dout_xs = [wd_x + b * mux_pitch + _SA_DOUT_X_LOCAL for b in range(p.bits)]
+
+    # Upper trunk band (met3 horizontal): 0.30 above precharge top.
     din_trunk_base_y = prec_top + 0.30
-    # All bits drop to the same y below WD (safe from DOUT's met3
-    # trunks because drop_x is chosen clear of DOUT trunk x ranges).
-    bit_y_below_wd = wd_y - 0.30
+    # Lower drop band (met1 horizontal): below DOUT band.
+    # DOUT uses wd_y-0.30 .. wd_y-4.50.  DIN drop band sits 0.60 µm
+    # below the DOUT band and staircases downward per bit.
+    drop_base_y = wd_y - 5.10
+
+    def _strap_conflict(x: float) -> bool:
+        return any(
+            abs(x - sx) <= _STRAP_KEEPOUT for sx in strap_x_centers
+        )
+
+    chosen_drop_xs: list[float] = []
+
+    def _pick_drop_x(bit_i: int) -> float:
+        """Pick drop_x[i].  Must clear:
+          - every PDN strap (with _STRAP_KEEPOUT)
+          - every din_pin_x  (met4 pad at (drop_x, trunk_y))
+          - every dout_pin_x (DOUT's met3 vertical at dout_pin_x crosses
+            the DIN band — a via-stack met3 pad at (drop_x, drop_y) on
+            top of it would short DIN to DOUT).
+          - every other bit's wd_din_x (its met2 vertical lives there).
+          - every other bit's sa_dout_x (SA DOUT met2 vertical).
+          - every already-picked drop_x (the met4 long vertical at that
+            x runs the full macro height; two such verticals at the
+            same x merge, and within met4 min-space they short).
+        Prefer drop_x = wd_din_x[i] when it clears everything.
+        """
+        wd_din_x_i = wd_din_xs[bit_i]
+
+        def _ok(x: float) -> bool:
+            if _strap_conflict(x):
+                return False
+            if any(abs(x - px) < _DROP_MARGIN for px in din_pin_xs):
+                return False
+            if any(abs(x - px) < _DROP_MARGIN for px in dout_pin_xs):
+                return False
+            for j, wx in enumerate(wd_din_xs):
+                if j == bit_i:
+                    continue
+                if abs(x - wx) < _DROP_MARGIN:
+                    return False
+            for sx in sa_dout_xs:
+                if abs(x - sx) < _DROP_MARGIN:
+                    return False
+            for dx in chosen_drop_xs:
+                if abs(x - dx) < _DROP_MARGIN:
+                    return False
+            return True
+
+        if _ok(wd_din_x_i):
+            return wd_din_x_i
+        # Search outward from wd_din_x_i in 0.5 µm steps up to ±12 µm.
+        steps = [0.5 * k for k in range(1, 25)]
+        for delta in steps:
+            for sign in (1, -1):
+                cand = wd_din_x_i + sign * delta
+                if _ok(cand):
+                    return cand
+        # Fallback — take the first clear x east of the VPWR strap.
+        for pad in (0.5, 1.0, 1.5, 2.0, 3.0, 5.0):
+            cand = xs_lo + pad
+            if _ok(cand):
+                return cand
+        return wd_din_x_i  # give up — will produce a short
+
+    wd_din_y_abs = wd_y + _WD_DIN_Y_LOCAL
 
     for bit in range(p.bits):
         din_pin_x = positions[f"din[{bit}]"][0]
-        wd_din_x_abs = wd_x + bit * mux_pitch + _WD_DIN_X_LOCAL
-        wd_din_y_abs = wd_y + _WD_DIN_Y_LOCAL
+        wd_din_x_abs = wd_din_xs[bit]
         trunk_y = din_trunk_base_y + bit * _BIT_TRUNK_PITCH
-
-        # drop_x = wd_din_x + fixed offset. Adjust further east if it
-        # lands inside (or too close to) the VPWR strap.
-        drop_x = wd_din_x_abs + _DIN_DROP_OFFSET
-        if (drop_x - _MET4_PAD_HALF) < (vpwr_x_hi + _VPWR_KEEPOUT):
-            drop_x = vpwr_x_hi + _VPWR_KEEPOUT
+        drop_y = drop_base_y - bit * _BIT_TRUNK_PITCH
+        drop_x = _pick_drop_x(bit)
+        chosen_drop_xs.append(drop_x)
 
         # 1. Via3 at top pin stub (met3 -> met4).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
                        position=(din_pin_x, pins_top_y))
-        # 2. Met4 short vertical at din_pin_x from pins_top_y DOWN to trunk_y.
+        # 2. Met4 short vertical at din_pin_x from pins_top_y to trunk_y.
         draw_wire(top, start=(din_pin_x, pins_top_y),
                   end=(din_pin_x, trunk_y), layer="met4")
         # 3. Via3 met4 -> met3 at (din_pin_x, trunk_y).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
                        position=(din_pin_x, trunk_y))
         # 4. Met3 horizontal trunk from din_pin_x to drop_x.
-        draw_wire(top, start=(din_pin_x, trunk_y),
-                  end=(drop_x, trunk_y), layer="met3")
+        if abs(drop_x - din_pin_x) > 1e-6:
+            draw_wire(top, start=(din_pin_x, trunk_y),
+                      end=(drop_x, trunk_y), layer="met3")
         # 5. Via3 met3 -> met4 at (drop_x, trunk_y).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
                        position=(drop_x, trunk_y))
-        # 6. Met4 long vertical at drop_x from trunk_y DOWN to bit_y_below_wd.
+        # 6. Met4 long vertical at drop_x from trunk_y DOWN to drop_y.
         draw_wire(top, start=(drop_x, trunk_y),
-                  end=(drop_x, bit_y_below_wd), layer="met4")
-        # 7. Via stack met4 -> met1 at (drop_x, bit_y_below_wd).
+                  end=(drop_x, drop_y), layer="met4")
+        # 7. Via stack met4 -> met1 at (drop_x, drop_y).
         draw_via_stack(top, from_layer="met1", to_layer="met4",
-                       position=(drop_x, bit_y_below_wd))
-        # 8. Met1 horizontal jog from drop_x to wd_din_x (if offset).
+                       position=(drop_x, drop_y))
+        # 8. Met1 horizontal jog from drop_x to wd_din_x at drop_y.
         if abs(drop_x - wd_din_x_abs) > 1e-6:
-            draw_wire(top, start=(drop_x, bit_y_below_wd),
-                      end=(wd_din_x_abs, bit_y_below_wd), layer="met1")
-        # 9. Met1 short vertical UP from bit_y to WD DIN pin y.
-        draw_wire(top, start=(wd_din_x_abs, bit_y_below_wd),
-                  end=(wd_din_x_abs, wd_din_y_abs), layer="met1")
+            draw_wire(top, start=(drop_x, drop_y),
+                      end=(wd_din_x_abs, drop_y), layer="met1")
+        # 9. Via met1 -> met2 at (wd_din_x, drop_y).
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(wd_din_x_abs, drop_y))
+        # 10. Met2 vertical from (wd_din_x, drop_y) UP to wd_din_y_abs.
+        draw_wire(top, start=(wd_din_x_abs, drop_y),
+                  end=(wd_din_x_abs, wd_din_y_abs), layer="met2")
+        # 11. Via met2 -> met1 at (wd_din_x, wd_din_y_abs) to connect
+        #     onto the WD DIN pin (met1 inside the cell).
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(wd_din_x_abs, wd_din_y_abs))
 
 
 def _route_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
@@ -1606,6 +1693,13 @@ _PDN_STRAP_W: float = 1.6         # met4 power strap width
 _PDN_STRAP_LAYER: str = "met4"
 _PDN_STRAP_MARGIN: float = 2.0    # gap between PDN strap and nearest block
 
+# Height reserved below the DOUT trunk band (wd_y-0.30 .. wd_y-4.50) for
+# the DIN drop band (wd_y-5.10 .. wd_y-9.30). Consumed by _top_pin_layout
+# when computing pins_bot_y. Matches _DIN_BAND_BASE_OFFSET + 0.60 gap +
+# 8*0.60 pitch = 5.10 - 0.60 = 4.80 for the band height itself; we round
+# to 5.0 for margin.
+_DIN_BAND_EXTENSION: float = 5.0
+
 
 def _top_pin_layout(
     p: MacroV2Params,
@@ -1616,6 +1710,11 @@ def _top_pin_layout(
     Returns (name -> position, pins_top_y, pins_bot_y).  Positions point
     at the *bottom* of the met3 stub (i.e. the tip facing the macro
     interior), which is the natural route entry point.
+
+    pins_bot_y is extended below wd_bot to leave room for BOTH the DOUT
+    trunk band (below WD, 8 tracks at 0.60 pitch starting at wd_y-0.30)
+    AND the DIN drop band (8 tracks at 0.60 pitch starting at wd_y-5.10),
+    plus a 0.60 µm margin to the bottom pin stubs.
     """
     array_x, _ = fp.positions["array"]
     array_w, _ = fp.sizes["array"]
@@ -1623,7 +1722,20 @@ def _top_pin_layout(
     prec_top = prec_y + prec_h
     pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
     wd_bot = fp.positions["write_driver"][1]
-    pins_bot_y = wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+    # Below WD we stack two horizontal routing bands before the bottom
+    # pin stubs:
+    #   DOUT band: wd_y-0.30 .. wd_y-4.50 (8 tracks at 0.60 pitch)
+    #   DIN band:  wd_y-5.10 .. wd_y-9.30 (8 tracks at 0.60 pitch,
+    #              0.60 µm gap from DOUT).
+    # _DIN_BAND_EXTENSION adds exactly the height of the DIN band to the
+    # pre-existing wd_bot-to-pins_bot_y clearance (which only accounted
+    # for DOUT). Keeping the clearance calculation structure identical
+    # preserves DOUT / PDN behaviour.
+    pins_bot_y = (
+        wd_bot
+        - _DIN_BAND_EXTENSION
+        - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+    )
 
     input_names: list[str] = []
     for i in range(p.num_addr_bits):
@@ -1832,7 +1944,9 @@ def _draw_power_network(
         prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
     )
     pins_bot_y = (
-        wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+        wd_bot
+        - _DIN_BAND_EXTENSION
+        - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
     )
     import math as _math
     _ROW_PITCH = 2.72

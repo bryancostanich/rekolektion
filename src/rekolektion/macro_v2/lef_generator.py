@@ -31,6 +31,7 @@ from rekolektion.macro_v2.assembler import (
     _PIN_LAYER,
     _PIN_STUB_LEN,
     _PIN_STUB_W,
+    _DIN_BAND_EXTENSION,
 )
 
 
@@ -77,7 +78,9 @@ def generate_lef(
         prec_top_tmp + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
     )
     pins_bot_y_tmp = (
-        wd_bot_tmp - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+        wd_bot_tmp
+        - _DIN_BAND_EXTENSION
+        - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
     )
     ys_lo = pins_bot_y_tmp - 0.5   # small extra margin beyond pin bottom
     ys_hi_tight = pins_top_y_tmp + _PIN_STUB_LEN + 0.5
@@ -125,7 +128,9 @@ def generate_lef(
     )
     wd_bot = fp.positions["write_driver"][1]
     pins_bot_y = (
-        wd_bot - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
+        wd_bot
+        - _DIN_BAND_EXTENSION
+        - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
     )
 
     input_names: list[str] = []

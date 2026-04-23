@@ -1,6 +1,6 @@
 * NGSPICE file created from sky130_fd_bd_sram__openram_write_driver.ext - technology: sky130B
 
-.subckt sky130_fd_bd_sram__openram_write_driver BL BR DIN EN GND VDD
+.subckt sky130_fd_bd_sram__openram_write_driver BR EN BL VDD DIN GND
 X0 a_213_736# EN a_129_736# GND sky130_fd_pr__nfet_01v8 ad=0.07975 pd=0.84 as=0.1485 ps=1.64 w=0.55 l=0.15
 X1 a_271_690# DIN GND GND sky130_fd_pr__nfet_01v8 ad=0.1044 pd=1.3 as=0.08865 ps=0.9 w=0.36 l=0.15
 X2 VDD a_41_1120# a_121_1585# VDD sky130_fd_pr__pfet_01v8 ad=0.07975 pd=0.84 as=0.1485 ps=1.64 w=0.55 l=0.15

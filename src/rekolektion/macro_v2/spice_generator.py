@@ -465,8 +465,15 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
         k = split[0]
         nand_name, nand_ports = _NAND_BY_FANIN[k]
         for r in range(p.rows):
-            inputs = [f"addr{i}" for i in range(k)]
-            args = inputs + [dec_out_ports[r]] + ["VGND", "VPWR"]
+            # NAND_k port order (native Magic extraction):
+            #   NAND2: GND VDD B A Z
+            #   NAND3: GND VDD C B A Z
+            #   NAND4: GND VDD D C B A Z
+            # addr[0] → A, addr[1] → B, addr[2] → C, addr[3] → D (if present).
+            addr_by_letter = [f"addr{i}" for i in range(k)]
+            # Inputs in reverse (D,C,B,A) to match native port order.
+            reversed_inputs = list(reversed(addr_by_letter))
+            args = ["VGND", "VPWR"] + reversed_inputs + [dec_out_ports[r]]
             f.write(f"Xnand_{r} {' '.join(args)} {nand_name}\n")
     else:
         # Multi-predecoder case TBD — emit stub placeholder.
@@ -493,10 +500,11 @@ def _write_wl_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
 
     nand3, _ = _NAND_BY_FANIN[3]
     for r in range(p.rows):
-        # NAND3(A=dec_out_r, B=VPWR, C=VPWR) = NOT dec_out_r
+        # NAND3 port order (native Magic): GND VDD C B A Z.
+        # B=VPWR, C=VPWR tie it off as inverter: Z = NOT A.
         f.write(
-            f"Xwld_{r} {in_ports[r]} VPWR VPWR {out_ports[r]} "
-            f"VGND VPWR {nand3}\n"
+            f"Xwld_{r} VGND VPWR VPWR VPWR {in_ports[r]} {out_ports[r]} "
+            f"{nand3}\n"
         )
     f.write(f".ends {name}\n\n")
 
@@ -517,9 +525,9 @@ def _write_sense_amp_row_subckt(f: TextIO, p: MacroV2Params) -> None:
     _wrap_ports(f, ports)
 
     for i in range(p.bits):
-        # sense_amp ports: BL BR DOUT EN GND VDD
+        # sense_amp port order (native Magic): BR BL EN VDD DOUT GND
         f.write(
-            f"Xsa_{i} {mbl[i]} {mbr[i]} {dout[i]} s_en VGND VPWR "
+            f"Xsa_{i} {mbr[i]} {mbl[i]} s_en VPWR {dout[i]} VGND "
             f"{_SENSE_AMP_NAME}\n"
         )
     f.write(f".ends {name}\n\n")
@@ -541,9 +549,9 @@ def _write_write_driver_row_subckt(f: TextIO, p: MacroV2Params) -> None:
     _wrap_ports(f, ports)
 
     for i in range(p.bits):
-        # write_driver ports: BL BR DIN EN GND VDD
+        # write_driver port order (native Magic): BR EN BL VDD DIN GND
         f.write(
-            f"Xwd_{i} {mbl[i]} {mbr[i]} {din[i]} w_en VGND VPWR "
+            f"Xwd_{i} {mbr[i]} w_en {mbl[i]} VPWR {din[i]} VGND "
             f"{_WRITE_DRIVER_NAME}\n"
         )
     f.write(f".ends {name}\n\n")
@@ -577,11 +585,12 @@ def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
             f"Xdff{i} {dff_d_nets[i]} clk {dff_q_nets[i]} "
             f"VPWR VGND {_DFF_NAME}\n"
         )
-    # NAND2: A=we, B=cs, Z=nandi_z (per _route_ctrl_internal).
+    # NAND2 port order (native Magic): GND VDD B A Z.
+    # A=we, B=cs, Z=nandi_z per _route_ctrl_internal.
     nand2, _ = _NAND_BY_FANIN[2]
     for i in range(2):
         f.write(
-            f"Xnand{i} we cs nand{i}_z VGND VPWR {nand2}\n"
+            f"Xnand{i} VGND VPWR cs we nand{i}_z {nand2}\n"
         )
     f.write(f".ends {name}\n\n")
 

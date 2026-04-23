@@ -1,6 +1,6 @@
 * NGSPICE file created from sky130_fd_bd_sram__openram_sense_amp.ext - technology: sky130B
 
-.subckt sky130_fd_bd_sram__openram_sense_amp BL BR DOUT EN GND VDD
+.subckt sky130_fd_bd_sram__openram_sense_amp BR BL EN VDD DOUT GND
 X0 a_154_1298# a_96_1689# VDD VDD sky130_fd_pr__pfet_01v8 ad=0.3402 pd=3.06 as=0.1827 ps=1.55 w=1.26 l=0.15
 X1 GND EN a_184_1689# GND sky130_fd_pr__nfet_01v8 ad=0.1885 pd=1.88 as=0.1885 ps=1.88 w=0.65 l=0.15
 X2 a_154_1298# a_96_1689# a_184_1689# GND sky130_fd_pr__nfet_01v8 ad=0.1885 pd=1.88 as=0.09425 ps=0.94 w=0.65 l=0.15

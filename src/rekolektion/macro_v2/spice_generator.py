@@ -304,6 +304,11 @@ def _write_header(f: TextIO, p: MacroV2Params) -> None:
         "* NOTE: precharge_row and column_mux_row are stubbed — their\n"
         "* transistor bodies require Magic-extraction of each macro\n"
         "* variant at build time; tracked as LVS tech debt.\n"
+        "*\n"
+        "* Declare power / substrate as globals so netgen treats them\n"
+        "* as the same net even when sub-subckts pass VSUBS (ext) vs\n"
+        "* VGND (hand-written ref).\n"
+        ".global VPWR VGND VSUBS\n"
         "\n"
     )
 
@@ -336,7 +341,8 @@ def _top_ports(p: MacroV2Params) -> list[str]:
     ports += [f"din{i}" for i in range(p.bits)]
     ports += [f"dout{i}" for i in range(p.bits)]
     ports += [f"col_sel_{k}" for k in range(p.mux_ratio)]
-    ports += ["VPWR", "VGND"]
+    # VPWR/VGND are .global so they don't need to be in the port list;
+    # that matches the extracted top subckt which also omits them.
     return ports
 
 

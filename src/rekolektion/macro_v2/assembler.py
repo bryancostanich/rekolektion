@@ -295,6 +295,22 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # C6.3 — extend BL/BR met1 strips through peripheral rows.
     _route_bl(top, p, fp)
 
+    # C6.3b — bridge muxed_BL / muxed_BR from col_mux -> sense_amp ->
+    # write_driver across their abutment gaps.
+    _route_muxed_bl_br(top, p, fp)
+
+    # C6.3c — DIN / DOUT routing (top pins <-> WD.DIN / SA.DOUT).
+    # Currently disabled: DIN needs a vertical drop at wd_din_x
+    # (1.425 for bit 0) which falls inside the central VPWR met4 strap
+    # (x=[0.755, 2.355]); and a met2 drop at wd_din_x would overlap
+    # w_en's per-bit met2 drop at wd_en_x (1.498) by 0.07 µm. Routing
+    # this cleanly needs either a w_en layer change, or a bit-0
+    # special-case path. Tracked as future work; leaving DIN/DOUT
+    # unrouted for now (din/dout top pins are already declared and
+    # present in the top subckt port list, just not electrically
+    # connected to WD.DIN / SA.DOUT).
+    # _route_din_dout(top, p, fp)
+
     # C6.4 — route control signals from control_logic to peripherals.
     _route_control(top, p, fp)
 
@@ -559,6 +575,253 @@ def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
                 layer="met1",
                 width=_BL_STRIP_W,
             )
+
+
+# ---------------------------------------------------------------------------
+# C6.3b — muxed_BL / muxed_BR bridges: col_mux -> SA -> WD
+# ---------------------------------------------------------------------------
+#
+# col_mux emits muxed_bl/muxed_br as per-bit met1 exit stubs on its
+# bottom edge at cell-local x=_MUX_BL_X=0.350 / _MUX_BR_X=0.800 per
+# mux group (i.e., per bit).  sense_amp and write_driver expect BL/BR
+# at their own pin x's — different from 0.350/0.800.  In the 1 µm
+# gaps between col_mux/SA and SA/WD we draw short L-shape met1 jogs
+# that bridge from the one x to the other.
+
+# col_mux muxed exit x per bit (cell-local, matches column_mux.py
+# _MUX_BL_X / _MUX_BR_X).
+_MUX_MBL_X_LOCAL: float = 0.350
+_MUX_MBR_X_LOCAL: float = 0.800
+
+# sense_amp BL/BR pin x (cell-local, per foundry LEF).  Both pins run
+# from cell-local y=0 to y=11.28 on met1.
+_SA_BL_X_LOCAL: float = 1.065   # x-centre of met1 rail [0.98, 1.15]
+_SA_BR_X_LOCAL: float = 1.430   # x-centre of met1 rail [1.36, 1.50]
+
+# write_driver BL/BR pin x (per LEF).  BL/BR pins sit only at the
+# TOP of the WD cell (y near 10.055 cell-local).
+_WD_BL_X_LOCAL: float = 0.770   # x-centre of BL pin (near top)
+_WD_BR_X_LOCAL: float = 1.650
+
+
+def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+    """Bridge muxed_BL / muxed_BR from col_mux through SA into WD.
+
+    Three segments per bit per side:
+      1. mux_bottom -> SA_top (1 µm gap): L-shape met1 jog from
+         mux exit x (0.350 for BL, 0.800 for BR) to SA BL/BR x
+         (1.065 / 1.430).
+      2. SA internal rail: the foundry sense_amp already has a
+         full-cell-height BL/BR rail on met1 — no routing needed.
+      3. SA_bottom -> WD_top (1 µm gap): L-shape met1 jog from
+         SA BL/BR x (1.065 / 1.430) to WD BL/BR x (0.770 / 1.650).
+
+    BL jogs run at the UPPER half of each gap, BR jogs at the LOWER
+    half, so BL and BR don't short to each other at the jog y.
+    """
+    mux_x, mux_y = fp.positions["col_mux"]
+    mux_w, mux_h = fp.sizes["col_mux"]
+    mux_bottom_y = mux_y
+
+    sa_x, sa_y = fp.positions["sense_amp"]
+    sa_w, sa_h = fp.sizes["sense_amp"]
+    sa_top_y = sa_y + sa_h
+    sa_bottom_y = sa_y
+
+    wd_x, wd_y = fp.positions["write_driver"]
+    wd_w, wd_h = fp.sizes["write_driver"]
+    wd_top_y = wd_y + wd_h
+
+    mux_pitch = p.mux_ratio * _BITCELL_WIDTH
+
+    def _L_jog(x_from: float, y_from: float, x_to: float, y_to: float,
+               y_mid: float) -> None:
+        """Draw an L-shape met1 jog from (x_from, y_from) to (x_to, y_to)
+        by going vertical to y_mid, horizontal to x_to, then vertical
+        to y_to."""
+        draw_wire(top, start=(x_from, y_from), end=(x_from, y_mid),
+                  layer="met1", width=_BL_STRIP_W)
+        if abs(x_to - x_from) > 1e-6:
+            draw_wire(top, start=(x_from, y_mid), end=(x_to, y_mid),
+                      layer="met1", width=_BL_STRIP_W)
+        draw_wire(top, start=(x_to, y_mid), end=(x_to, y_to),
+                  layer="met1", width=_BL_STRIP_W)
+
+    # col_mux -> SA: 1 µm gap at y=[sa_top_y, mux_bottom_y] (sa_top_y
+    # < mux_bottom_y).
+    # Within a single bit, mux_BR x (0.800) is between mux_BL x (0.350)
+    # and SA_BL x (1.065). A BL horizontal jog at an "upper" y would
+    # cross BR's vertical segment (which covers y from mux_bottom down
+    # to br_mid). To avoid the crossing, make BL's mid-y LOWER than
+    # BR's mid-y: BL first drops past BR's vertical y range, then
+    # jogs horizontally.
+    mid_top = (mux_bottom_y + sa_top_y) / 2 + 0.20  # closer to mux
+    mid_bot = (mux_bottom_y + sa_top_y) / 2 - 0.20  # closer to SA
+    for bit in range(p.bits):
+        bx = bit * mux_pitch
+        # BR uses UPPER mid-y (closer to mux bottom)
+        _L_jog(
+            x_from=mux_x + bx + _MUX_MBR_X_LOCAL, y_from=mux_bottom_y,
+            x_to=sa_x + bx + _SA_BR_X_LOCAL, y_to=sa_top_y,
+            y_mid=mid_top,
+        )
+        # BL uses LOWER mid-y (closer to SA top), below BR's vertical
+        _L_jog(
+            x_from=mux_x + bx + _MUX_MBL_X_LOCAL, y_from=mux_bottom_y,
+            x_to=sa_x + bx + _SA_BL_X_LOCAL, y_to=sa_top_y,
+            y_mid=mid_bot,
+        )
+
+    # SA -> WD: 1 µm gap at y=[wd_top_y, sa_bottom_y].
+    # Here BR x goes from SA (1.430) to WD (1.650), BL x goes from SA
+    # (1.065) to WD (0.770). BR's x is again right of BL's, so same
+    # rule: BL uses the LOWER mid-y.
+    mid_top = (sa_bottom_y + wd_top_y) / 2 + 0.20
+    mid_bot = (sa_bottom_y + wd_top_y) / 2 - 0.20
+    for bit in range(p.bits):
+        bx = bit * mux_pitch
+        _L_jog(
+            x_from=sa_x + bx + _SA_BR_X_LOCAL, y_from=sa_bottom_y,
+            x_to=wd_x + bx + _WD_BR_X_LOCAL, y_to=wd_top_y,
+            y_mid=mid_top,
+        )
+        _L_jog(
+            x_from=sa_x + bx + _SA_BL_X_LOCAL, y_from=sa_bottom_y,
+            x_to=wd_x + bx + _WD_BL_X_LOCAL, y_to=wd_top_y,
+            y_mid=mid_bot,
+        )
+
+
+# ---------------------------------------------------------------------------
+# C6.3c — din / dout routing
+# ---------------------------------------------------------------------------
+
+# WD DIN pin cell-local x (from foundry LEF): pin on met1 at
+# x=[1.275, 1.575], y=[0.020, 0.300]. Pin centre at x=1.425, at the
+# BOTTOM of the WD cell (y very small).
+_WD_DIN_X_LOCAL: float = 1.425
+_WD_DIN_Y_LOCAL: float = 0.160
+
+# SA DOUT pin cell-local x (from foundry LEF): pin on met1 at
+# x=[0.520, 0.750], y=[0.000, 1.270]. Pin centre at x=0.635, at the
+# BOTTOM of the SA cell (extending UP to y=1.27).
+_SA_DOUT_X_LOCAL: float = 0.635
+_SA_DOUT_Y_LOCAL: float = 0.0   # bottom edge
+
+# Pitch between trunk y's for per-bit horizontal jogs on met3.
+_BIT_TRUNK_PITCH: float = 0.60  # 0.30 met3 width + 0.30 spacing
+
+
+def _route_din_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+    """Route din[i] top pins to WD[i].DIN, and SA[i].DOUT to
+    dout[i] bottom pins.
+
+    Per-bit horizontal jogs on met3 bridge from the top-pin x to the
+    peripheral pin x. Each bit has its own jog y (stacked 0.60 µm
+    apart) so they don't short to each other.
+
+    din: jog in the gap above precharge (y in [prec_top, pins_top_y]).
+         Uses met4 vertical to cross the macro height at the wd_din_x
+         position. Met4 is chip-preferred vertical and cells don't use
+         it; only PDN straps might — din pin x's are > 22 µm, clear of
+         the central VPWR strap at x=1.555 and both VGND edge straps.
+
+    dout: jog in the gap below WD (y in [pins_bot_y, wd_bot_y]).
+          Uses met2 vertical for the long descent through WD (WD has
+          no met2 internally).
+    """
+    sa_x, sa_y = fp.positions["sense_amp"]
+    wd_x, wd_y = fp.positions["write_driver"]
+    wd_w, wd_h = fp.sizes["write_driver"]
+    sa_w, sa_h = fp.sizes["sense_amp"]
+    prec_y = fp.positions["precharge"][1]
+    prec_h = fp.sizes["precharge"][1]
+    prec_top = prec_y + prec_h
+
+    positions, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
+
+    mux_pitch = p.mux_ratio * _BITCELL_WIDTH
+
+    # --- din: top pin -> WD DIN --------------------------------------------
+    # Trunks sit in the gap above precharge (y in [prec_top, pins_top_y]).
+    # Start the first trunk just above prec_top to leave clearance for
+    # precharge's top met3 rail (at prec_y + 3.64 within the cell — the
+    # VPWR rail), and stack upward.
+    # Per-bit trunk y below WD. Each bit uses a DIFFERENT y in the
+    # wd→pin_bot gap so the per-bit horizontal met3 jogs don't merge.
+    # The bottommost bit's trunk must stay above pins_bot_y + stub
+    # (dout pin stubs live there).
+    din_trunk_base_y = wd_y - 0.80   # below WD bottom
+    for bit in range(p.bits):
+        din_pin_x = positions[f"din[{bit}]"][0]
+        wd_din_x_abs = wd_x + bit * mux_pitch + _WD_DIN_X_LOCAL
+        wd_din_y_abs = wd_y + _WD_DIN_Y_LOCAL
+        trunk_y = din_trunk_base_y - bit * _BIT_TRUNK_PITCH
+
+        # Routing: din pin (met3) -> met4 vertical at din_pin_x (far
+        # from VPWR strap for all bits) -> met3 horizontal jog below
+        # WD -> short met2 vertical from jog back up to WD DIN pin ->
+        # met1 at the pin.
+        #
+        # din_pin_x is well east of the central VPWR strap (x≈1.555);
+        # the strap is only 1.6 µm wide so even bit 0's din_pin_x
+        # (≈22 µm) clears it by >20 µm. wd_din_x for bit 0 would be at
+        # x=1.425 which IS under the strap — so we don't run met4 at
+        # wd_din_x; we only put a via stack (no vertical met4) there.
+
+        # 1. Via3 at top of din pin stub: met3 (pin) -> met4.
+        draw_via_stack(top, from_layer="met3", to_layer="met4",
+                       position=(din_pin_x, pins_top_y))
+        # 2. Met4 vertical at din_pin_x from pins_top_y DOWN to trunk_y.
+        draw_wire(top, start=(din_pin_x, pins_top_y),
+                  end=(din_pin_x, trunk_y), layer="met4")
+        # 3. Via3 met4 -> met3 at (din_pin_x, trunk_y).
+        draw_via_stack(top, from_layer="met3", to_layer="met4",
+                       position=(din_pin_x, trunk_y))
+        # 4. Horizontal met3 trunk from din_pin_x to wd_din_x_abs.
+        draw_wire(top, start=(din_pin_x, trunk_y),
+                  end=(wd_din_x_abs, trunk_y), layer="met3")
+        # 5. Via stack met3 -> met2 at (wd_din_x, trunk_y).
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(wd_din_x_abs, trunk_y))
+        # 6. Short met2 vertical UP from trunk_y to WD DIN pin y.
+        #    (trunk_y is below wd_din_y, so "up" means less negative.)
+        draw_wire(top, start=(wd_din_x_abs, trunk_y),
+                  end=(wd_din_x_abs, wd_din_y_abs), layer="met2")
+        # 7. Via1 met2 -> met1 at WD DIN pin.
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(wd_din_x_abs, wd_din_y_abs))
+
+    # --- dout: SA DOUT -> bottom pin ---------------------------------------
+    # SA DOUT pin sits at y=sa_y (SA bottom), on met1. Drop met2 DOWN
+    # through WD (safe — WD has no met2 internally), then horizontal
+    # met3 jog in the gap below WD, then up to dout bottom pin.
+    # (Actually dout bottom pin is at pins_bot_y which is BELOW WD,
+    #  so we keep going down after the jog — no need to go up.)
+    dout_trunk_base_y = wd_y - 0.30  # 0.30 µm below WD bottom
+    for bit in range(p.bits):
+        dout_pin_x = positions[f"dout[{bit}]"][0]
+        sa_dout_x_abs = sa_x + bit * mux_pitch + _SA_DOUT_X_LOCAL
+        trunk_y = dout_trunk_base_y - bit * _BIT_TRUNK_PITCH
+
+        # 1. Via at SA DOUT pin (met1 -> met2).
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(sa_dout_x_abs, sa_y))
+        # 2. Met2 vertical from SA bottom DOWN through WD to trunk_y.
+        draw_wire(top, start=(sa_dout_x_abs, sa_y),
+                  end=(sa_dout_x_abs, trunk_y), layer="met2")
+        # 3. Via2 met2 -> met3 at (sa_dout_x, trunk_y).
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(sa_dout_x_abs, trunk_y))
+        # 4. Horizontal met3 trunk from sa_dout_x to dout_pin_x.
+        draw_wire(top, start=(sa_dout_x_abs, trunk_y),
+                  end=(dout_pin_x, trunk_y), layer="met3")
+        # 5. Met3 vertical from (dout_pin_x, trunk_y) DOWN to pins_bot_y
+        #    (the dout pin stub top). The pin stub itself is drawn by
+        #    _place_top_pins.
+        draw_wire(top, start=(dout_pin_x, trunk_y),
+                  end=(dout_pin_x, pins_bot_y + _PIN_STUB_LEN),
+                  layer="met3")
 
 
 # ---------------------------------------------------------------------------

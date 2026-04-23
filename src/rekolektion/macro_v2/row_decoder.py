@@ -98,9 +98,6 @@ class RowDecoder:
         self.top_cell_name = name or f"row_decoder_{num_rows}"
 
     def build(self) -> gdstk.Library:
-        # Deferred import avoids circular import at module load
-        from rekolektion.macro_v2.predecoder import Predecoder
-
         lib = gdstk.Library(name=f"{self.top_cell_name}_lib")
         top = gdstk.Cell(self.top_cell_name)
         seen: set[str] = set()
@@ -117,37 +114,203 @@ class RowDecoder:
             lib.add(top)
             return lib
 
-        # Multi-predecoder case: 2-4 predecoder blocks stacked vertically
-        # at the left, followed by a column of num_rows NAND_k cells
-        # where k = number of predecoders (final-stage fan-in).
-        pred_block_width = 0.0
-        y = 0.0
-        for idx, k in enumerate(self.split):
-            pd = Predecoder(
-                num_inputs=k,
-                name=f"{self.top_cell_name}_predecoder{idx}_{k}to{2**k}",
-            )
-            pd_lib = pd.build()
-            for c in pd_lib.cells:
+        # Multi-predecoder case: flatten predecoder NAND placements
+        # directly into row_decoder (no separate Predecoder sub-cell)
+        # so Magic extracts a flat topology matching the flat reference
+        # SPICE (spice_generator._write_row_decoder_subckt multi-branch).
+        self._build_multi_predecoder(lib, top, seen)
+
+        lib.add(top)
+        return lib
+
+    def _build_multi_predecoder(
+        self, lib: gdstk.Library, top: gdstk.Cell, seen: set[str],
+    ) -> None:
+        """Place + wire predecoder stages and final NAND column inline.
+
+        Layout (cell-local):
+            x=0..pred_w: predecoder stages stacked vertically
+                stage 0 (k=split[0]): 2^k NAND_k cells in a horizontal row
+                stage 1, stage 2, ... above
+            x=pred_w+GAP: final NAND_m column, m=len(split), pitched 1.58
+
+        Internal wiring:
+            N = sum(split) vertical met3 addr rails labeled addr0..addrN-1,
+                spanning the predecoder block height.  Each predecoder
+                stage taps its k addr rails horizontally.
+            m vertical met3 "pred{stage}_out_0" rails running down the
+                final NAND column, each connected to stage N's first
+                NAND Z output; per-row met2 spurs + li1 spurs drop from
+                each rail into every final NAND's corresponding input.
+        """
+        from rekolektion.macro_v2.routing import (
+            draw_label, draw_via_stack, draw_wire,
+        )
+
+        # 1. Place predecoder stages (flattened NAND cells).
+        total_addr = sum(self.split)
+        stage_y = 0.0
+        stage_geom: list[dict] = []
+        # Predecoders sit at x >= addr_rail_area_w so the N addr rails to
+        # their west don't collide with NAND cell bodies.
+        addr_rail_pitch = 0.5
+        addr_rail_x0 = 0.3
+        pred_area_x0 = addr_rail_x0 + total_addr * addr_rail_pitch + 0.5
+
+        for stage_idx, k in enumerate(self.split):
+            if k not in _NAND_CELL_NAMES:
+                raise ValueError(f"stage fan-in {k} has no foundry NAND")
+            nand_name = _NAND_CELL_NAMES[k]
+            nand_src = gdstk.read_gds(str(_NAND_GDS_PATHS[k]))
+            for c in nand_src.cells:
                 if c.name in seen:
                     continue
                 lib.add(c.copy(c.name))
                 seen.add(c.name)
-            pd_cell = next(c for c in lib.cells if c.name == pd.top_cell_name)
-            top.add(gdstk.Reference(pd_cell, origin=(0.0, y)))
-            bb = pd_cell.bounding_box()
-            pd_w = bb[1][0] - bb[0][0]
-            pd_h = bb[1][1] - bb[0][1]
-            pred_block_width = max(pred_block_width, pd_w)
-            y += pd_h + _INTER_PREDECODER_GAP
+            nand_cell = next(c for c in lib.cells if c.name == nand_name)
+            bb = nand_cell.bounding_box()
+            nand_w = bb[1][0] - bb[0][0]
+            nand_h = bb[1][1] - bb[0][1]
 
-        nand_x = pred_block_width + _PREDECODER_TO_NAND_GAP
+            nand_origins: list[tuple[float, float]] = []
+            for j in range(2 ** k):
+                ox = pred_area_x0 + j * nand_w
+                top.add(gdstk.Reference(nand_cell, origin=(ox, stage_y)))
+                nand_origins.append((ox, stage_y))
+            stage_geom.append(dict(
+                stage=stage_idx, k=k, nand_w=nand_w, nand_h=nand_h,
+                y_origin=stage_y, nand_origins=nand_origins,
+            ))
+            stage_y += nand_h + _INTER_PREDECODER_GAP
+
+        pred_block_top_y = stage_y
+        pred_block_right_x = pred_area_x0 + max(
+            (2 ** k) * g["nand_w"]
+            for k, g in zip(self.split, stage_geom)
+        )
+
+        # 2. Place final NAND column east of the predecoder block.
+        nand_x = pred_block_right_x + _PREDECODER_TO_NAND_GAP
         self._emit_vertical_nand_column(
             lib, top, seen, k_fanin=self.final_fanin, x=nand_x,
         )
 
-        lib.add(top)
-        return lib
+        # 3. Draw N vertical addr rails on met3, labeled addr0..addrN-1.
+        addr_rail_xs: list[float] = []
+        for i in range(total_addr):
+            rail_x = addr_rail_x0 + i * addr_rail_pitch
+            addr_rail_xs.append(rail_x)
+            draw_wire(
+                top, start=(rail_x, -0.2), end=(rail_x, pred_block_top_y + 0.2),
+                layer="met3",
+            )
+            draw_label(
+                top, text=f"addr{i}", layer="met3",
+                position=(rail_x, pred_block_top_y / 2),
+            )
+
+        # 4. Wire each predecoder NAND's k inputs to its k addr rails.
+        addr_offset = 0
+        for g in stage_geom:
+            k = g["k"]
+            if k not in self._NAND_INPUT_PIN_POS:
+                raise ValueError(f"NAND fan-in {k} pin map missing")
+            pin_pos = self._NAND_INPUT_PIN_POS[k]
+            pin_names = ["A", "B", "C"][:k]
+            stage_addr_xs = addr_rail_xs[addr_offset : addr_offset + k]
+            addr_offset += k
+
+            for (nand_ox, nand_oy) in g["nand_origins"]:
+                for pin_name, rail_x in zip(pin_names, stage_addr_xs):
+                    pin_lx, pin_ly = pin_pos[pin_name]
+                    pin_ax, pin_ay = nand_ox + pin_lx, nand_oy + pin_ly
+                    # met2 horizontal from pin x to rail x at pin y.
+                    draw_wire(
+                        top, start=(rail_x, pin_ay), end=(pin_ax, pin_ay),
+                        layer="met2",
+                    )
+                    draw_via_stack(
+                        top, from_layer="met2", to_layer="met3",
+                        position=(rail_x, pin_ay),
+                    )
+                    draw_via_stack(
+                        top, from_layer="li1", to_layer="met2",
+                        position=(pin_ax, pin_ay),
+                    )
+
+        # 5. Wire each stage's first-NAND output to a pred_out rail
+        #    spanning the final NAND column, then drop per-row spurs
+        #    into the final NAND input pins.
+        #
+        # The final NAND_m column uses k_fanin=m; its pin_pos gives the
+        # cell-local (x,y) of pins A..C.  We route one rail per stage to
+        # the corresponding pin (stage 0→A, stage 1→B, stage 2→C).
+        if self.final_fanin not in self._NAND_INPUT_PIN_POS:
+            return  # NAND4+ not supported for fanout; skip
+        final_pin_pos = self._NAND_INPUT_PIN_POS[self.final_fanin]
+        final_pin_names = ["A", "B", "C"][: self.final_fanin]
+
+        # The pred_out rails live at the same x as their per-row
+        # destination pins (so per-row spurs are zero-length vertically),
+        # offset east from each input's x by a small jog to clear the
+        # via stack landing on the NAND pin — mirrors _add_addr_rails.
+        rail_offsets = [-0.4, -2.3, -3.8][: self.final_fanin]
+
+        for stage_idx, g in enumerate(stage_geom):
+            k = g["k"]
+            # First NAND in stage: its Z output is on li1, typically at
+            # the top of the cell.  For NAND2: li1 Z rect x=[1.05, 4.44]
+            # y=[1.57, 1.74].  For NAND3: similar topology.  We land
+            # mid-strip for robust via drop.
+            first_ox, first_oy = g["nand_origins"][0]
+            z_local_x, z_local_y = self._NAND_Z_PIN_POS[k]
+            z_ax = first_ox + z_local_x
+            z_ay = first_oy + z_local_y
+
+            # Target vertical rail on met3 down the final column.
+            pin_name = final_pin_names[stage_idx]
+            pin_lx, _ = final_pin_pos[pin_name]
+            rail_x = nand_x + pin_lx + rail_offsets[stage_idx]
+
+            # (a) li1→met3 via stack at the Z output.
+            draw_via_stack(
+                top, from_layer="li1", to_layer="met3",
+                position=(z_ax, z_ay),
+            )
+            # (b) met3 horizontal from Z to rail_x at z_ay.
+            draw_wire(
+                top, start=(z_ax, z_ay), end=(rail_x, z_ay),
+                layer="met3",
+            )
+            # (c) met3 vertical rail spanning all rows.
+            rail_top_y = pred_block_top_y
+            rail_bot_y = -0.2
+            if z_ay > rail_top_y:
+                rail_top_y = z_ay + 0.2
+            draw_wire(
+                top, start=(rail_x, rail_bot_y), end=(rail_x, rail_top_y),
+                layer="met3",
+            )
+            # (d) per-row: drop met2 spur + li1 via into each final NAND
+            #     A/B/C pin.
+            for r in range(self.num_rows):
+                if r % 2 == 0:
+                    pin_ay = r * _NAND_DEC_PITCH + final_pin_pos[pin_name][1]
+                else:
+                    pin_ay = (r + 1) * _NAND_DEC_PITCH - final_pin_pos[pin_name][1]
+                pin_ax = nand_x + pin_lx
+                draw_via_stack(
+                    top, from_layer="met2", to_layer="met3",
+                    position=(rail_x, pin_ay),
+                )
+                draw_wire(
+                    top, start=(rail_x, pin_ay), end=(pin_ax, pin_ay),
+                    layer="met2",
+                )
+                draw_via_stack(
+                    top, from_layer="li1", to_layer="met2",
+                    position=(pin_ax, pin_ay),
+                )
 
     # NAND input-pin cell-local coords (met1 label / li1 pin).  These
     # need to match what Magic extracts for A/B/C on each NAND variant.
@@ -156,6 +319,16 @@ class RowDecoder:
     _NAND_INPUT_PIN_POS: dict[int, dict[str, tuple[float, float]]] = {
         2: {"A": (0.405, 1.095), "B": (0.405, 0.555)},
         3: {"A": (1.265, 0.410), "B": (0.715, 0.770), "C": (0.165, 1.130)},
+    }
+
+    # NAND Z-output cell-local (x, y) — center of a safe-to-via landing
+    # on the li1 output strip.  The strip is wide on both variants, so
+    # any x inside the strip + a central y works.
+    #   NAND2: li1 Z strip x=[1.05, 4.44], y=[1.57, 1.74]
+    #   NAND3: li1 Z strip spans the cell width from x≈1.6; y=[0.20, 0.37]
+    _NAND_Z_PIN_POS: dict[int, tuple[float, float]] = {
+        2: (2.75, 1.65),
+        3: (3.5, 0.285),
     }
 
     def _add_addr_rails(

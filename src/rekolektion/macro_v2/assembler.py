@@ -1594,16 +1594,27 @@ def _route_addr(
     p: MacroV2Params,
     fp: Floorplan,
 ) -> None:
-    """Route top-level addr[0..k-1] pins to NAND_dec A/B/C inputs for
-    a single-predecoder row decoder.  Skipped for multi-predecoder
-    configs (rows > 8), where the full decoder already has its own
-    internal wiring."""
+    """Route top-level addr[0..sum(split)-1] pins to the row_decoder's
+    internal addr rails.
+
+    Single-predecoder case: row_decoder's _add_addr_rails draws labeled
+    met3 rails inside the cell; we additionally drop per-row li1
+    spurs from a sidebar into each NAND input pin — double-wired but
+    consistent.
+
+    Multi-predecoder case: row_decoder._build_multi_predecoder draws
+    labeled met3 addr rails inside its own footprint.  We just need to
+    land each top-level addr[i] pin onto the corresponding internal
+    rail.  Magic's hierarchical extractor uses the label to promote
+    addr{i} as a subckt port of row_decoder.
+    """
     split = _SPLIT_TABLE[p.rows]
+    total_addr = sum(split)
+
     if len(split) != 1:
-        # Multi-predecoder not wired yet — LVS for those macros will
-        # fall short of closure until the predecoder fan-in is routed.
-        # Tracked separately from sram_test_tiny (rows=8).
+        _route_addr_multi_predecoder(top, p, fp, total_addr)
         return
+
     k = split[0]
     if k not in (2, 3):
         return  # NAND4 unsupported here (no 4-pin routing)
@@ -1681,6 +1692,79 @@ def _route_addr(
                 end=(li_hi, pin_y),
                 layer="li1",
             )
+
+
+def _route_addr_multi_predecoder(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+    total_addr: int,
+) -> None:
+    """Land each top-level addr[i] pin onto row_decoder's internal
+    addr{i} met3 rail.
+
+    The rails are drawn inside row_decoder at cell-local
+    x = addr_rail_x0 + i * addr_rail_pitch, spanning the predecoder
+    block height (y=0..stack_y).  They're labeled addr{i} on met3.
+
+    We draw a met3 feeder from each top-level addr pin down to the
+    rail's absolute position; Magic merges them at the label.
+    """
+    positions, pins_top_y, _ = _top_pin_layout(p, fp)
+    dec_origin = fp.positions["row_decoder"]
+    dec_x, dec_y = dec_origin
+
+    # Must match row_decoder._build_multi_predecoder.
+    _ADDR_RAIL_X0_LOCAL: float = 0.3
+    _ADDR_RAIL_PITCH: float = 0.5
+
+    top_stub_top_y = pins_top_y + _PIN_STUB_LEN
+    addr_trunk_y_base = top_stub_top_y + _CTRL_TRUNK_PITCH
+
+    for i in range(total_addr):
+        addr_pin_key = f"addr[{i}]"
+        if addr_pin_key not in positions:
+            continue  # should not happen for multi-predecoder configs
+        addr_pin_x, _ = positions[addr_pin_key]
+        rail_y_trunk = addr_trunk_y_base + i * _CTRL_TRUNK_PITCH
+
+        rail_x_abs = dec_x + _ADDR_RAIL_X0_LOCAL + i * _ADDR_RAIL_PITCH
+        # Landing y: inside the predecoder block's y range.  Use
+        # a conservative 2.0 µm above dec_y (each predecoder stage is
+        # >1.7 µm tall, so 2 µm always lands on a valid portion of the
+        # rail drawn inside the row_decoder cell).
+        land_y = dec_y + 2.0
+
+        # (1) met3 feeder from top pin up/down to horizontal trunk y.
+        draw_wire(
+            top,
+            start=(addr_pin_x, top_stub_top_y),
+            end=(addr_pin_x, rail_y_trunk + _CTRL_TRUNK_HALF_W),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        # (2) met3 horizontal trunk at rail_y_trunk from addr_pin_x to
+        #     rail_x_abs.
+        trunk_west = rail_x_abs - _CTRL_TRUNK_HALF_W
+        trunk_east = addr_pin_x + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(trunk_west, rail_y_trunk),
+            end=(trunk_east, rail_y_trunk),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
+        # (3) met3 vertical from rail_y_trunk DOWN to land_y (into the
+        #     row_decoder's labeled rail).  All met3 — no via needed.
+        lo = min(rail_y_trunk, land_y) - _CTRL_TRUNK_HALF_W
+        hi = max(rail_y_trunk, land_y) + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(rail_x_abs, lo),
+            end=(rail_x_abs, hi),
+            layer="met3",
+            width=_CTRL_TRUNK_W,
+        )
 
 
 def layer_min_width_half(layer: str) -> float:
@@ -1837,7 +1921,9 @@ def _place_top_pins(
             col_mux_x + 0.40,
             rail_y_abs + _COLMUX_RAIL_W / 2,
         )
-        draw_pin_with_label(top, text=f"col_sel[{k}]",
+        # Label with underscore notation to match the mux cell's
+        # Magic-extracted col_sel_N port naming.
+        draw_pin_with_label(top, text=f"col_sel_{k}",
                             layer=_PIN_LAYER, rect=rect)
 
 

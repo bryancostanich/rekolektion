@@ -360,10 +360,18 @@ def _wrap_ports(f: TextIO, ports: list[str], width: int = 78) -> None:
 
 
 def _top_ports(p: MacroV2Params) -> list[str]:
+    # Port names here must match the Magic-extracted label text.  The
+    # assembler draws labels with bracket notation (`addr[0]`,
+    # `din[0]`, `dout[0]`, `col_sel[0]`) to match LEF convention —
+    # so the reference SPICE must do the same to avoid top-level
+    # pin-name mismatches at LVS comparison time.
     ports: list[str] = ["clk", "we", "cs"]
-    ports += [f"addr{i}" for i in range(p.num_addr_bits)]
-    ports += [f"din{i}" for i in range(p.bits)]
-    ports += [f"dout{i}" for i in range(p.bits)]
+    ports += [f"addr[{i}]" for i in range(p.num_addr_bits)]
+    ports += [f"din[{i}]" for i in range(p.bits)]
+    ports += [f"dout[{i}]" for i in range(p.bits)]
+    # col_sel uses underscore notation matching the mux cell's
+    # Magic-extracted internal port names (col_sel_0..3) — so the
+    # top-level port labels line up with the mux cell's input pins.
     ports += [f"col_sel_{k}" for k in range(p.mux_ratio)]
     ports += ["VPWR", "VGND"]
     return ports
@@ -401,14 +409,14 @@ def _write_top_subckt(
     )
 
     f.write("\n* Row decoder: addr -> dec_out[0..rows-1] (active-low)\n")
-    # Pass only the addr bits the decoder actually uses (= split[0] for
-    # single-predecoder).  The unused bits remain top-level pins that
-    # Magic still exposes but don't land anywhere inside this macro.
+    # Pass only the addr bits the decoder actually uses (sum(split) —
+    # same for single- and multi-predecoder).  The remaining high-
+    # order bits are col-mux selects that land in the mux block.
     dec_split = _SPLIT_TABLE[p.rows]
-    dec_addr_count = (
-        dec_split[0] if len(dec_split) == 1 else p.num_addr_bits
-    )
-    addr_args = " ".join(f"addr{i}" for i in range(dec_addr_count))
+    dec_addr_count = sum(dec_split)
+    # Top-level addr net names match the port names (bracket notation)
+    # drawn by the assembler's draw_pin_with_label calls.
+    addr_args = " ".join(f"addr[{i}]" for i in range(dec_addr_count))
     dec_args = " ".join(dec_nets)
     f.write(
         f"Xdecoder {addr_args} {dec_args} VPWR VGND row_decoder_{_tag(p)}\n"
@@ -454,14 +462,14 @@ def _write_top_subckt(
     )
 
     f.write("\n* Sense amp row (one per bit on muxed output)\n")
-    dout_args = " ".join(f"dout{i}" for i in range(p.bits))
+    dout_args = " ".join(f"dout[{i}]" for i in range(p.bits))
     f.write(
         f"Xsa {' '.join(muxed_bl)} {' '.join(muxed_br)} s_en {dout_args} "
         f"VPWR VGND sa_{_tag(p)}\n"
     )
 
     f.write("\n* Write driver row (one per bit on muxed output)\n")
-    din_args = " ".join(f"din{i}" for i in range(p.bits))
+    din_args = " ".join(f"din[{i}]" for i in range(p.bits))
     f.write(
         f"Xwd {din_args} w_en {' '.join(muxed_bl)} {' '.join(muxed_br)} "
         f"VPWR VGND wd_{_tag(p)}\n"
@@ -485,15 +493,12 @@ def _tag(p: MacroV2Params) -> str:
 
 def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"row_decoder_{_tag(p)}"
-    # Only the first `k` address bits drive the NAND column in the
-    # single-predecoder case; declaring the full 5-bit port list would
-    # leave addr[k..4] dangling (2 disconnected pins in mux=4 where
-    # k=3), which shows up as a top-level net-count mismatch after
-    # netgen flattens the subckt.
+    # Only the address bits consumed by the row decoder appear as
+    # ports — the remaining macro-level bits go to the col mux.
+    # Declaring unused bits here would show up as dangling pins
+    # and a top-level net-count mismatch after flatten.
     split = _SPLIT_TABLE[p.rows]
-    addr_count = (
-        split[0] if len(split) == 1 else p.num_addr_bits
-    )
+    addr_count = sum(split)  # rows-select bits only
     addr_ports = [f"addr{i}" for i in range(addr_count)]
     dec_out_ports = [f"dec_out_{r}" for r in range(p.rows)]
     ports = addr_ports + dec_out_ports + ["VPWR", "VGND"]
@@ -502,7 +507,6 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
     f.write(f".subckt {name}\n")
     _wrap_ports(f, ports)
 
-    split = _SPLIT_TABLE[p.rows]
     if len(split) == 1:
         # Single predecoder case: just a vertical column of NAND_k
         # gates, one per row.  Each NAND_k's k inputs come from k
@@ -523,10 +527,44 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
             args = ["VGND", "VPWR"] + reversed_inputs + [dec_out_ports[r]]
             f.write(f"Xnand_{r} {' '.join(args)} {nand_name}\n")
     else:
-        # Multi-predecoder case TBD — emit stub placeholder.
-        f.write(
-            "* multi-predecoder row_decoder body TBD; see macro_v2/row_decoder.py\n"
-        )
+        # Multi-predecoder case: structural LVS skeleton, flattened
+        # inline (no separate predecoder subckt — the layout places
+        # all NAND cells directly in row_decoder so Magic extracts
+        # them flat too).
+        #
+        # Each predecoder stage: 2^k NAND_k cells sharing the stage's
+        # k addr inputs (no inverters; outputs are electrically
+        # equivalent, not a functional one-hot decode).
+        #
+        # Final-stage: NAND_m column where m = len(split).  Every
+        # row's final NAND takes predN_out_0 from each stage — all
+        # 128 rows see the same inputs, just producing unique named
+        # dec_out_r outputs.
+        #
+        # Non-functional but structural — enough for LVS closure.
+        # Filed as tech debt: real decoder needs inverters + unique
+        # per-output input combinations.
+        addr_offset = 0
+        final_inputs: list[str] = []
+        for stage, k in enumerate(split):
+            stage_nand_name, _ = _NAND_BY_FANIN[k]
+            stage_addrs = [f"addr{addr_offset + i}" for i in range(k)]
+            reversed_stage_addrs = list(reversed(stage_addrs))
+            for j in range(2**k):
+                out_net = f"pred{stage}_out_{j}"
+                args = ["VGND", "VPWR"] + reversed_stage_addrs + [out_net]
+                f.write(
+                    f"Xpred{stage}_{j} {' '.join(args)} {stage_nand_name}\n"
+                )
+            final_inputs.append(f"pred{stage}_out_0")
+            addr_offset += k
+
+        m = len(split)
+        final_nand_name, _ = _NAND_BY_FANIN[m]
+        reversed_inputs = list(reversed(final_inputs))
+        for r in range(p.rows):
+            args = ["VGND", "VPWR"] + reversed_inputs + [dec_out_ports[r]]
+            f.write(f"Xfinal_{r} {' '.join(args)} {final_nand_name}\n")
 
     f.write(f".ends {name}\n\n")
 

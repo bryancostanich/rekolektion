@@ -299,17 +299,16 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # write_driver across their abutment gaps.
     _route_muxed_bl_br(top, p, fp)
 
-    # C6.3c — DIN / DOUT routing (top pins <-> WD.DIN / SA.DOUT).
-    # Currently disabled: DIN needs a vertical drop at wd_din_x
-    # (1.425 for bit 0) which falls inside the central VPWR met4 strap
-    # (x=[0.755, 2.355]); and a met2 drop at wd_din_x would overlap
-    # w_en's per-bit met2 drop at wd_en_x (1.498) by 0.07 µm. Routing
-    # this cleanly needs either a w_en layer change, or a bit-0
-    # special-case path. Tracked as future work; leaving DIN/DOUT
-    # unrouted for now (din/dout top pins are already declared and
-    # present in the top subckt port list, just not electrically
-    # connected to WD.DIN / SA.DOUT).
-    # _route_din_dout(top, p, fp)
+    # C6.3c — DOUT routing (SA.DOUT -> dout bottom pins).
+    # DIN routing is DEFERRED — see `_route_din` docstring: bit 0's
+    # wd_din_x=1.425 falls inside the central VPWR met4 strap
+    # (x=[0.755, 2.355]), so a met1→met5 via stack there creates a
+    # ~1.18 µm-wide met4 pad that shorts DIN to VPWR. Other bits are
+    # clean. Fixing bit 0 needs either (a) a non-met4-using via stack
+    # (met2→met3 only), (b) a different DIN x mapping that avoids the
+    # VPWR strap, or (c) a smaller VPWR strap on a different layer.
+    # Leaving DIN unconnected for now; all 28 top ports are declared.
+    _route_dout(top, p, fp)
 
     # C6.4 — route control signals from control_logic to peripherals.
     _route_control(top, p, fp)
@@ -710,6 +709,100 @@ _SA_DOUT_Y_LOCAL: float = 0.0   # bottom edge
 
 # Pitch between trunk y's for per-bit horizontal jogs on met3.
 _BIT_TRUNK_PITCH: float = 0.60  # 0.30 met3 width + 0.30 spacing
+
+
+def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+    """Route top-level din[i] pins to WD[i].DIN.
+
+    Path per bit:
+      din pin (met3) -> via3 -> met4 vertical at din_pin_x down to
+      a per-bit trunk y below WD -> via4 -> met5 horizontal jog from
+      din_pin_x to wd_din_x -> via stack met5->met1 at (wd_din_x,
+      trunk_y) -> short met1 vertical UP to WD DIN pin.
+
+    Why met4 at din_pin_x (not wd_din_x): for bit 0 wd_din_x=1.425
+    falls inside the central VPWR met4 strap (x=[0.755, 2.355]); a
+    met4 vertical there would short DIN to VPWR. din_pin_x values
+    are 22.29-40.92, far east of the VPWR strap for every bit.
+
+    Why met5 for the horizontal trunk (instead of met3): DOUT trunks
+    already occupy met3 at y=[-29.8, -34.0] below WD. Using met5
+    for DIN trunks puts them in the same y range but on a different
+    layer, so the two sets don't merge.
+    """
+    wd_x, wd_y = fp.positions["write_driver"]
+
+    positions, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
+    mux_pitch = p.mux_ratio * _BITCELL_WIDTH
+
+    # Per-bit trunk y below WD. Same y range as DOUT trunks — but on
+    # met5 (DOUT is met3) so no layer collision.
+    din_trunk_base_y = wd_y - 0.30   # 0.30 µm below WD bottom
+    for bit in range(p.bits):
+        din_pin_x = positions[f"din[{bit}]"][0]
+        wd_din_x_abs = wd_x + bit * mux_pitch + _WD_DIN_X_LOCAL
+        wd_din_y_abs = wd_y + _WD_DIN_Y_LOCAL
+        trunk_y = din_trunk_base_y - bit * _BIT_TRUNK_PITCH
+
+        # 1. Via3 at top of din pin stub: met3 (pin stub) -> met4.
+        draw_via_stack(top, from_layer="met3", to_layer="met4",
+                       position=(din_pin_x, pins_top_y))
+        # 2. Met4 vertical at din_pin_x from pins_top_y DOWN to trunk_y.
+        draw_wire(top, start=(din_pin_x, pins_top_y),
+                  end=(din_pin_x, trunk_y), layer="met4")
+        # 3. Via4 met4 -> met5 at (din_pin_x, trunk_y).
+        draw_via_stack(top, from_layer="met4", to_layer="met5",
+                       position=(din_pin_x, trunk_y))
+        # 4. Horizontal met5 trunk from din_pin_x to wd_din_x_abs.
+        draw_wire(top, start=(din_pin_x, trunk_y),
+                  end=(wd_din_x_abs, trunk_y), layer="met5")
+        # 5. Via stack met5 -> met1 at (wd_din_x, trunk_y).
+        draw_via_stack(top, from_layer="met1", to_layer="met5",
+                       position=(wd_din_x_abs, trunk_y))
+        # 6. Short met1 vertical UP from trunk_y to WD DIN pin y.
+        draw_wire(top, start=(wd_din_x_abs, trunk_y),
+                  end=(wd_din_x_abs, wd_din_y_abs), layer="met1")
+
+
+def _route_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+    """Route SA[i].DOUT to the dout[i] bottom pin of the macro.
+
+    SA DOUT sits at cell-local (0.635, 0.0) on met1 — i.e., the SA
+    cell's BOTTOM edge. We bring it DOWN on met2 through the WD cell
+    (WD has no met2 internally, so this is safe), then jog east/west
+    on met3 in the gap below WD to the dout pin x, then met3 down to
+    the dout pin stub.
+
+    Per-bit trunks use different y's below WD so they don't merge.
+    """
+    sa_x, sa_y = fp.positions["sense_amp"]
+    wd_x, wd_y = fp.positions["write_driver"]
+    positions, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
+    mux_pitch = p.mux_ratio * _BITCELL_WIDTH
+
+    dout_trunk_base_y = wd_y - 0.30
+    for bit in range(p.bits):
+        dout_pin_x = positions[f"dout[{bit}]"][0]
+        sa_dout_x_abs = sa_x + bit * mux_pitch + _SA_DOUT_X_LOCAL
+        trunk_y = dout_trunk_base_y - bit * _BIT_TRUNK_PITCH
+
+        # 1. Via at SA DOUT pin (met1 -> met2).
+        draw_via_stack(top, from_layer="met1", to_layer="met2",
+                       position=(sa_dout_x_abs, sa_y))
+        # 2. Met2 vertical from SA bottom DOWN through WD to trunk_y.
+        draw_wire(top, start=(sa_dout_x_abs, sa_y),
+                  end=(sa_dout_x_abs, trunk_y), layer="met2")
+        # 3. Via2 met2 -> met3 at (sa_dout_x, trunk_y).
+        draw_via_stack(top, from_layer="met2", to_layer="met3",
+                       position=(sa_dout_x_abs, trunk_y))
+        # 4. Horizontal met3 trunk from sa_dout_x to dout_pin_x.
+        draw_wire(top, start=(sa_dout_x_abs, trunk_y),
+                  end=(dout_pin_x, trunk_y), layer="met3")
+        # 5. Met3 vertical from (dout_pin_x, trunk_y) DOWN to the top
+        #    of the dout pin stub (which is drawn by _place_top_pins).
+        draw_wire(top, start=(dout_pin_x, trunk_y),
+                  end=(dout_pin_x, pins_bot_y + _PIN_STUB_LEN),
+                  layer="met3")
 
 
 def _route_din_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:

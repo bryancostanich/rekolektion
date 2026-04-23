@@ -115,16 +115,19 @@ class WlDriverRow:
                     x_reflection=True,
                 ))
 
-        # VDD rail (met1 vertical) on the right side of the column.
-        # Labelled so Magic names the rail's net `VPWR` instead of
-        # auto-generating a per-instance #-net and exposing each
-        # NAND3's B/C pin as an individual port of wl_driver_row.
+        # VDD rail on met2 (vertical) on the right side of the column.
+        # Met1 would collide with the top-level _route_wl met1
+        # horizontal that crosses this x on its way from each wl_driver
+        # NAND3 Z output eastward to the array WL — same-layer
+        # crossings short every row's WL to VDD.  Met2 sidesteps the
+        # collision (wl_driver has zero internal met2, and met1-only
+        # top-level WL routing doesn't touch met2 at this x).
         vdd_x = _VDD_RAIL_X_OFFSET
-        _rect(top, "met1",
+        _rect(top, "met2",
               vdd_x - _VDD_RAIL_W / 2, 0.0,
               vdd_x + _VDD_RAIL_W / 2, self.num_rows * _NAND_PITCH)
         draw_label(
-            top, text="VPWR", layer="met1",
+            top, text="VPWR", layer="met2",
             position=(vdd_x, self.num_rows * _NAND_PITCH / 2),
         )
 
@@ -147,17 +150,13 @@ class WlDriverRow:
                     top, from_layer="li1", to_layer="met2",
                     position=(pin_local_x, pin_y),
                 )
-                # met2 horizontal from pin to VDD rail x
+                # met2 horizontal from pin to VDD rail x — rail is
+                # also on met2 now, so no via needed at the rail end.
                 draw_wire(
                     top,
                     start=(pin_local_x, pin_y),
                     end=(vdd_x, pin_y),
                     layer="met2",
-                )
-                # met2 -> met1 via stack at the VDD rail
-                draw_via_stack(
-                    top, from_layer="met1", to_layer="met2",
-                    position=(vdd_x, pin_y),
                 )
 
         lib.add(top)

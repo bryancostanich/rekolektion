@@ -373,11 +373,12 @@ def _write_bitcell_array_subckt(f: TextIO, p: MacroV2Params) -> None:
     _wrap_ports(f, ports)
     for r in range(p.rows):
         for c in range(p.cols):
-            # Bitcell extracted subckt ports: BL BR WL VGND VNB VPB VPWR GND VDD
-            # Tie VNB=VGND, VPB=VPWR, GND=VGND, VDD=VPWR.
+            # Bitcell extracted subckt ports (native Magic order):
+            #   BL BR VGND VPWR VPB WL VNB
+            # Tie VNB=VGND, VPB=VPWR.
             f.write(
-                f"Xbc_{r}_{c} bl{c} br{c} wl{r} "
-                f"VGND VGND VPWR VPWR VGND VPWR "
+                f"Xbc_{r}_{c} bl{c} br{c} "
+                f"VGND VPWR VPWR wl{r} VGND "
                 f"{_BITCELL_NAME}\n"
             )
     f.write(f".ends {name}\n\n")

@@ -1532,15 +1532,26 @@ def _route_ctrl_internal(
 #   x < row_decoder.left) -> per-row via stack met3->li1 -> short li1
 #   horizontal east into the NAND_dec pin.
 #
-# NAND_dec pin cell-local coords (LEF / label dump):
-#   A: (1.265, 0.410)   B: (0.715, 0.770)   C: (0.165, 1.130)
-# X-mirror on odd rows (matching bitcell / wl_driver tiling).
-_NAND_DEC_A_X_LOCAL: float = 1.265
-_NAND_DEC_A_Y_LOCAL: float = 0.410
-_NAND_DEC_B_X_LOCAL: float = 0.715
-_NAND_DEC_B_Y_LOCAL: float = 0.770
-_NAND_DEC_C_X_LOCAL: float = 0.165
-_NAND_DEC_C_Y_LOCAL: float = 1.130
+# NAND_dec input-pin cell-local coords (from the cell GDS's met1.label /
+# li1.label text positions — NOT from LEF, which lists bbox RECTs; pin
+# center placements are on met1 where the addr sidebar's li1→met3 stack
+# lands).  NAND2 and NAND3 have completely different pin layouts — each
+# is only valid for its own k_fanin.
+_NAND_DEC_PIN_POS: dict[int, dict[str, tuple[float, float]]] = {
+    # NAND2: A and B both on met1 at x=0.405.  From GDS labels A=(0.405,
+    # 1.095) B=(0.405, 0.555).
+    2: {
+        "A": (0.405, 1.095),
+        "B": (0.405, 0.555),
+    },
+    # NAND3: A/B/C at distinct x's on met1.  From GDS labels A=(1.265,
+    # 0.410) B=(0.715, 0.770) C=(0.165, 1.130).
+    3: {
+        "A": (1.265, 0.410),
+        "B": (0.715, 0.770),
+        "C": (0.165, 1.130),
+    },
+}
 
 # Sidebar rail x-offsets (west of row_decoder's left edge).  Each addr
 # signal gets a unique vertical rail, spaced > _CTRL_TRUNK_PITCH apart.
@@ -1560,13 +1571,16 @@ def _nand_dec_pin_absolute(
     used in the wl_driver and row_decoder row_decoder NAND column).
     Only A/B/C inputs are supported (this helper is for addr fan-in).
     """
-    if pin not in ("A", "B", "C"):
-        raise ValueError(f"unsupported NAND input pin {pin!r}")
-    x_local, y_local = {
-        "A": (_NAND_DEC_A_X_LOCAL, _NAND_DEC_A_Y_LOCAL),
-        "B": (_NAND_DEC_B_X_LOCAL, _NAND_DEC_B_Y_LOCAL),
-        "C": (_NAND_DEC_C_X_LOCAL, _NAND_DEC_C_Y_LOCAL),
-    }[pin]
+    if k_fanin not in _NAND_DEC_PIN_POS:
+        raise ValueError(
+            f"no pin-position table for NAND fan-in {k_fanin}"
+        )
+    pos_table = _NAND_DEC_PIN_POS[k_fanin]
+    if pin not in pos_table:
+        raise ValueError(
+            f"NAND{k_fanin}_dec has no {pin!r} input pin"
+        )
+    x_local, y_local = pos_table[pin]
     dec_x, dec_y = dec_origin
     if row % 2 == 0:
         abs_y = dec_y + row * _NAND_DEC_PITCH + y_local

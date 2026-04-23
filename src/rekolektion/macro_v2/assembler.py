@@ -322,6 +322,13 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     _place_top_pins(top, p, fp)
     _draw_power_network(top, p, fp)
 
+    # C6.6 — SRAM core marker (81/2). Waives sky130's min-width /
+    # min-spacing rules inside the marker for li1/met1/met2/poly/diff,
+    # which is what lets the foundry bitcell (pitch 1.31 µm, W=0.14
+    # access transistors) pass DRC. Cover the bitcell array plus the
+    # precharge/col_mux rows above and below it.
+    _draw_sram_core_marker(top, p, fp)
+
     lib.add(top)
 
     # Shift the top cell so its bounding-box lower-left lands at (0, 0),
@@ -1756,6 +1763,34 @@ def _place_power_grid(
     )
     draw_pin_with_label(top, text="VGND", layer=_PDN_STRAP_LAYER,
                         rect=vgnd_rect)
+
+
+# ---------------------------------------------------------------------------
+# C6.6 — SRAM core marker (81/2)
+# ---------------------------------------------------------------------------
+
+def _draw_sram_core_marker(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Draw the sky130 SRAM core marker (GDS layer 81/2) over the
+    bitcell array and its immediately abutting peripheral rows
+    (precharge above, col_mux/SA/WD below). Inside the marker, sky130
+    relaxes li1/met1/met2/poly/diff width and spacing rules that are
+    otherwise violated by the foundry bitcell's tight 1.31 µm pitch
+    (e.g., W=0.14 access transistor, 0.055 µm BL/BR met1 spacing).
+    """
+    from rekolektion.tech.sky130 import LAYERS
+    coreid_l, coreid_d = LAYERS.COREID.as_tuple
+    # Extent: from write_driver bottom up to precharge top, and across
+    # the full array width (plus a small margin).
+    x0 = fp.positions["array"][0] - 0.30
+    x1 = (fp.positions["array"][0] + fp.sizes["array"][0]) + 0.30
+    y0 = fp.positions["write_driver"][1] - 0.30
+    y1 = (fp.positions["precharge"][1] + fp.sizes["precharge"][1]) + 0.30
+    top.add(gdstk.rectangle((x0, y0), (x1, y1),
+                            layer=coreid_l, datatype=coreid_d))
 
 
 # ---------------------------------------------------------------------------

@@ -299,15 +299,8 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # write_driver across their abutment gaps.
     _route_muxed_bl_br(top, p, fp)
 
-    # C6.3c — DOUT routing (SA.DOUT -> dout bottom pins).
-    # DIN routing is DEFERRED — see `_route_din` docstring: bit 0's
-    # wd_din_x=1.425 falls inside the central VPWR met4 strap
-    # (x=[0.755, 2.355]), so a met1→met5 via stack there creates a
-    # ~1.18 µm-wide met4 pad that shorts DIN to VPWR. Other bits are
-    # clean. Fixing bit 0 needs either (a) a non-met4-using via stack
-    # (met2→met3 only), (b) a different DIN x mapping that avoids the
-    # VPWR strap, or (c) a smaller VPWR strap on a different layer.
-    # Leaving DIN unconnected for now; all 28 top ports are declared.
+    # C6.3c — DIN and DOUT routing.
+    _route_din(top, p, fp)
     _route_dout(top, p, fp)
 
     # C6.4 — route control signals from control_logic to peripherals.
@@ -714,53 +707,92 @@ _BIT_TRUNK_PITCH: float = 0.60  # 0.30 met3 width + 0.30 spacing
 def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
     """Route top-level din[i] pins to WD[i].DIN.
 
-    Path per bit:
-      din pin (met3) -> via3 -> met4 vertical at din_pin_x down to
-      a per-bit trunk y below WD -> via4 -> met5 horizontal jog from
-      din_pin_x to wd_din_x -> via stack met5->met1 at (wd_din_x,
-      trunk_y) -> short met1 vertical UP to WD DIN pin.
+    Path per bit (top to bottom):
+      din pin (met3)
+        -> via3 -> met4 short vertical down to trunk_y (above precharge)
+        -> via4 -> met3 horizontal trunk at trunk_y from din_pin_x to drop_x
+        -> via3 -> met4 long vertical from trunk_y down to bit_y_below_wd
+        -> via stack met4->met1 at (drop_x, bit_y_below_wd)
+        -> met1 jog from drop_x to wd_din_x (if drop_x != wd_din_x)
+        -> met1 short vertical UP to WD DIN pin
 
-    Why met4 at din_pin_x (not wd_din_x): for bit 0 wd_din_x=1.425
-    falls inside the central VPWR met4 strap (x=[0.755, 2.355]); a
-    met4 vertical there would short DIN to VPWR. din_pin_x values
-    are 22.29-40.92, far east of the VPWR strap for every bit.
+    Two trunk bands:
+      trunk_y (per-bit, above precharge) — horizontal met3 jogs
+        from din_pin_x to the bit's drop_x. 8 bits stacked at 0.60
+        pitch between prec_top (17.62) and top pin stubs (24.12).
+      bit_y_below_wd (shared) — all bits drop to the SAME y at their
+        per-bit drop_x. No conflict because drop_x differs per bit.
 
-    Why met5 for the horizontal trunk (instead of met3): DOUT trunks
-    already occupy met3 at y=[-29.8, -34.0] below WD. Using met5
-    for DIN trunks puts them in the same y range but on a different
-    layer, so the two sets don't merge.
+    The "drop x" is chosen to avoid the central VPWR met4 strap
+    (x=[0.755, 2.355]) — for bit 0 wd_din_x=1.425 is INSIDE the strap,
+    so drop_x is shifted east. Other bits drop at wd_din_x directly.
     """
     wd_x, wd_y = fp.positions["write_driver"]
+    prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
+    prec_top = prec_y + prec_h
 
     positions, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
     mux_pitch = p.mux_ratio * _BITCELL_WIDTH
 
-    # Per-bit trunk y below WD. Same y range as DOUT trunks — but on
-    # met5 (DOUT is met3) so no layer collision.
-    din_trunk_base_y = wd_y - 0.30   # 0.30 µm below WD bottom
+    # VPWR strap x-range (must match `_draw_power_network`).
+    xs_lo = min(x for x, _ in fp.positions.values()) - 1.0
+    xs_hi = max(fp.positions[n][0] + fp.sizes[n][0] for n in fp.positions) + 1.0
+    vpwr_x_center = xs_lo + (xs_hi - xs_lo) / 2
+    vpwr_x_hi = vpwr_x_center + _PDN_STRAP_W / 2
+
+    _MET4_PAD_HALF: float = 0.60
+    _VPWR_KEEPOUT: float = _MET4_PAD_HALF + 0.30
+    # Offset drop_x east of wd_din_x so bit j's met4 long vertical
+    # doesn't pass through bit i's trunk-end via pad at din_pin_x_i.
+    # Uniform 1.5 µm offset clears every bit's neighbor with > 0.6 µm
+    # margin (enough for 0.30 met4 min spacing + pad half-widths).
+    _DIN_DROP_OFFSET: float = 1.5
+
+    # Trunk y band sits in the 5.6 µm gap above precharge.
+    din_trunk_base_y = prec_top + 0.30
+    # All bits drop to the same y below WD (safe from DOUT's met3
+    # trunks because drop_x is chosen clear of DOUT trunk x ranges).
+    bit_y_below_wd = wd_y - 0.30
+
     for bit in range(p.bits):
         din_pin_x = positions[f"din[{bit}]"][0]
         wd_din_x_abs = wd_x + bit * mux_pitch + _WD_DIN_X_LOCAL
         wd_din_y_abs = wd_y + _WD_DIN_Y_LOCAL
-        trunk_y = din_trunk_base_y - bit * _BIT_TRUNK_PITCH
+        trunk_y = din_trunk_base_y + bit * _BIT_TRUNK_PITCH
 
-        # 1. Via3 at top of din pin stub: met3 (pin stub) -> met4.
+        # drop_x = wd_din_x + fixed offset. Adjust further east if it
+        # lands inside (or too close to) the VPWR strap.
+        drop_x = wd_din_x_abs + _DIN_DROP_OFFSET
+        if (drop_x - _MET4_PAD_HALF) < (vpwr_x_hi + _VPWR_KEEPOUT):
+            drop_x = vpwr_x_hi + _VPWR_KEEPOUT
+
+        # 1. Via3 at top pin stub (met3 -> met4).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
                        position=(din_pin_x, pins_top_y))
-        # 2. Met4 vertical at din_pin_x from pins_top_y DOWN to trunk_y.
+        # 2. Met4 short vertical at din_pin_x from pins_top_y DOWN to trunk_y.
         draw_wire(top, start=(din_pin_x, pins_top_y),
                   end=(din_pin_x, trunk_y), layer="met4")
-        # 3. Via4 met4 -> met5 at (din_pin_x, trunk_y).
-        draw_via_stack(top, from_layer="met4", to_layer="met5",
+        # 3. Via3 met4 -> met3 at (din_pin_x, trunk_y).
+        draw_via_stack(top, from_layer="met3", to_layer="met4",
                        position=(din_pin_x, trunk_y))
-        # 4. Horizontal met5 trunk from din_pin_x to wd_din_x_abs.
+        # 4. Met3 horizontal trunk from din_pin_x to drop_x.
         draw_wire(top, start=(din_pin_x, trunk_y),
-                  end=(wd_din_x_abs, trunk_y), layer="met5")
-        # 5. Via stack met5 -> met1 at (wd_din_x, trunk_y).
-        draw_via_stack(top, from_layer="met1", to_layer="met5",
-                       position=(wd_din_x_abs, trunk_y))
-        # 6. Short met1 vertical UP from trunk_y to WD DIN pin y.
-        draw_wire(top, start=(wd_din_x_abs, trunk_y),
+                  end=(drop_x, trunk_y), layer="met3")
+        # 5. Via3 met3 -> met4 at (drop_x, trunk_y).
+        draw_via_stack(top, from_layer="met3", to_layer="met4",
+                       position=(drop_x, trunk_y))
+        # 6. Met4 long vertical at drop_x from trunk_y DOWN to bit_y_below_wd.
+        draw_wire(top, start=(drop_x, trunk_y),
+                  end=(drop_x, bit_y_below_wd), layer="met4")
+        # 7. Via stack met4 -> met1 at (drop_x, bit_y_below_wd).
+        draw_via_stack(top, from_layer="met1", to_layer="met4",
+                       position=(drop_x, bit_y_below_wd))
+        # 8. Met1 horizontal jog from drop_x to wd_din_x (if offset).
+        if abs(drop_x - wd_din_x_abs) > 1e-6:
+            draw_wire(top, start=(drop_x, bit_y_below_wd),
+                      end=(wd_din_x_abs, bit_y_below_wd), layer="met1")
+        # 9. Met1 short vertical UP from bit_y to WD DIN pin y.
+        draw_wire(top, start=(wd_din_x_abs, bit_y_below_wd),
                   end=(wd_din_x_abs, wd_din_y_abs), layer="met1")
 
 

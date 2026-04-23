@@ -21,10 +21,13 @@ Scope:
 from __future__ import annotations
 
 import math
+import tempfile
 from pathlib import Path
 from typing import TextIO
 
 from rekolektion.macro_v2.assembler import MacroV2Params
+from rekolektion.macro_v2.column_mux_row import ColumnMuxRow
+from rekolektion.macro_v2.precharge_row import PrechargeRow
 from rekolektion.macro_v2.row_decoder import _SPLIT_TABLE
 
 
@@ -59,19 +62,171 @@ def generate_reference_spice(
 ) -> Path:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Magic-extract the Python-generated precharge / column_mux bodies
+    # so the reference has real transistors (matches the ext netlist).
+    # We do this BEFORE opening the output file because the extracted
+    # port list is used both by the top-level .subckt call emitter AND
+    # the per-cell writer.
+    pre_body = _extract_cell(
+        PrechargeRow(bits=p.bits, mux_ratio=p.mux_ratio,
+                     name=f"pre_{_tag(p)}"),
+        cell_name=f"pre_{_tag(p)}",
+    )
+    mux_body = _extract_cell(
+        ColumnMuxRow(bits=p.bits, mux_ratio=p.mux_ratio,
+                     name=f"mux_{_tag(p)}"),
+        cell_name=f"mux_{_tag(p)}",
+    )
     with path.open("w") as f:
         _write_header(f, p)
         _write_includes(f)
-        _write_top_subckt(f, p)
+        _write_top_subckt(f, p, pre_body, mux_body)
         _write_bitcell_array_subckt(f, p)
         _write_row_decoder_subckt(f, p)
         _write_wl_driver_row_subckt(f, p)
         _write_sense_amp_row_subckt(f, p)
         _write_write_driver_row_subckt(f, p)
         _write_control_logic_subckt(f, p)
-        _write_precharge_row_stub(f, p)
-        _write_column_mux_row_stub(f, p)
+        _write_extracted_subckt(f, pre_body)
+        _write_extracted_subckt(f, mux_body)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Build-time Magic extraction of Python-generated cells
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+
+
+@dataclass
+class _ExtractedCell:
+    """A Magic-extracted cell body + parsed port order."""
+    name: str
+    ports: list[str]
+    body_lines: list[str]  # everything between .subckt and .ends (inclusive)
+
+
+def _extract_cell(
+    obj,
+    cell_name: str,
+) -> _ExtractedCell:
+    """Build `obj` to GDS, run Magic extract on it, and return the
+    extracted .subckt body plus its port order.
+
+    The builder `obj` must implement `.build() -> gdstk.Library` and
+    emit a top cell named `cell_name`.  All electrical ports are
+    detected via labels in the GDS (Magic `port makeall`-style
+    behaviour emerges naturally because the labels overlap metal).
+
+    Port list is derived from the labels on the top cell (ordered by
+    label name), NOT from Magic (`port makeall` on these flat cells
+    doesn't produce explicit PORT statements — Magic just references
+    the label-named nets in the X-lines).  The caller is responsible
+    for instantiating with args in this same order.
+    """
+    # Defer the import to keep spice_generator import-lean when the
+    # verify stack is unavailable (e.g. CI without Magic).
+    from rekolektion.verify.lvs import extract_netlist
+
+    tmpdir = Path(tempfile.mkdtemp(prefix=f"refspice_{cell_name}_"))
+    lib = obj.build()
+    gds_path = tmpdir / f"{cell_name}.gds"
+    lib.write_gds(str(gds_path))
+    extracted_sp = extract_netlist(
+        gds_path, cell_name=cell_name, output_dir=tmpdir, timeout=300,
+    )
+
+    # Parse the extracted SPICE: find .subckt <cell_name> .. .ends.
+    text = extracted_sp.read_text()
+    lines = _unfold_continuations(text.splitlines())
+    subckt_start = None
+    subckt_end = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f".subckt {cell_name}"):
+            subckt_start = i
+        elif subckt_start is not None and line.strip().lower().startswith(
+            (f".ends {cell_name.lower()}", ".ends")
+        ):
+            subckt_end = i
+            break
+    if subckt_start is None:
+        raise RuntimeError(
+            f"Magic extraction of {cell_name} produced no .subckt line"
+        )
+    if subckt_end is None:
+        # Some ext2spice outputs omit the cell name after .ends
+        subckt_end = len(lines) - 1
+
+    # Collect the net names referenced by X-lines; use those as the
+    # port list since Magic's `.subckt` header doesn't list them.
+    # Each X-line is: `X<inst> <node1> ... <nodeK> <model> <params...>`.
+    # Model names in this flow start with "sky130_fd_" — any token with
+    # that prefix (or containing '=' for params) terminates the node
+    # list.
+    def _is_model_or_param(t: str) -> bool:
+        return (
+            "=" in t
+            or t.startswith("sky130_")
+            or t.startswith("sky130")
+        )
+    used_nets: list[str] = []
+    seen: set[str] = set()
+    for line in lines[subckt_start + 1 : subckt_end + 1]:
+        s = line.strip()
+        if not s.startswith("X"):
+            continue
+        toks = s.split()
+        for t in toks[1:]:
+            if _is_model_or_param(t):
+                break
+            if t not in seen:
+                used_nets.append(t)
+                seen.add(t)
+
+    # Drop internal auto-generated nets (they contain '#') and keep
+    # only "label-named" public nets — those are the real ports.
+    public = [n for n in used_nets if "#" not in n]
+    # Stable, deterministic ordering: bitlines first (bl_, br_), then
+    # muxed_bl_/muxed_br_, then col_sel_, then p_en_bar, then power.
+    # Sort by natural index within each category.
+    def _key(n: str) -> tuple[int, object]:
+        if n.startswith("bl_"): return (0, int(n[3:]))
+        if n.startswith("br_"): return (1, int(n[3:]))
+        if n.startswith("muxed_bl_"): return (2, int(n[9:]))
+        if n.startswith("muxed_br_"): return (3, int(n[9:]))
+        if n.startswith("col_sel_"): return (4, int(n[8:]))
+        if n == "p_en_bar": return (5, 0)
+        if n.upper() == "VPWR": return (9, 0)
+        if n.upper() == "VGND" or n.upper() == "VSUBS": return (9, 1)
+        return (8, n)
+    ports = sorted(public, key=_key)
+
+    # Capture the body lines verbatim (we'll rewrite the .subckt line
+    # to include the port list).
+    body_lines = lines[subckt_start : subckt_end + 1]
+    # Replace the .subckt line with an explicit port listing.
+    body_lines[0] = f".subckt {cell_name} " + " ".join(ports)
+    return _ExtractedCell(name=cell_name, ports=ports, body_lines=body_lines)
+
+
+def _unfold_continuations(lines: list[str]) -> list[str]:
+    """Collapse SPICE `+ ...` continuation lines into their parent."""
+    out: list[str] = []
+    for line in lines:
+        if line.startswith("+") and out:
+            out[-1] += " " + line[1:].strip()
+        else:
+            out.append(line)
+    return out
+
+
+def _write_extracted_subckt(f: TextIO, cell: _ExtractedCell) -> None:
+    """Emit a Magic-extracted cell body as a .subckt block."""
+    f.write(f"* ---- {cell.name} (Magic-extracted body) ----\n")
+    for line in cell.body_lines:
+        f.write(line + "\n")
+    f.write("\n")
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +280,12 @@ def _top_ports(p: MacroV2Params) -> list[str]:
 # Top-level .subckt — wires every block by shared nets
 # ---------------------------------------------------------------------------
 
-def _write_top_subckt(f: TextIO, p: MacroV2Params) -> None:
+def _write_top_subckt(
+    f: TextIO,
+    p: MacroV2Params,
+    pre_body: "_ExtractedCell",
+    mux_body: "_ExtractedCell",
+) -> None:
     ports = _top_ports(p)
     wl_nets = [f"wl_{r}" for r in range(p.rows)]
     dec_nets = [f"dec_out_{r}" for r in range(p.rows)]  # decoder output (active-low)
@@ -162,19 +322,19 @@ def _write_top_subckt(f: TextIO, p: MacroV2Params) -> None:
         f"VPWR VGND sram_array_{_tag(p)}\n"
     )
 
-    f.write("\n* Precharge row\n")
+    # Precharge / column_mux instantiations use the port ORDER from the
+    # Magic-extracted subckt (which is whatever order Magic emits when
+    # walking the GDS labels — not alphabetical, not structural).  We
+    # map each extracted port name to the top-level net with the same
+    # name.
+    f.write("\n* Precharge row (Magic-extracted port order)\n")
     f.write(
-        f"Xprecharge {' '.join(bl_nets)} {' '.join(br_nets)} p_en_bar VPWR "
-        f"pre_{_tag(p)}\n"
+        f"Xprecharge {' '.join(pre_body.ports)} {pre_body.name}\n"
     )
 
-    f.write("\n* Column mux row\n")
-    col_sel_nets = [f"col_sel_{k}" for k in range(p.mux_ratio)]
+    f.write("\n* Column mux row (Magic-extracted port order)\n")
     f.write(
-        f"Xcolmux {' '.join(bl_nets)} {' '.join(br_nets)} "
-        f"{' '.join(muxed_bl)} {' '.join(muxed_br)} "
-        f"{' '.join(col_sel_nets)} VPWR VGND "
-        f"mux_{_tag(p)}\n"
+        f"Xcolmux {' '.join(mux_body.ports)} {mux_body.name}\n"
     )
 
     f.write("\n* Sense amp row (one per bit on muxed output)\n")
@@ -372,26 +532,5 @@ def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
 # Precharge / column mux — stubs (Python-generated, not extracted yet)
 # ---------------------------------------------------------------------------
 
-def _write_precharge_row_stub(f: TextIO, p: MacroV2Params) -> None:
-    name = f"pre_{_tag(p)}"
-    bl = [f"bl_{c}" for c in range(p.cols)]
-    br = [f"br_{c}" for c in range(p.cols)]
-    ports = bl + br + ["p_en_bar", "VPWR"]
-    f.write(f"* ---- {name} (stub; body via Magic-extract at build time) ----\n")
-    f.write(f".subckt {name}\n")
-    _wrap_ports(f, ports)
-    f.write(f".ends {name}\n\n")
-
-
-def _write_column_mux_row_stub(f: TextIO, p: MacroV2Params) -> None:
-    name = f"mux_{_tag(p)}"
-    bl = [f"bl_{c}" for c in range(p.cols)]
-    br = [f"br_{c}" for c in range(p.cols)]
-    mbl = [f"muxed_bl_{i}" for i in range(p.bits)]
-    mbr = [f"muxed_br_{i}" for i in range(p.bits)]
-    col_sel = [f"col_sel_{k}" for k in range(p.mux_ratio)]
-    ports = bl + br + mbl + mbr + col_sel + ["VPWR", "VGND"]
-    f.write(f"* ---- {name} (stub; body via Magic-extract at build time) ----\n")
-    f.write(f".subckt {name}\n")
-    _wrap_ports(f, ports)
-    f.write(f".ends {name}\n\n")
+# Precharge / column_mux bodies are emitted by _write_extracted_subckt.
+# No hand-written stubs — all content comes from Magic extraction.

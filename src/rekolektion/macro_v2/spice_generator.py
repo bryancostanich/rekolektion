@@ -363,9 +363,9 @@ def _write_top_subckt(
     f.write(f".subckt {p.top_cell_name}\n")
     _wrap_ports(f, ports)
 
-    f.write("\n* Control logic: clk/we/cs -> clk_buf, wl_en, p_en_bar, s_en, w_en\n")
+    f.write("\n* Control logic: clk/we/cs -> clk_buf, p_en_bar, s_en, w_en\n")
     f.write(
-        f"Xcontrol clk we cs clk_buf wl_en p_en_bar s_en w_en VPWR VGND "
+        f"Xcontrol clk we cs clk_buf p_en_bar s_en w_en VPWR VGND "
         f"ctrl_logic_{_tag(p)}\n"
     )
 
@@ -373,7 +373,7 @@ def _write_top_subckt(
     addr_args = " ".join(f"addr{i}" for i in range(p.num_addr_bits))
     dec_args = " ".join(dec_nets)
     f.write(
-        f"Xdecoder {addr_args} {dec_args} wl_en VPWR VGND row_decoder_{_tag(p)}\n"
+        f"Xdecoder {addr_args} {dec_args} VPWR VGND row_decoder_{_tag(p)}\n"
     )
 
     f.write("\n* WL driver row: dec_out (low-active) -> WL (high-active)\n")
@@ -449,7 +449,7 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"row_decoder_{_tag(p)}"
     addr_ports = [f"addr{i}" for i in range(p.num_addr_bits)]
     dec_out_ports = [f"dec_out_{r}" for r in range(p.rows)]
-    ports = addr_ports + dec_out_ports + ["wl_en", "VPWR", "VGND"]
+    ports = addr_ports + dec_out_ports + ["VPWR", "VGND"]
 
     f.write(f"* ---- {name} ----\n")
     f.write(f".subckt {name}\n")
@@ -559,7 +559,7 @@ def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
         f"* ---- {name} (wiring matches assembler _route_ctrl_internal) ----\n"
     )
     f.write(
-        f".subckt {name} clk we cs clk_buf wl_en p_en_bar s_en w_en "
+        f".subckt {name} clk we cs clk_buf p_en_bar s_en w_en "
         "VPWR VGND\n"
     )
     # NAND2 outputs drive DFF D inputs:

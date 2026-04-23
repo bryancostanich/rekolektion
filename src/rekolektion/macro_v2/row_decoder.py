@@ -113,6 +113,7 @@ class RowDecoder:
         if len(self.split) == 1:
             k = self.split[0]
             self._emit_vertical_nand_column(lib, top, seen, k_fanin=k, x=0.0)
+            self._add_addr_rails(top, k_fanin=k, nand_x=0.0)
             lib.add(top)
             return lib
 
@@ -147,6 +148,106 @@ class RowDecoder:
 
         lib.add(top)
         return lib
+
+    # NAND input-pin cell-local coords (met1 label / li1 pin).  These
+    # need to match what Magic extracts for A/B/C on each NAND variant.
+    #   NAND2: A=(0.405, 1.095), B=(0.405, 0.555)  (li1, same x)
+    #   NAND3: A=(1.265, 0.410), B=(0.715, 0.770), C=(0.165, 1.130)
+    _NAND_INPUT_PIN_POS: dict[int, dict[str, tuple[float, float]]] = {
+        2: {"A": (0.405, 1.095), "B": (0.405, 0.555)},
+        3: {"A": (1.265, 0.410), "B": (0.715, 0.770), "C": (0.165, 1.130)},
+    }
+
+    def _add_addr_rails(
+        self,
+        top: "gdstk.Cell",
+        *,
+        k_fanin: int,
+        nand_x: float,
+    ) -> None:
+        """Add internal addr-input rails to consolidate per-row NAND
+        input pins.  Without these, Magic extracts every NAND's A/B/C
+        pin as its own port of the row_decoder cell; the LVS reference
+        (which ties all rows' A pins to addr0, B to addr1, C to addr2)
+        then mismatches structurally.
+
+        Each addr_i gets a vertical met3 rail west of the NAND column,
+        plus per-row met3 horizontal spurs that cross the NAND body at
+        the pin y, with met1↔met3 via stacks where the spur reaches
+        the pin's cell-local (x, y) — met1 is available at those
+        positions because the NAND cell places a met1.label on each
+        input pin's li1 via (so there's met1 metal co-located).
+        """
+        from rekolektion.macro_v2.routing import (
+            draw_label, draw_via_stack, draw_wire,
+        )
+
+        if k_fanin not in self._NAND_INPUT_PIN_POS:
+            # Unsupported fan-in (e.g. NAND4) — skip; LVS won't match
+            # but the layout still works functionally.
+            return
+        pin_pos = self._NAND_INPUT_PIN_POS[k_fanin]
+
+        # Unique rail x per addr signal, placed WEST of the NAND
+        # column in the space between it and the row_decoder's
+        # default width.  The offsets are chosen to clear the top-
+        # level _route_addr sidebars at dec_x-1.5, -3.0, -4.5 (also
+        # met3) by at least 0.5 µm on either side.
+        rail_offsets = [-0.4, -2.3, -3.8][:k_fanin]  # addr0, addr1, addr2
+        pin_names = ["A", "B", "C"][:k_fanin]
+
+        rail_ylo = -0.1
+        rail_yhi = self.num_rows * _NAND_DEC_PITCH + 0.1
+
+        for i, (pin_name, rail_dx) in enumerate(zip(pin_names, rail_offsets)):
+            rail_x = nand_x + rail_dx
+            # Vertical met3 rail spanning all rows.
+            draw_wire(
+                top,
+                start=(rail_x, rail_ylo),
+                end=(rail_x, rail_yhi),
+                layer="met3",
+            )
+            x_local, y_local = pin_pos[pin_name]
+            for row in range(self.num_rows):
+                pin_x = nand_x + x_local
+                if row % 2 == 0:
+                    pin_y = row * _NAND_DEC_PITCH + y_local
+                else:
+                    pin_y = (row + 1) * _NAND_DEC_PITCH - y_local
+                # Horizontal spur on met2 (different layer from the
+                # rails and the top-level addr sidebars) so we don't
+                # short adjacent addr rails when one spur crosses
+                # another rail's x.  NAND cells have zero internal
+                # met2.
+                draw_wire(
+                    top,
+                    start=(rail_x, pin_y),
+                    end=(pin_x, pin_y),
+                    layer="met2",
+                )
+                # Via stack at the rail end: bridge met3 rail to the
+                # met2 spur.
+                draw_via_stack(
+                    top,
+                    from_layer="met2", to_layer="met3",
+                    position=(rail_x, pin_y),
+                )
+                # Li1↔met2 via stack at the pin: NAND A/B/C pins live
+                # on li1 (layer 67), so the chain must reach li1.
+                draw_via_stack(
+                    top,
+                    from_layer="li1", to_layer="met2",
+                    position=(pin_x, pin_y),
+                )
+
+            # Label the rail at its midpoint.
+            draw_label(
+                top,
+                text=f"addr{i}",
+                layer="met3",
+                position=(rail_x, (rail_ylo + rail_yhi) / 2),
+            )
 
     def _emit_vertical_nand_column(
         self,

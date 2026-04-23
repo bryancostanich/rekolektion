@@ -67,17 +67,30 @@ def _lvs_one(m: ProductionMacro, input_root: Path, output_root: Path) -> dict:
     out_dir = output_root / m.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # run_lvs does the Magic extraction internally.  Don't pre-extract
-    # here — that duplicates the work (Magic runs twice, taking 2x
-    # wall time).
-    print(
-        f"[{m.name}] running full LVS: extract GDS (~10-15 min) + netgen ...",
-        flush=True,
-    )
-    try:
-        result = run_lvs(gds, ref_sp, cell_name=m.name, output_dir=out_dir)
-    except Exception as exc:
-        return {"macro": m.name, "ok": False, "error": f"LVS failed: {exc}"}
+    # If Magic already extracted this macro in a previous run, reuse
+    # the result.  The extracted file is <name>_extracted.spice per
+    # extract_netlist's convention.
+    prior_extracted = out_dir / f"{m.name}_extracted.spice"
+    if prior_extracted.exists():
+        print(f"[{m.name}] reusing prior extraction at {prior_extracted}",
+              flush=True)
+        try:
+            result = run_lvs(
+                gds, ref_sp, cell_name=m.name, output_dir=out_dir,
+                extracted_netlist=prior_extracted,
+            )
+        except Exception as exc:
+            return {"macro": m.name, "ok": False, "error": f"LVS failed: {exc}"}
+    else:
+        # run_lvs does the Magic extraction internally.
+        print(
+            f"[{m.name}] running full LVS: extract GDS (~10-15 min) + netgen ...",
+            flush=True,
+        )
+        try:
+            result = run_lvs(gds, ref_sp, cell_name=m.name, output_dir=out_dir)
+        except Exception as exc:
+            return {"macro": m.name, "ok": False, "error": f"LVS failed: {exc}"}
 
     # Device counts for the summary table.
     ref_counts = _count_devices(ref_sp)

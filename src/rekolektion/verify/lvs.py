@@ -157,6 +157,8 @@ def run_lvs(
     cell_name: str = "",
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
+    extracted_netlist: str | Path | None = None,
+    netgen_timeout: int = 3600,
 ) -> LVSResult:
     """Run LVS: extract layout netlist, compare against schematic.
 
@@ -166,6 +168,13 @@ def run_lvs(
         cell_name: Top cell name.
         pdk_root: PDK root path.
         output_dir: Output directory for results.
+        extracted_netlist: if given, reuse this pre-extracted SPICE
+            instead of running Magic again.  Saves ~10 min on
+            production-size macros when iterating on netgen setup.
+        netgen_timeout: seconds to allow netgen to complete.  Default
+            3600 (1 h) — production-scale netlists (2000+ transistors,
+            deep hierarchy) routinely need 15+ min in netgen's graph
+            matcher.  Small cells finish in seconds regardless.
 
     Returns:
         LVSResult indicating match/mismatch.
@@ -181,8 +190,15 @@ def run_lvs(
 
     from rekolektion.tech.sky130 import netgen_setup
 
-    # Step 1: Extract netlist from layout
-    extracted = extract_netlist(gds_path, cell_name, pdk_root, output_dir)
+    # Step 1: Extract netlist from layout (unless caller already has one).
+    if extracted_netlist is not None:
+        extracted = Path(extracted_netlist)
+        if not extracted.exists():
+            raise RuntimeError(
+                f"extracted_netlist {extracted} does not exist"
+            )
+    else:
+        extracted = extract_netlist(gds_path, cell_name, pdk_root, output_dir)
 
     # Step 2: Run netgen comparison
     setup_file = netgen_setup(pdk_root)
@@ -250,7 +266,7 @@ def run_lvs(
             netgen_cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=netgen_timeout,
             cwd=str(output_dir),
             stdin=subprocess.DEVNULL,  # prevent Tk GUI on netgen builds with TkCon
         )

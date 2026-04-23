@@ -250,10 +250,11 @@ class RowDecoder:
         final_pin_pos = self._NAND_INPUT_PIN_POS[self.final_fanin]
         final_pin_names = ["A", "B", "C"][: self.final_fanin]
 
-        # The pred_out rails live at the same x as their per-row
-        # destination pins (so per-row spurs are zero-length vertically),
-        # offset east from each input's x by a small jog to clear the
-        # via stack landing on the NAND pin — mirrors _add_addr_rails.
+        # The pred_out rails live WEST of the final NAND column at
+        # rail_offsets (matches _add_addr_rails in single-predecoder).
+        # Must NOT be at nand_x + pin_lx — via-stack pads at adjacent
+        # pin positions (A at 0.41, B at 0.77, C at 1.13 — only 0.36
+        # µm apart) overlap and short all 3 inputs to one net.
         rail_offsets = [-0.4, -2.3, -3.8][: self.final_fanin]
 
         for stage_idx, g in enumerate(stage_geom):
@@ -267,10 +268,12 @@ class RowDecoder:
             z_ax = first_ox + z_local_x
             z_ay = first_oy + z_local_y
 
-            # Target vertical rail on met3 down the final column.
+            # Target vertical rail on met3 down the final column,
+            # positioned WEST of the column to give via-stack pads a
+            # clean y-column that doesn't overlap adjacent pins.
             pin_name = final_pin_names[stage_idx]
             pin_lx, _ = final_pin_pos[pin_name]
-            rail_x = nand_x + pin_lx + rail_offsets[stage_idx]
+            rail_x = nand_x + rail_offsets[stage_idx]
 
             # (a) li1→met3 via stack at the Z output.
             draw_via_stack(
@@ -282,11 +285,20 @@ class RowDecoder:
                 top, start=(z_ax, z_ay), end=(rail_x, z_ay),
                 layer="met3",
             )
-            # (c) met3 vertical rail spanning all rows.
-            rail_top_y = pred_block_top_y
+            # (c) met3 vertical rail spanning the FULL final-NAND
+            # column height (all 128 rows at pitch 1.58), plus the
+            # predecoder block height above.  An earlier version
+            # clipped at pred_block_top_y (~14 µm) which cut the
+            # rail short of rows >9 — per-row via stacks landed on
+            # floating met3 pads instead of the rail, leaving every
+            # final NAND's A/B/C pin disconnected from its
+            # predecoder output.
             rail_bot_y = -0.2
-            if z_ay > rail_top_y:
-                rail_top_y = z_ay + 0.2
+            rail_top_y = max(
+                self.num_rows * _NAND_DEC_PITCH + 0.2,
+                z_ay + 0.2,
+                pred_block_top_y + 0.2,
+            )
             draw_wire(
                 top, start=(rail_x, rail_bot_y), end=(rail_x, rail_top_y),
                 layer="met3",

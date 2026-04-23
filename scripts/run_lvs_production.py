@@ -67,21 +67,24 @@ def _lvs_one(m: ProductionMacro, input_root: Path, output_root: Path) -> dict:
     out_dir = output_root / m.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[{m.name}] extracting GDS via Magic (may take ~10 min) ...", flush=True)
+    # run_lvs does the Magic extraction internally.  Don't pre-extract
+    # here — that duplicates the work (Magic runs twice, taking 2x
+    # wall time).
+    print(
+        f"[{m.name}] running full LVS: extract GDS (~10-15 min) + netgen ...",
+        flush=True,
+    )
     try:
-        extracted = extract_netlist(
-            gds, cell_name=m.name, output_dir=out_dir, timeout=1800,
-        )
+        result = run_lvs(gds, ref_sp, cell_name=m.name, output_dir=out_dir)
     except Exception as exc:
-        return {"macro": m.name, "ok": False, "error": f"extract failed: {exc}"}
+        return {"macro": m.name, "ok": False, "error": f"LVS failed: {exc}"}
 
+    # Device counts for the summary table.
     ref_counts = _count_devices(ref_sp)
-    ext_counts = _count_devices(extracted)
+    ext_path = result.extracted_netlist_path
+    ext_counts = _count_devices(ext_path) if ext_path else {}
     ref_total = sum(ref_counts.values())
     ext_total = sum(ext_counts.values())
-
-    print(f"[{m.name}] running netgen LVS ...", flush=True)
-    result = run_lvs(gds, ref_sp, cell_name=m.name, output_dir=out_dir)
 
     return {
         "macro": m.name,

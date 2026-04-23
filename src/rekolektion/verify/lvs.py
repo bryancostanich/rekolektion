@@ -67,11 +67,17 @@ def extract_netlist(
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
     make_ports: bool = False,
-    timeout: int = 300,
+    timeout: int = 1800,
 ) -> Path:
     """Extract SPICE netlist from GDS using Magic.
 
     Returns path to the extracted .spice file.
+
+    timeout defaults to 1800 s (30 min) — the 300 s default was too
+    short for production-scale macros.  Measured ~12 min for the full
+    sram_weight_bank_small top extraction on this machine; 30 min
+    leaves headroom for larger variants.  Small cells (<1 s) pay
+    nothing for a high ceiling.
 
     make_ports: if True, promote every label attached to geometry into a
     subckt port via `port makeall`. Required for downstream PVT SPICE

@@ -14,14 +14,16 @@ from rekolektion.peripherals.column_mux import generate_column_mux
 
 
 _BITCELL_WIDTH: float = 1.31
-# Height depends on mux_ratio. M=2 needs 2 sel-rail slots on met3 above
-# the pass-gate row, M=4 needs 4, M=8 needs 8. Values come from the
-# column_mux.py Option II layout: sel_first_y + (M-1)*sel_pitch
-# + RAIL_W/2 + 0.14 with sel_first_y=2.425, sel_pitch=0.80, RAIL_W=0.40.
+# Height depends on mux_ratio. Values come from column_mux.py's cell_h
+# formula: sel_first_y + (M-1)*sel_pitch + RAIL_W/2 + 0.14, where
+# sel_first_y=2.425, sel_pitch=0.80, RAIL_W=0.40.
+#   M=2: 2.425 + 1*0.80 + 0.20 + 0.14 = 3.565
+#   M=4: 2.425 + 3*0.80 + 0.20 + 0.14 = 5.165
+#   M=8: 2.425 + 7*0.80 + 0.20 + 0.14 = 8.365
 _COLMUX_HEIGHT_BY_MUX: dict[int, float] = {
     2: 3.565,
-    4: 4.965,
-    8: 8.165,
+    4: 5.165,
+    8: 8.365,
 }
 # Preserve the module-level constant other code imports as the "default".
 _COLMUX_HEIGHT: float = _COLMUX_HEIGHT_BY_MUX[4]

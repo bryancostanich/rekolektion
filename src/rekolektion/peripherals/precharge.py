@@ -461,6 +461,21 @@ def generate_precharge(
             f"br_{i}", (_snap(x_br), _snap(_CELL_H - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
 
+        # Adapter jogs at cell BOTTOM: bridge internal BL/BR stubs
+        # (at x_bl=0.0425, x_br=1.1575) to the foundry bitcell's real
+        # met1 BL/BR positions (x_bl_real=0.420, x_br_real=0.780).
+        # The precharge sits ABOVE the array; its bottom edge abuts the
+        # assembler's BL/BR bridge strip (at x=0.420/0.780) in the gap
+        # between precharge and array.
+        x_bl_real = i * pair_pitch + 0.420
+        x_br_real = i * pair_pitch + 0.780
+        _rect(cell, _MET1,
+              x_bl - met1_half, 0.0,
+              x_bl_real + met1_half, 0.14)
+        _rect(cell, _MET1,
+              x_br_real - met1_half, 0.0,
+              x_br + met1_half, 0.14)
+
     # --- Per-block: Rows A, B, C transistors ------------------------------
     for b in range(num_blocks):
         x_block = b * block_width

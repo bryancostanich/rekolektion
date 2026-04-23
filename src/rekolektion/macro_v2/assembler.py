@@ -503,64 +503,58 @@ def _route_wl(
 # C6.3 — BL/BR fanout: extend array strips through peripheral rows
 # ---------------------------------------------------------------------------
 
-# Bitcell pin positions (absolute, relative to array origin at (0,0))
-# Derived from bitcell_array.py: col_x0 = col * cell_width (1.31);
-# BL at col_x0 + 0.0425, BR at col_x0 + 1.1575, strip width 0.14.
-_BITCELL_BL_X_OFFSET: float = 0.0425
-_BITCELL_BR_X_OFFSET: float = 1.1575
+# Bitcell pin positions (absolute, relative to array origin at (0,0)).
+# From the foundry LEF sky130_fd_bd_sram__sram_sp_cell_opt1.magic.lef:
+#   BL  met1 rail  RECT 0.350 0.000 0.490 1.435  -> x-centre 0.420
+#   BR  met1 rail  RECT 0.710 0.145 0.850 1.580  -> x-centre 0.780
+# The peripheral cells (precharge, col_mux) were laid out with BL at
+# 0.0425 and BR at 1.1575 (assumed pair-boundary positions). Each of
+# them emits adapter jogs at its abutting edge to bridge internal
+# 0.0425/1.1575 to external 0.420/0.780 — see `precharge._draw_bl_br_jogs`
+# and `column_mux._draw_bl_br_jogs`.
+_BITCELL_BL_X_OFFSET: float = 0.420
+_BITCELL_BR_X_OFFSET: float = 0.780
 _BITCELL_WIDTH: float = 1.31
 _BL_STRIP_W: float = 0.14
 
 
 def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
-    """Extend the bitcell array's per-col BL/BR met1 strips up through
-    the precharge row and down through the col_mux / sense_amp /
-    write_driver rows.
+    """Bridge BL/BR between bitcell array and peripherals.
 
-    The array (C3) already emits spanning met1 strips at each column's
-    BL and BR x-coordinate for y in [0, array_h]. Here we extend those
-    strips into the peripheral y-range so the peripheral cells' met1
-    BL/BR pins physically overlap the strip, giving Magic extraction a
-    shared net.
+    The bitcell's own BL/BR rails at x=0.420 / 0.780 are continuous
+    through the array via cell abutment. This function adds short
+    met1 bridges across the 1 µm array-to-peripheral gaps so the
+    array's BL/BR connect to the precharge (above) and col_mux (below).
 
-    Only col-0 of each mux group connects to the peripheral pins at
-    their specific cell-local x (see D2 in autonomous_decisions.md).
-    The other 3 cols per mux group are extended to avoid DRC asymmetry
-    but remain electrically isolated from their peripheral pins.
+    BL/BR do not extend below col_mux — col_mux produces muxed_BL/
+    muxed_BR on its bottom edge for sense_amp/write_driver; raw BL
+    doesn't need to reach SA/WD.
     """
     array_x, array_y = fp.positions["array"]
     array_w, array_h = fp.sizes["array"]
 
     prec_x, prec_y = fp.positions["precharge"]
-    prec_w, prec_h = fp.sizes["precharge"]
-    prec_top = prec_y + prec_h
+    col_mux_x, col_mux_y = fp.positions["col_mux"]
+    col_mux_w, col_mux_h = fp.sizes["col_mux"]
+    col_mux_top = col_mux_y + col_mux_h
 
-    # Below-array stack: work out the lowest y touched by any
-    # peripheral so the downward strip reaches all of them.
-    below_y_min = min(
-        fp.positions[name][1]
-        for name in ("col_mux", "sense_amp", "write_driver")
-    )
-
-    # For each bitcell column, extend its BL/BR strips:
-    #   up   from array_y + array_h to prec_top
-    #   down from array_y down to below_y_min
+    # For each column, bridge BL/BR across both array-peripheral gaps.
     for col in range(p.cols):
         col_x0 = array_x + col * _BITCELL_WIDTH
         for x_offset in (_BITCELL_BL_X_OFFSET, _BITCELL_BR_X_OFFSET):
             strip_x = col_x0 + x_offset
-            # Up-extension: from array top into precharge row
+            # Above array: from array top up to precharge bottom
             draw_wire(
                 top,
                 start=(strip_x, array_y + array_h),
-                end=(strip_x, prec_top),
+                end=(strip_x, prec_y),
                 layer="met1",
                 width=_BL_STRIP_W,
             )
-            # Down-extension: from array bottom through col_mux/SA/WD
+            # Below array: from array bottom down to col_mux top
             draw_wire(
                 top,
-                start=(strip_x, below_y_min),
+                start=(strip_x, col_mux_top),
                 end=(strip_x, array_y),
                 layer="met1",
                 width=_BL_STRIP_W,

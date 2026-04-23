@@ -21,14 +21,16 @@ from rekolektion.macro_v2.routing import draw_label, draw_pin, draw_wire
 _FOUNDRY_WL_LABEL_X: float = 0.605
 _FOUNDRY_WL_LABEL_Y: float = 1.385
 
-# Foundry bitcell's BL/BR x-coordinates (cell-local, µm). From the LEF:
-# BL PIN on met1: RECT 0.000 0.705 0.085 0.875 -> x-center ≈ 0.0425
-# BR PIN on met1: RECT 1.115 0.705 1.200 0.875 -> x-center ≈ 1.1575
-_FOUNDRY_BL_X_IN_CELL: float = 0.0425
-_FOUNDRY_BR_X_IN_CELL: float = 1.1575
-# Bitcell's own BL/BR labels are on met1.label (68/5) at (0.420, 1.130) and
-# (0.780, 1.130). Our override labels go at the same y per-row to hit each
-# instance's internal label.
+# Foundry bitcell's BL/BR x-coordinates (cell-local, µm). Per the full
+# foundry LEF `sky130_fd_bd_sram__sram_sp_cell_opt1.magic.lef`:
+#   BL  met1 rail  RECT 0.350 0.000 0.490 1.435  -> x-centre 0.420
+#   BR  met1 rail  RECT 0.710 0.145 0.850 1.580  -> x-centre 0.780
+# (Earlier versions of this file misread the LEF and put these at
+# 0.0425 / 1.1575 — those are VGND's pin rect x-centre, not BL's. The
+# bug caused our BL strip to physically overlap VGND inside every
+# bitcell, shorting BL to VGND across the array.)
+_FOUNDRY_BL_X_IN_CELL: float = 0.420
+_FOUNDRY_BR_X_IN_CELL: float = 0.780
 _FOUNDRY_BL_LABEL_X: float = 0.420
 _FOUNDRY_BR_LABEL_X: float = 0.780
 _FOUNDRY_BLBR_LABEL_Y: float = 1.130
@@ -139,8 +141,8 @@ class BitcellArray:
         for col in range(self.cols):
             col_x0 = col * self._cell_w
             # All columns placed un-mirrored — no Y-mirror complexity.
-            bl_x = col_x0 + 0.0425
-            br_x = col_x0 + 1.1575
+            bl_x = col_x0 + _FOUNDRY_BL_X_IN_CELL
+            br_x = col_x0 + _FOUNDRY_BR_X_IN_CELL
 
             for xc, prefix in ((bl_x, "bl"), (br_x, "br")):
                 # Spanning vertical met1 strip

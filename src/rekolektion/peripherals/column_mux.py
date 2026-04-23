@@ -288,6 +288,22 @@ def generate_column_mux(
             f"br_{i}", (_snap(x_br), _snap(cell_h - 0.15)),
             layer=_MET1[0], texttype=_MET1[1]))
 
+        # Adapter jogs at cell TOP: bridge the internal BL/BR stubs
+        # (at x_bl=0.0425, x_br=1.1575) to the foundry bitcell's real
+        # met1 BL/BR positions (at x_bl_real=0.420, x_br_real=0.780).
+        # Without these jogs, the mux's BL at the cell top doesn't abut
+        # the array's BL at x=0.420 (they'd be at different x). A short
+        # horizontal met1 rect in the top 0.14 µm of the cell reaches
+        # to the bitcell BL/BR x.
+        x_bl_real = x_offset + 0.420
+        x_br_real = x_offset + 0.780
+        _rect(cell, _MET1,
+              x_bl - met1_half, cell_h - 0.14,
+              x_bl_real + met1_half, cell_h)
+        _rect(cell, _MET1,
+              x_br_real - met1_half, cell_h - 0.14,
+              x_br + met1_half, cell_h)
+
         # BL pass-gate at x_mp1, BR pass-gate at x_mp2. Vertical NMOS.
         bl_bot, bl_top = _vertical_nmos(cell, x_mp1, pg_y)
         br_bot, br_top = _vertical_nmos(cell, x_mp2, pg_y)

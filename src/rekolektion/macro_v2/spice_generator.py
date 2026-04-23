@@ -59,7 +59,17 @@ _WRITE_DRIVER_PORTS = ("BL", "BR", "DIN", "EN")
 def generate_reference_spice(
     p: MacroV2Params,
     output_path: str | Path,
+    top_subckt_name: str | None = None,
 ) -> Path:
+    """Generate the reference SPICE for LVS.
+
+    top_subckt_name: when the caller renames the assembled GDS top
+    cell (e.g. `sram_weight_bank_small` instead of the default
+    `sram_512x32_mux4`), pass the same name here so the .subckt line
+    in the refspice matches what Magic extracts from the GDS.
+    Without this, netgen's `-batch lvs` can't find matching top
+    subckts and LVS fails before it starts.
+    """
     from rekolektion.macro_v2.bitcell_array import BitcellArray
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +101,7 @@ def generate_reference_spice(
             f, p,
             pre_body=pre_body, mux_body=mux_body,
             array_body=array_body,
+            top_subckt_name=top_subckt_name,
         )
         _write_row_decoder_subckt(f, p)
         _write_wl_driver_row_subckt(f, p)
@@ -359,7 +370,9 @@ def _write_top_subckt(
     pre_body: "_ExtractedCell",
     mux_body: "_ExtractedCell",
     array_body: "_ExtractedCell",
+    top_subckt_name: str | None = None,
 ) -> None:
+    top_name = top_subckt_name or p.top_cell_name
     ports = _top_ports(p)
     wl_nets = [f"wl_{r}" for r in range(p.rows)]
     dec_nets = [f"dec_out_{r}" for r in range(p.rows)]  # decoder output (active-low)
@@ -368,7 +381,7 @@ def _write_top_subckt(
     muxed_bl = [f"muxed_bl_{i}" for i in range(p.bits)]
     muxed_br = [f"muxed_br_{i}" for i in range(p.bits)]
 
-    f.write(f".subckt {p.top_cell_name}\n")
+    f.write(f".subckt {top_name}\n")
     _wrap_ports(f, ports)
 
     f.write("\n* Control logic: clk/we/cs -> clk_buf, p_en_bar, s_en, w_en\n")
@@ -444,7 +457,7 @@ def _write_top_subckt(
         f"VPWR VGND wd_{_tag(p)}\n"
     )
 
-    f.write(f"\n.ends {p.top_cell_name}\n\n")
+    f.write(f"\n.ends {top_name}\n\n")
 
 
 def _tag(p: MacroV2Params) -> str:

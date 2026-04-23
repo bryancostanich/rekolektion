@@ -106,7 +106,10 @@ def _generate_one(m: ProductionMacro, output_root: Path) -> None:
     lib.write_gds(str(gds_path))
     print(f"  wrote {gds_path}  ({gds_path.stat().st_size // 1024} KB)")
 
-    generate_reference_spice(p, sp_path)
+    # Pass macro_name as the top-subckt name so the refspice's .subckt
+    # header matches the GDS top-cell name we renamed above — netgen
+    # needs both sides to agree on the top-level subckt name.
+    generate_reference_spice(p, sp_path, top_subckt_name=m.macro_name)
     print(f"  wrote {sp_path}  ({sp_path.stat().st_size} bytes)")
 
     lef_path = cell_dir / f"{m.macro_name}.lef"

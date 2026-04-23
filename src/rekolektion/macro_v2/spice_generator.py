@@ -226,7 +226,17 @@ def _extract_cell(
 
     # Drop internal auto-generated nets (they contain '#') and keep
     # only "label-named" public nets — those are the real ports.
-    public = [n for n in used_nets if "#" not in n]
+    # ALSO drop VPWR specifically — Magic's top-level hierarchical
+    # extraction treats it as a global and doesn't emit it as a
+    # sub-cell port.  (VSUBS is kept because Magic does expose it as
+    # a port in hierarchical extraction of mux etc.  The asymmetry
+    # between VPWR (always hidden) and VSUBS (sometimes a port) is
+    # Magic's convention, not ours.)
+    _GLOBAL_NETS_FILTERED = {"VPWR", "VGND", "VPB", "VNB", "GND", "VDD"}
+    public = [
+        n for n in used_nets
+        if "#" not in n and n.upper() not in _GLOBAL_NETS_FILTERED
+    ]
     # Stable, deterministic ordering.  Keys handle both the flat
     # peripheral-row signal names (bl_, br_, muxed_*, col_sel_) AND
     # the bitcell_array's two-index forms (bl_<grp>_<col>, wl_<grp>_<row>).

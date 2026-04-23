@@ -57,8 +57,51 @@ class SenseAmpRow:
             origin = (i * self.pitch, 0.0)
             top.add(gdstk.Reference(sa_cell, origin=origin))
 
+        # Consolidate the per-cell EN pins (met1 at local y=[10.820,
+        # 11.120]) into one row-wide `s_en` bus so Magic extracts a
+        # single EN port instead of `bits` separate ones.
+        self._add_s_en_rail(top)
+
         lib.add(top)
         return lib
+
+    def _add_s_en_rail(self, top: gdstk.Cell) -> None:
+        """Add a met2 horizontal `s_en` rail above all SA EN pins.
+
+        Met1 is not safe here: SA's BL and BR pins extend as full-
+        height met1 strips (y=0..11.28) at x=0.98–1.15 and 1.36–1.50
+        respectively, so a horizontal met1 at the EN-pin y would short
+        BL/BR into s_en.  SA has zero internal met2, so a horizontal
+        met2 above the EN pins, with a per-cell via2 down to each EN
+        met1 pad, fans out cleanly.
+        """
+        from rekolektion.macro_v2.routing import draw_label, draw_via_stack
+        from rekolektion.macro_v2.sky130_drc import GDS_LAYER
+
+        met2_l, met2_d = GDS_LAYER["met2"]
+        # SA EN met1 pad: RECT (0.470, 10.820)-(0.760, 11.120), centre
+        # (0.615, 10.970).  Route met2 rail at the same y range, then
+        # drop met1-met2 via at each cell's EN centre.
+        en_cx_local = 0.615
+        en_cy = 10.970
+        rail_y_lo = 10.820
+        rail_y_hi = 11.120
+        rail_x_lo = -0.20                                 # a hair west of cell 0
+        rail_x_hi = (self.bits - 1) * self.pitch + 2.700  # a hair east of cell N-1
+        top.add(gdstk.rectangle(
+            (rail_x_lo, rail_y_lo),
+            (rail_x_hi, rail_y_hi),
+            layer=met2_l, datatype=met2_d,
+        ))
+        for i in range(self.bits):
+            draw_via_stack(
+                top, from_layer="met1", to_layer="met2",
+                position=(i * self.pitch + en_cx_local, en_cy),
+            )
+        draw_label(
+            top, text="s_en", layer="met2",
+            position=((rail_x_lo + rail_x_hi) / 2, en_cy),
+        )
 
     def _import_cell(self, lib: gdstk.Library) -> gdstk.Cell:
         src = gdstk.read_gds(str(_SA_GDS))

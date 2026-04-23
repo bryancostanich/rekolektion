@@ -18,7 +18,9 @@ activation_bank runs at mux=4 (not mux=2 as originally spec'd).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,10 +46,40 @@ PRODUCTION_MACROS: tuple[ProductionMacro, ...] = (
 )
 
 
-def generate_all(output_root: Path) -> None:
+def generate_all(output_root: Path, workers: int = 0) -> None:
+    """Generate every macro in PRODUCTION_MACROS.
+
+    workers=0 (default): run one macro at a time, in-process — easiest
+    to debug, preserves live stdout.
+    workers>=2:          run up to N macros concurrently via a
+    ProcessPoolExecutor.  Each worker spawns its own Magic subprocess
+    for the refspice extraction, so N parallel workers = N parallel
+    Magic processes.  Capped at len(PRODUCTION_MACROS) since there's
+    no benefit beyond one worker per macro.
+    """
     output_root.mkdir(parents=True, exist_ok=True)
-    for m in PRODUCTION_MACROS:
-        _generate_one(m, output_root)
+    if workers <= 1 or len(PRODUCTION_MACROS) <= 1:
+        for m in PRODUCTION_MACROS:
+            _generate_one(m, output_root)
+        return
+
+    effective = min(workers, len(PRODUCTION_MACROS))
+    print(
+        f"[parallel] running {len(PRODUCTION_MACROS)} macros with "
+        f"{effective} worker processes"
+    )
+    with ProcessPoolExecutor(max_workers=effective) as pool:
+        futures = {
+            pool.submit(_generate_one, m, output_root): m
+            for m in PRODUCTION_MACROS
+        }
+        for fut in as_completed(futures):
+            m = futures[fut]
+            try:
+                fut.result()
+            except Exception as exc:
+                print(f"[{m.macro_name}] FAILED: {exc}", file=sys.stderr)
+                raise
 
 
 def _generate_one(m: ProductionMacro, output_root: Path) -> None:
@@ -95,8 +127,18 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir", type=Path, default=default_output,
         help=f"output root (default: {default_output})",
     )
+    ap.add_argument(
+        "--workers", "-j", type=int, default=0,
+        help=(
+            "parallel worker processes.  Default 0 = serial (easier to "
+            "debug).  Pass -j <N> (>=2) to run up to N macros in parallel; "
+            "capped at the number of macros.  Each worker still spawns its "
+            "own Magic subprocess — Magic itself is single-threaded, so the "
+            "wall-clock speedup is at most min(workers, len(macros))."
+        ),
+    )
     args = ap.parse_args(argv)
-    generate_all(args.output_dir)
+    generate_all(args.output_dir, workers=args.workers)
     print("\nDone.")
     return 0
 

@@ -156,8 +156,14 @@ def _extract_cell(
     lib = obj.build()
     gds_path = tmpdir / f"{cell_name}.gds"
     lib.write_gds(str(gds_path))
+    # Magic extract on production-size arrays (e.g. weight bank's 128x128
+    # = 16384 bitcells) takes ~10 minutes because resolving array-level
+    # li1/met1 abutment connectivity is inherently single-threaded in
+    # Magic.  Measured: sram_array_m4_512x32 = 586 s.  Set a 30-minute
+    # ceiling so the largest realistic arrays (and any future bigger
+    # variants) have headroom; tiny test arrays finish in ~3 s regardless.
     extracted_sp = extract_netlist(
-        gds_path, cell_name=cell_name, output_dir=tmpdir, timeout=300,
+        gds_path, cell_name=cell_name, output_dir=tmpdir, timeout=1800,
     )
 
     # Parse the extracted SPICE: find .subckt <cell_name> .. .ends.

@@ -1264,26 +1264,109 @@ def _route_ctrl_internal(
     p: MacroV2Params,
     fp: Floorplan,
 ) -> None:
-    """Wire clk/we/cs into ctrl_logic and NAND2 Z back to DFF D.
+    """Land top-level clk/we/cs pins onto ctrl_logic's internal
+    labeled rails.
 
-    Topology — all horizontal trunks are on met3, all vertical feeders
-    and dest drops are on met3 with via stacks terminating on the
-    destination pin's native layer (met2 for DFFs, li1 for NAND2s).
+    control_logic.py now draws all internal wiring (clk met2 rail
+    spanning all 4 DFFs, we met3 rail above NAND2, cs met2 rail
+    below NAND2, nand_z drops from NAND2 Z to DFF D, VPWR/VGND
+    rails with pin labels) inside the cell.  This function's only
+    job is to BRIDGE the top-level pin stubs (met3 at pins_top_y)
+    DOWN to a point on each labeled rail so Magic's hierarchical
+    extractor promotes clk/we/cs to ctrl_logic subckt ports.
 
-      - clk/we/cs: trunk at a unique y ABOVE the top input pin row
-        (y > pins_top_y + stub_len).  Each trunk extends only from the
-        leftmost destination to its own feeder x, so trunks do not
-        overlap feeders of later signals.  The top-level pin stub (met3
-        at pin_x) feeds into the trunk via a short vertical extension.
+    clk  rail — met2 at local y=3.62, x-span -0.5..cell_w+0.5
+    we   rail — met3 at local y=11.3, x-span A0..A1
+    cs   rail — met2 at local y=9.625, x-span B0..B1
+    """
+    return _route_ctrl_external_pins(top, p, fp)
 
-      - NAND2_Z -> DFF_D: trunks in the ctrl_logic / array gap, placed
-        above the ctrl_logic bbox and below the array.  Feeders via
-        stack up from li1 (NAND2 Z) to met3; dest drops via stack down
-        to met2 (DFF D).
 
-    Long vertical descents on met3 pass through row_decoder / wl_driver
-    regions, which contain only NAND3 / bitcell cells (no internal
-    met3), so no layer conflict.
+def _route_ctrl_external_pins(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    ctrl_origin = fp.positions["control_logic"]
+    ctrl_x, ctrl_y = ctrl_origin
+    positions, pins_top_y, _pins_bot_y = _top_pin_layout(p, fp)
+    top_stub_top_y = pins_top_y + _PIN_STUB_LEN
+
+    # Must match control_logic.py rail y's (cell-local).
+    # clk:  at DFF CLK pin y = 3.620
+    # we:   hardcoded above NAND2 body to avoid nand_z met2 overlap
+    # cs:   at NAND2 B pin y = y_nand (_DFF_H + _INTER_ROW_GAP) + 0.555
+    #       = 7.545 + 2.0 + 0.555 = 10.100
+    _CLK_RAIL_Y_LOCAL: float = 3.620
+    _WE_RAIL_Y_LOCAL: float = 11.300
+    _CS_RAIL_Y_LOCAL: float = 10.100
+
+    # A convenient x inside the ctrl_logic footprint for landing.
+    # clk rail spans x=-0.5..(cell_w+0.5); we/cs span x≈3.86..15.54.
+    # Use a central x that's on all three rails.
+    # ctrl_logic cell width = 4 * 5.84 = 23.36 µm; mid ≈ 11.68.
+    _LAND_X_LOCAL: float = 11.680
+
+    land_x_abs = ctrl_x + _LAND_X_LOCAL
+    clk_land_y = ctrl_y + _CLK_RAIL_Y_LOCAL
+    we_land_y = ctrl_y + _WE_RAIL_Y_LOCAL
+    cs_land_y = ctrl_y + _CS_RAIL_Y_LOCAL
+
+    def _drop_met3_to_rail(
+        pin_x: float, pin_y_top: float,
+        land_x: float, land_y: float,
+        rail_layer: str,
+    ) -> None:
+        # Horizontal met3 trunk from pin_x to land_x (at pin_y_top + margin).
+        trunk_y = max(pin_y_top + 0.5, land_y + 0.5)
+        draw_wire(
+            top,
+            start=(pin_x, pin_y_top),
+            end=(pin_x, trunk_y + _CTRL_TRUNK_HALF_W),
+            layer="met3", width=_CTRL_TRUNK_W,
+        )
+        west = min(pin_x, land_x) - _CTRL_TRUNK_HALF_W
+        east = max(pin_x, land_x) + _CTRL_TRUNK_HALF_W
+        draw_wire(
+            top,
+            start=(west, trunk_y), end=(east, trunk_y),
+            layer="met3", width=_CTRL_TRUNK_W,
+        )
+        draw_wire(
+            top,
+            start=(land_x, trunk_y + _CTRL_TRUNK_HALF_W),
+            end=(land_x, land_y - _CTRL_TRUNK_HALF_W),
+            layer="met3", width=_CTRL_TRUNK_W,
+        )
+        # If landing on met2, add met3→met2 via stack at the land point.
+        if rail_layer == "met2":
+            draw_via_stack(
+                top, from_layer="met2", to_layer="met3",
+                position=(land_x, land_y),
+            )
+        # (rail_layer == "met3": the vertical already merges with the rail)
+
+    clk_pin_x, _ = positions["clk"]
+    _drop_met3_to_rail(clk_pin_x, top_stub_top_y,
+                       land_x_abs, clk_land_y, "met2")
+
+    we_pin_x, _ = positions["we"]
+    _drop_met3_to_rail(we_pin_x, top_stub_top_y,
+                       land_x_abs, we_land_y, "met3")
+
+    cs_pin_x, _ = positions["cs"]
+    _drop_met3_to_rail(cs_pin_x, top_stub_top_y,
+                       land_x_abs, cs_land_y, "met2")
+
+
+def _OLD_route_ctrl_internal(
+    top: gdstk.Cell,
+    p: MacroV2Params,
+    fp: Floorplan,
+) -> None:
+    """Original per-DFF/NAND2 routing — kept for reference, no longer
+    called.  ctrl_logic now handles its own internal wiring; see
+    _route_ctrl_external_pins for the simplified external connection.
     """
     ctrl_origin = fp.positions["control_logic"]
     ctrl_x, ctrl_y = ctrl_origin

@@ -55,8 +55,13 @@ _INTER_ROW_GAP: float = 2.0
 
 # Cell pin coordinates (LEF origin = 0,0 for gdstk; values are local
 # to each placed cell origin).
-_DFF_W: float = 5.840
-_DFF_H: float = 7.070
+# DFF GDS bbox is 6.200 × 7.545 (wider/taller than the LEF SIZE
+# 5.840 × 7.070 because the GDS geometry includes well/metal
+# overhang).  Use the GDS extent for tiling so placed cells don't
+# physically overlap — and so our pin-x arithmetic matches the
+# assembler's `_DFF_W = 6.2`.
+_DFF_W: float = 6.200
+_DFF_H: float = 7.545
 _DFF_D_LOCAL: tuple[float, float] = (0.850, 2.820)      # met2
 _DFF_CLK_LOCAL: tuple[float, float] = (1.980, 3.620)    # met2
 _DFF_Q_LOCAL: tuple[float, float] = (5.575, 3.175)      # met2

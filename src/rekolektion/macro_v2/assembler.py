@@ -1293,21 +1293,22 @@ def _route_ctrl_external_pins(
     top_stub_top_y = pins_top_y + _PIN_STUB_LEN
 
     # Must match control_logic.py rail y's (cell-local).
-    # clk:  at DFF CLK pin y = 3.620
-    # we:   hardcoded above NAND2 body to avoid nand_z met2 overlap
-    # cs:   at NAND2 B pin y = y_nand (_DFF_H + _INTER_ROW_GAP) + 0.555
-    #       = 7.545 + 2.0 + 0.555 = 10.100
     _CLK_RAIL_Y_LOCAL: float = 3.620
     _WE_RAIL_Y_LOCAL: float = 11.300
     _CS_RAIL_Y_LOCAL: float = 10.100
 
-    # A convenient x inside the ctrl_logic footprint for landing.
-    # clk rail spans x=-0.5..(cell_w+0.5); we/cs span x≈3.86..15.54.
-    # Use a central x that's on all three rails.
-    # ctrl_logic cell width = 4 * 5.84 = 23.36 µm; mid ≈ 11.68.
-    _LAND_X_LOCAL: float = 11.680
+    # Each signal lands at a UNIQUE x.  If clk/we/cs all descended
+    # on met3 at the same x, the three verticals would merge into
+    # one net at y levels where the rails don't pre-empt the met3.
+    # we/cs rails only span the NAND2 A/B pin x range (~[4.2, 16.6]
+    # for DFF_W=6.2 placement).  clk rail is full-width.
+    _CLK_LAND_X_LOCAL: float = 2.0    # on clk rail, west of we/cs spans
+    _WE_LAND_X_LOCAL: float = 7.0    # inside we rail x span
+    _CS_LAND_X_LOCAL: float = 13.0   # inside cs rail x span, clear of we
 
-    land_x_abs = ctrl_x + _LAND_X_LOCAL
+    clk_land_x = ctrl_x + _CLK_LAND_X_LOCAL
+    we_land_x = ctrl_x + _WE_LAND_X_LOCAL
+    cs_land_x = ctrl_x + _CS_LAND_X_LOCAL
     clk_land_y = ctrl_y + _CLK_RAIL_Y_LOCAL
     we_land_y = ctrl_y + _WE_RAIL_Y_LOCAL
     cs_land_y = ctrl_y + _CS_RAIL_Y_LOCAL
@@ -1316,9 +1317,11 @@ def _route_ctrl_external_pins(
         pin_x: float, pin_y_top: float,
         land_x: float, land_y: float,
         rail_layer: str,
+        trunk_y: float,
     ) -> None:
-        # Horizontal met3 trunk from pin_x to land_x (at pin_y_top + margin).
-        trunk_y = max(pin_y_top + 0.5, land_y + 0.5)
+        # Horizontal met3 trunk from pin_x to land_x at trunk_y.
+        # Caller supplies a unique trunk_y per signal so trunks from
+        # different signals don't short on met3.
         draw_wire(
             top,
             start=(pin_x, pin_y_top),
@@ -1346,17 +1349,23 @@ def _route_ctrl_external_pins(
             )
         # (rail_layer == "met3": the vertical already merges with the rail)
 
+    # Unique trunk y per signal (met3 horizontal at each y won't short).
+    # Stack above the pin stub top with _CTRL_TRUNK_PITCH spacing.
+    clk_trunk_y = top_stub_top_y + 4 * _CTRL_TRUNK_PITCH
+    we_trunk_y = top_stub_top_y + 5 * _CTRL_TRUNK_PITCH
+    cs_trunk_y = top_stub_top_y + 6 * _CTRL_TRUNK_PITCH
+
     clk_pin_x, _ = positions["clk"]
     _drop_met3_to_rail(clk_pin_x, top_stub_top_y,
-                       land_x_abs, clk_land_y, "met2")
+                       clk_land_x, clk_land_y, "met2", clk_trunk_y)
 
     we_pin_x, _ = positions["we"]
     _drop_met3_to_rail(we_pin_x, top_stub_top_y,
-                       land_x_abs, we_land_y, "met3")
+                       we_land_x, we_land_y, "met2", we_trunk_y)
 
     cs_pin_x, _ = positions["cs"]
     _drop_met3_to_rail(cs_pin_x, top_stub_top_y,
-                       land_x_abs, cs_land_y, "met2")
+                       cs_land_x, cs_land_y, "met2", cs_trunk_y)
 
 
 def _OLD_route_ctrl_internal(

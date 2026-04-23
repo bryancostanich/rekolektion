@@ -181,32 +181,30 @@ class ControlLogic:
             net_name="nand1_z",
         )
 
-        # we: horizontal met3 rail ABOVE the NAND2 cell body.  A met2
-        # rail at the A pin y (=10.165) would overlap the nand_z via
-        # stack's met2 pad at (Z_x, 10.325) → pad y range extends to
-        # 10.165 with pad size 0.32, shorting A with Z.  Route on met3
-        # above y ≈ 10.5 to clear both the nand_z met2 and met3 pads
-        # (pad tops ~10.49).
-        we_rail_y = nand2_origins[0][1] + _NAND_H + 0.3  # 9.07+2.69+0.3=12.06
-        # Oops — collides with VPWR rail at cell_h+0.3=12.06.  Use a
-        # y between nand_z pad top and VPWR rail.
+        # we: horizontal met2 rail ABOVE the NAND2 cell body.  At the A
+        # pin y (10.64) the met2 rail's width-0.14 y range would
+        # overlap the nand_z met2 via stack's pad (y=[10.64, 10.96] at
+        # Z_y=10.8) — shorting we with nand_z.  Route above the pad
+        # instead (y=11.3).  Met2 (not met3) is important: the parent
+        # cell's clk/cs drops descend on met3 verticals at some x in
+        # the we rail's x range — same-layer crossings would short
+        # them.  Connect A pins to the rail via li1→met2 stubs.
         we_rail_y = 11.3
         for i in range(_NUM_CONTROL_NAND2S):
-            # li1 → met3 via stack at each A pin.
-            draw_via_stack(top, from_layer="li1", to_layer="met3",
+            draw_via_stack(top, from_layer="li1", to_layer="met2",
                            position=_nand_a(i))
-            # Vertical met3 riser from A pin up to the we rail y.
+            # Vertical met2 riser from A pin (li1→met2 via) up to rail.
             draw_wire(
                 top, start=_nand_a(i), end=(_nand_a(i)[0], we_rail_y),
-                layer="met3",
+                layer="met2",
             )
         draw_wire(
             top,
             start=(_nand_a(0)[0], we_rail_y),
             end=(_nand_a(1)[0], we_rail_y),
-            layer="met3",
+            layer="met2",
         )
-        draw_label(top, text="we", layer="met3",
+        draw_label(top, text="we", layer="met2",
                    position=(_nand_a(0)[0], we_rail_y))
 
         # cs: same pattern for NAND2_{0,1}.B pins.

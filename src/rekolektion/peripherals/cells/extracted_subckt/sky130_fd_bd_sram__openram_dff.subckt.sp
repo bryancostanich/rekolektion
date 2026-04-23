@@ -1,6 +1,6 @@
 * NGSPICE file created from sky130_fd_bd_sram__openram_dff.ext - technology: sky130B
 
-.subckt sky130_fd_bd_sram__openram_dff CLK D Q Q_N GND VDD
+.subckt sky130_fd_bd_sram__openram_dff D CLK Q VDD GND
 X0 VDD a_28_102# a_389_712# VDD sky130_fd_pr__pfet_01v8 ad=0.42 pd=3.28 as=0.315 ps=3.21 w=3 l=0.15
 X1 a_47_611# CLK a_197_712# VDD sky130_fd_pr__pfet_01v8 ad=0.675 pd=3.45 as=0.315 ps=3.21 w=3 l=0.15
 X2 a_239_76# CLK VDD VDD sky130_fd_pr__pfet_01v8 ad=0.795 pd=6.53 as=0.42 ps=3.28 w=3 l=0.15

@@ -568,14 +568,14 @@ def _write_control_logic_subckt(f: TextIO, p: MacroV2Params) -> None:
     # DFF Q outputs drive the ctrl_logic block outputs.
     dff_q_nets = ("clk_buf", "p_en_bar", "s_en", "w_en")
     dff_d_nets = ("nand0_z", "nand0_z", "nand1_z", "nand1_z")
-    # DFF port order from the cached (port-patched) subckt:
-    # CLK D Q Q_N GND VDD.  Q_N has no label in the foundry GDS so
-    # Magic will NOT promote it to a port in the assembled netlist;
-    # we leave it on a per-instance floating net here.
+    # DFF port order matches Magic's native extraction: D CLK Q VDD GND.
+    # Q_N is never actually connected inside the foundry DFF body
+    # (the internal complement net is named QN, not Q_N), so Magic
+    # doesn't promote it as a port; we don't list or pass it either.
     for i in range(4):
         f.write(
-            f"Xdff{i} clk {dff_d_nets[i]} {dff_q_nets[i]} dff{i}_qn "
-            f"VGND VPWR {_DFF_NAME}\n"
+            f"Xdff{i} {dff_d_nets[i]} clk {dff_q_nets[i]} "
+            f"VPWR VGND {_DFF_NAME}\n"
         )
     # NAND2: A=we, B=cs, Z=nandi_z (per _route_ctrl_internal).
     nand2, _ = _NAND_BY_FANIN[2]

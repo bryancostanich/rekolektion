@@ -60,13 +60,13 @@ def generate_reference_spice(
     p: MacroV2Params,
     output_path: str | Path,
 ) -> Path:
+    from rekolektion.macro_v2.bitcell_array import BitcellArray
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Magic-extract the Python-generated precharge / column_mux bodies
-    # so the reference has real transistors (matches the ext netlist).
-    # We do this BEFORE opening the output file because the extracted
-    # port list is used both by the top-level .subckt call emitter AND
-    # the per-cell writer.
+    # Magic-extract the Python-generated cells whose transistor bodies
+    # are parameter-dependent.  Doing this at build time keeps the
+    # reference's structure (port order, internal nets) bit-identical
+    # to what Magic sees at the top level, which is how LVS closes.
     pre_body = _extract_cell(
         PrechargeRow(bits=p.bits, mux_ratio=p.mux_ratio,
                      name=f"pre_{_tag(p)}"),
@@ -77,11 +77,21 @@ def generate_reference_spice(
                      name=f"mux_{_tag(p)}"),
         cell_name=f"mux_{_tag(p)}",
     )
+    array_body = _extract_cell(
+        BitcellArray(rows=p.rows, cols=p.cols,
+                     name=f"sram_array_{_tag(p)}"),
+        cell_name=f"sram_array_{_tag(p)}",
+    )
     with path.open("w") as f:
         _write_header(f, p)
-        _write_includes(f)
-        _write_top_subckt(f, p, pre_body, mux_body)
-        _write_bitcell_array_subckt(f, p)
+        # Skip the cached bitcell .include — the Magic-extracted array
+        # body brings its own bitcell subckt with matching port order.
+        _write_includes(f, skip=[_BITCELL_NAME])
+        _write_top_subckt(
+            f, p,
+            pre_body=pre_body, mux_body=mux_body,
+            array_body=array_body,
+        )
         _write_row_decoder_subckt(f, p)
         _write_wl_driver_row_subckt(f, p)
         _write_sense_amp_row_subckt(f, p)
@@ -89,6 +99,15 @@ def generate_reference_spice(
         _write_control_logic_subckt(f, p)
         _write_extracted_subckt(f, pre_body)
         _write_extracted_subckt(f, mux_body)
+        # Emit the bitcell subckt from the array extraction, then the
+        # array body itself.  Order matters — body references the
+        # bitcell subckt.
+        for dep_name, dep_lines in array_body.dep_subckts:
+            f.write(f"* ---- {dep_name} (from array extraction) ----\n")
+            for line in dep_lines:
+                f.write(line + "\n")
+            f.write("\n")
+        _write_extracted_subckt(f, array_body)
     return path
 
 
@@ -96,7 +115,7 @@ def generate_reference_spice(
 # Build-time Magic extraction of Python-generated cells
 # ---------------------------------------------------------------------------
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -105,6 +124,10 @@ class _ExtractedCell:
     name: str
     ports: list[str]
     body_lines: list[str]  # everything between .subckt and .ends (inclusive)
+    # Other subckts that appeared in the same extraction (e.g. when
+    # extracting sram_array, Magic also emits the bitcell subckt).
+    # Each entry is (subckt_name, body_lines) verbatim.
+    dep_subckts: list[tuple[str, list[str]]] = field(default_factory=list)
 
 
 def _extract_cell(
@@ -187,19 +210,31 @@ def _extract_cell(
     # Drop internal auto-generated nets (they contain '#') and keep
     # only "label-named" public nets — those are the real ports.
     public = [n for n in used_nets if "#" not in n]
-    # Stable, deterministic ordering: bitlines first (bl_, br_), then
-    # muxed_bl_/muxed_br_, then col_sel_, then p_en_bar, then power.
-    # Sort by natural index within each category.
-    def _key(n: str) -> tuple[int, object]:
-        if n.startswith("bl_"): return (0, int(n[3:]))
-        if n.startswith("br_"): return (1, int(n[3:]))
-        if n.startswith("muxed_bl_"): return (2, int(n[9:]))
-        if n.startswith("muxed_br_"): return (3, int(n[9:]))
-        if n.startswith("col_sel_"): return (4, int(n[8:]))
-        if n == "p_en_bar": return (5, 0)
-        if n.upper() == "VPWR": return (9, 0)
-        if n.upper() == "VGND" or n.upper() == "VSUBS": return (9, 1)
-        return (8, n)
+    # Stable, deterministic ordering.  Keys handle both the flat
+    # peripheral-row signal names (bl_, br_, muxed_*, col_sel_) AND
+    # the bitcell_array's two-index forms (bl_<grp>_<col>, wl_<grp>_<row>).
+    def _key(n: str) -> tuple:
+        # Array-style labels from bitcell_array: wl_0_<row>, bl_0_<col>,
+        # br_0_<col>.
+        if n.startswith("wl_") and n.count("_") == 2:
+            parts = n.split("_")
+            return (0, int(parts[2]), int(parts[1]))
+        if n.startswith("bl_") and n.count("_") == 2:
+            parts = n.split("_")
+            return (1, int(parts[2]), int(parts[1]))
+        if n.startswith("br_") and n.count("_") == 2:
+            parts = n.split("_")
+            return (2, int(parts[2]), int(parts[1]))
+        # Flat peripheral-row names.
+        if n.startswith("bl_"): return (3, int(n[3:]))
+        if n.startswith("br_"): return (4, int(n[3:]))
+        if n.startswith("muxed_bl_"): return (5, int(n[9:]))
+        if n.startswith("muxed_br_"): return (6, int(n[9:]))
+        if n.startswith("col_sel_"): return (7, int(n[8:]))
+        if n == "p_en_bar": return (8, 0)
+        if n.upper() == "VPWR": return (12, 0)
+        if n.upper() == "VGND" or n.upper() == "VSUBS": return (12, 1)
+        return (11, n)
     ports = sorted(public, key=_key)
 
     # Capture the body lines verbatim (we'll rewrite the .subckt line
@@ -207,7 +242,33 @@ def _extract_cell(
     body_lines = lines[subckt_start : subckt_end + 1]
     # Replace the .subckt line with an explicit port listing.
     body_lines[0] = f".subckt {cell_name} " + " ".join(ports)
-    return _ExtractedCell(name=cell_name, ports=ports, body_lines=body_lines)
+
+    # Collect any OTHER .subckt definitions in the extraction (those
+    # are sub-cells Magic emitted alongside the target, e.g. the
+    # bitcell subckt when extracting sram_array_m4_32x8).
+    dep_subckts: list[tuple[str, list[str]]] = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith(".subckt"):
+            sub_name = s.split()[1]
+            if sub_name != cell_name:
+                # Find matching .ends
+                end_idx = i + 1
+                while end_idx < len(lines):
+                    if lines[end_idx].strip().lower().startswith(".ends"):
+                        break
+                    end_idx += 1
+                dep_subckts.append(
+                    (sub_name, lines[i : end_idx + 1])
+                )
+                i = end_idx
+        i += 1
+
+    return _ExtractedCell(
+        name=cell_name, ports=ports, body_lines=body_lines,
+        dep_subckts=dep_subckts,
+    )
 
 
 def _unfold_continuations(lines: list[str]) -> list[str]:
@@ -247,8 +308,11 @@ def _write_header(f: TextIO, p: MacroV2Params) -> None:
     )
 
 
-def _write_includes(f: TextIO) -> None:
+def _write_includes(f: TextIO, skip: list[str] | None = None) -> None:
+    skip_set = set(skip or [])
     for fname in sorted(_EXTRACTED_DIR.glob("*.subckt.sp")):
+        if fname.stem.replace(".subckt", "") in skip_set:
+            continue
         f.write(f".include \"{fname}\"\n")
     f.write("\n")
 
@@ -283,8 +347,10 @@ def _top_ports(p: MacroV2Params) -> list[str]:
 def _write_top_subckt(
     f: TextIO,
     p: MacroV2Params,
+    *,
     pre_body: "_ExtractedCell",
     mux_body: "_ExtractedCell",
+    array_body: "_ExtractedCell",
 ) -> None:
     ports = _top_ports(p)
     wl_nets = [f"wl_{r}" for r in range(p.rows)]
@@ -316,10 +382,22 @@ def _write_top_subckt(
         f"wl_driver_{_tag(p)}\n"
     )
 
-    f.write("\n* Bitcell array: rows x cols cells\n")
+    f.write("\n* Bitcell array (Magic-extracted port order)\n")
+    # Map each extracted array port (e.g. "wl_0_3" / "bl_0_17" /
+    # "br_0_9") to the top-level net with the same index (wl_3, bl_17,
+    # br_9).  The "_0_" segment is the bitcell-array's group index;
+    # we only generate one group at this level so it's always 0.
+    def _map_array_port(portname: str) -> str:
+        if portname.startswith("wl_0_"):
+            return f"wl_{portname.split('_')[2]}"
+        if portname.startswith("bl_0_"):
+            return f"bl_{portname.split('_')[2]}"
+        if portname.startswith("br_0_"):
+            return f"br_{portname.split('_')[2]}"
+        return portname
+    mapped_array_args = [_map_array_port(pt) for pt in array_body.ports]
     f.write(
-        f"Xarray {' '.join(wl_nets)} {' '.join(bl_nets)} {' '.join(br_nets)} "
-        f"VPWR VGND sram_array_{_tag(p)}\n"
+        f"Xarray {' '.join(mapped_array_args)} {array_body.name}\n"
     )
 
     # Precharge / column_mux instantiations use the port ORDER from the
@@ -359,29 +437,8 @@ def _tag(p: MacroV2Params) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Bitcell array — rows * cols foundry bitcells
+# Bitcell array — emitted from Magic extraction in generate_reference_spice.
 # ---------------------------------------------------------------------------
-
-def _write_bitcell_array_subckt(f: TextIO, p: MacroV2Params) -> None:
-    name = f"sram_array_{_tag(p)}"
-    wl_ports = [f"wl{r}" for r in range(p.rows)]
-    bl_ports = [f"bl{c}" for c in range(p.cols)]
-    br_ports = [f"br{c}" for c in range(p.cols)]
-    ports = wl_ports + bl_ports + br_ports + ["VPWR", "VGND"]
-    f.write(f"* ---- {name} ----\n")
-    f.write(f".subckt {name}\n")
-    _wrap_ports(f, ports)
-    for r in range(p.rows):
-        for c in range(p.cols):
-            # Bitcell extracted subckt ports (native Magic order):
-            #   BL BR VGND VPWR VPB WL VNB
-            # Tie VNB=VGND, VPB=VPWR.
-            f.write(
-                f"Xbc_{r}_{c} bl{c} br{c} "
-                f"VGND VPWR VPWR wl{r} VGND "
-                f"{_BITCELL_NAME}\n"
-            )
-    f.write(f".ends {name}\n\n")
 
 
 # ---------------------------------------------------------------------------

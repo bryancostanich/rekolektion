@@ -17,7 +17,7 @@ from pathlib import Path
 
 import gdstk
 
-from rekolektion.macro_v2.routing import draw_wire, draw_via_stack
+from rekolektion.macro_v2.routing import draw_label, draw_wire, draw_via_stack
 from rekolektion.macro_v2.sky130_drc import GDS_LAYER
 
 
@@ -115,11 +115,18 @@ class WlDriverRow:
                     x_reflection=True,
                 ))
 
-        # VDD rail (met1 vertical) on the right side of the column
+        # VDD rail (met1 vertical) on the right side of the column.
+        # Labelled so Magic names the rail's net `VPWR` instead of
+        # auto-generating a per-instance #-net and exposing each
+        # NAND3's B/C pin as an individual port of wl_driver_row.
         vdd_x = _VDD_RAIL_X_OFFSET
         _rect(top, "met1",
               vdd_x - _VDD_RAIL_W / 2, 0.0,
               vdd_x + _VDD_RAIL_W / 2, self.num_rows * _NAND_PITCH)
+        draw_label(
+            top, text="VPWR", layer="met1",
+            position=(vdd_x, self.num_rows * _NAND_PITCH / 2),
+        )
 
         # Tie B + C to VDD for every row.
         # NAND3_dec has internal met1 VDD rails at x=[4.26,4.50] and

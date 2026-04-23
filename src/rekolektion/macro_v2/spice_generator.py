@@ -301,14 +301,11 @@ def _write_header(f: TextIO, p: MacroV2Params) -> None:
         f"* Words x Bits x Mux: {p.words} x {p.bits} x mux{p.mux_ratio}\n"
         f"* Rows: {p.rows}, Cols: {p.cols}, Addr bits: {p.num_addr_bits}\n"
         "*\n"
-        "* NOTE: precharge_row and column_mux_row are stubbed — their\n"
-        "* transistor bodies require Magic-extraction of each macro\n"
-        "* variant at build time; tracked as LVS tech debt.\n"
-        "*\n"
-        "* Declare power / substrate as globals so netgen treats them\n"
-        "* as the same net even when sub-subckts pass VSUBS (ext) vs\n"
-        "* VGND (hand-written ref).\n"
-        ".global VPWR VGND VSUBS\n"
+        "* Declare the sky130 substrate / power nets as globals.  Magic\n"
+        "* treats VSUBS as substrate; the bitcell body exposes VPB/VNB\n"
+        "* (n-well / p-well tap nets) which inherit VPWR/VGND tie-off\n"
+        "* globally.\n"
+        ".global VSUBS VPWR VGND VPB VNB\n"
         "\n"
     )
 
@@ -341,8 +338,7 @@ def _top_ports(p: MacroV2Params) -> list[str]:
     ports += [f"din{i}" for i in range(p.bits)]
     ports += [f"dout{i}" for i in range(p.bits)]
     ports += [f"col_sel_{k}" for k in range(p.mux_ratio)]
-    # VPWR/VGND are .global so they don't need to be in the port list;
-    # that matches the extracted top subckt which also omits them.
+    ports += ["VPWR", "VGND"]
     return ports
 
 
@@ -376,7 +372,14 @@ def _write_top_subckt(
     )
 
     f.write("\n* Row decoder: addr -> dec_out[0..rows-1] (active-low)\n")
-    addr_args = " ".join(f"addr{i}" for i in range(p.num_addr_bits))
+    # Pass only the addr bits the decoder actually uses (= split[0] for
+    # single-predecoder).  The unused bits remain top-level pins that
+    # Magic still exposes but don't land anywhere inside this macro.
+    dec_split = _SPLIT_TABLE[p.rows]
+    dec_addr_count = (
+        dec_split[0] if len(dec_split) == 1 else p.num_addr_bits
+    )
+    addr_args = " ".join(f"addr{i}" for i in range(dec_addr_count))
     dec_args = " ".join(dec_nets)
     f.write(
         f"Xdecoder {addr_args} {dec_args} VPWR VGND row_decoder_{_tag(p)}\n"
@@ -453,7 +456,16 @@ def _tag(p: MacroV2Params) -> str:
 
 def _write_row_decoder_subckt(f: TextIO, p: MacroV2Params) -> None:
     name = f"row_decoder_{_tag(p)}"
-    addr_ports = [f"addr{i}" for i in range(p.num_addr_bits)]
+    # Only the first `k` address bits drive the NAND column in the
+    # single-predecoder case; declaring the full 5-bit port list would
+    # leave addr[k..4] dangling (2 disconnected pins in mux=4 where
+    # k=3), which shows up as a top-level net-count mismatch after
+    # netgen flattens the subckt.
+    split = _SPLIT_TABLE[p.rows]
+    addr_count = (
+        split[0] if len(split) == 1 else p.num_addr_bits
+    )
+    addr_ports = [f"addr{i}" for i in range(addr_count)]
     dec_out_ports = [f"dec_out_{r}" for r in range(p.rows)]
     ports = addr_ports + dec_out_ports + ["VPWR", "VGND"]
 

@@ -122,6 +122,26 @@ class WlDriverRow:
                     origin=(0.0, (row + 1) * _NAND_PITCH),
                     x_reflection=True,
                 ))
+            # Label each NAND3's A pin (input from decoder) as
+            # dec_out_{row} so the extracted subckt exposes a named
+            # port instead of the anonymous sky130_..._nand3_dec_NN/A.
+            # Without this label, Magic's ext2spice uses the per-
+            # instance port path as the subckt-boundary name, and
+            # netgen LVS reports the entire dec_out[0..127] bus as
+            # mismatched even though topology matches the reference.
+            a_x, a_y = self.a_pin_absolute(row)
+            draw_label(
+                top, text=f"dec_out_{row}", layer="li1",
+                position=(a_x, a_y),
+            )
+            # Same reasoning for Z: the WL output net needs a
+            # semantic label (wl_{row}) so the extracted port name
+            # matches the reference.
+            z_x, z_y = self.z_pin_absolute(row)
+            draw_label(
+                top, text=f"wl_{row}", layer="li1",
+                position=(z_x, z_y),
+            )
 
         # VDD rail on met2 (vertical) on the right side of the column.
         # Met1 would collide with the top-level _route_wl met1

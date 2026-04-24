@@ -62,10 +62,68 @@ from rekolektion.macro_v2.column_mux_row import _COLMUX_HEIGHT as _COLMUX_H  # n
 # ControlLogic stack height — DFF row + inter-row gap + NAND2 row.
 _CTRL_H: float = 7.545 + 2.0 + 2.69
 
-# Row decoder width — NAND cell width (for the narrower case) + margin.
-# For num_rows in {4, 8} the decoder is a single NAND column (~7.5 um
-# wide for NAND3); larger decoders add predecoder blocks on the left.
-_DECODER_W_ESTIMATE: float = 25.0
+# Row decoder width estimate.  Returns the bbox width the
+# row_decoder cell will actually occupy — must match row_decoder.py's
+# _build_multi_predecoder / _emit_vertical_nand_column geometry so
+# the floorplan reserves enough room to the left of wl_driver.
+#
+# Previous fixed 25.0 µm estimate was valid only for the single-
+# predecoder case (num_rows ≤ 8, a single NAND3 column ~ 7.5 µm).
+# For 128-row macros the multi-predecoder block is ~66 µm wide plus
+# the final NAND column (~7.5 µm) plus gaps ≈ 76 µm — placing
+# wl_driver and the array at x=27 on top of that row_decoder, which
+# shorts every bitcell BL/BR/WL to every row_decoder addr rail.
+def _decoder_w_estimate(rows: int) -> float:
+    """Width the row_decoder will draw, in µm, for `rows` rows."""
+    # Must match row_decoder._build_multi_predecoder:
+    #   addr_rail_x0=0.3, addr_rail_pitch=0.7
+    #   pred_area_x0 = 0.3 + total_addr*0.7 + 0.5
+    #   pred block right = pred_area_x0 + max(2**k for k in split) * nand_w
+    #   final NAND col at pred_right + _PREDECODER_TO_NAND_GAP
+    #   total width = final NAND col + nand_w_of_final + small margin
+    from rekolektion.macro_v2.row_decoder import (
+        _SPLIT_TABLE, _PREDECODER_TO_NAND_GAP, _NAND_CELL_NAMES,
+        _NAND_GDS_PATHS,
+    )
+    import gdstk as _g
+    split = _SPLIT_TABLE.get(rows)
+    if split is None:
+        return 25.0  # fall back — unsupported row count
+    if len(split) == 1:
+        # Single-predecoder case: width is just the NAND column.
+        k = split[0]
+        nand_src = _g.read_gds(str(_NAND_GDS_PATHS[k]))
+        nand_cell = next(c for c in nand_src.cells
+                         if c.name == _NAND_CELL_NAMES[k])
+        (bx0, _), (bx1, _) = nand_cell.bounding_box()
+        return (bx1 - bx0) + 1.0
+    # Multi-predecoder.
+    total_addr = sum(split)
+    addr_rail_pitch = 0.7
+    pred_area_x0 = 0.3 + total_addr * addr_rail_pitch + 0.5
+    # Peek at each stage's NAND cell width to find the widest stage.
+    pred_block_w = 0.0
+    for k in split:
+        nand_src = _g.read_gds(str(_NAND_GDS_PATHS[k]))
+        nand_cell = next(c for c in nand_src.cells
+                         if c.name == _NAND_CELL_NAMES[k])
+        (bx0, _), (bx1, _) = nand_cell.bounding_box()
+        nand_w = bx1 - bx0
+        pred_block_w = max(pred_block_w, (2 ** k) * nand_w)
+    # Final column fan-in = len(split); width = that NAND cell width.
+    final_fanin = len(split)
+    final_src = _g.read_gds(str(_NAND_GDS_PATHS[final_fanin]))
+    final_cell = next(c for c in final_src.cells
+                      if c.name == _NAND_CELL_NAMES[final_fanin])
+    (bx0, _), (bx1, _) = final_cell.bounding_box()
+    final_nand_w = bx1 - bx0
+    return (
+        pred_area_x0
+        + pred_block_w
+        + _PREDECODER_TO_NAND_GAP
+        + final_nand_w
+        + 1.0  # right-edge margin
+    )
 
 
 @dataclass
@@ -178,7 +236,7 @@ def build_floorplan(p: MacroV2Params) -> Floorplan:
     sizes["wl_driver"] = (wld_w, array_h)
 
     # Row decoder to the left of the WL driver.
-    dec_w = _DECODER_W_ESTIMATE
+    dec_w = _decoder_w_estimate(p.rows)
     positions["row_decoder"] = (
         -(wld_w + _DECODER_TO_ARRAY_GAP + dec_w + _DECODER_TO_ARRAY_GAP),
         0.0,

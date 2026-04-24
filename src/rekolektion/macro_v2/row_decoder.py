@@ -153,7 +153,12 @@ class RowDecoder:
         stage_geom: list[dict] = []
         # Predecoders sit at x >= addr_rail_area_w so the N addr rails to
         # their west don't collide with NAND cell bodies.
-        addr_rail_pitch = 0.5
+        # Pitch 0.7: at stage 2 (NAND3), the three via2 pads at rail
+        # ends stack diagonally (pin Δx=0.55, Δy=0.36).  With pad=0.37
+        # and pitch=0.5, adjacent pads end up 0.13 µm apart in x with
+        # 0.01 µm y overlap — Magic merges them into one net.  Pitch
+        # 0.7 gives 0.33 µm x clearance between stacked pads.
+        addr_rail_pitch = 0.7
         addr_rail_x0 = 0.3
         pred_area_x0 = addr_rail_x0 + total_addr * addr_rail_pitch + 0.5
 
@@ -195,7 +200,12 @@ class RowDecoder:
             lib, top, seen, k_fanin=self.final_fanin, x=nand_x,
         )
 
-        # 3. Draw N vertical addr rails on met3, labeled addr0..addrN-1.
+        # 3. Draw N vertical addr rails on met3, labeled
+        #    addr[0]..addr[N-1] — matches the top-level pin label
+        #    so Magic merges the two labels onto one net (the
+        #    top-level subckt port) rather than naming the net by
+        #    the alphabetically-first of {addr0, addr[0]} = `addr0`
+        #    and dropping `addr[0]` from the ext2spice output.
         addr_rail_xs: list[float] = []
         for i in range(total_addr):
             rail_x = addr_rail_x0 + i * addr_rail_pitch
@@ -205,11 +215,31 @@ class RowDecoder:
                 layer="met3",
             )
             draw_label(
-                top, text=f"addr{i}", layer="met3",
+                top, text=f"addr[{i}]", layer="met3",
                 position=(rail_x, pred_block_top_y / 2),
             )
 
         # 4. Wire each predecoder NAND's k inputs to its k addr rails.
+        #
+        # Two routing modes, chosen per stage:
+        #
+        #   DIRECT (NAND2, k=2): met2 spur at pin_y from rail_x to
+        #     pin_x.  Safe because NAND2 pins (y_local 0.555/1.095)
+        #     are well clear of the cell's internal met2 (y_local
+        #     0.795-1.335), and the spur doesn't cross cell bodies.
+        #
+        #   DETOUR (NAND3, k=3): route UNDER the stage's cell row via
+        #     the inter-stage gap.  NAND3 has substantial internal
+        #     met2 at y_local 0.795-1.335 (between B and C pins).
+        #     Every spur that would extend PAST its target cell (i.e.,
+        #     any cell east of the westernmost pin in that addr's
+        #     stage) passes through neighbouring cells' bodies and
+        #     merges with their internal met2 — shorting addr5↔addr6
+        #     via the internal met2 net.  Detour routes at y below the
+        #     cell row (in the stage's y-gap), then jogs up at the
+        #     pin's x (inside the target cell, where no met2 exists
+        #     at that x because pin_x is never inside the cell's
+        #     internal met2 x range).
         addr_offset = 0
         for g in stage_geom:
             k = g["k"]
@@ -220,23 +250,109 @@ class RowDecoder:
             stage_addr_xs = addr_rail_xs[addr_offset : addr_offset + k]
             addr_offset += k
 
+            stage_y_origin = g["y_origin"]
+
+            if k == 3:
+                # Detour y: below the stage's cell bottom (y_origin -
+                # 0.395 for NAND3 bbox).  Need a UNIQUE y per pin so
+                # that A/B/C detour horizontals (all met2) don't merge
+                # into one wire where their x-ranges overlap.
+                #
+                # Crucially, assign C (leftmost pin, smallest pin_x)
+                # the HIGHEST detour_y — closest to the cell.  Pin x
+                # ordering is A > B > C (A rightmost).  Each pin's
+                # vertical jog runs from detour_y up to pin_y at
+                # pin_x.  If we assigned C the LOWEST detour, pin A's
+                # horizontal at a higher y would cross C's vertical
+                # (and B's) within C_v's y range — shorting all three.
+                # Putting C's detour HIGHEST keeps each pin's
+                # horizontal below the other pins' verticals (their
+                # verticals start at higher y).
+                #
+                # Stagger at 0.5 µm steps: A sits 1.5 below cell, B
+                # sits 1.0 below, C sits 0.5 below.  Must stay above
+                # the previous stage's cell top.
+                detour_ys = {
+                    pin_names[i]: stage_y_origin - 1.5 + 0.5 * i
+                    for i in range(k)
+                }
+                assert min(detour_ys.values()) > 0.0, (
+                    f"NAND3 stage at y={stage_y_origin} has no gap below; "
+                    f"detour routing requires a lower-stage gap"
+                )
+            else:
+                detour_ys = None  # use direct routing
+
             for (nand_ox, nand_oy) in g["nand_origins"]:
                 for pin_name, rail_x in zip(pin_names, stage_addr_xs):
                     pin_lx, pin_ly = pin_pos[pin_name]
                     pin_ax, pin_ay = nand_ox + pin_lx, nand_oy + pin_ly
-                    # met2 horizontal from pin x to rail x at pin y.
-                    draw_wire(
-                        top, start=(rail_x, pin_ay), end=(pin_ax, pin_ay),
-                        layer="met2",
-                    )
-                    draw_via_stack(
-                        top, from_layer="met2", to_layer="met3",
-                        position=(rail_x, pin_ay),
-                    )
-                    draw_via_stack(
-                        top, from_layer="li1", to_layer="met2",
-                        position=(pin_ax, pin_ay),
-                    )
+
+                    if detour_ys is not None:
+                        detour_y = detour_ys[pin_name]
+                        # Detour: rail -> [met3 rail] -> via2 ->
+                        # [met2 horizontal at detour_y] -> via1 ->
+                        # [met1 vertical at pin_x] -> mcon ->
+                        # [li1 pin pad].
+                        #
+                        # Why split layers: the horizontals (one per
+                        # pin at its unique detour_y) span x from rail
+                        # to target cell's pin_x, passing THROUGH
+                        # other cells' x.  The verticals (one per pin
+                        # at pin_x) span y from detour_y up to pin_y.
+                        # If both were on the same layer, cell M's
+                        # horizontal for pin P would cross cell K's
+                        # vertical for another pin Q at (pin_Q_x_K,
+                        # detour_y_P) — shorting addr(P) to addr(Q).
+                        # Putting horizontals on met2 and verticals on
+                        # met1 keeps crossings harmless.
+                        # (1) via2 at rail_x @ detour_y: met3→met2.
+                        draw_via_stack(
+                            top, from_layer="met2", to_layer="met3",
+                            position=(rail_x, detour_y),
+                        )
+                        # (2) met2 horizontal at detour_y.
+                        draw_wire(
+                            top,
+                            start=(rail_x, detour_y), end=(pin_ax, detour_y),
+                            layer="met2",
+                        )
+                        # (3) via1 at pin_x @ detour_y: met2→met1.
+                        draw_via_stack(
+                            top, from_layer="met1", to_layer="met2",
+                            position=(pin_ax, detour_y),
+                        )
+                        # (4) met1 vertical from detour_y up to pin_y.
+                        #     Inside the target NAND3 at pin_x (pin
+                        #     x_local ≤ 1.265) — all stage-2 NAND3
+                        #     internal met1 lives at x_local ≥ 1.79.
+                        draw_wire(
+                            top,
+                            start=(pin_ax, detour_y), end=(pin_ax, pin_ay),
+                            layer="met1",
+                        )
+                        # (5) mcon at pin: li1→met1 stack connects to
+                        #     the cell's li1 pin pad.
+                        draw_via_stack(
+                            top, from_layer="li1", to_layer="met1",
+                            position=(pin_ax, pin_ay),
+                        )
+                    else:
+                        # Direct: met2 horizontal at pin_y from rail_x
+                        # to pin_x.
+                        draw_wire(
+                            top,
+                            start=(rail_x, pin_ay), end=(pin_ax, pin_ay),
+                            layer="met2",
+                        )
+                        draw_via_stack(
+                            top, from_layer="met2", to_layer="met3",
+                            position=(rail_x, pin_ay),
+                        )
+                        draw_via_stack(
+                            top, from_layer="li1", to_layer="met2",
+                            position=(pin_ax, pin_ay),
+                        )
 
         # 5. Wire each stage's first-NAND output to a pred_out rail
         #    spanning the final NAND column, then drop per-row spurs
@@ -275,16 +391,74 @@ class RowDecoder:
             pin_lx, _ = final_pin_pos[pin_name]
             rail_x = nand_x + rail_offsets[stage_idx]
 
-            # (a) li1→met3 via stack at the Z output.
-            draw_via_stack(
-                top, from_layer="li1", to_layer="met3",
-                position=(z_ax, z_ay),
-            )
-            # (b) met3 horizontal from Z to rail_x at z_ay.
-            draw_wire(
-                top, start=(z_ax, z_ay), end=(rail_x, z_ay),
-                layer="met3",
-            )
+            # Routing from the first-NAND Z output to its pred_out rail.
+            # Two cases based on stage fan-in:
+            #
+            # NAND2 (k=2): Z cell-local y (1.65) is ABOVE both input
+            #   pins (A=1.095, B=0.555).  A direct met2 horizontal at
+            #   z_ay clears the A/B pin via-stack pads (y_local_top
+            #   ≤1.255).  But that horizontal crosses the pred_out
+            #   rails of stages whose pred_out_x is east of this stage's
+            #   rail_x (on met3) — met2 over met3 does not short.
+            #
+            # NAND3 (k=3): Z cell-local y (0.285) is BELOW all input
+            #   pins (A=0.41, B=0.77, C=1.13).  A met2 horizontal at
+            #   z_ay passes through every other NAND3's A-pin via-stack
+            #   met2 pad AND a met2 vertical jog crosses the A/B/C
+            #   input spurs (also met2) — both cause rail merges.
+            #   Solution: route the ENTIRE Z→rail path on met3.  The
+            #   vertical jog at x=z_ax is inside the first cell body
+            #   (no existing met3).  The horizontal at jog_y hits
+            #   rail_x (merge intended — same layer).  Stage 2 is the
+            #   westernmost pred_out rail by construction so the
+            #   horizontal never crosses the other pred_out rails.
+            if k == 3:
+                # Can't place the li1→met3 via stack at z_ay: its
+                # intermediate met2 pad (0.32 × 0.32 centred on z)
+                # would overlap every neighbouring NAND3's A-pin
+                # spur at y≈9.79, merging pred_out_0 into addr4.
+                # Instead:
+                #   1. li1→met1 stack at Z (small, contained)
+                #   2. met1 vertical wire north inside cell body
+                #      (NAND3 internal met1 lives at x_local≈1.9;
+                #      z_ax at x_local=3.5 is clear)
+                #   3. met1→met3 stack at jog_y (above all input
+                #      pin pads so its met2 pad is clear of spurs)
+                #   4. met3 horizontal east to rail_x
+                jog_y = g["y_origin"] + 1.7
+                draw_via_stack(
+                    top, from_layer="li1", to_layer="met1",
+                    position=(z_ax, z_ay),
+                )
+                draw_wire(
+                    top, start=(z_ax, z_ay), end=(z_ax, jog_y),
+                    layer="met1",
+                )
+                draw_via_stack(
+                    top, from_layer="met1", to_layer="met3",
+                    position=(z_ax, jog_y),
+                )
+                # met3 horizontal from (z_ax, jog_y) east to rail_x.
+                # Both on met3 — they merge into one net at rail_x.
+                draw_wire(
+                    top, start=(z_ax, jog_y), end=(rail_x, jog_y),
+                    layer="met3",
+                )
+            else:
+                # NAND2: direct met2 horizontal is clear of pin pads.
+                draw_via_stack(
+                    top, from_layer="li1", to_layer="met2",
+                    position=(z_ax, z_ay),
+                )
+                draw_wire(
+                    top, start=(z_ax, z_ay), end=(rail_x, z_ay),
+                    layer="met2",
+                )
+                draw_via_stack(
+                    top, from_layer="met2", to_layer="met3",
+                    position=(rail_x, z_ay),
+                )
+                jog_y = z_ay
             # (c) met3 vertical rail spanning the FULL final-NAND
             # column height (all 128 rows at pitch 1.58), plus the
             # predecoder block height above.  An earlier version
@@ -296,7 +470,7 @@ class RowDecoder:
             rail_bot_y = -0.2
             rail_top_y = max(
                 self.num_rows * _NAND_DEC_PITCH + 0.2,
-                z_ay + 0.2,
+                jog_y + 0.2,
                 pred_block_top_y + 0.2,
             )
             draw_wire(
@@ -429,7 +603,7 @@ class RowDecoder:
             # Label the rail at its midpoint.
             draw_label(
                 top,
-                text=f"addr{i}",
+                text=f"addr[{i}]",
                 layer="met3",
                 position=(rail_x, (rail_ylo + rail_yhi) / 2),
             )

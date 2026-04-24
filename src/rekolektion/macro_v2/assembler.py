@@ -1351,9 +1351,14 @@ def _route_ctrl_external_pins(
 
     # Unique trunk y per signal (met3 horizontal at each y won't short).
     # Stack above the pin stub top with _CTRL_TRUNK_PITCH spacing.
-    clk_trunk_y = top_stub_top_y + 4 * _CTRL_TRUNK_PITCH
-    we_trunk_y = top_stub_top_y + 5 * _CTRL_TRUNK_PITCH
-    cs_trunk_y = top_stub_top_y + 6 * _CTRL_TRUNK_PITCH
+    # Slots 1..total_addr are used by the row-decoder addr feeders
+    # (_route_addr_multi_predecoder); ctrl starts AFTER them so trunks
+    # don't overlap on met3 and short addr[i] to clk/we/cs.
+    split = _SPLIT_TABLE[p.rows]
+    total_addr = sum(split)
+    clk_trunk_y = top_stub_top_y + (total_addr + 1) * _CTRL_TRUNK_PITCH
+    we_trunk_y = top_stub_top_y + (total_addr + 2) * _CTRL_TRUNK_PITCH
+    cs_trunk_y = top_stub_top_y + (total_addr + 3) * _CTRL_TRUNK_PITCH
 
     clk_pin_x, _ = positions["clk"]
     _drop_met3_to_rail(clk_pin_x, top_stub_top_y,
@@ -1808,7 +1813,7 @@ def _route_addr_multi_predecoder(
 
     # Must match row_decoder._build_multi_predecoder.
     _ADDR_RAIL_X0_LOCAL: float = 0.3
-    _ADDR_RAIL_PITCH: float = 0.5
+    _ADDR_RAIL_PITCH: float = 0.7
 
     top_stub_top_y = pins_top_y + _PIN_STUB_LEN
     addr_trunk_y_base = top_stub_top_y + _CTRL_TRUNK_PITCH
@@ -1846,16 +1851,29 @@ def _route_addr_multi_predecoder(
             layer="met3",
             width=_CTRL_TRUNK_W,
         )
-        # (3) met3 vertical from rail_y_trunk DOWN to land_y (into the
-        #     row_decoder's labeled rail).  All met3 — no via needed.
-        lo = min(rail_y_trunk, land_y) - _CTRL_TRUNK_HALF_W
-        hi = max(rail_y_trunk, land_y) + _CTRL_TRUNK_HALF_W
+        # (3) met2 vertical DROP from rail_y_trunk DOWN to land_y, at
+        #     rail_x_abs.  Must be on met2 (not met3) because each
+        #     bit's drop passes THROUGH every other bit's horizontal
+        #     trunk at (rail_x_abs_i, trunk_y_j) — same-layer met3
+        #     crossings there would merge addr[i] with addr[j].
+        #     Met4 is also unavailable: addr[0]/addr[1] drop x values
+        #     (1.3, 2.0) fall inside the west VGND PDN strap's x range
+        #     (~[0.5, 2.1]), so met4 drops would short to VGND.
+        #     via1+via2 at each end transitions met2↔met3.
+        draw_via_stack(
+            top, from_layer="met2", to_layer="met3",
+            position=(rail_x_abs, rail_y_trunk),
+        )
         draw_wire(
             top,
-            start=(rail_x_abs, lo),
-            end=(rail_x_abs, hi),
-            layer="met3",
+            start=(rail_x_abs, land_y),
+            end=(rail_x_abs, rail_y_trunk),
+            layer="met2",
             width=_CTRL_TRUNK_W,
+        )
+        draw_via_stack(
+            top, from_layer="met2", to_layer="met3",
+            position=(rail_x_abs, land_y),
         )
 
 
@@ -2211,6 +2229,17 @@ def _draw_power_network(
             top, from_layer="met2", to_layer="met4",
             position=(vx, top_rail_y),
         )
+        # Label the met2 pad as VPWR so Magic identifies the net as
+        # the top-level VPWR port.  Needs BOTH a pin rect (met2.pin
+        # dtype 16) and a label (met2.label dtype 5) for Magic's
+        # ext2spice to promote the net to an external subckt port.
+        draw_pin_with_label(
+            top, text="VPWR", layer="met2",
+            rect=(
+                vx - _PAD_HALF_X, top_rail_y - _PAD_HALF_Y,
+                vx + _PAD_HALF_X, top_rail_y + _PAD_HALF_Y,
+            ),
+        )
 
     for vx in vgnd_xs:
         draw_pdn_strap(
@@ -2223,6 +2252,13 @@ def _draw_power_network(
         draw_via_stack(
             top, from_layer="met2", to_layer="met4",
             position=(vx, bot_rail_y),
+        )
+        draw_pin_with_label(
+            top, text="VGND", layer="met2",
+            rect=(
+                vx - _PAD_HALF_X, bot_rail_y - _PAD_HALF_Y,
+                vx + _PAD_HALF_X, bot_rail_y + _PAD_HALF_Y,
+            ),
         )
 
 

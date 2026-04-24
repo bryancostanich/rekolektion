@@ -835,7 +835,13 @@ def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
     ]
 
     _MET4_PAD_HALF: float = 0.60
-    _STRAP_KEEPOUT: float = _MET4_PAD_HALF + 0.30
+    # Keep drop straps clear of PDN strap edges by
+    #   (PDN half-width) + (drop half-width) + met4 min-spacing.
+    # Previous formula (_MET4_PAD_HALF + 0.30 = 0.90) only accounted
+    # for the drop pad, not the PDN strap's own 1.6 µm width.  Result:
+    # din[10]'s drop at x=130.89 overlapped VPWR's strap at x=129.18-
+    # 130.78 by 0.04 µm (same met4 layer = short).
+    _STRAP_KEEPOUT: float = _PDN_STRAP_W / 2 + 0.15 + 0.30
     _DROP_MARGIN: float = 0.70
 
     # Collect clearance targets.

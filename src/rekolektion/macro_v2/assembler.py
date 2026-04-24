@@ -550,6 +550,16 @@ def _route_wl(
             top, from_layer="li1", to_layer="met1",
             position=(wld_a_x, wld_a_y),
         )
+        # Label the decoder→wl_driver wire as dec_out_{row} so the
+        # extracted net matches the reference SPICE's internal signal
+        # name.  Without this label, Magic names the net by whatever
+        # subcell port it encounters first (e.g. `wl_driver_0/sky130_
+        # fd_bd_sram__openram_sp_nand3_dec_61/A`), causing LVS pin-
+        # matching to fail even though topology is correct.
+        draw_label(
+            top, text=f"dec_out_{row}", layer="met1",
+            position=(dec_out_x + 0.5, dec_out_y),
+        )
 
         # --- Segment 2: WL driver Z → array WL poly ---
         wld_z_local = wld.z_pin_absolute(row)

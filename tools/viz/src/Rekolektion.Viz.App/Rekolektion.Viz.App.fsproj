@@ -14,6 +14,7 @@
     <PackageReference Include="Avalonia.FuncUI.Elmish" Version="1.6.0" />
     <PackageReference Include="Elmish" Version="4.3.0" />
     <PackageReference Include="System.Reactive" Version="6.0.1" />
+    <PackageReference Include="Silk.NET.OpenGL" Version="2.21.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Rekolektion.Viz.Core\Rekolektion.Viz.Core.fsproj" />
@@ -26,6 +27,8 @@
     <Compile Include="Services/RekolektionCli.fs" />
     <Compile Include="Services/GdsLoading.fs" />
     <Compile Include="Canvas2D/GdsCanvasControl.fs" />
+    <Compile Include="Canvas3D/Matrix4x4Helpers.fs" />
+    <Compile Include="Canvas3D/StackCanvasControl.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

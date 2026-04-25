@@ -19,6 +19,7 @@
     <Compile Include="UpdateTests.fs" />
     <Compile Include="RekolektionCliTests.fs" />
     <Compile Include="GdsLoadingTests.fs" />
+    <Compile Include="HeadlessRenderTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -32,7 +32,7 @@ def test_production_macros_assemble(
     tmp_path, macro, words, bits, mux, rows, cols
 ):
     p = MacroV2Params(words=words, bits=bits, mux_ratio=mux)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     ref_names = {r.cell.name for r in top.references}
     assert any("sram_array" in n for n in ref_names)

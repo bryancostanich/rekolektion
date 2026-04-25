@@ -96,7 +96,7 @@ def _generate_one(m: ProductionMacro, output_root: Path) -> None:
     gds_path = cell_dir / f"{m.macro_name}.gds"
     sp_path = cell_dir / f"{m.macro_name}.sp"
 
-    lib = assemble(p)
+    lib, tracker = assemble(p)
     # Override top cell name to the production macro name by creating a
     # thin wrapper. Assembler uses `p.top_cell_name` which is
     # deterministic; instead we rename here for LEF-compat.
@@ -105,6 +105,11 @@ def _generate_one(m: ProductionMacro, output_root: Path) -> None:
     lib.name = f"{m.macro_name}_lib"
     lib.write_gds(str(gds_path))
     print(f"  wrote {gds_path}  ({gds_path.stat().st_size // 1024} KB)")
+
+    # Emit `<gds>.nets.json` sidecar consumed by the F# rekolektion-viz
+    # tool to highlight nets in the rendered macro.
+    sidecar_path = tracker.write(gds_path, m.macro_name)
+    print(f"  wrote {sidecar_path}  ({sidecar_path.stat().st_size} bytes)")
 
     # Pass macro_name as the top-subckt name so the refspice's .subckt
     # header matches the GDS top-cell name we renamed above — netgen

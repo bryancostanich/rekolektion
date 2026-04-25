@@ -39,7 +39,7 @@ def main() -> int:
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
 
     print(f"Assembling {p.top_cell_name} ...", flush=True)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = _OUT / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
 

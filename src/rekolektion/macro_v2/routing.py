@@ -1,7 +1,7 @@
 """DRC-clean-by-construction routing primitives for the v2 SRAM generator."""
 from __future__ import annotations
 
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
 import gdstk
 
@@ -11,6 +11,9 @@ from rekolektion.macro_v2.sky130_drc import (
     layer_min_width,
     snap,
 )
+
+if TYPE_CHECKING:
+    from rekolektion.macro_v2.nets_tracker import NetClass, NetsTracker
 
 
 Point = Tuple[float, float]
@@ -23,6 +26,9 @@ def draw_wire(
     end: Point,
     layer: str,
     width: float | None = None,
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> gdstk.Polygon:
     """Draw a horizontal or vertical wire from `start` to `end` on `layer`.
 
@@ -79,6 +85,14 @@ def draw_wire(
         )
 
     cell.add(rect)
+    if tracker is not None and net is not None:
+        tracker.record(
+            cell=cell,
+            layer=GDS_LAYER[layer][0],
+            datatype=GDS_LAYER[layer][1],
+            net=net,
+            cls=cls,
+        )
     return rect
 
 
@@ -137,6 +151,9 @@ def draw_via_stack(
     from_layer: str,
     to_layer: str,
     position: Point,
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> None:
     """Draw a centered via stack from `from_layer` up to `to_layer` at `position`.
 
@@ -173,16 +190,24 @@ def draw_via_stack(
     # Second pass: emit cuts. Landing pads are emitted ONCE per metal
     # using the max size computed above.
     for metal, size in pad_size.items():
-        _emit_square(cell, cx, cy, size, metal)
+        _emit_square(cell, cx, cy, size, metal,
+                     tracker=tracker, net=net, cls=cls)
     for m_lower, via_name, m_upper, via_size, _, _, _ in _VIA_LADDER:
         lower_idx = _METAL_ORDER.index(m_lower)
         upper_idx = _METAL_ORDER.index(m_upper)
         if upper_idx <= from_idx or lower_idx >= to_idx:
             continue
-        _emit_square(cell, cx, cy, via_size, via_name)
+        _emit_square(cell, cx, cy, via_size, via_name,
+                     tracker=tracker, net=net, cls=cls)
 
 
-def _emit_square(cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str) -> None:
+def _emit_square(
+    cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str,
+    *,
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
+) -> None:
     """Emit a centered square of `size` um on `layer` at (cx, cy)."""
     half = size / 2
     rect = gdstk.rectangle(
@@ -192,6 +217,14 @@ def _emit_square(cell: gdstk.Cell, cx: float, cy: float, size: float, layer: str
         datatype=GDS_LAYER[layer][1],
     )
     cell.add(rect)
+    if tracker is not None and net is not None:
+        tracker.record(
+            cell=cell,
+            layer=GDS_LAYER[layer][0],
+            datatype=GDS_LAYER[layer][1],
+            net=net,
+            cls=cls,
+        )
 
 
 def draw_via_array(
@@ -202,6 +235,9 @@ def draw_via_array(
     position: Point,
     rows: int,
     cols: int,
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> None:
     """Draw an R×C array of via cuts between from_layer and to_layer.
 
@@ -260,7 +296,8 @@ def draw_via_array(
 
     # Second pass: emit one landing pad per metal (sized to the max).
     for metal in pad_w:
-        _emit_rect(cell, cx, cy, pad_w[metal], pad_h[metal], metal)
+        _emit_rect(cell, cx, cy, pad_w[metal], pad_h[metal], metal,
+                   tracker=tracker, net=net, cls=cls)
 
     # Third pass: emit cuts at each step's own pitch.
     for m_lower, via_name, m_upper, via_size, cut_gap, array_w, array_h, _, _ in steps:
@@ -270,11 +307,16 @@ def draw_via_array(
             for c in range(cols):
                 cx_cut = x0 + c * (via_size + cut_gap) + via_size / 2
                 cy_cut = y0 + r * (via_size + cut_gap) + via_size / 2
-                _emit_square(cell, cx_cut, cy_cut, via_size, via_name)
+                _emit_square(cell, cx_cut, cy_cut, via_size, via_name,
+                             tracker=tracker, net=net, cls=cls)
 
 
 def _emit_rect(
-    cell: gdstk.Cell, cx: float, cy: float, w: float, h: float, layer: str
+    cell: gdstk.Cell, cx: float, cy: float, w: float, h: float, layer: str,
+    *,
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> None:
     """Emit a centered W×H rectangle on `layer` at (cx, cy)."""
     rect = gdstk.rectangle(
@@ -284,6 +326,14 @@ def _emit_rect(
         datatype=GDS_LAYER[layer][1],
     )
     cell.add(rect)
+    if tracker is not None and net is not None:
+        tracker.record(
+            cell=cell,
+            layer=GDS_LAYER[layer][0],
+            datatype=GDS_LAYER[layer][1],
+            net=net,
+            cls=cls,
+        )
 
 
 def draw_pin(
@@ -291,6 +341,9 @@ def draw_pin(
     *,
     layer: str,
     rect: Tuple[float, float, float, float],
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> gdstk.Polygon:
     """Emit a metal rectangle on the layer's .pin purpose (dtype 16).
 
@@ -312,6 +365,14 @@ def draw_pin(
         datatype=GDS_LAYER[pin_layer_key][1],
     )
     cell.add(r)
+    if tracker is not None and net is not None:
+        tracker.record(
+            cell=cell,
+            layer=GDS_LAYER[pin_layer_key][0],
+            datatype=GDS_LAYER[pin_layer_key][1],
+            net=net,
+            cls=cls,
+        )
     return r
 
 
@@ -347,9 +408,18 @@ def draw_pin_with_label(
     text: str,
     layer: str,
     rect: Tuple[float, float, float, float],
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> None:
-    """Convenience: emit a pin rect and a label at the rect's center."""
-    draw_pin(cell, layer=layer, rect=rect)
+    """Convenience: emit a pin rect and a label at the rect's center.
+
+    If ``tracker`` is provided but ``net`` is not, the pin's ``text`` is
+    used as the net name (the common case for top-level pin labels).
+    """
+    effective_net = net if net is not None else (text if tracker is not None else None)
+    draw_pin(cell, layer=layer, rect=rect,
+             tracker=tracker, net=effective_net, cls=cls)
     x1, y1, x2, y2 = rect
     cx = (x1 + x2) / 2
     cy = (y1 + y2) / 2
@@ -365,6 +435,9 @@ def draw_pdn_strap(
     span_end: float,
     layer: str,
     width: float,
+    tracker: "NetsTracker | None" = None,
+    net: str | None = None,
+    cls: "NetClass" = "signal",
 ) -> gdstk.Polygon:
     """Draw a power-distribution strap on `layer`.
 
@@ -408,4 +481,12 @@ def draw_pdn_strap(
             datatype=GDS_LAYER[layer][1],
         )
     cell.add(rect)
+    if tracker is not None and net is not None:
+        tracker.record(
+            cell=cell,
+            layer=GDS_LAYER[layer][0],
+            datatype=GDS_LAYER[layer][1],
+            net=net,
+            cls=cls,
+        )
     return rect

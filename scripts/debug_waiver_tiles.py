@@ -32,7 +32,7 @@ def main() -> None:
 
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
     tmp = Path(tempfile.mkdtemp(prefix="rekolektion_debug_"))
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
 

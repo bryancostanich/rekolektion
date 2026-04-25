@@ -32,6 +32,7 @@ from rekolektion.macro_v2.row_decoder import (
     _NAND_DEC_PITCH,
     _SPLIT_TABLE,
 )
+from rekolektion.macro_v2.nets_tracker import NetClass, NetsTracker
 from rekolektion.macro_v2.routing import (
     draw_label,
     draw_pdn_strap,
@@ -319,17 +320,24 @@ def _build_block_libraries(
     return blocks
 
 
-def assemble(p: MacroV2Params) -> gdstk.Library:
+def assemble(p: MacroV2Params) -> tuple[gdstk.Library, NetsTracker]:
     """Compose all C3/C4/C5 blocks into a top-level macro GDS.
 
     C6.1 placement only — no inter-block routing. Subsequent tasks
     (C6.2-C6.5) wire the blocks and add top-level pins + PDN.
+
+    Returns ``(library, tracker)`` where ``tracker`` is a
+    :class:`NetsTracker` recording each top-level net's polygon
+    references. Pass ``tracker.write(gds_path, macro_name)`` after
+    ``library.write_gds(...)`` to emit the ``<gds>.nets.json`` sidecar
+    consumed by the F# rekolektion-viz tool.
     """
     fp = build_floorplan(p)
     blocks = _build_block_libraries(p)
 
     lib = gdstk.Library(name=f"{p.top_cell_name}_lib")
     top = gdstk.Cell(p.top_cell_name)
+    tracker = NetsTracker()
 
     # Merge every subblock's cells into the top-level library exactly once.
     seen: set[str] = set()
@@ -348,37 +356,37 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
         top.add(gdstk.Reference(block_cell, origin=(x, y)))
 
     # C6.2 — wire decoder output to array WL per row.
-    _route_wl(top, p, fp)
+    _route_wl(top, p, fp, tracker=tracker)
 
     # C6.3 — extend BL/BR met1 strips through peripheral rows.
-    _route_bl(top, p, fp)
+    _route_bl(top, p, fp, tracker=tracker)
 
     # C6.3b — bridge muxed_BL / muxed_BR from col_mux -> sense_amp ->
     # write_driver across their abutment gaps.
-    _route_muxed_bl_br(top, p, fp)
+    _route_muxed_bl_br(top, p, fp, tracker=tracker)
 
     # C6.3c — DIN and DOUT routing.
-    _route_din(top, p, fp)
-    _route_dout(top, p, fp)
+    _route_din(top, p, fp, tracker=tracker)
+    _route_dout(top, p, fp, tracker=tracker)
 
     # C6.4 — route control signals from control_logic to peripherals.
-    _route_control(top, p, fp)
+    _route_control(top, p, fp, tracker=tracker)
 
     # C6.4b — wire top-level clk/we/cs into ctrl_logic DFFs/NAND2s and
     # NAND2 outputs back to DFF D inputs so Magic promotes CLK/D/A/B/Z
     # as ports on each cell during LVS extraction.
-    _route_ctrl_internal(top, p, fp)
+    _route_ctrl_internal(top, p, fp, tracker=tracker)
 
     # C6.4c — addr fan-in to row_decoder NAND_dec inputs.
-    _route_addr(top, p, fp)
+    _route_addr(top, p, fp, tracker=tracker)
 
     # C6.5 — top-level signal pins + proper macro PDN (FIX-A).
     # _place_power_grid drew met4 straps for an old design that
     # isn't compatible with chip-level PDN; _draw_power_network
     # replaces it with met2 rails + met3 straps that align with the
     # LEF power pin stubs.
-    _place_top_pins(top, p, fp)
-    _draw_power_network(top, p, fp)
+    _place_top_pins(top, p, fp, tracker=tracker)
+    _draw_power_network(top, p, fp, tracker=tracker)
 
     # C6.6 — SRAM core marker (81/2). Waives sky130's min-width /
     # min-spacing rules inside the marker for li1/met1/met2/poly/diff,
@@ -399,7 +407,7 @@ def assemble(p: MacroV2Params) -> gdstk.Library:
     # contain any shapes or vias" for every macro instance.
     _shift_top_to_zero_origin(top, p, fp)
 
-    return lib
+    return lib, tracker
 
 
 def _shift_top_to_zero_origin(
@@ -497,6 +505,7 @@ def _route_wl(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Wire each row:  decoder Z → wl_driver A → wl_driver Z → array WL.
 
@@ -533,22 +542,27 @@ def _route_wl(
         wld_a_x = wld_origin[0] + wld_a_local[0]
         wld_a_y = wld_origin[1] + wld_a_local[1]
 
+        dec_out_net = f"dec_out[{row}]"
         draw_via_stack(
             top, from_layer="li1", to_layer="met1",
             position=(dec_out_x, dec_out_y),
+            tracker=tracker, net=dec_out_net,
         )
         draw_wire(
             top, start=(dec_out_x, dec_out_y),
             end=(wld_a_x, dec_out_y), layer="met1",
+            tracker=tracker, net=dec_out_net,
         )
         if abs(wld_a_y - dec_out_y) > 1e-6:
             draw_wire(
                 top, start=(wld_a_x, dec_out_y),
                 end=(wld_a_x, wld_a_y), layer="met1",
+                tracker=tracker, net=dec_out_net,
             )
         draw_via_stack(
             top, from_layer="li1", to_layer="met1",
             position=(wld_a_x, wld_a_y),
+            tracker=tracker, net=dec_out_net,
         )
         # Label the decoder→wl_driver wire as dec_out_{row} so the
         # extracted net matches the reference SPICE's internal signal
@@ -567,22 +581,27 @@ def _route_wl(
         wld_z_y = wld_origin[1] + wld_z_local[1]
         wl_y = _array_wl_y_absolute(array_origin[1], row)
 
+        wl_net = f"WL[{row}]"
         draw_via_stack(
             top, from_layer="li1", to_layer="met1",
             position=(wld_z_x, wld_z_y),
+            tracker=tracker, net=wl_net,
         )
         draw_wire(
             top, start=(wld_z_x, wld_z_y),
             end=(via_x_at_array, wld_z_y), layer="met1",
+            tracker=tracker, net=wl_net,
         )
         if abs(wl_y - wld_z_y) > 1e-6:
             draw_wire(
                 top, start=(via_x_at_array, wld_z_y),
                 end=(via_x_at_array, wl_y), layer="met1",
+                tracker=tracker, net=wl_net,
             )
         draw_via_stack(
             top, from_layer="poly", to_layer="met1",
             position=(via_x_at_array, wl_y),
+            tracker=tracker, net=wl_net,
         )
 
 
@@ -605,7 +624,8 @@ _BITCELL_WIDTH: float = 1.31
 _BL_STRIP_W: float = 0.14
 
 
-def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan,
+              tracker: NetsTracker | None = None) -> None:
     """Bridge BL/BR between bitcell array and peripherals.
 
     The bitcell's own BL/BR rails at x=0.420 / 0.780 are continuous
@@ -628,8 +648,12 @@ def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
     # For each column, bridge BL/BR across both array-peripheral gaps.
     for col in range(p.cols):
         col_x0 = array_x + col * _BITCELL_WIDTH
-        for x_offset in (_BITCELL_BL_X_OFFSET, _BITCELL_BR_X_OFFSET):
+        for x_offset, side in (
+            (_BITCELL_BL_X_OFFSET, "BL"),
+            (_BITCELL_BR_X_OFFSET, "BR"),
+        ):
             strip_x = col_x0 + x_offset
+            net_name = f"{side}[{col}]"
             # Above array: from array top up to precharge bottom
             draw_wire(
                 top,
@@ -637,6 +661,7 @@ def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
                 end=(strip_x, prec_y),
                 layer="met1",
                 width=_BL_STRIP_W,
+                tracker=tracker, net=net_name,
             )
             # Below array: from array bottom down to col_mux top
             draw_wire(
@@ -645,6 +670,7 @@ def _route_bl(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
                 end=(strip_x, array_y),
                 layer="met1",
                 width=_BL_STRIP_W,
+                tracker=tracker, net=net_name,
             )
 
 
@@ -675,7 +701,8 @@ _WD_BL_X_LOCAL: float = 0.770   # x-centre of BL pin (near top)
 _WD_BR_X_LOCAL: float = 1.650
 
 
-def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan,
+                       tracker: NetsTracker | None = None) -> None:
     """Bridge muxed_BL / muxed_BR from col_mux through SA into WD.
 
     Three segments per bit per side:
@@ -706,17 +733,20 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None
     mux_pitch = p.mux_ratio * _BITCELL_WIDTH
 
     def _L_jog(x_from: float, y_from: float, x_to: float, y_to: float,
-               y_mid: float) -> None:
+               y_mid: float, net: str | None = None) -> None:
         """Draw an L-shape met1 jog from (x_from, y_from) to (x_to, y_to)
         by going vertical to y_mid, horizontal to x_to, then vertical
         to y_to."""
         draw_wire(top, start=(x_from, y_from), end=(x_from, y_mid),
-                  layer="met1", width=_BL_STRIP_W)
+                  layer="met1", width=_BL_STRIP_W,
+                  tracker=tracker, net=net)
         if abs(x_to - x_from) > 1e-6:
             draw_wire(top, start=(x_from, y_mid), end=(x_to, y_mid),
-                      layer="met1", width=_BL_STRIP_W)
+                      layer="met1", width=_BL_STRIP_W,
+                      tracker=tracker, net=net)
         draw_wire(top, start=(x_to, y_mid), end=(x_to, y_to),
-                  layer="met1", width=_BL_STRIP_W)
+                  layer="met1", width=_BL_STRIP_W,
+                  tracker=tracker, net=net)
 
     # col_mux -> SA: 1 µm gap at y=[sa_top_y, mux_bottom_y] (sa_top_y
     # < mux_bottom_y).
@@ -735,12 +765,14 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None
             x_from=mux_x + bx + _MUX_MBR_X_LOCAL, y_from=mux_bottom_y,
             x_to=sa_x + bx + _SA_BR_X_LOCAL, y_to=sa_top_y,
             y_mid=mid_top,
+            net=f"muxed_BR[{bit}]",
         )
         # BL uses LOWER mid-y (closer to SA top), below BR's vertical
         _L_jog(
             x_from=mux_x + bx + _MUX_MBL_X_LOCAL, y_from=mux_bottom_y,
             x_to=sa_x + bx + _SA_BL_X_LOCAL, y_to=sa_top_y,
             y_mid=mid_bot,
+            net=f"muxed_BL[{bit}]",
         )
 
     # SA -> WD: 1 µm gap at y=[wd_top_y, sa_bottom_y].
@@ -755,11 +787,13 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None
             x_from=sa_x + bx + _SA_BR_X_LOCAL, y_from=sa_bottom_y,
             x_to=wd_x + bx + _WD_BR_X_LOCAL, y_to=wd_top_y,
             y_mid=mid_top,
+            net=f"muxed_BR[{bit}]",
         )
         _L_jog(
             x_from=sa_x + bx + _SA_BL_X_LOCAL, y_from=sa_bottom_y,
             x_to=wd_x + bx + _WD_BL_X_LOCAL, y_to=wd_top_y,
             y_mid=mid_bot,
+            net=f"muxed_BL[{bit}]",
         )
 
 
@@ -794,7 +828,8 @@ _SA_DOUT_Y_LOCAL: float = 0.0   # bottom edge
 _BIT_TRUNK_PITCH: float = 0.60  # 0.30 met3 width + 0.30 spacing
 
 
-def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan,
+               tracker: NetsTracker | None = None) -> None:
     """Route top-level din[i] pins to WD[i].DIN.
 
     Per-bit path (top to bottom):
@@ -937,45 +972,58 @@ def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
         drop_x = _pick_drop_x(bit)
         chosen_drop_xs.append(drop_x)
 
+        din_net = f"din[{bit}]"
         # 1. Via3 at top pin stub (met3 -> met4).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
-                       position=(din_pin_x, pins_top_y))
+                       position=(din_pin_x, pins_top_y),
+                       tracker=tracker, net=din_net)
         # 2. Met4 short vertical at din_pin_x from pins_top_y to trunk_y.
         draw_wire(top, start=(din_pin_x, pins_top_y),
-                  end=(din_pin_x, trunk_y), layer="met4")
+                  end=(din_pin_x, trunk_y), layer="met4",
+                  tracker=tracker, net=din_net)
         # 3. Via3 met4 -> met3 at (din_pin_x, trunk_y).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
-                       position=(din_pin_x, trunk_y))
+                       position=(din_pin_x, trunk_y),
+                       tracker=tracker, net=din_net)
         # 4. Met3 horizontal trunk from din_pin_x to drop_x.
         if abs(drop_x - din_pin_x) > 1e-6:
             draw_wire(top, start=(din_pin_x, trunk_y),
-                      end=(drop_x, trunk_y), layer="met3")
+                      end=(drop_x, trunk_y), layer="met3",
+                      tracker=tracker, net=din_net)
         # 5. Via3 met3 -> met4 at (drop_x, trunk_y).
         draw_via_stack(top, from_layer="met3", to_layer="met4",
-                       position=(drop_x, trunk_y))
+                       position=(drop_x, trunk_y),
+                       tracker=tracker, net=din_net)
         # 6. Met4 long vertical at drop_x from trunk_y DOWN to drop_y.
         draw_wire(top, start=(drop_x, trunk_y),
-                  end=(drop_x, drop_y), layer="met4")
+                  end=(drop_x, drop_y), layer="met4",
+                  tracker=tracker, net=din_net)
         # 7. Via stack met4 -> met1 at (drop_x, drop_y).
         draw_via_stack(top, from_layer="met1", to_layer="met4",
-                       position=(drop_x, drop_y))
+                       position=(drop_x, drop_y),
+                       tracker=tracker, net=din_net)
         # 8. Met1 horizontal jog from drop_x to wd_din_x at drop_y.
         if abs(drop_x - wd_din_x_abs) > 1e-6:
             draw_wire(top, start=(drop_x, drop_y),
-                      end=(wd_din_x_abs, drop_y), layer="met1")
+                      end=(wd_din_x_abs, drop_y), layer="met1",
+                      tracker=tracker, net=din_net)
         # 9. Via met1 -> met2 at (wd_din_x, drop_y).
         draw_via_stack(top, from_layer="met1", to_layer="met2",
-                       position=(wd_din_x_abs, drop_y))
+                       position=(wd_din_x_abs, drop_y),
+                       tracker=tracker, net=din_net)
         # 10. Met2 vertical from (wd_din_x, drop_y) UP to wd_din_y_abs.
         draw_wire(top, start=(wd_din_x_abs, drop_y),
-                  end=(wd_din_x_abs, wd_din_y_abs), layer="met2")
+                  end=(wd_din_x_abs, wd_din_y_abs), layer="met2",
+                  tracker=tracker, net=din_net)
         # 11. Via met2 -> met1 at (wd_din_x, wd_din_y_abs) to connect
         #     onto the WD DIN pin (met1 inside the cell).
         draw_via_stack(top, from_layer="met1", to_layer="met2",
-                       position=(wd_din_x_abs, wd_din_y_abs))
+                       position=(wd_din_x_abs, wd_din_y_abs),
+                       tracker=tracker, net=din_net)
 
 
-def _route_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
+def _route_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan,
+                tracker: NetsTracker | None = None) -> None:
     """Route SA[i].DOUT to the dout[i] bottom pin of the macro.
 
     SA DOUT sits at cell-local (0.635, 0.0) on met1 — i.e., the SA
@@ -997,23 +1045,29 @@ def _route_dout(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
         sa_dout_x_abs = sa_x + bit * mux_pitch + _SA_DOUT_X_LOCAL
         trunk_y = dout_trunk_base_y - bit * _BIT_TRUNK_PITCH
 
+        dout_net = f"dout[{bit}]"
         # 1. Via at SA DOUT pin (met1 -> met2).
         draw_via_stack(top, from_layer="met1", to_layer="met2",
-                       position=(sa_dout_x_abs, sa_y))
+                       position=(sa_dout_x_abs, sa_y),
+                       tracker=tracker, net=dout_net)
         # 2. Met2 vertical from SA bottom DOWN through WD to trunk_y.
         draw_wire(top, start=(sa_dout_x_abs, sa_y),
-                  end=(sa_dout_x_abs, trunk_y), layer="met2")
+                  end=(sa_dout_x_abs, trunk_y), layer="met2",
+                  tracker=tracker, net=dout_net)
         # 3. Via2 met2 -> met3 at (sa_dout_x, trunk_y).
         draw_via_stack(top, from_layer="met2", to_layer="met3",
-                       position=(sa_dout_x_abs, trunk_y))
+                       position=(sa_dout_x_abs, trunk_y),
+                       tracker=tracker, net=dout_net)
         # 4. Horizontal met3 trunk from sa_dout_x to dout_pin_x.
         draw_wire(top, start=(sa_dout_x_abs, trunk_y),
-                  end=(dout_pin_x, trunk_y), layer="met3")
+                  end=(dout_pin_x, trunk_y), layer="met3",
+                  tracker=tracker, net=dout_net)
         # 5. Met3 vertical from (dout_pin_x, trunk_y) DOWN to the top
         #    of the dout pin stub (which is drawn by _place_top_pins).
         draw_wire(top, start=(dout_pin_x, trunk_y),
                   end=(dout_pin_x, pins_bot_y + _PIN_STUB_LEN),
-                  layer="met3")
+                  layer="met3",
+                  tracker=tracker, net=dout_net)
 
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1173,7 @@ def _route_control(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Route p_en_bar, s_en, w_en from control_logic DFF outputs to each
     bit's peripheral EN pin.
@@ -1174,30 +1229,38 @@ def _route_control(
         target_x: float,
         target_y: float,
         target_layer: str,
+        net: str | None = None,
     ) -> None:
         dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, dff_idx)
         # 1. Vertical met2 from DFF Q to trunk y
         draw_wire(top, start=(dff_q_x, dff_q_y),
-                  end=(dff_q_x, trunk_y), layer="met2")
+                  end=(dff_q_x, trunk_y), layer="met2",
+                  tracker=tracker, net=net)
         # 2. Via stack met2 -> met3 at the trunk
         draw_via_stack(top, from_layer="met2", to_layer="met3",
-                       position=(dff_q_x, trunk_y))
+                       position=(dff_q_x, trunk_y),
+                       tracker=tracker, net=net)
         # 3. Horizontal met3 trunk
         draw_wire(top, start=(dff_q_x, trunk_y),
-                  end=(target_x, trunk_y), layer="met3")
+                  end=(target_x, trunk_y), layer="met3",
+                  tracker=tracker, net=net)
         # 4. Via stack met3 -> met2 at target column
         draw_via_stack(top, from_layer="met2", to_layer="met3",
-                       position=(target_x, trunk_y))
+                       position=(target_x, trunk_y),
+                       tracker=tracker, net=net)
         # 5. Vertical met2 from trunk down (or up) to target pin
         draw_wire(top, start=(target_x, trunk_y),
-                  end=(target_x, target_y), layer="met2")
+                  end=(target_x, target_y), layer="met2",
+                  tracker=tracker, net=net)
         # 6. Via stack met2 -> target_layer (met1 or met3)
         if target_layer == "met1":
             draw_via_stack(top, from_layer="met1", to_layer="met2",
-                           position=(target_x, target_y))
+                           position=(target_x, target_y),
+                           tracker=tracker, net=net)
         elif target_layer == "met3":
             draw_via_stack(top, from_layer="met2", to_layer="met3",
-                           position=(target_x, target_y))
+                           position=(target_x, target_y),
+                           tracker=tracker, net=net)
         # met2 target: no via needed (met2 already)
 
     # Trunk y's. Control signals route from ctrl_logic (which sits
@@ -1235,24 +1298,31 @@ def _route_control(
     landing_x = 0.3
     # 1. DFF Q (met2) -> vertical met2 up to trunk y
     draw_wire(top, start=(dff_q_x, dff_q_y),
-              end=(dff_q_x, trunk_y_p_en_bar), layer="met2")
+              end=(dff_q_x, trunk_y_p_en_bar), layer="met2",
+              tracker=tracker, net="p_en_bar")
     draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(dff_q_x, trunk_y_p_en_bar))
+                   position=(dff_q_x, trunk_y_p_en_bar),
+                   tracker=tracker, net="p_en_bar")
     # 2. Met3 trunk from DFF column EAST to riser_x (outside col_mux)
     draw_wire(top, start=(dff_q_x, trunk_y_p_en_bar),
-              end=(riser_x, trunk_y_p_en_bar), layer="met3")
+              end=(riser_x, trunk_y_p_en_bar), layer="met3",
+              tracker=tracker, net="p_en_bar")
     # 3. Via met3->met2 at riser bottom
     draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(riser_x, trunk_y_p_en_bar))
+                   position=(riser_x, trunk_y_p_en_bar),
+                   tracker=tracker, net="p_en_bar")
     # 4. Met2 vertical from riser bottom UP to rail y (in empty gap)
     draw_wire(top, start=(riser_x, trunk_y_p_en_bar),
-              end=(riser_x, p_rail_y), layer="met2")
+              end=(riser_x, p_rail_y), layer="met2",
+              tracker=tracker, net="p_en_bar")
     # 5. Via met2->met3 at riser top (rail y)
     draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(riser_x, p_rail_y))
+                   position=(riser_x, p_rail_y),
+                   tracker=tracker, net="p_en_bar")
     # 6. Short met3 jog from riser into the precharge rail
     draw_wire(top, start=(riser_x, p_rail_y),
-              end=(landing_x, p_rail_y), layer="met3")
+              end=(landing_x, p_rail_y), layer="met3",
+              tracker=tracker, net="p_en_bar")
 
     # --- s_en (DFF 2 Q -> sense_amp EN pins, one per bit) -------------
     # Per-bit SA EN pin is met1 at (sa_x + bit*mux_pitch + 0.615,
@@ -1262,42 +1332,54 @@ def _route_control(
     dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 2)
     # DFF Q (met2) -> vertical met2 DOWN to the trunk y (trunk below)
     draw_wire(top, start=(dff_q_x, dff_q_y),
-              end=(dff_q_x, trunk_y_s_en), layer="met2")
+              end=(dff_q_x, trunk_y_s_en), layer="met2",
+              tracker=tracker, net="s_en")
     draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(dff_q_x, trunk_y_s_en))
+                   position=(dff_q_x, trunk_y_s_en),
+                   tracker=tracker, net="s_en")
     # Trunk extends from DFF column east to last bit's SA EN x + margin.
     rail_x_end_s = sa_x + (p.bits - 1) * mux_pitch + _SA_EN_X_LOCAL + 1.0
     draw_wire(top, start=(dff_q_x, trunk_y_s_en),
-              end=(rail_x_end_s, trunk_y_s_en), layer="met3")
+              end=(rail_x_end_s, trunk_y_s_en), layer="met3",
+              tracker=tracker, net="s_en")
     # Per-bit drop: trunk -> met2 vertical -> met1 SA EN pin
     for bit in range(p.bits):
         pin_x = sa_x + bit * mux_pitch + _SA_EN_X_LOCAL
         pin_y = sa_y + _SA_EN_Y_LOCAL
         draw_via_stack(top, from_layer="met2", to_layer="met3",
-                       position=(pin_x, trunk_y_s_en))
+                       position=(pin_x, trunk_y_s_en),
+                       tracker=tracker, net="s_en")
         draw_wire(top, start=(pin_x, trunk_y_s_en),
-                  end=(pin_x, pin_y), layer="met2")
+                  end=(pin_x, pin_y), layer="met2",
+                  tracker=tracker, net="s_en")
         draw_via_stack(top, from_layer="met1", to_layer="met2",
-                       position=(pin_x, pin_y))
+                       position=(pin_x, pin_y),
+                       tracker=tracker, net="s_en")
 
     # --- w_en (DFF 3 Q -> write_driver EN pins, one per bit) ---------
     dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 3)
     draw_wire(top, start=(dff_q_x, dff_q_y),
-              end=(dff_q_x, trunk_y_w_en), layer="met2")
+              end=(dff_q_x, trunk_y_w_en), layer="met2",
+              tracker=tracker, net="w_en")
     draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(dff_q_x, trunk_y_w_en))
+                   position=(dff_q_x, trunk_y_w_en),
+                   tracker=tracker, net="w_en")
     rail_x_end_w = wd_x + (p.bits - 1) * mux_pitch + _WD_EN_X_LOCAL + 1.0
     draw_wire(top, start=(dff_q_x, trunk_y_w_en),
-              end=(rail_x_end_w, trunk_y_w_en), layer="met3")
+              end=(rail_x_end_w, trunk_y_w_en), layer="met3",
+              tracker=tracker, net="w_en")
     for bit in range(p.bits):
         pin_x = wd_x + bit * mux_pitch + _WD_EN_X_LOCAL
         pin_y = wd_y + _WD_EN_Y_LOCAL
         draw_via_stack(top, from_layer="met2", to_layer="met3",
-                       position=(pin_x, trunk_y_w_en))
+                       position=(pin_x, trunk_y_w_en),
+                       tracker=tracker, net="w_en")
         draw_wire(top, start=(pin_x, trunk_y_w_en),
-                  end=(pin_x, pin_y), layer="met2")
+                  end=(pin_x, pin_y), layer="met2",
+                  tracker=tracker, net="w_en")
         draw_via_stack(top, from_layer="met1", to_layer="met2",
-                       position=(pin_x, pin_y))
+                       position=(pin_x, pin_y),
+                       tracker=tracker, net="w_en")
 
 
 # ---------------------------------------------------------------------------
@@ -1348,6 +1430,7 @@ def _route_ctrl_internal(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Land top-level clk/we/cs pins onto ctrl_logic's internal
     labeled rails.
@@ -1364,13 +1447,14 @@ def _route_ctrl_internal(
     we   rail — met3 at local y=11.3, x-span A0..A1
     cs   rail — met2 at local y=9.625, x-span B0..B1
     """
-    return _route_ctrl_external_pins(top, p, fp)
+    return _route_ctrl_external_pins(top, p, fp, tracker=tracker)
 
 
 def _route_ctrl_external_pins(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     ctrl_origin = fp.positions["control_logic"]
     ctrl_x, ctrl_y = ctrl_origin
@@ -1403,6 +1487,8 @@ def _route_ctrl_external_pins(
         land_x: float, land_y: float,
         rail_layer: str,
         trunk_y: float,
+        net: str | None = None,
+        cls: "NetClass" = "signal",  # noqa: F821
     ) -> None:
         # Horizontal met3 trunk from pin_x to land_x at trunk_y.
         # Caller supplies a unique trunk_y per signal so trunks from
@@ -1412,6 +1498,7 @@ def _route_ctrl_external_pins(
             start=(pin_x, pin_y_top),
             end=(pin_x, trunk_y + _CTRL_TRUNK_HALF_W),
             layer="met3", width=_CTRL_TRUNK_W,
+            tracker=tracker, net=net, cls=cls,
         )
         west = min(pin_x, land_x) - _CTRL_TRUNK_HALF_W
         east = max(pin_x, land_x) + _CTRL_TRUNK_HALF_W
@@ -1419,6 +1506,7 @@ def _route_ctrl_external_pins(
             top,
             start=(west, trunk_y), end=(east, trunk_y),
             layer="met3", width=_CTRL_TRUNK_W,
+            tracker=tracker, net=net, cls=cls,
         )
         # Vertical drop from trunk to land: MUST be on met2, not met3.
         # Drop x-positions (clk=2.0, we=7.0, cs=13.0 cell-local) lie
@@ -1431,18 +1519,21 @@ def _route_ctrl_external_pins(
         draw_via_stack(
             top, from_layer="met2", to_layer="met3",
             position=(land_x, trunk_y),
+            tracker=tracker, net=net, cls=cls,
         )
         draw_wire(
             top,
             start=(land_x, trunk_y),
             end=(land_x, land_y),
             layer="met2", width=_CTRL_TRUNK_W,
+            tracker=tracker, net=net, cls=cls,
         )
         if rail_layer == "met3":
             # Need a met2→met3 via at the rail to merge with the rail.
             draw_via_stack(
                 top, from_layer="met2", to_layer="met3",
                 position=(land_x, land_y),
+                tracker=tracker, net=net, cls=cls,
             )
         # rail_layer == "met2": the met2 drop bottom directly merges
         # with the labeled met2 rail; no via needed.
@@ -1460,15 +1551,18 @@ def _route_ctrl_external_pins(
 
     clk_pin_x, _ = positions["clk"]
     _drop_met3_to_rail(clk_pin_x, top_stub_top_y,
-                       clk_land_x, clk_land_y, "met2", clk_trunk_y)
+                       clk_land_x, clk_land_y, "met2", clk_trunk_y,
+                       net="clk", cls="clock")
 
     we_pin_x, _ = positions["we"]
     _drop_met3_to_rail(we_pin_x, top_stub_top_y,
-                       we_land_x, we_land_y, "met2", we_trunk_y)
+                       we_land_x, we_land_y, "met2", we_trunk_y,
+                       net="we", cls="signal")
 
     cs_pin_x, _ = positions["cs"]
     _drop_met3_to_rail(cs_pin_x, top_stub_top_y,
-                       cs_land_x, cs_land_y, "met2", cs_trunk_y)
+                       cs_land_x, cs_land_y, "met2", cs_trunk_y,
+                       net="cs", cls="signal")
 
 
 def _OLD_route_ctrl_internal(
@@ -1788,6 +1882,7 @@ def _route_addr(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Route top-level addr[0..sum(split)-1] pins to the row_decoder's
     internal addr rails.
@@ -1807,7 +1902,7 @@ def _route_addr(
     total_addr = sum(split)
 
     if len(split) != 1:
-        _route_addr_multi_predecoder(top, p, fp, total_addr)
+        _route_addr_multi_predecoder(top, p, fp, total_addr, tracker=tracker)
         return
 
     k = split[0]
@@ -1832,6 +1927,7 @@ def _route_addr(
     pin_names = ["A", "B", "C"][:k]
     for i, pin_name in enumerate(pin_names):
         addr_pin_key = f"addr[{i}]"
+        addr_net = addr_pin_key
         addr_pin_x, _ = positions[addr_pin_key]
         rail_y = addr_trunk_y_base + i * _CTRL_TRUNK_PITCH
         sidebar_x = dec_x - _ADDR_SIDEBAR_X_OFFSETS[i]
@@ -1851,6 +1947,7 @@ def _route_addr(
             end=(addr_pin_x, rail_y + _CTRL_TRUNK_HALF_W),
             layer="met3",
             width=_CTRL_TRUNK_W,
+            tracker=tracker, net=addr_net,
         )
         # --- (2) met3 trunk from addr_pin_x LEFT to sidebar_x --------
         trunk_west = sidebar_x - _CTRL_TRUNK_HALF_W
@@ -1861,6 +1958,7 @@ def _route_addr(
             end=(trunk_east, rail_y),
             layer="met3",
             width=_CTRL_TRUNK_W,
+            tracker=tracker, net=addr_net,
         )
         # --- (3) sidebar vertical on met3 covering all pin y's -------
         rail_bot = min(per_row_pin_ys) - _CTRL_TRUNK_HALF_W
@@ -1871,12 +1969,14 @@ def _route_addr(
             end=(sidebar_x, rail_top),
             layer="met3",
             width=_CTRL_TRUNK_W,
+            tracker=tracker, net=addr_net,
         )
         # --- (4)(5) per-row: via stack + li1 horizontal into pin -----
         for r, pin_y in enumerate(per_row_pin_ys):
             draw_via_stack(
                 top, from_layer="li1", to_layer="met3",
                 position=(sidebar_x, pin_y),
+                tracker=tracker, net=addr_net,
             )
             # li1 horizontal from sidebar to pin
             li_lo = sidebar_x - layer_min_width_half("li1")
@@ -1886,6 +1986,7 @@ def _route_addr(
                 start=(li_lo, pin_y),
                 end=(li_hi, pin_y),
                 layer="li1",
+                tracker=tracker, net=addr_net,
             )
 
 
@@ -1894,6 +1995,7 @@ def _route_addr_multi_predecoder(
     p: MacroV2Params,
     fp: Floorplan,
     total_addr: int,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Land each top-level addr[i] pin onto row_decoder's internal
     addr{i} met3 rail.
@@ -1920,6 +2022,7 @@ def _route_addr_multi_predecoder(
         addr_pin_key = f"addr[{i}]"
         if addr_pin_key not in positions:
             continue  # should not happen for multi-predecoder configs
+        addr_net = addr_pin_key
         addr_pin_x, _ = positions[addr_pin_key]
         rail_y_trunk = addr_trunk_y_base + i * _CTRL_TRUNK_PITCH
 
@@ -1937,6 +2040,7 @@ def _route_addr_multi_predecoder(
             end=(addr_pin_x, rail_y_trunk + _CTRL_TRUNK_HALF_W),
             layer="met3",
             width=_CTRL_TRUNK_W,
+            tracker=tracker, net=addr_net,
         )
         # (2) met3 horizontal trunk at rail_y_trunk from addr_pin_x to
         #     rail_x_abs.
@@ -1948,6 +2052,7 @@ def _route_addr_multi_predecoder(
             end=(trunk_east, rail_y_trunk),
             layer="met3",
             width=_CTRL_TRUNK_W,
+            tracker=tracker, net=addr_net,
         )
         # (3) met2 vertical DROP from rail_y_trunk DOWN to land_y, at
         #     rail_x_abs.  Must be on met2 (not met3) because each
@@ -1961,6 +2066,7 @@ def _route_addr_multi_predecoder(
         draw_via_stack(
             top, from_layer="met2", to_layer="met3",
             position=(rail_x_abs, rail_y_trunk),
+            tracker=tracker, net=addr_net,
         )
         draw_wire(
             top,
@@ -1968,10 +2074,12 @@ def _route_addr_multi_predecoder(
             end=(rail_x_abs, rail_y_trunk),
             layer="met2",
             width=_CTRL_TRUNK_W,
+            tracker=tracker, net=addr_net,
         )
         draw_via_stack(
             top, from_layer="met2", to_layer="met3",
             position=(rail_x_abs, land_y),
+            tracker=tracker, net=addr_net,
         )
 
 
@@ -2101,6 +2209,7 @@ def _place_top_pins(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Place LEF-style met3 pins for addr, din, dout, clk, we, cs at
     the top (inputs) and bottom (outputs) of the macro.
@@ -2110,6 +2219,9 @@ def _place_top_pins(
     for name, (px, _) in positions.items():
         if name.startswith("dout"):
             continue
+        # clk is the only top-level clock signal; everything else is a
+        # data/control signal.
+        pin_cls: "NetClass" = "clock" if name == "clk" else "signal"  # noqa: F821
         rect = (
             px - _PIN_STUB_W / 2,
             pins_top_y,
@@ -2122,11 +2234,14 @@ def _place_top_pins(
             end=(px, pins_top_y + _PIN_STUB_LEN),
             layer=_PIN_LAYER,
             width=_PIN_STUB_W,
+            tracker=tracker, net=name, cls=pin_cls,
         )
-        draw_pin_with_label(top, text=name, layer=_PIN_LAYER, rect=rect)
+        draw_pin_with_label(top, text=name, layer=_PIN_LAYER, rect=rect,
+                            tracker=tracker, net=name, cls=pin_cls)
 
     for i in range(p.bits):
         px, _ = positions[f"dout[{i}]"]
+        dout_net = f"dout[{i}]"
         rect = (
             px - _PIN_STUB_W / 2,
             pins_bot_y,
@@ -2139,8 +2254,10 @@ def _place_top_pins(
             end=(px, pins_bot_y + _PIN_STUB_LEN),
             layer=_PIN_LAYER,
             width=_PIN_STUB_W,
+            tracker=tracker, net=dout_net,
         )
-        draw_pin_with_label(top, text=f"dout[{i}]", layer=_PIN_LAYER, rect=rect)
+        draw_pin_with_label(top, text=dout_net, layer=_PIN_LAYER, rect=rect,
+                            tracker=tracker, net=dout_net)
 
     # col_sel_{k} pins — labeled on the col_mux cell's existing sel_{k}
     # met3 rails at the macro's WEST edge. The rails already span the
@@ -2164,8 +2281,10 @@ def _place_top_pins(
         )
         # Label with underscore notation to match the mux cell's
         # Magic-extracted col_sel_N port naming.
-        draw_pin_with_label(top, text=f"col_sel_{k}",
-                            layer=_PIN_LAYER, rect=rect)
+        col_sel_net = f"col_sel_{k}"
+        draw_pin_with_label(top, text=col_sel_net,
+                            layer=_PIN_LAYER, rect=rect,
+                            tracker=tracker, net=col_sel_net)
 
 
 def _place_power_grid(
@@ -2262,6 +2381,7 @@ def _draw_power_network(
     top: gdstk.Cell,
     p: MacroV2Params,
     fp: Floorplan,
+    tracker: NetsTracker | None = None,
 ) -> None:
     """Build the macro's internal power distribution network.
 
@@ -2307,12 +2427,21 @@ def _draw_power_network(
     _PAD_HALF_X: float = _PDN_STRAP_W / 2 + 0.3      # ~1.1 µm wide
     _PAD_HALF_Y: float = _PDN_MET2_RAIL_W / 2        # 0.20 µm tall
 
-    def _draw_local_met2_pad(cx: float, cy: float) -> None:
+    def _draw_local_met2_pad(
+        cx: float, cy: float,
+        net: str | None = None,
+        cls: "NetClass" = "signal",  # noqa: F821
+    ) -> None:
         top.add(gdstk.rectangle(
             (cx - _PAD_HALF_X, cy - _PAD_HALF_Y),
             (cx + _PAD_HALF_X, cy + _PAD_HALF_Y),
             layer=met2_l, datatype=met2_d,
         ))
+        if tracker is not None and net is not None:
+            tracker.record(
+                cell=top, layer=met2_l, datatype=met2_d,
+                net=net, cls=cls,
+            )
 
     # Vertical met4 straps — chip-PDN interface layer.
     #
@@ -2354,11 +2483,13 @@ def _draw_power_network(
             center_coord=vx,
             span_start=bot_rail_y, span_end=top_rail_y,
             layer="met4", width=_PDN_STRAP_W,
+            tracker=tracker, net="VPWR", cls="power",
         )
-        _draw_local_met2_pad(vx, top_rail_y)
+        _draw_local_met2_pad(vx, top_rail_y, net="VPWR", cls="power")
         draw_via_stack(
             top, from_layer="met2", to_layer="met4",
             position=(vx, top_rail_y),
+            tracker=tracker, net="VPWR", cls="power",
         )
         # Label the met2 pad as VPWR so Magic identifies the net as
         # the top-level VPWR port.  Needs BOTH a pin rect (met2.pin
@@ -2370,6 +2501,7 @@ def _draw_power_network(
                 vx - _PAD_HALF_X, top_rail_y - _PAD_HALF_Y,
                 vx + _PAD_HALF_X, top_rail_y + _PAD_HALF_Y,
             ),
+            tracker=tracker, net="VPWR", cls="power",
         )
 
     for vx in vgnd_xs:
@@ -2378,11 +2510,13 @@ def _draw_power_network(
             center_coord=vx,
             span_start=bot_rail_y, span_end=top_rail_y,
             layer="met4", width=_PDN_STRAP_W,
+            tracker=tracker, net="VGND", cls="ground",
         )
-        _draw_local_met2_pad(vx, bot_rail_y)
+        _draw_local_met2_pad(vx, bot_rail_y, net="VGND", cls="ground")
         draw_via_stack(
             top, from_layer="met2", to_layer="met4",
             position=(vx, bot_rail_y),
+            tracker=tracker, net="VGND", cls="ground",
         )
         draw_pin_with_label(
             top, text="VGND", layer="met2",
@@ -2390,6 +2524,7 @@ def _draw_power_network(
                 vx - _PAD_HALF_X, bot_rail_y - _PAD_HALF_Y,
                 vx + _PAD_HALF_X, bot_rail_y + _PAD_HALF_Y,
             ),
+            tracker=tracker, net="VGND", cls="ground",
         )
 
 

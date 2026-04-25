@@ -54,7 +54,7 @@ def test_mux(mux: int, bits: int = 8, words: int = 32) -> dict:
     p = MacroV2Params(words=words, bits=bits, mux_ratio=mux)
     print(f"\n=== mux={mux} === ({p.top_cell_name})", flush=True)
 
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = out / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
     print(f"  GDS: {gds}", flush=True)

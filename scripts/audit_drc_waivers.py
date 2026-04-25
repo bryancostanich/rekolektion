@@ -134,7 +134,7 @@ def _tile_inside(
 
 def run_audit(p: MacroV2Params) -> dict:
     tmp = Path(tempfile.mkdtemp(prefix="rekolektion_audit_"))
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
 

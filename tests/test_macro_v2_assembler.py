@@ -100,14 +100,14 @@ def test_floorplan_macro_size_is_bounding_box():
 
 def test_assemble_returns_library_with_top_cell():
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     names = {c.name for c in lib.cells}
     assert p.top_cell_name in names
 
 
 def test_assemble_top_cell_references_every_block():
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     ref_names = {r.cell.name for r in top.references}
     for needle in (
@@ -122,7 +122,7 @@ def test_assemble_top_cell_references_every_block():
 def test_assemble_block_references_at_floorplan_positions():
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
     fp = build_floorplan(p)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
 
     def ref_with(substring: str) -> gdstk.Reference:
@@ -139,7 +139,7 @@ def test_assemble_block_references_at_floorplan_positions():
 def test_assemble_tiny_macro_drc_clean(tmp_path):
     from rekolektion.verify.drc import run_drc
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
     r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
@@ -155,7 +155,7 @@ def test_assemble_tiny_macro_drc_clean(tmp_path):
 def test_wl_routing_adds_one_met1_wire_per_row():
     """Each row gets a top-level met1 wire between decoder column and array."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     # Top-level met1 polygons between the decoder right edge and the
     # array left edge live in x < 0 (array is at x=0).
@@ -187,7 +187,7 @@ def test_wl_routing_met1_to_poly_via_stacks_at_array_edge():
     We don't try to measure the exact position; instead count poly.pin
     polygons at the array's left edge (one per row)."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     # Via stacks drop poly + mcon via + met1 landing pads. Count the
     # met1 landing pads directly at the array's left edge (x ~ 0).
@@ -218,7 +218,7 @@ def test_assemble_tiny_macro_with_wl_routing_drc_clean(tmp_path):
     introducing new real errors (all existing waivers still apply)."""
     from rekolektion.verify.drc import run_drc
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
     r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
@@ -233,7 +233,7 @@ def test_assemble_tiny_macro_with_wl_routing_drc_clean(tmp_path):
 
 def test_bl_extends_strips_above_array_to_precharge():
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     fp = build_floorplan(p)
     array_top_y = fp.positions["array"][1] + fp.sizes["array"][1]
@@ -259,7 +259,7 @@ def test_bl_extends_strips_above_array_to_precharge():
 
 def test_bl_extends_strips_below_array_through_peripherals():
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     fp = build_floorplan(p)
     array_bot_y = fp.positions["array"][1]
@@ -284,7 +284,7 @@ def test_bl_extends_strips_below_array_through_peripherals():
 def test_assemble_tiny_macro_with_bl_routing_drc_clean(tmp_path):
     from rekolektion.verify.drc import run_drc
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
     r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
@@ -301,7 +301,7 @@ def test_control_routing_adds_met2_rails():
     """Three long horizontal met2 rails (p_en_bar, s_en, w_en) crossing
     the macro at peripheral y-positions."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     fp = build_floorplan(p)
     array_w = fp.sizes["array"][0]
@@ -326,7 +326,7 @@ def test_control_routing_adds_met2_rails():
 def test_assemble_tiny_macro_with_control_routing_drc_clean(tmp_path):
     from rekolektion.verify.drc import run_drc
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
     r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
@@ -344,7 +344,7 @@ def test_top_level_has_pin_labels_for_every_signal():
     identifies the nets. Power pins (VPWR/VGND) are declared only in
     the LEF as met2 edge stubs; the GDS has met2 rails but no label."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     pin_labels = {lbl.text for lbl in top.labels}
     required = {"clk", "we", "cs"}
@@ -361,7 +361,7 @@ def test_top_level_has_met2_power_rails():
     """The macro's PDN is two full-width met2 rails — VPWR at the top,
     VGND at the bottom — with LEF pin stubs straddling each edge."""
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     # Count met2 (69, 20) polygons that span most of the macro width.
     fp = build_floorplan(p)
@@ -387,7 +387,7 @@ def test_assemble_tiny_macro_full_pipeline_drc_clean(tmp_path):
     """Full assembler stack (C6.0-C6.5) DRC-clean for sram_test_tiny."""
     from rekolektion.verify.drc import run_drc
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
     r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
@@ -409,7 +409,7 @@ def test_sram_test_tiny_end_to_end_drc_clean(tmp_path):
     p = MacroV2Params(words=32, bits=8, mux_ratio=4)
 
     # Assemble GDS
-    lib = assemble(p)
+    lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
 

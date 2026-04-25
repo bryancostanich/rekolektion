@@ -364,7 +364,7 @@ def prepare_openlane_run(
     #    sub-block cell.  Add li1 + mcon + met1 landing pads at each
     #    LEF-declared li1 pin location so the OpenROAD router can
     #    land on met1.
-    assembled = assemble(p)
+    assembled, _ = assemble(p)
     cell_names = _sub_block_cell_names(p)
     sub_gds_paths: dict[str, Path] = {}
     for fp_key, lef_key in _FP_TO_LEF_KEY.items():

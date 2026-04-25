@@ -20,6 +20,9 @@
     <ProjectReference Include="..\Rekolektion.Viz.Render\Rekolektion.Viz.Render.fsproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Model/Model.fs" />
+    <Compile Include="Model/Msg.fs" />
+    <Compile Include="Model/Update.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

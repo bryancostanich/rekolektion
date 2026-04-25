@@ -18,6 +18,7 @@
   <ItemGroup>
     <Compile Include="SkyThemeTests.fs" />
     <Compile Include="LayerPainterTests.fs" />
+    <Compile Include="LabelPainterTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

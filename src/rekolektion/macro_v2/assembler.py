@@ -791,7 +791,14 @@ _SA_DOUT_X_LOCAL: float = 0.635
 _SA_DOUT_Y_LOCAL: float = 0.0   # bottom edge
 
 # Pitch between trunk y's for per-bit horizontal jogs on met3.
-_BIT_TRUNK_PITCH: float = 0.60  # 0.30 met3 width + 0.30 spacing
+_BIT_TRUNK_PITCH: float = 0.70  # 0.30 met3 width + 0.40 clearance.
+# Was 0.60 (= width + min spacing exactly).  At pitch 0.60 the
+# adjacent trunks' edges sit AT the met3 min-spacing boundary, and
+# Magic's extract treats them as electrically merged — every adjacent
+# pair of bits whose trunk x-ranges overlap gets unified into one
+# net.  For weight_bank that produced equiv "din[10]" "din[1..9]"
+# (10 consecutive bits whose trunks all overlapped each other in x).
+# 0.70 gives 0.40 µm edge spacing — clearly above the 0.30 min.
 
 
 def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
@@ -2026,7 +2033,23 @@ def _top_pin_layout(
     array_w, _ = fp.sizes["array"]
     prec_y, prec_h = fp.positions["precharge"][1], fp.sizes["precharge"][1]
     prec_top = prec_y + prec_h
-    pins_top_y = prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
+    # `_route_din` lays its met3 trunks at y = prec_top + 0.30 + i *
+    # _BIT_TRUNK_PITCH for i in 0..bits-1. Each trunk runs the full
+    # x-extent between din_pin_x[i] and drop_x[i] — i.e., it crosses
+    # every other din pin's x position. If pins_top_y lands such that
+    # the pin stub region [pins_top_y, pins_top_y + _PIN_STUB_LEN]
+    # overlaps any trunk_y[i], that trunk's met3 wire merges with every
+    # input pin stub it crosses in x, creating equiv chains like
+    # din[0..9] (10 consecutive bits whose pin stubs all sit under one
+    # offending trunk). Ensure pins_top_y sits above the entire trunk
+    # band so all 32 trunks are below the stubs with met3 min spacing.
+    din_trunks_top_y = (
+        prec_top + 0.30 + (p.bits - 1) * _BIT_TRUNK_PITCH + 0.15
+    )
+    pins_top_y = max(
+        prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN,
+        din_trunks_top_y + 0.30,
+    )
     wd_bot = fp.positions["write_driver"][1]
     # Below WD we stack two horizontal routing bands before the bottom
     # pin stubs:

@@ -9,6 +9,8 @@
     <Compile Include="Gds/Types.fs" />
     <Compile Include="Gds/Reader.fs" />
     <Compile Include="Layout/Layer.fs" />
+    <Compile Include="Sidecar/Types.fs" />
+    <Compile Include="Sidecar/Loader.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

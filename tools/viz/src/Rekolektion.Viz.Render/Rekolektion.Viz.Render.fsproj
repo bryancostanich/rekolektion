@@ -14,6 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Color/SkyTheme.fs" />
+    <Compile Include="Skia/LayerPainter.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

@@ -13,6 +13,7 @@
     <ProjectReference Include="..\Rekolektion.Viz.Core\Rekolektion.Viz.Core.fsproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Color/SkyTheme.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

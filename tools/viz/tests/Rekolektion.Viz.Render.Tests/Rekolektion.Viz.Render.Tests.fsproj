@@ -10,11 +10,13 @@
     <PackageReference Include="xunit" Version="2.9.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="FsUnit.Xunit" Version="6.0.0" />
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rekolektion.Viz.Render\Rekolektion.Viz.Render.fsproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="SkyThemeTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

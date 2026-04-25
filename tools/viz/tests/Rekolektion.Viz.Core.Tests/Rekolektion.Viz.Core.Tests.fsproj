@@ -22,6 +22,7 @@
     <Compile Include="HierarchyTests.fs" />
     <Compile Include="VisibilityTests.fs" />
     <Compile Include="PickingTests.fs" />
+    <Compile Include="LabelFloodTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

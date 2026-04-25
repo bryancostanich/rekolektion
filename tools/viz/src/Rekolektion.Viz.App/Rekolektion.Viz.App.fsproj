@@ -23,6 +23,7 @@
     <Compile Include="Model/Model.fs" />
     <Compile Include="Model/Msg.fs" />
     <Compile Include="Model/Update.fs" />
+    <Compile Include="Services/RekolektionCli.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

@@ -17,6 +17,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="UpdateTests.fs" />
+    <Compile Include="RekolektionCliTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

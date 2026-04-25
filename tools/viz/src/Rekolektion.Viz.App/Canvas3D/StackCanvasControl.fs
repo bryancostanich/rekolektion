@@ -25,6 +25,7 @@ type StackCanvasControl() =
     let mutable gl : GL option = None
     let mutable vbo : uint32 = 0u
     let mutable ebo : uint32 = 0u
+    let mutable vao : uint32 = 0u
     let mutable program : uint32 = 0u
     let mutable indexCount : int = 0
     let mutable yawDeg = 30.0
@@ -55,6 +56,7 @@ type StackCanvasControl() =
         gl <- Some g
         vbo <- g.GenBuffer()
         ebo <- g.GenBuffer()
+        vao <- g.GenVertexArray()
         // Minimal vertex shader (position + color + visibility) + frag shader
         let vsSrc = "
             #version 330 core
@@ -84,6 +86,11 @@ type StackCanvasControl() =
             let s = g.CreateShader(kind)
             g.ShaderSource(s, src)
             g.CompileShader(s)
+            let mutable status = 0
+            g.GetShader(s, ShaderParameterName.CompileStatus, &status)
+            if status = 0 then
+                let log = g.GetShaderInfoLog s
+                eprintfn "[viz3d] shader compile failed (%A): %s" kind log
             s
         let vs = compile vsSrc ShaderType.VertexShader
         let fs = compile fsSrc ShaderType.FragmentShader
@@ -91,6 +98,11 @@ type StackCanvasControl() =
         g.AttachShader(program, vs)
         g.AttachShader(program, fs)
         g.LinkProgram(program)
+        let mutable linkStatus = 0
+        g.GetProgram(program, ProgramPropertyARB.LinkStatus, &linkStatus)
+        if linkStatus = 0 then
+            let log = g.GetProgramInfoLog program
+            eprintfn "[viz3d] program link failed: %s" log
         g.DeleteShader(vs)
         g.DeleteShader(fs)
 
@@ -99,6 +111,7 @@ type StackCanvasControl() =
         | Some g ->
             g.DeleteBuffer(vbo)
             g.DeleteBuffer(ebo)
+            g.DeleteVertexArray vao
             g.DeleteProgram(program)
         | None -> ()
 
@@ -128,6 +141,7 @@ type StackCanvasControl() =
                 arr.[off + 5] <- b
                 arr.[off + 6] <- vis
 
+            g.BindVertexArray(vao)
             g.BindBuffer(GLEnum.ArrayBuffer, vbo)
             g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
             g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
@@ -152,6 +166,6 @@ type StackCanvasControl() =
             let mvp = Matrix4x4Helpers.buildOrbitMvp yawDeg pitchDeg zoom (this.Bounds.Width, this.Bounds.Height)
             let loc = g.GetUniformLocation(program, "uMVP")
             let mvpArr = Matrix4x4Helpers.toFloatArray mvp
-            g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+            g.UniformMatrix4(loc, 1u, true, ReadOnlySpan<float32>(mvpArr))
             g.DrawElements(GLEnum.Triangles, uint32 indexCount, GLEnum.UnsignedInt, IntPtr.Zero.ToPointer())
         | _ -> ()

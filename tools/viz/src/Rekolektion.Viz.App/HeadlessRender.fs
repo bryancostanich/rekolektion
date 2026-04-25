@@ -46,7 +46,8 @@ module HeadlessRender =
             (outputPath: string)
             (width: int)
             (height: int)
-            (holdMs: int) : int =
+            (holdMs: int)
+            (preRenderMsgs: Model.Msg.Msg list) : int =
         Environment.SetEnvironmentVariable("REKOLEKTION_VIZ_HEADLESS", "1")
 
         use session = HeadlessUnitTestSession.StartNew(typeof<HeadlessApp>)
@@ -62,10 +63,22 @@ module HeadlessRender =
                 window.Width  <- float width
                 window.Height <- float height
                 window.Show()
+                // MainWindow's `do` block runs `Program.runWithDispatch`
+                // synchronously, which calls `Subscriptions.syncDispatch`
+                // and publishes the wrapped dispatcher into
+                // `AppDispatch.current`. So at this point `AppDispatch.send`
+                // is live and can carry pre-render Msgs (OpenFile,
+                // ToggleLayer, HighlightNet, SetTab) into the Elmish
+                // model BEFORE the hold loop pumps the resulting Cmds.
+                for msg in preRenderMsgs do
+                    AppDispatch.send msg
                 // Pump dispatcher frames so initial layout, Elmish init,
                 // and any async data subscriptions get a chance to render.
                 // HoldMs is caller-tunable: async content can take a few
-                // hundred ms on cold start.
+                // hundred ms on cold start. With preRenderMsgs supplied,
+                // OpenFile triggers a Cmd.OfAsync that loads the GDS;
+                // the hold window must be long enough for that to
+                // resolve into LoadComplete and re-render.
                 let swHold = System.Diagnostics.Stopwatch.StartNew()
                 while swHold.ElapsedMilliseconds < int64 holdMs do
                     Dispatcher.UIThread.RunJobs()

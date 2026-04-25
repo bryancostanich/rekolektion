@@ -24,6 +24,7 @@
     <Compile Include="Model/Model.fs" />
     <Compile Include="Model/Msg.fs" />
     <Compile Include="Model/Update.fs" />
+    <Compile Include="HeadlessRenderArgs.fs" />
     <Compile Include="Services/RekolektionCli.fs" />
     <Compile Include="Services/GdsLoading.fs" />
     <Compile Include="Services/CommandListener.fs" />

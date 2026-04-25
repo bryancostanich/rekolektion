@@ -106,13 +106,52 @@ let cmdApp (args: string list) : int =
     let argv = args |> List.toArray
     Rekolektion.Viz.App.Program.runDesktop argv
 
-/// `viz-render --gds ... --output ...` — STUB. Task 26 stops at
-/// dispatch wiring; Task 27 implements full flag parsing and
-/// invokes `App.HeadlessRender.renderToPng` with toggle Msgs
-/// pre-applied to the headless model.
-let cmdVizRender (_args: string list) : int =
-    printfn "viz-render: implemented in Task 27 (flag parsing + headless toggles)"
-    0
+/// `viz-render --gds ... --output ...` — boot the App headlessly,
+/// dispatch a pre-render Msg sequence (OpenFile + per-layer
+/// toggles + optional highlight + tab switch), then capture a
+/// PNG of the resulting MainWindow. Used by the MCP
+/// `rekolektion_viz_render` tool (Task 29) so agents can inspect
+/// arbitrary GDS macros without a live Viz session.
+///
+/// Unknown layer names from `--toggle-layer` are silently
+/// dropped via `List.choose` here. CommandListener returns a JSON
+/// error in the same situation; for the one-shot CLI path we
+/// match `List.choose`'s drop-and-continue semantics so a
+/// typo in one layer doesn't fail the whole render.
+let cmdVizRender (args: string list) : int =
+    match Rekolektion.Viz.App.HeadlessRenderArgs.parseVizRenderArgs args with
+    | Error msg ->
+        eprintfn "viz-render: %s" msg
+        1
+    | Ok parsed ->
+        let openMsg =
+            Rekolektion.Viz.App.Model.Msg.Msg.OpenFile parsed.Gds
+        let toggleMsgs =
+            parsed.Toggles
+            |> List.choose (fun (name, visible) ->
+                Rekolektion.Viz.Core.Layout.Layer.allDrawing
+                |> List.tryFind (fun l -> l.Name = name)
+                |> Option.map (fun l ->
+                    Rekolektion.Viz.App.Model.Msg.Msg.ToggleLayer
+                        ((l.Number, l.DataType), visible)))
+        let highlightMsgs =
+            match parsed.Highlight with
+            | Some n -> [ Rekolektion.Viz.App.Model.Msg.Msg.HighlightNet (Some n) ]
+            | None   -> []
+        let tabMsgs =
+            match parsed.Tab with
+            | "3D" ->
+                [ Rekolektion.Viz.App.Model.Msg.Msg.SetTab
+                    Rekolektion.Viz.App.Model.Model.Tab.View3D ]
+            | _ -> []
+        let preRenderMsgs =
+            openMsg :: (toggleMsgs @ highlightMsgs @ tabMsgs)
+        Rekolektion.Viz.App.HeadlessRender.renderToPng
+            parsed.Output
+            parsed.Width
+            parsed.Height
+            parsed.HoldMs
+            preRenderMsgs
 
 [<EntryPoint>]
 let main argv =

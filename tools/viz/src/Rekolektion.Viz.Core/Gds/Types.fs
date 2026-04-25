@@ -1,7 +1,7 @@
 module Rekolektion.Viz.Core.Gds.Types
 
 /// GDS coordinates are integer database units (DBU). Conversion to
-/// micrometers happens at display time using Library.DbUnitsPerUserUnit.
+/// micrometers happens at display time using Library.UserUnitsPerDbUnit.
 type Point = { X: int64; Y: int64 }
 
 type Boundary = {
@@ -58,7 +58,7 @@ type Structure = {
 
 type Library = {
     Name: string
-    DbUnitsPerUserUnit: float    // user units per DB unit (e.g. 0.001 μm/DBU)
+    UserUnitsPerDbUnit: float    // user units per DB unit (e.g. 0.001 μm/DBU)
     DbUnitsInMeters: float       // meters per DB unit (e.g. 1e-9)
     Structures: Structure list
 }

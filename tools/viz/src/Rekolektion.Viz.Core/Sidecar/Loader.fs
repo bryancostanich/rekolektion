@@ -32,13 +32,20 @@ let load (path: string) : Sidecar option =
             let json = File.ReadAllText path
             use doc = JsonDocument.Parse json
             let root = doc.RootElement
-            let nets =
-                root.GetProperty("nets").EnumerateObject()
-                |> Seq.map (fun p -> p.Name, parseNetEntry p.Name p.Value)
-                |> Map.ofSeq
-            Some {
-                Version = root.GetProperty("version").GetInt32()
-                Macro   = root.GetProperty("macro").GetString()
-                Nets    = nets
-            }
-        with _ -> None
+            let version = root.GetProperty("version").GetInt32()
+            if version <> 1 then None
+            else
+                let nets =
+                    root.GetProperty("nets").EnumerateObject()
+                    |> Seq.map (fun p -> p.Name, parseNetEntry p.Name p.Value)
+                    |> Map.ofSeq
+                Some {
+                    Version = version
+                    Macro   = root.GetProperty("macro").GetString()
+                    Nets    = nets
+                }
+        with
+        | :? System.Text.Json.JsonException
+        | :? System.Collections.Generic.KeyNotFoundException
+        | :? System.InvalidOperationException
+        | :? System.FormatException -> None

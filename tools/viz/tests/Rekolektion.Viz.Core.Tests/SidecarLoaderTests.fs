@@ -27,3 +27,12 @@ let ``Sidecar exposes power class for VPWR`` () =
     | Some sc ->
         sc.Nets.["VPWR"].Class |> should equal Types.NetClass.Power
     | None -> failwith "expected Some"
+
+[<Fact>]
+let ``Loader.load returns None for unsupported version`` () =
+    let tmp = Path.GetTempFileName()
+    File.WriteAllText(tmp, """{"version":2,"macro":"future","nets":{}}""")
+    try
+        Loader.load tmp |> should equal (None: Types.Sidecar option)
+    finally
+        File.Delete tmp

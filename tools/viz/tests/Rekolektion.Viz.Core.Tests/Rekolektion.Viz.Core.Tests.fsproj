@@ -19,6 +19,7 @@
     <Compile Include="GdsReaderTests.fs" />
     <Compile Include="LayerTests.fs" />
     <Compile Include="SidecarLoaderTests.fs" />
+    <Compile Include="HierarchyTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

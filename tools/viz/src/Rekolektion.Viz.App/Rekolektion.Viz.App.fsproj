@@ -29,6 +29,12 @@
     <Compile Include="Canvas2D/GdsCanvasControl.fs" />
     <Compile Include="Canvas3D/Matrix4x4Helpers.fs" />
     <Compile Include="Canvas3D/StackCanvasControl.fs" />
+    <Compile Include="View/RunDialog.fs" />
+    <Compile Include="View/TopBar.fs" />
+    <Compile Include="View/LeftPanel.fs" />
+    <Compile Include="View/Inspector.fs" />
+    <Compile Include="View/LogPane.fs" />
+    <Compile Include="View/AppView.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

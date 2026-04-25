@@ -32,22 +32,24 @@ type private SkiaDraw(bounds: Rect, lib: Library, toggle: Visibility.ToggleState
 type GdsCanvasControl() =
     inherit Control()
 
-    static let LibraryProp =
+    static member val LibraryProperty : StyledProperty<Library option> =
         AvaloniaProperty.Register<GdsCanvasControl, Library option>("Library", None)
-    static let ToggleProp =
+        with get
+    static member val ToggleProperty : StyledProperty<Visibility.ToggleState> =
         AvaloniaProperty.Register<GdsCanvasControl, Visibility.ToggleState>("Toggle", Visibility.empty)
+        with get
 
     member this.Library
-        with get() : Library option = this.GetValue(LibraryProp)
-        and set(v: Library option) = this.SetValue(LibraryProp, v) |> ignore
+        with get() : Library option = this.GetValue(GdsCanvasControl.LibraryProperty)
+        and set(v: Library option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
 
     member this.Toggle
-        with get() : Visibility.ToggleState = this.GetValue(ToggleProp)
-        and set(v: Visibility.ToggleState) = this.SetValue(ToggleProp, v) |> ignore
+        with get() : Visibility.ToggleState = this.GetValue(GdsCanvasControl.ToggleProperty)
+        and set(v: Visibility.ToggleState) = this.SetValue(GdsCanvasControl.ToggleProperty, v) |> ignore
 
     override this.OnPropertyChanged(e) =
         base.OnPropertyChanged e
-        if e.Property = LibraryProp || e.Property = ToggleProp then
+        if e.Property = GdsCanvasControl.LibraryProperty || e.Property = GdsCanvasControl.ToggleProperty then
             this.InvalidateVisual()
 
     override this.Render(context) =

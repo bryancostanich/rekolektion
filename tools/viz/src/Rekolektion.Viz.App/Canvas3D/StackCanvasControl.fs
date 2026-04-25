@@ -17,11 +17,6 @@ open Rekolektion.Viz.Render.Mesh
 type StackCanvasControl() =
     inherit OpenGlControlBase()
 
-    static let LibraryProp =
-        AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
-    static let ToggleProp =
-        AvaloniaProperty.Register<StackCanvasControl, Visibility.ToggleState>("Toggle", Visibility.empty)
-
     let mutable gl : GL option = None
     let mutable vbo : uint32 = 0u
     let mutable ebo : uint32 = 0u
@@ -32,13 +27,20 @@ type StackCanvasControl() =
     let mutable pitchDeg = -25.0
     let mutable zoom = 1.0
 
+    static member val LibraryProperty : StyledProperty<Library option> =
+        AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
+        with get
+    static member val ToggleProperty : StyledProperty<Visibility.ToggleState> =
+        AvaloniaProperty.Register<StackCanvasControl, Visibility.ToggleState>("Toggle", Visibility.empty)
+        with get
+
     member this.Library
-        with get() : Library option = this.GetValue(LibraryProp)
-        and set(v: Library option) = this.SetValue(LibraryProp, v) |> ignore
+        with get() : Library option = this.GetValue(StackCanvasControl.LibraryProperty)
+        and set(v: Library option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
 
     member this.Toggle
-        with get() : Visibility.ToggleState = this.GetValue(ToggleProp)
-        and set(v: Visibility.ToggleState) = this.SetValue(ToggleProp, v) |> ignore
+        with get() : Visibility.ToggleState = this.GetValue(StackCanvasControl.ToggleProperty)
+        and set(v: Visibility.ToggleState) = this.SetValue(StackCanvasControl.ToggleProperty, v) |> ignore
 
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
         yawDeg <- yaw
@@ -48,7 +50,7 @@ type StackCanvasControl() =
 
     override this.OnPropertyChanged e =
         base.OnPropertyChanged e
-        if e.Property = LibraryProp || e.Property = ToggleProp then
+        if e.Property = StackCanvasControl.LibraryProperty || e.Property = StackCanvasControl.ToggleProperty then
             this.RequestNextFrameRendering()
 
     override this.OnOpenGlInit(gli) =

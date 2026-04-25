@@ -39,6 +39,6 @@
     <Compile Include="View/AppView.fs" />
     <Compile Include="App.fs" />
     <Compile Include="HeadlessRender.fs" />
-    <Compile Include="Placeholder.fs" />
+    <Compile Include="Program.fs" />
   </ItemGroup>
 </Project>

@@ -17,6 +17,7 @@
   <ItemGroup>
     <Compile Include="GdsTypesTests.fs" />
     <Compile Include="GdsReaderTests.fs" />
+    <Compile Include="LayerTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

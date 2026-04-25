@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="Gds/Types.fs" />
     <Compile Include="Gds/Reader.fs" />
+    <Compile Include="Layout/Layer.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

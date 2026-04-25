@@ -65,6 +65,33 @@ class WriteDriverRow:
         # `w_en` net.
         self._add_w_en_rail(top)
 
+        # Per-cell VPWR / VGND .pin shapes so the write_driver_row
+        # cell exposes both supply rails as ports.  Foundry write_driver
+        # met1 power label positions: VDD at cell-local (1.48, 1.05),
+        # (1.10, 5.70); GND at (1.31, 3.13), (1.965, 4.135), (1.10,
+        # 7.885).  We anchor a single VPWR + single VGND .pin per cell
+        # over one rail position; identical labels merge all cells into
+        # one VPWR / VGND net at the write_driver_row boundary.  Same
+        # pattern as `row_decoder._label_power_rails` and `wl_driver_row`.
+        from rekolektion.macro_v2.routing import draw_pin_with_label
+        _half = 0.07
+        _VDD_X = 1.48
+        _VDD_Y = 1.05
+        _GND_X = 1.31
+        _GND_Y = 3.13
+        for i in range(self.bits):
+            cx = i * self.pitch
+            draw_pin_with_label(
+                top, text="VPWR", layer="met1",
+                rect=(cx + _VDD_X - _half, _VDD_Y - _half,
+                      cx + _VDD_X + _half, _VDD_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text="VGND", layer="met1",
+                rect=(cx + _GND_X - _half, _GND_Y - _half,
+                      cx + _GND_X + _half, _GND_Y + _half),
+            )
+
         lib.add(top)
         return lib
 

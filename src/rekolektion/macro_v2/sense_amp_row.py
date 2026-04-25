@@ -62,6 +62,30 @@ class SenseAmpRow:
         # single EN port instead of `bits` separate ones.
         self._add_s_en_rail(top)
 
+        # Per-cell VPWR / VGND .pin shapes so the sense_amp_row cell
+        # exposes both supply rails as ports (same pattern as
+        # write_driver_row / wl_driver_row / row_decoder).  Foundry SA
+        # met1 power label positions: VDD at cell-local (1.89, 2.00),
+        # (1.97, 6.34); GND at (1.90, 0.385), (2.25, 10.055).
+        from rekolektion.macro_v2.routing import draw_pin_with_label
+        _half = 0.07
+        _VDD_X = 1.89
+        _VDD_Y = 2.00
+        _GND_X = 1.90
+        _GND_Y = 0.385
+        for i in range(self.bits):
+            cx = i * self.pitch
+            draw_pin_with_label(
+                top, text="VPWR", layer="met1",
+                rect=(cx + _VDD_X - _half, _VDD_Y - _half,
+                      cx + _VDD_X + _half, _VDD_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text="VGND", layer="met1",
+                rect=(cx + _GND_X - _half, _GND_Y - _half,
+                      cx + _GND_X + _half, _GND_Y + _half),
+            )
+
         lib.add(top)
         return lib
 

@@ -236,8 +236,15 @@ class ControlLogic:
         _rect(top, "met1",
               -0.5, vpwr_rail_y - vpwr_rail_w / 2,
               cell_w + 0.5, vpwr_rail_y + vpwr_rail_w / 2)
-        draw_label(top, text="VPWR", layer="met1",
-                   position=(0.0, vpwr_rail_y))
+        # Pin shape promotes VPWR to a port of ctrl_logic (was just a
+        # named net before, leaving the parent macro's VPWR port
+        # disconnected at the LVS comparison).
+        from rekolektion.macro_v2.routing import draw_pin_with_label
+        draw_pin_with_label(
+            top, text="VPWR", layer="met1",
+            rect=(-0.5, vpwr_rail_y - vpwr_rail_w / 2,
+                  cell_w + 0.5, vpwr_rail_y + vpwr_rail_w / 2),
+        )
         # Drop to each NAND2 VDD met1 rail.  NAND2 VDD rail is met1
         # at local x=3.35..3.60, y=0.15..2.01.  Extend a vertical met1
         # from the NAND rail top up to the VPWR rail.
@@ -264,8 +271,11 @@ class ControlLogic:
         _rect(top, "met1",
               -0.5, vgnd_rail_y - vpwr_rail_w / 2,
               cell_w + 0.5, vgnd_rail_y + vpwr_rail_w / 2)
-        draw_label(top, text="VGND", layer="met1",
-                   position=(0.0, vgnd_rail_y))
+        draw_pin_with_label(
+            top, text="VGND", layer="met1",
+            rect=(-0.5, vgnd_rail_y - vpwr_rail_w / 2,
+                  cell_w + 0.5, vgnd_rail_y + vpwr_rail_w / 2),
+        )
         # Bridge to each DFF bottom li1 rail (li1 at y=-0.1..0.1)
         # via li1↔met1 via stack + vertical met1 down to VGND rail.
         for ox, oy in dff_origins:

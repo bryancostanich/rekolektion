@@ -17,7 +17,9 @@ from pathlib import Path
 
 import gdstk
 
-from rekolektion.macro_v2.routing import draw_label, draw_wire, draw_via_stack
+from rekolektion.macro_v2.routing import (
+    draw_label, draw_pin_with_label, draw_wire, draw_via_stack,
+)
 from rekolektion.macro_v2.sky130_drc import GDS_LAYER
 
 
@@ -122,25 +124,29 @@ class WlDriverRow:
                     origin=(0.0, (row + 1) * _NAND_PITCH),
                     x_reflection=True,
                 ))
-            # Label each NAND3's A pin (input from decoder) as
-            # dec_out_{row} so the extracted subckt exposes a named
-            # port instead of the anonymous sky130_..._nand3_dec_NN/A.
-            # Without this label, Magic's ext2spice uses the per-
-            # instance port path as the subckt-boundary name, and
-            # netgen LVS reports the entire dec_out[0..127] bus as
-            # mismatched even though topology matches the reference.
+            # Expose each NAND3's A and Z as named ports of the
+            # wl_driver cell (`dec_out_{row}` and `wl_{row}`).  Magic
+            # only promotes labels to ports when the label sits on a
+            # polygon owned by THIS cell AND a `.pin` shape (datatype
+            # 16) exists on that net.  An earlier `draw_label`-only
+            # version registered the names as nodes but did not export
+            # them as ports, so the parent `_route_wl` connection
+            # showed up as `wl_driver_m4_512x32_0/wl_X` and
+            # `wl_driver_m4_512x32_0/dec_out_X` (subcell-internal)
+            # rather than top-level dec_out_X / wl_X.  draw_pin_with_label
+            # emits both purposes.  The .pin sits on the cell's li1
+            # input/output pin pad (small overlap with the foundry
+            # cell's li1) so the label anchors to a wl_driver-owned
+            # polygon.
             a_x, a_y = self.a_pin_absolute(row)
-            draw_label(
+            draw_pin_with_label(
                 top, text=f"dec_out_{row}", layer="li1",
-                position=(a_x, a_y),
+                rect=(a_x - 0.07, a_y - 0.07, a_x + 0.07, a_y + 0.07),
             )
-            # Same reasoning for Z: the WL output net needs a
-            # semantic label (wl_{row}) so the extracted port name
-            # matches the reference.
             z_x, z_y = self.z_pin_absolute(row)
-            draw_label(
+            draw_pin_with_label(
                 top, text=f"wl_{row}", layer="li1",
-                position=(z_x, z_y),
+                rect=(z_x - 0.07, z_y - 0.07, z_x + 0.07, z_y + 0.07),
             )
 
         # VDD rail on met2 (vertical) on the right side of the column.
@@ -154,9 +160,16 @@ class WlDriverRow:
         _rect(top, "met2",
               vdd_x - _VDD_RAIL_W / 2, 0.0,
               vdd_x + _VDD_RAIL_W / 2, self.num_rows * _NAND_PITCH)
-        draw_label(
+        # Use draw_pin_with_label so VPWR becomes a port (not just a
+        # named net) of the wl_driver cell.  Pin rect overlays the
+        # rail at the rail's mid-y; the rail itself stays on met2.
+        _rail_mid_y = self.num_rows * _NAND_PITCH / 2
+        draw_pin_with_label(
             top, text="VPWR", layer="met2",
-            position=(vdd_x, self.num_rows * _NAND_PITCH / 2),
+            rect=(
+                vdd_x - _VDD_RAIL_W / 2, _rail_mid_y - 0.10,
+                vdd_x + _VDD_RAIL_W / 2, _rail_mid_y + 0.10,
+            ),
         )
 
         # Tie B + C to VDD for every row.
@@ -212,6 +225,39 @@ class WlDriverRow:
             end=(vdd_x, bridge_y),
             layer="met2",
         )
+
+        # Per-cell VPWR / VGND .pin shapes so the wl_driver cell
+        # exposes both supply rails as ports.  The foundry NAND3 cells'
+        # internal met1 GND rail (cell-local x=1.905) and VDD rails
+        # (x=4.38, x=6.54) extend past the cell's y bbox; vertically-
+        # abutted instances chain into a single net per rail (the
+        # GND chain is the only way VGND can be exposed since
+        # wl_driver has no top-level GND infrastructure).  Labeling
+        # one cell per chain would suffice topologically, but applying
+        # the label to every cell costs little and is robust to future
+        # placement edits.  Same approach as `row_decoder._label_power_rails`.
+        _NAND3_GND_X_LOCAL = 1.905
+        _NAND3_GND_Y_LOCAL = 0.715  # rail mid-y for label/.pin anchor
+        _NAND3_VDD_X_LOCAL = 4.380
+        _NAND3_VDD_Y_LOCAL = 0.850
+        _half = 0.07
+        for row in range(self.num_rows):
+            if row % 2 == 0:
+                gnd_y = row * _NAND_PITCH + _NAND3_GND_Y_LOCAL
+                vdd_y = row * _NAND_PITCH + _NAND3_VDD_Y_LOCAL
+            else:
+                gnd_y = (row + 1) * _NAND_PITCH - _NAND3_GND_Y_LOCAL
+                vdd_y = (row + 1) * _NAND_PITCH - _NAND3_VDD_Y_LOCAL
+            draw_pin_with_label(
+                top, text="VGND", layer="met1",
+                rect=(_NAND3_GND_X_LOCAL - _half, gnd_y - _half,
+                      _NAND3_GND_X_LOCAL + _half, gnd_y + _half),
+            )
+            draw_pin_with_label(
+                top, text="VPWR", layer="met1",
+                rect=(_NAND3_VDD_X_LOCAL - _half, vdd_y - _half,
+                      _NAND3_VDD_X_LOCAL + _half, vdd_y + _half),
+            )
 
         lib.add(top)
         return lib

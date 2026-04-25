@@ -657,6 +657,8 @@ class RowDecoder:
         x: float,
     ) -> None:
         """Import NAND_k and tile num_rows of them vertically at nand_h pitch."""
+        from rekolektion.macro_v2.routing import draw_label
+
         if k_fanin not in _NAND_CELL_NAMES:
             raise ValueError(
                 f"fan-in {k_fanin} has no foundry NAND cell"
@@ -669,6 +671,7 @@ class RowDecoder:
             lib.add(c.copy(c.name))
             seen.add(c.name)
         nand_cell = next(c for c in lib.cells if c.name == nand_name)
+        z_lx, z_ly = self._NAND_Z_PIN_POS[k_fanin]
         # X-mirror odd rows so adjacent cells share power rails — this
         # is the standard dec-family tiling pattern (same as the bitcell
         # array) and is what keeps the layout DRC-clean at pitch 1.58.
@@ -677,9 +680,46 @@ class RowDecoder:
                 top.add(gdstk.Reference(
                     nand_cell, origin=(x, row * _NAND_DEC_PITCH),
                 ))
+                z_ay = row * _NAND_DEC_PITCH + z_ly
             else:
                 top.add(gdstk.Reference(
                     nand_cell,
                     origin=(x, (row + 1) * _NAND_DEC_PITCH),
                     x_reflection=True,
                 ))
+                z_ay = (row + 1) * _NAND_DEC_PITCH - z_ly
+            # Expose each row's Z output as port `dec_out_{row}` of
+            # the row_decoder cell so the parent macro's X-instance
+            # can connect it to the wl_driver's A input.  Magic only
+            # promotes a label to a port when (a) the label sits on a
+            # drawn polygon owned by THIS cell (not a sub-cell
+            # reference) and (b) a `.pin` purpose polygon (datatype
+            # 16) exists on that same net.  An earlier attempt with
+            # only a li1.label landed the label on the foundry NAND3's
+            # internal Z li1 strip; Magic registered the net but did
+            # not export it as a row_decoder port, so the row_decoder
+            # subckt was emitted with only 17 ports (addr[0..6] +
+            # stray subcell paths) instead of 137, and the parent
+            # X-instance line collapsed to all `we` placeholders.
+            #
+            # Fix: draw a li1.pin shape OVER the foundry NAND3's full
+            # Z strip (cell-local x=[1.61, 7.51], y=[0.20, 0.37]) plus
+            # a label.  The wide pin guarantees any later parent-level
+            # drop on this strip merges with the named port — assembler
+            # `_route_wl` lands its li1→met1 stack at cell-local x=7.01
+            # (right_edge − _NAND_OUTPUT_X_OFFSET_FROM_RIGHT = 0.5),
+            # which is far from z_lx = 3.5.  A narrow stub at z_lx
+            # gave the row_decoder.ext a dec_out_X port but the parent
+            # drop missed it, so the X-instance still emitted
+            # `instance/dec_out_X` (subcell-internal) instead of the
+            # top-level dec_out_X net that wl_driver expects.
+            from rekolektion.macro_v2.routing import draw_pin_with_label
+            # Z-strip absolute extent (cell-local x [1.61, 7.51],
+            # y_local [0.20, 0.37], width 0.17 µm).  For odd rows the
+            # cell is x_reflected so y mirrors around the cell centre;
+            # the strip's y in absolute terms is [z_ay-0.085, z_ay+0.085].
+            draw_pin_with_label(
+                top, text=f"dec_out_{row}", layer="li1",
+                rect=(x + 1.61, z_ay - 0.085,
+                      x + 7.51, z_ay + 0.085),
+            )

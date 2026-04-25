@@ -6,7 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Compile Include lines added in subsequent tasks -->
+    <Compile Include="Gds/Types.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

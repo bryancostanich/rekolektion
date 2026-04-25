@@ -107,15 +107,19 @@ type App() =
                 if not (Directory.Exists rekoDir) then
                     Directory.CreateDirectory rekoDir |> ignore
                 let sockPath = Path.Combine(rekoDir, "viz.sock")
-                if File.Exists sockPath then
-                    try File.Delete sockPath with _ -> ()
-                // TODO(Tasks 23, 24): wire up the screenshot + command
-                // listeners here once their modules land. The socket
-                // path is computed and the parent dir is ensured, so
-                // those tasks should be a 2-line change:
-                //   let screenshotHandle = ScreenshotListener.start sockPath (fun () -> Some (mainWindow :> Avalonia.Controls.TopLevel))
-                //   let commandHandle    = CommandListener.start sockPath (fun msg -> AppDispatch.send msg)
-                // and Dispose them on desktop.Exit.
-                ignore sockPath
+                // Bind the screenshot listener on the project-scoped
+                // viz socket so the MCP `rekolektion_viz_screenshot`
+                // tool can fetch a PNG of the running window.
+                // ScreenshotListener.start does its own stale-socket
+                // cleanup before bind, so a leftover viz.sock from a
+                // previous crashed run doesn't block this listener.
+                let screenshotHandle =
+                    ScreenshotListener.start sockPath (fun () ->
+                        Some (mainWindow :> Avalonia.Controls.TopLevel))
+                desktop.Exit.Add(fun _ -> screenshotHandle.Dispose())
+                // TODO(Task 24): wire up the CommandListener for
+                // agent-driven Msg dispatch on a sibling socket
+                // (CommandListener can't share viz.sock — only one
+                // listener per UDS path).
         | _ -> ()
         base.OnFrameworkInitializationCompleted()

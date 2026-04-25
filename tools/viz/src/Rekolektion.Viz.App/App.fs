@@ -14,6 +14,26 @@ open Rekolektion.Viz.App.Model.Update
 open Rekolektion.Viz.App.Services
 open Rekolektion.Viz.App.View
 
+/// Module-level handle to the live Elmish dispatcher. Captured by
+/// `syncDispatch` below the first time `Program.runWithDispatch`
+/// invokes it (during MainWindow construction). Read by services
+/// that need to inject Msgs from outside the UI tree —
+/// CommandListener (UDS POST endpoints) is the only consumer
+/// today, but anything not wired through Elmish Cmd / Sub goes
+/// through here.
+///
+/// The mutable ref is intentionally not thread-safe: `current`
+/// is only written once (UI thread, during boot) and read after
+/// that, so a plain `option` ref is fine. `send` is a no-op
+/// before the dispatcher is wired so early calls (e.g. headless
+/// boot) don't NPE. Pattern lifted from Moroder.Viz's App.fs.
+module AppDispatch =
+    let mutable current : (Msg.Msg -> unit) option = None
+    let send (msg: Msg.Msg) : unit =
+        match current with
+        | Some d -> d msg
+        | None   -> ()
+
 module private Subscriptions =
 
     /// Dispatch wrapper used by `Program.runWithDispatch` below. FuncUI's
@@ -36,6 +56,15 @@ module private Subscriptions =
                 inner msg
             else
                 Avalonia.Threading.Dispatcher.UIThread.Post(fun () -> inner msg)
+
+    /// Wraps `uiDispatch` and additionally publishes the wrapped
+    /// dispatcher into `AppDispatch.current` so off-Elmish services
+    /// (CommandListener) can fire Msgs through the same UI-thread
+    /// marshalling path.
+    let syncDispatch (inner: Dispatch<Msg.Msg>) : Dispatch<Msg.Msg> =
+        let ui = uiDispatch inner
+        AppDispatch.current <- Some ui
+        ui
 
 /// Root Avalonia window. Bootstraps the Elmish MVU loop via FuncUI's
 /// `Program.withHost` on construction, threading a live `ServiceBackend`
@@ -62,7 +91,7 @@ type MainWindow() as this =
 
         Program.mkProgram init update view
         |> Program.withHost this
-        |> Program.runWithDispatch Subscriptions.uiDispatch ()
+        |> Program.runWithDispatch Subscriptions.syncDispatch ()
 
 type App() =
     inherit Application()
@@ -113,13 +142,16 @@ type App() =
                 // ScreenshotListener.start does its own stale-socket
                 // cleanup before bind, so a leftover viz.sock from a
                 // previous crashed run doesn't block this listener.
+                // The listener routes by HTTP method+path: GET serves
+                // a PNG screenshot; POST delegates to CommandListener
+                // for agent-driven Msg dispatch (open file, toggle
+                // layer/net, highlight net, switch tab). Both share
+                // the same viz.sock — only one UDS listener per path.
                 let screenshotHandle =
-                    ScreenshotListener.start sockPath (fun () ->
-                        Some (mainWindow :> Avalonia.Controls.TopLevel))
+                    ScreenshotListener.start
+                        sockPath
+                        (fun () -> Some (mainWindow :> Avalonia.Controls.TopLevel))
+                        AppDispatch.send
                 desktop.Exit.Add(fun _ -> screenshotHandle.Dispose())
-                // TODO(Task 24): wire up the CommandListener for
-                // agent-driven Msg dispatch on a sibling socket
-                // (CommandListener can't share viz.sock — only one
-                // listener per UDS path).
         | _ -> ()
         base.OnFrameworkInitializationCompleted()

@@ -84,16 +84,16 @@ let derive (lib: Library) : Map<string, NetEntry> =
         | Some s0 ->
             // BFS over same-layer polygons that touch.
             let sameLayer = polys |> List.filter (fun p -> p.Layer = s0.Layer && p.DataType = s0.DataType)
-            let visited = System.Collections.Generic.HashSet<int>()
+            let visited = System.Collections.Generic.HashSet<string * int>()
             let queue = System.Collections.Generic.Queue<PolyEntry>()
             queue.Enqueue s0 |> ignore
-            visited.Add (s0.Index + (s0.StructureName.GetHashCode())) |> ignore
+            visited.Add (s0.StructureName, s0.Index) |> ignore
             let collected = System.Collections.Generic.List<PolyEntry>()
             while queue.Count > 0 do
                 let cur = queue.Dequeue()
                 collected.Add cur
                 for cand in sameLayer do
-                    let key = cand.Index + (cand.StructureName.GetHashCode())
+                    let key = (cand.StructureName, cand.Index)
                     if not (visited.Contains key) && touch cur.Points cand.Points then
                         visited.Add key |> ignore
                         queue.Enqueue cand |> ignore

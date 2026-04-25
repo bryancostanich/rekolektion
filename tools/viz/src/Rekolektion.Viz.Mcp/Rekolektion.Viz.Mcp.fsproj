@@ -12,6 +12,6 @@
     <ProjectReference Include="..\Rekolektion.Viz.App\Rekolektion.Viz.App.fsproj" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Placeholder.fs" />
+    <Compile Include="Program.fs" />
   </ItemGroup>
 </Project>

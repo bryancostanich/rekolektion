@@ -283,6 +283,31 @@ class RowDecoder:
             else:
                 detour_ys = None  # use direct routing
 
+            # Draw the rail-end via stack ONCE per (stage, pin).  An
+            # earlier version emitted it inside the cell loop, which
+            # produced N (= 2^k) identical via2 cuts + met2 + met3 pads
+            # stacked at the same (rail_x, y).  Magic's extract treated
+            # the stack of 8 overlapping cuts as a single cut whose
+            # connectivity bonded the rail to ONLY the first cell's
+            # spur — leaving the other 7 cells' input pins isolated
+            # nets at the row_decoder level.  Drawing once here gives
+            # one clean cut per pin, and the per-cell met2 spur drawn
+            # below merges through it onto the rail for every cell.
+            if detour_ys is not None:
+                for pin_name, rail_x in zip(pin_names, stage_addr_xs):
+                    draw_via_stack(
+                        top, from_layer="met2", to_layer="met3",
+                        position=(rail_x, detour_ys[pin_name]),
+                    )
+            else:
+                ref_oy = g["nand_origins"][0][1]
+                for pin_name, rail_x in zip(pin_names, stage_addr_xs):
+                    pin_y_ref = ref_oy + pin_pos[pin_name][1]
+                    draw_via_stack(
+                        top, from_layer="met2", to_layer="met3",
+                        position=(rail_x, pin_y_ref),
+                    )
+
             for (nand_ox, nand_oy) in g["nand_origins"]:
                 for pin_name, rail_x in zip(pin_names, stage_addr_xs):
                     pin_lx, pin_ly = pin_pos[pin_name]
@@ -293,7 +318,10 @@ class RowDecoder:
                         # Detour: rail -> [met3 rail] -> via2 ->
                         # [met2 horizontal at detour_y] -> via1 ->
                         # [met1 vertical at pin_x] -> mcon ->
-                        # [li1 pin pad].
+                        # [li1 pin pad].  The rail-end via2 is drawn
+                        # once outside this loop (see comment above);
+                        # here we draw the per-cell spur and pin-end
+                        # via1 + met1 vertical + mcon.
                         #
                         # Why split layers: the horizontals (one per
                         # pin at its unique detour_y) span x from rail
@@ -306,23 +334,18 @@ class RowDecoder:
                         # detour_y_P) — shorting addr(P) to addr(Q).
                         # Putting horizontals on met2 and verticals on
                         # met1 keeps crossings harmless.
-                        # (1) via2 at rail_x @ detour_y: met3→met2.
-                        draw_via_stack(
-                            top, from_layer="met2", to_layer="met3",
-                            position=(rail_x, detour_y),
-                        )
-                        # (2) met2 horizontal at detour_y.
+                        # (1) met2 horizontal at detour_y.
                         draw_wire(
                             top,
                             start=(rail_x, detour_y), end=(pin_ax, detour_y),
                             layer="met2",
                         )
-                        # (3) via1 at pin_x @ detour_y: met2→met1.
+                        # (2) via1 at pin_x @ detour_y: met2→met1.
                         draw_via_stack(
                             top, from_layer="met1", to_layer="met2",
                             position=(pin_ax, detour_y),
                         )
-                        # (4) met1 vertical from detour_y up to pin_y.
+                        # (3) met1 vertical from detour_y up to pin_y.
                         #     Inside the target NAND3 at pin_x (pin
                         #     x_local ≤ 1.265) — all stage-2 NAND3
                         #     internal met1 lives at x_local ≥ 1.79.
@@ -331,7 +354,7 @@ class RowDecoder:
                             start=(pin_ax, detour_y), end=(pin_ax, pin_ay),
                             layer="met1",
                         )
-                        # (5) mcon at pin: li1→met1 stack connects to
+                        # (4) mcon at pin: li1→met1 stack connects to
                         #     the cell's li1 pin pad.
                         draw_via_stack(
                             top, from_layer="li1", to_layer="met1",
@@ -339,15 +362,12 @@ class RowDecoder:
                         )
                     else:
                         # Direct: met2 horizontal at pin_y from rail_x
-                        # to pin_x.
+                        # to pin_x.  Rail-end via stack drawn once
+                        # outside this loop (see comment above).
                         draw_wire(
                             top,
                             start=(rail_x, pin_ay), end=(pin_ax, pin_ay),
                             layer="met2",
-                        )
-                        draw_via_stack(
-                            top, from_layer="met2", to_layer="met3",
-                            position=(rail_x, pin_ay),
                         )
                         draw_via_stack(
                             top, from_layer="li1", to_layer="met2",
@@ -371,7 +391,26 @@ class RowDecoder:
         # Must NOT be at nand_x + pin_lx — via-stack pads at adjacent
         # pin positions (A at 0.41, B at 0.77, C at 1.13 — only 0.36
         # µm apart) overlap and short all 3 inputs to one net.
-        rail_offsets = [-0.4, -2.3, -3.8][: self.final_fanin]
+        #
+        # Rails MUST sit east of the predecoder block's rightmost
+        # internal met2.  Stage-2 NAND3 cells have an internal met2
+        # rail at cell-local x=[2.530, 5.945], y=[0.795, 1.335]
+        # (likely the cell's VDD anchor).  The rightmost stage-2 cell
+        # at x_origin=58.41 puts that internal met2 at abs x_max=64.355,
+        # y=[10.175, 10.715].  Per-row spurs to the final NAND column
+        # emit a via2 stack at (rail_x, pin_y).  For row 6 (pin_y=10.61
+        # from pin C y_local=1.130, r=6 even: 6*1.58+1.130) the via2
+        # met2 pad lands at y=[10.425, 10.795] — y_min=10.425 OVERLAPS
+        # the stage-2 cell's internal met2 y_max=10.435 by 10 nm.  If
+        # the rail x is also inside the cell's met2 x range (≤64.355),
+        # the spur pad shorts pred*_out_0 to that cell's internal net,
+        # which the cell ties to its pin C — so addr[6] (pin C of
+        # cell 135 in the chain) bridges to pred2_out_0.  Original
+        # offsets [-0.4, -2.3, -3.8] put rails at x=64.14 / 65.64 —
+        # BOTH inside the predecoder block (which ends at x=65.94).
+        # Shift rails into the (pred_block_right_x, nand_x) gap so
+        # every via2 pad sits east of stage-2 cell internal met2.
+        rail_offsets = [-0.4, -1.4, -2.4][: self.final_fanin]
 
         for stage_idx, g in enumerate(stage_geom):
             k = g["k"]

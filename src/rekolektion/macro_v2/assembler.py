@@ -1409,19 +1409,32 @@ def _route_ctrl_external_pins(
             start=(west, trunk_y), end=(east, trunk_y),
             layer="met3", width=_CTRL_TRUNK_W,
         )
+        # Vertical drop from trunk to land: MUST be on met2, not met3.
+        # Drop x-positions (clk=2.0, we=7.0, cs=13.0 cell-local) lie
+        # inside the row_decoder block, where stage-2's Z→rail wire
+        # runs horizontally on met3 at y≈51.7 spanning cell-local
+        # x=[9.2, 64.14].  Same-layer met3 crossings short clk/we/cs
+        # to pred2_out_0, propagating via row_decoder addr rails into
+        # an equiv chain cs≡we≡clk≡addr[0..6].  Met2 drops cross the
+        # met3 wire harmlessly.
+        draw_via_stack(
+            top, from_layer="met2", to_layer="met3",
+            position=(land_x, trunk_y),
+        )
         draw_wire(
             top,
-            start=(land_x, trunk_y + _CTRL_TRUNK_HALF_W),
-            end=(land_x, land_y - _CTRL_TRUNK_HALF_W),
-            layer="met3", width=_CTRL_TRUNK_W,
+            start=(land_x, trunk_y),
+            end=(land_x, land_y),
+            layer="met2", width=_CTRL_TRUNK_W,
         )
-        # If landing on met2, add met3→met2 via stack at the land point.
-        if rail_layer == "met2":
+        if rail_layer == "met3":
+            # Need a met2→met3 via at the rail to merge with the rail.
             draw_via_stack(
                 top, from_layer="met2", to_layer="met3",
                 position=(land_x, land_y),
             )
-        # (rail_layer == "met3": the vertical already merges with the rail)
+        # rail_layer == "met2": the met2 drop bottom directly merges
+        # with the labeled met2 rail; no via needed.
 
     # Unique trunk y per signal (met3 horizontal at each y won't short).
     # Stack above the pin stub top with _CTRL_TRUNK_PITCH spacing.

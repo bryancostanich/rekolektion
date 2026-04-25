@@ -21,6 +21,7 @@
     <Compile Include="SidecarLoaderTests.fs" />
     <Compile Include="HierarchyTests.fs" />
     <Compile Include="VisibilityTests.fs" />
+    <Compile Include="PickingTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

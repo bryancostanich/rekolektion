@@ -9,11 +9,18 @@ Run ALL steps after modifying `src/rekolektion/bitcell/sky130_6t_lr.py`:
 python3 -c "from rekolektion.bitcell.sky130_6t_lr import generate_bitcell; generate_bitcell('output/sky130_6t_lr.gds')"
 
 # 2. Render per-layer PNGs (F# tool — READ these to verify visually)
-cd ~/Git_Repos/bryan_costanich/rekolektion/tools/viz
-dotnet run -- render ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/rekolektion/output/renders/lr/
+cd ~/Git_Repos/bryan_costanich/rekolektion
+dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- render output/sky130_6t_lr.gds output/renders/lr/
 
 # 3. Generate 3D files — GLB + STL + in-situ GLB (F# tool)
-dotnet run -- mesh ~/Git_Repos/bryan_costanich/rekolektion/output/sky130_6t_lr.gds ~/Git_Repos/bryan_costanich/rekolektion/output/3d_lr/
+dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- mesh output/sky130_6t_lr.gds output/3d_lr/
+
+# 3a. Open the live desktop viewer (interactive 2D + 3D)
+dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- app
+
+# 3b. Headless one-shot render (no GUI; for CI / agents)
+dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- viz-render \
+    --gds output/sky130_6t_lr.gds --output output/renders/lr_smoke.png
 
 # 4. DRC check via Magic
 cd ~/Git_Repos/bryan_costanich/rekolektion
@@ -92,7 +99,7 @@ EOF
 - `src/rekolektion/bitcell/sky130_6t_lr_cim.py` — 7T+1C CIM cell generator + variants
 - `src/rekolektion/tech/sky130.py` — design rules, layer defs, PDK variant config
 - `src/rekolektion/macro/cim_assembler.py` — CIM macro assembler
-- `tools/viz/` — F# GDS reader, layer renderer, 3D mesh generator (.NET 10)
+- `tools/viz/` — F# 5-project solution (.NET 10): Core (GDS/sidecar), Render (Skia + 3D mesh), App (Avalonia desktop), Cli (read/render/mesh/app/viz-render), Mcp (stdio JSON-RPC server with 7 agent tools)
 - `scripts/render_cell.py` — GDS to per-layer PNG renderer (Python, legacy)
 - `scripts/gds_to_stl.py` — GDS to 3D GLB/STL converter (Python, legacy)
 

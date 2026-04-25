@@ -292,7 +292,7 @@
   module Rekolektion.Viz.Core.Gds.Types
 
   /// GDS coordinates are integer database units (DBU). Conversion to
-  /// micrometers happens at display time using Library.DbUnitsPerUserUnit.
+  /// micrometers happens at display time using Library.UserUnitsPerDbUnit.
   type Point = { X: int64; Y: int64 }
 
   type Boundary = {
@@ -349,7 +349,7 @@
 
   type Library = {
       Name: string
-      DbUnitsPerUserUnit: float    // user units per DB unit (e.g. 0.001 μm/DBU)
+      UserUnitsPerDbUnit: float    // user units per DB unit (e.g. 0.001 μm/DBU)
       DbUnitsInMeters: float       // meters per DB unit (e.g. 1e-9)
       Structures: Structure list
   }
@@ -431,7 +431,7 @@
       let lib = Reader.readGds (fixturePath "bitcell_lr.gds")
       lib.Name |> should not' (equal "")
       lib.Structures |> List.isEmpty |> should equal false
-      lib.DbUnitsPerUserUnit |> should be (greaterThan 0.0)
+      lib.UserUnitsPerDbUnit |> should be (greaterThan 0.0)
 
   [<Fact>]
   let ``Reader.readGds bitcell_lr has at least one boundary`` () =
@@ -833,7 +833,7 @@
   [<Fact>]
   let ``Hierarchy.detect identifies known sram sub-blocks`` () =
       let lib = {
-          Name = "test"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+          Name = "test"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
           Structures = [
               mkStruct "macro_v2_top"
               mkStruct "sram_array"
@@ -854,7 +854,7 @@
   [<Fact>]
   let ``Hierarchy.detect classifies blocks by role`` () =
       let lib = {
-          Name = "x"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+          Name = "x"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
           Structures = [mkStruct "sram_array"; mkStruct "row_decoder"]
       }
       let blocks = Hierarchy.detect lib
@@ -1206,7 +1206,7 @@
   [<Fact>]
   let ``label on a polygon names that polygon's net`` () =
       let lib = {
-          Name = "x"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+          Name = "x"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
           Structures = [{
               Name = "top"
               Elements = [
@@ -1222,7 +1222,7 @@
   [<Fact>]
   let ``label on overlapping polys connects both`` () =
       let lib = {
-          Name = "x"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+          Name = "x"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
           Structures = [{
               Name = "top"
               Elements = [
@@ -1454,7 +1454,7 @@
   let private rect x y w h = [ {X=x;Y=y}; {X=x+w;Y=y}; {X=x+w;Y=y+h}; {X=x;Y=y+h}; {X=x;Y=y} ]
 
   let private singleBoundaryLib (layer: int) (datatype: int) =
-      { Name = "x"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+      { Name = "x"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
         Structures = [{
           Name = "top"
           Elements = [
@@ -1605,7 +1605,7 @@
   [<Fact>]
   let ``Labels paint visible text`` () =
       let lib =
-          { Name = "x"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+          { Name = "x"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
             Structures = [{
               Name = "top"
               Elements = [
@@ -1697,7 +1697,7 @@
   [<Fact>]
   let ``Extruder.extrude produces 8 vertices per rectangular layer (top + bottom)`` () =
       let lib =
-          { Name = "x"; DbUnitsPerUserUnit = 0.001; DbUnitsInMeters = 1e-9
+          { Name = "x"; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9
             Structures = [{
                 Name = "top"
                 Elements = [ Boundary { Layer = 68; DataType = 20; Points = rect 0L 0L 1000L 1000L } ]
@@ -1728,7 +1728,7 @@
 
   /// Convert DBU→μm via library scale.
   let private dbuToUm (lib: Library) (v: int64) : float32 =
-      float32 (float v * lib.DbUnitsPerUserUnit)
+      float32 (float v * lib.UserUnitsPerDbUnit)
 
   /// Extrude a single rectilinear polygon at z0..z1. Returns 8 vertices
   /// (top quad then bottom quad) and 36 triangle indices (2 caps × 2
@@ -3082,7 +3082,7 @@ Simplest design: refactor ScreenshotListener into a unified `SocketServer` that 
       | [path] ->
           let lib = Reader.readGds path
           printfn "Library: %s" lib.Name
-          printfn "DB units/user unit: %g" lib.DbUnitsPerUserUnit
+          printfn "DB units/user unit: %g" lib.UserUnitsPerDbUnit
           printfn "Structures: %d" lib.Structures.Length
           for s in lib.Structures do
               let bs = s.Elements |> List.filter (function Types.Boundary _ -> true | _ -> false) |> List.length

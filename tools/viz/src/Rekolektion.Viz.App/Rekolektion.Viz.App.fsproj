@@ -25,6 +25,7 @@
     <Compile Include="Model/Update.fs" />
     <Compile Include="Services/RekolektionCli.fs" />
     <Compile Include="Services/GdsLoading.fs" />
+    <Compile Include="Canvas2D/GdsCanvasControl.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

@@ -16,6 +16,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="GdsTypesTests.fs" />
+    <Compile Include="GdsReaderTests.fs" />
     <Compile Include="Placeholder.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\testdata\bitcell_lr.gds">
+      <Link>testdata\bitcell_lr.gds</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

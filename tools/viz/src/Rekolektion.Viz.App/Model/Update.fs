@@ -61,8 +61,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with View3D = { v with ZoomFactor = v.ZoomFactor * f } }, Cmd.none
     | Msg.RunMacroRequested p ->
         let cmd =
+            // TODO(task 16+): wire log-line callback through Cmd.ofSub so streamed stderr posts LogLine msgs.
             Cmd.OfAsync.either
-                (fun () -> backend.RunMacro p (fun line -> ()))
+                (fun () -> backend.RunMacro p (fun _line -> ()))
                 ()
                 (function
                     | Ok path -> Msg.RunCompleted path

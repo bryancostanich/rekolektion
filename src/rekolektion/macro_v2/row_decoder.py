@@ -111,6 +111,7 @@ class RowDecoder:
             k = self.split[0]
             self._emit_vertical_nand_column(lib, top, seen, k_fanin=k, x=0.0)
             self._add_addr_rails(top, k_fanin=k, nand_x=0.0)
+            self._label_power_rails(top)
             lib.add(top)
             return lib
 
@@ -119,9 +120,60 @@ class RowDecoder:
         # so Magic extracts a flat topology matching the flat reference
         # SPICE (spice_generator._write_row_decoder_subckt multi-branch).
         self._build_multi_predecoder(lib, top, seen)
+        self._label_power_rails(top)
 
         lib.add(top)
         return lib
+
+    # Cell-local centres of foundry NAND VDD / GND met1 rails.  Used to
+    # plant row_decoder-owned met1.pin shapes that promote each cell's
+    # supply rails into VPWR/VGND ports of the row_decoder cell.
+    _NAND_POWER_PIN_POS: dict[int, dict[str, tuple[float, float]]] = {
+        2: {"VPWR": (3.365, 1.030), "VGND": (1.240, 0.782)},
+        3: {"VPWR": (4.380, 0.850), "VGND": (1.905, 0.715)},
+    }
+
+    def _label_power_rails(self, top: "gdstk.Cell") -> None:
+        """Drop VPWR/VGND .pin shapes over each placed NAND cell's supply
+        rails so Magic exposes them as ports of the row_decoder cell.
+
+        Without these, every isolated VDD group in the cell (the 8
+        stage-2 NAND3 columns, 4×2 NAND2 stages, and the y-abutted
+        final NAND column) becomes its own stray
+        `nand3_dec_X/VDD` port at the row_decoder boundary — the
+        extracted subckt then carries 6+ unmatched VDD ports while
+        the reference SPICE has a single VPWR.  Adding a labeled
+        met1.pin per rail gives every cell's supply pin a row_decoder
+        net name; identical labels ensure all groups merge."""
+        from rekolektion.macro_v2.routing import draw_pin_with_label
+
+        for ref in list(top.references):
+            cell_name = ref.cell.name
+            if "nand3_dec" in cell_name:
+                k = 3
+            elif "nand2_dec" in cell_name:
+                k = 2
+            else:
+                continue
+            ox, oy = ref.origin
+            mirrored = bool(getattr(ref, "x_reflection", False))
+            pin_pos = self._NAND_POWER_PIN_POS[k]
+            for net_name, (lx, ly) in pin_pos.items():
+                # x_reflection negates Y in cell-local before translation.
+                pin_ay = oy - ly if mirrored else oy + ly
+                pin_ax = ox + lx
+                # Tiny .pin so we don't introduce new geometry that
+                # could collide with adjacent routing — just enough to
+                # carry the label.  The foundry rail extends past cell
+                # boundaries (e.g. NAND3 VDD y_local [-0.035, 1.735])
+                # so the rail itself is what carries current; the .pin
+                # shape only anchors the label to the row_decoder cell.
+                half = 0.07
+                draw_pin_with_label(
+                    top, text=net_name, layer="met1",
+                    rect=(pin_ax - half, pin_ay - half,
+                          pin_ax + half, pin_ay + half),
+                )
 
     def _build_multi_predecoder(
         self, lib: gdstk.Library, top: gdstk.Cell, seen: set[str],

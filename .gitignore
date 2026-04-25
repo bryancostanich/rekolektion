@@ -16,6 +16,7 @@ output/
 *.lib
 *.spice
 *.sp
+!tools/viz/testdata/*.gds
 
 # Allow committed foundry-cell port-patched subckts (D3 LVS cache)
 !src/rekolektion/peripherals/cells/extracted_subckt/*.subckt.sp

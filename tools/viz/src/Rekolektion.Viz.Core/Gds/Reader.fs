@@ -79,17 +79,26 @@ let private readReal8 (data: byte[]) (offset: int) : float =
 
 /// Read all records from a GDS binary stream.
 let private readRecords (stream: Stream) : RawRecord list =
-    let reader = new BinaryReader(stream)
+    // leaveOpen=true: outer `use stream` in readGds owns FileStream disposal.
+    use reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen = true)
     let records = System.Collections.Generic.List<RawRecord>()
     while stream.Position < stream.Length do
         let lenBytes = reader.ReadBytes(2)
-        if lenBytes.Length < 2 then () // EOF
+        if lenBytes.Length < 2 then () // clean EOF on the record boundary
         else
             let len = int lenBytes.[0] <<< 8 ||| int lenBytes.[1]
             let typeBytes = reader.ReadBytes(2)
+            if typeBytes.Length < 2 then
+                raise (EndOfStreamException "truncated GDSII record header")
             let recType = uint16 (int typeBytes.[0] <<< 8 ||| int typeBytes.[1])
             let dataLen = len - 4
-            let data = if dataLen > 0 then reader.ReadBytes(dataLen) else [||]
+            let data =
+                if dataLen > 0 then
+                    let buf = reader.ReadBytes(dataLen)
+                    if buf.Length < dataLen then
+                        raise (EndOfStreamException "truncated GDSII record payload")
+                    buf
+                else [||]
             records.Add({ RecordType = recType; Data = data })
     records |> Seq.toList
 

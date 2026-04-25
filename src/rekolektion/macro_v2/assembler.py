@@ -2039,17 +2039,50 @@ def _top_pin_layout(
     for i in range(p.bits):
         input_names.append(f"din[{i}]")
 
+    # Compute the PDN strap x-ranges (centre ± half-width) so we can
+    # keep top/bottom pin x-positions clear of them.  Without this,
+    # the rightmost dout/din pins (e.g. dout[31] at x ≈ 258 when the
+    # macro is ~260 wide) land directly under the east VGND strap on
+    # met4; the pin's met3 stub overlaps the strap's met2 anchor pad
+    # in 2D and Magic merges the pin net with VGND.
+    xs_lo = min(x for x, _ in fp.positions.values())
+    xs_hi = max(
+        fp.positions[n][0] + fp.sizes[n][0] for n in fp.positions
+    )
+    macro_xs_lo = xs_lo - 1.0
+    macro_xs_hi = xs_hi + 1.0
+    macro_w_ext = macro_xs_hi - macro_xs_lo
+    edge_margin = _PDN_STRAP_W / 2 + 0.5
+    strap_centers = [
+        macro_xs_lo + macro_w_ext / 2,        # VPWR centre
+        macro_xs_lo + edge_margin,            # VGND left
+        macro_xs_hi - edge_margin,            # VGND right
+    ]
+    strap_keepout = _PDN_STRAP_W / 2 + 0.5  # PDN half-width + clearance
+
+    def _avoid_straps(x: float) -> float:
+        """Nudge x clear of any PDN strap by at least strap_keepout."""
+        for sc in strap_centers:
+            if abs(x - sc) < strap_keepout:
+                # Push x to whichever side gives the smaller jump.
+                west = sc - strap_keepout
+                east = sc + strap_keepout
+                x = west if abs(x - west) < abs(x - east) else east
+        return x
+
     x0 = array_x + 1.0
     x_end = array_x + array_w - 1.0
     step = (x_end - x0) / max(len(input_names) - 1, 1) if len(input_names) > 1 else 0.0
     positions: dict[str, tuple[float, float]] = {}
     for i, name in enumerate(input_names):
-        positions[name] = (x0 + i * step, pins_top_y)
+        positions[name] = (_avoid_straps(x0 + i * step), pins_top_y)
 
     x0b = array_x + 1.0
     stepb = (x_end - x0b) / max(p.bits - 1, 1) if p.bits > 1 else 0.0
     for i in range(p.bits):
-        positions[f"dout[{i}]"] = (x0b + i * stepb, pins_bot_y)
+        positions[f"dout[{i}]"] = (
+            _avoid_straps(x0b + i * stepb), pins_bot_y,
+        )
     return positions, pins_top_y, pins_bot_y
 
 

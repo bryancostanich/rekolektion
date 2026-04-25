@@ -770,8 +770,19 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None
 # WD DIN pin cell-local x (from foundry LEF): pin on met1 at
 # x=[1.275, 1.575], y=[0.020, 0.300]. Pin centre at x=1.425, at the
 # BOTTOM of the WD cell (y very small).
+#
+# Y_LOCAL placed at the pin's *low* y so the via-stack pad stays well
+# below the wd_m4 W_EN rail (cell-local y=0.47–0.64).  Previous value
+# 0.160 put the 0.32 µm pad's top edge at y_local=0.32, leaving only
+# 0.150 µm to the EN rail bottom — at the met1 min-spacing limit.  In
+# the ext file Magic merged each DIN via pad with the EN rail, then
+# transitively chained writedriver_21..30 DINs (10 consecutive bits)
+# into one net (equiv "din[10]" "din[1..9]").
+# 0.060 puts pad y range [-0.100, 0.220] in cell-local — still
+# overlaps the foundry DIN strip (y=0.020–0.300 at x=[1.275, 1.575])
+# but clears the EN rail by 0.250 µm.
 _WD_DIN_X_LOCAL: float = 1.425
-_WD_DIN_Y_LOCAL: float = 0.160
+_WD_DIN_Y_LOCAL: float = 0.060
 
 # SA DOUT pin cell-local x (from foundry LEF): pin on met1 at
 # x=[0.520, 0.750], y=[0.000, 1.270]. Pin centre at x=0.635, at the

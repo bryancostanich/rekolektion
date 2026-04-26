@@ -2415,4 +2415,83 @@ def _draw_power_network(
             ),
         )
 
+    # Block-level VPWR / VGND taps.
+    #
+    # The PDN strap above only labels two met2 pads (one VPWR at top,
+    # two VGND at edges).  Each block (row_decoder, wl_driver, etc.)
+    # has its own VPWR / VGND ports anchored at cell-internal met1
+    # rails — but those rails sit at distinct x positions inside each
+    # block, none of which coincide with the strap x.  The strap
+    # therefore can't electrically reach the block rails through the
+    # geometry alone, so the parent extracted SPICE shows VPWR/VGND
+    # disconnected at top level and emits the row_decoder / wl_driver
+    # / etc. X-instance lines with `we` placeholders for their VPWR/
+    # VGND port positions.
+    #
+    # Magic's ext2spice merges nets by label name across the hierarchy.
+    # Dropping a parent-level met1 + met1.pin shape (same purpose as
+    # the strap's met2 .pin) at one of each block's rail positions
+    # makes the parent net "VPWR" share its name with the block's
+    # internal "VPWR" port — netgen flattens both into a single net.
+    # The taps overlay an already-existing met1 rail in the block (a
+    # foundry cell's VDD/GND rail or the block's own power infrastructure)
+    # so Magic also sees a physical metal merge at the same coords.
+    _TAP_HALF = 0.07
+
+    def _tap_block_power(
+        block_name: str,
+        vpwr_local: tuple[float, float],
+        vgnd_local: tuple[float, float],
+    ) -> None:
+        bx, by = fp.positions[block_name]
+        for net_name, (lx, ly) in (
+            ("VPWR", vpwr_local), ("VGND", vgnd_local),
+        ):
+            draw_pin_with_label(
+                top, text=net_name, layer="met1",
+                rect=(
+                    bx + lx - _TAP_HALF, by + ly - _TAP_HALF,
+                    bx + lx + _TAP_HALF, by + ly + _TAP_HALF,
+                ),
+            )
+
+    # Tap point per block — cell-local rail positions that the block
+    # itself labels VPWR/VGND.  Identical-name parent labels merge.
+    # row_decoder multi-predecoder: final NAND3 column at cell-local
+    # x = `_decoder_w_estimate` calc gives nand_x ≈ 67.94 in cell
+    # coords; pick row 0 NAND3 VDD rail (cell-local x=4.38, y=0.85)
+    # and GND rail (x=1.905, y=0.715).
+    if len(_SPLIT_TABLE[p.rows]) == 1:
+        _NAND_X_IN_DEC = 0.0
+    else:
+        _NAND_X_IN_DEC = 4 * 4.77 + 2.0  # matches `_route_wl`'s nand_x_in_dec
+    _tap_block_power(
+        "row_decoder",
+        vpwr_local=(_NAND_X_IN_DEC + 4.38, 0.85),
+        vgnd_local=(_NAND_X_IN_DEC + 1.905, 0.715),
+    )
+    _tap_block_power(
+        "wl_driver",
+        vpwr_local=(4.38, 0.85),
+        vgnd_local=(1.905, 0.715),
+    )
+    _tap_block_power(
+        "write_driver",
+        vpwr_local=(1.48, 1.05),
+        vgnd_local=(1.31, 3.13),
+    )
+    _tap_block_power(
+        "sense_amp",
+        vpwr_local=(1.89, 2.00),
+        vgnd_local=(1.90, 0.385),
+    )
+    # ctrl_logic explicit power rails.  Cell height in control_logic.py:
+    # ctrl_cell_h = NAND2 row at y in [0, 1.99].  VPWR rail at y =
+    # cell_h + 0.3 = 2.29; VGND rail at y = -0.5.
+    _tap_block_power(
+        "control_logic",
+        vpwr_local=(2.0, 2.29),
+        vgnd_local=(2.0, -0.5),
+    )
+
 

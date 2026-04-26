@@ -513,8 +513,33 @@ def _route_wl(
         nand_x_in_dec = 0.0
         k_fanin = _SPLIT_TABLE[p.rows][0]
     else:
-        nand_x_in_dec = 4 * 4.77 + 2.0
-        k_fanin = len(_SPLIT_TABLE[p.rows])
+        # Final NAND column lives east of the predecoder block.  Must
+        # match `RowDecoder._build_multi_predecoder` exactly:
+        #   pred_area_x0      = addr_rail_x0 (0.3) + total_addr * pitch (0.7) + 0.5
+        #   pred_block_right_x = pred_area_x0 + max(2^k * nand_w_k for k in split)
+        #   nand_x            = pred_block_right_x + _PREDECODER_TO_NAND_GAP (2.0)
+        #
+        # An earlier hard-coded value (4 * 4.77 + 2.0 = 21.08) was sized
+        # for a different predecoder layout (4 NAND2s wide).  After the
+        # multi-predecoder rewrite the predecoder block grew to 8 NAND3s
+        # wide, so the stale offset landed every dec_out via stack INSIDE
+        # the stage-2 cells (cell-local x≈28 cell-local instead of x≈68);
+        # the parent's via stacks shorted onto stage-2 Z li1 strips,
+        # chaining dec_out_0..dec_out_127 through 8 stage-2 outputs and
+        # creating 95 spurious `merge dec_out_<i> dec_out_<i+1>` lines
+        # in the parent .ext.
+        from rekolektion.macro_v2.row_decoder import _PREDECODER_TO_NAND_GAP
+        # Foundry NAND cell widths (matches row_decoder.py's runtime
+        # bbox computation): NAND2 = 4.77 µm, NAND3 = 7.53 µm.
+        _NAND_W = {2: 4.77, 3: 7.53}
+        split = _SPLIT_TABLE[p.rows]
+        total_addr = sum(split)
+        pred_area_x0 = 0.3 + total_addr * 0.7 + 0.5
+        pred_block_right_x = pred_area_x0 + max(
+            (2 ** k) * _NAND_W[k] for k in split
+        )
+        nand_x_in_dec = pred_block_right_x + _PREDECODER_TO_NAND_GAP
+        k_fanin = len(split)
 
     # WL driver row (WlDriverRow) places one NAND3_dec per row at
     # (0, row*1.58) cell-local, with X-mirror on odd rows (same pattern
@@ -2478,7 +2503,18 @@ def _draw_power_network(
     if len(_SPLIT_TABLE[p.rows]) == 1:
         _NAND_X_IN_DEC = 0.0
     else:
-        _NAND_X_IN_DEC = 4 * 4.77 + 2.0  # matches `_route_wl`'s nand_x_in_dec
+        # Final NAND column x in row_decoder cell-local — matches
+        # `RowDecoder._build_multi_predecoder` and the corrected
+        # _route_wl calc.
+        from rekolektion.macro_v2.row_decoder import _PREDECODER_TO_NAND_GAP
+        _split = _SPLIT_TABLE[p.rows]
+        _total_addr = sum(_split)
+        _pred_area_x0 = 0.3 + _total_addr * 0.7 + 0.5
+        _NAND_W = {2: 4.77, 3: 7.53}
+        _pred_block_right_x = _pred_area_x0 + max(
+            (2 ** k) * _NAND_W[k] for k in _split
+        )
+        _NAND_X_IN_DEC = _pred_block_right_x + _PREDECODER_TO_NAND_GAP
     _tap_block_power(
         "row_decoder",
         vpwr_local=(_NAND_X_IN_DEC + 4.38, 0.85),

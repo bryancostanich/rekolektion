@@ -522,9 +522,23 @@ def _route_wl(
     wld = WlDriverRow(num_rows=p.rows)
 
     array_left = array_origin[0]
-    via_x_at_array = array_left - _WL_VIA_ARRAY_GAP
+    # Stagger the poly→met1 via stack x by row parity.  The poly pad
+    # of the via stack is 0.43 µm × 0.43 µm; adjacent rows' wl_y values
+    # differ by only 0.39 µm (= 1.58 cell pitch − 2*FOUNDRY_WL_LABEL_Y).
+    # If both parities used the same x, the poly pads would overlap by
+    # 40 nm, merging wl[0]↔wl[1], wl[2]↔wl[3], … in the extracted
+    # netlist (visible at parent .ext as `merge wl_driver_0/wl_1
+    # wl_driver_0/wl_0`).  Offset odd rows west by 0.7 µm so poly pads
+    # sit at distinct x columns and never overlap; the met1 wire
+    # stretches an extra 0.7 µm to reach the new pad x — the pads are
+    # still well east of wl_driver (>2 µm clearance) and well west of
+    # the array's first cell so no other geometry conflicts.
+    _WL_VIA_X_ODD_OFFSET: float = 0.7
+    via_x_even = array_left - _WL_VIA_ARRAY_GAP
+    via_x_odd = via_x_even - _WL_VIA_X_ODD_OFFSET
 
     for row in range(p.rows):
+        via_x_at_array = via_x_even if row % 2 == 0 else via_x_odd
         # --- Segment 1: decoder Z → WL driver A ---
         dec_out_x, dec_out_y = _nand_output_absolute(
             dec_origin, nand_x_in_dec, k_fanin, row,

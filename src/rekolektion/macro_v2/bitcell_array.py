@@ -98,23 +98,34 @@ class BitcellArray:
             else:
                 wl_y = row_y0 + self._cell_h - _FOUNDRY_WL_LABEL_Y
 
-            # Spanning horizontal poly strip — drawn on poly (66/20)
+            # Spanning horizontal poly strip — drawn on poly (66/20).
+            # Extend westward of the array bbox by `_WL_STRIP_WEST_EXT`
+            # so the parent's `_route_wl` poly→met1 via stack at
+            # x = array_left − _WL_VIA_ARRAY_GAP lands on this strip
+            # (the pad is centred 0.3 µm west of array_left and is
+            # 0.43 µm wide, so its east edge is 0.085 µm short of the
+            # array's nominal left edge — without extension, the
+            # pad overlaps NOTHING and Magic emits no merge between
+            # wl_driver_X/wl_X and array/wl_0_X).  With the staggered
+            # odd-row via at array_left − 1.0, we need the strip to
+            # extend at least 1.215 µm west of x=0 cell-local.
+            _WL_STRIP_WEST_EXT = 1.5
             draw_wire(
                 top,
-                start=(0.0, wl_y),
+                start=(-_WL_STRIP_WEST_EXT, wl_y),
                 end=(self.width, wl_y),
                 layer="poly",
                 width=WL_STRIP_W,
             )
-            # Pin + label at the left end (x = WL_STRIP_W/2 to stay inside span)
+            # Pin + label at the (extended) left end
             pin_extent = 0.14
             draw_pin(
                 top,
                 layer="poly",
                 rect=(
-                    0.0,
+                    -_WL_STRIP_WEST_EXT,
                     wl_y - WL_STRIP_W / 2,
-                    pin_extent,
+                    -_WL_STRIP_WEST_EXT + pin_extent,
                     wl_y + WL_STRIP_W / 2,
                 ),
             )
@@ -122,7 +133,7 @@ class BitcellArray:
                 top,
                 text=f"wl_0_{row}",
                 layer="poly",
-                position=(pin_extent / 2, wl_y),
+                position=(-_WL_STRIP_WEST_EXT + pin_extent / 2, wl_y),
             )
 
     def _add_bl_br_labels(self, top: gdstk.Cell) -> None:

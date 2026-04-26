@@ -43,6 +43,32 @@ _NAND2_GDS_PATH: Path = _CELLS_DIR / f"{_NAND2_CELL_NAME}.gds"
 _NUM_OUTPUT_DFFS: int = 4
 _NUM_CONTROL_NAND2S: int = 2
 
+# East extension of clk/we/cs met2 rails past the cell body.  Required
+# because the parent macro's clk/we/cs drops MUST land east of the
+# row_decoder block to avoid crossing its internal met2 (Z→pred_out
+# wires).  The row_decoder lives between the macro's left edge and the
+# wl_driver/array column; its right edge maps to ctrl_logic-local x ≈
+# 64.66 for the current weight_bank floorplan.  Extending rails into
+# the row_decoder/wl_driver gap (x_local 64.66..66.66) puts the drop
+# landing zone safely east of the row_decoder while remaining inside
+# the floorplan-allocated ctrl_logic slot (slot width ≈ dec_w µm).
+#
+# Per-rail east extents (NOT a single shared extent): each met2 drop
+# crosses every met2 horizontal rail in its y-traversal range.  If
+# all three rails extended to the same x, every drop would merge
+# with all three rails, recreating the cs/we/clk/p_en_bar/VPWR
+# super-net.  Instead, each rail terminates JUST EAST of its drop x,
+# and drops are ordered by the depth of their target rail (we → cs
+# → clk, west → east, since clk_rail_y is the deepest absolute y in
+# ctrl_logic and clk's drop must traverse past we/cs rail y's).
+# Verified geometry: clk drop crosses no other rail because we/cs
+# rails terminate west of clk's drop x; cs drop crosses no other
+# rail because we rail terminates west of cs's drop x; we drop
+# only reaches we_rail_y so terminates before any other rail's y.
+_WE_RAIL_EAST: float = 65.20    # we drop lands at 65.10
+_CS_RAIL_EAST: float = 65.76    # cs drop lands at 65.66, clear of we_rail
+_CLK_RAIL_EAST: float = 66.32   # clk drop lands at 66.22, clear of we/cs rails
+
 # OpenRAM std-cell-style cells (DFF / NAND_dec) are designed to abut edge-to-
 # edge — their N-wells extend to the cell boundary and merge into one when
 # tiled.  Leaving even a small gap creates an N-well spacing violation
@@ -161,9 +187,16 @@ class ControlLogic:
         # clk: horizontal met2 rail at the DFF CLK pin y, spanning all 4 DFFs.
         # The DFF's CLK pin is met2 (port rect y=[3.46, 3.78]); a met2 rail
         # at y=3.62 overlaps every CLK pin and merges them into one net.
+        # East extension to _CLK_RAIL_EAST lets the parent's drop land
+        # east of the row_decoder block (see header comment).  clk's
+        # rail extent is the LONGEST of the three because clk_rail_y is
+        # the deepest absolute y in ctrl_logic — clk drop must traverse
+        # past the we/cs rail y's, so we/cs rails MUST terminate west
+        # of the clk drop x to avoid merging clk with we/cs.
         clk_y = _DFF_CLK_LOCAL[1]
         draw_wire(
-            top, start=(-0.5, clk_y), end=(cell_w + 0.5, clk_y), layer="met2",
+            top, start=(-0.5, clk_y), end=(_CLK_RAIL_EAST, clk_y),
+            layer="met2",
         )
         draw_label(top, text="clk", layer="met2",
                    position=(-0.3, clk_y))
@@ -198,22 +231,32 @@ class ControlLogic:
                 top, start=_nand_a(i), end=(_nand_a(i)[0], we_rail_y),
                 layer="met2",
             )
+        # Extend rail east past the cell body so the parent's `we` drop
+        # can land at a safe x outside the row_decoder block.  we's
+        # rail terminates at the SHORTEST east extent (_WE_RAIL_EAST)
+        # because we_rail_y is the highest of the three in absolute y
+        # (least-deep drop target).  Terminating short keeps clk and
+        # cs drops (which land deeper, traversing past we_rail_y)
+        # from crossing the we rail at their own drop x.
         draw_wire(
             top,
             start=(_nand_a(0)[0], we_rail_y),
-            end=(_nand_a(1)[0], we_rail_y),
+            end=(_WE_RAIL_EAST, we_rail_y),
             layer="met2",
         )
         draw_label(top, text="we", layer="met2",
                    position=(_nand_a(0)[0], we_rail_y))
 
-        # cs: same pattern for NAND2_{0,1}.B pins.
+        # cs: same pattern for NAND2_{0,1}.B pins.  cs rail's east end
+        # (_CS_RAIL_EAST) sits BETWEEN we's and clk's so cs's drop
+        # crosses no longer rail and clk's drop (further east) doesn't
+        # cross cs.
         b_y = nand2_origins[0][1] + _NAND_B_LOCAL[1]
         for i in range(_NUM_CONTROL_NAND2S):
             draw_via_stack(top, from_layer="li1", to_layer="met2",
                            position=_nand_b(i))
         draw_wire(
-            top, start=(_nand_b(0)[0], b_y), end=(_nand_b(1)[0], b_y),
+            top, start=(_nand_b(0)[0], b_y), end=(_CS_RAIL_EAST, b_y),
             layer="met2",
         )
         draw_label(top, text="cs", layer="met2", position=_nand_b(0))

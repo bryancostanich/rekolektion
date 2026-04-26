@@ -1279,11 +1279,18 @@ def _route_control(
     riser_x = -0.5
     # Landing x: just inside the rail's x-range.
     landing_x = 0.3
-    # 1. DFF Q (met2) -> vertical met2 up to trunk y
-    draw_wire(top, start=(dff_q_x, dff_q_y),
-              end=(dff_q_x, trunk_y_p_en_bar), layer="met2")
+    # 1. Transition to met3 IMMEDIATELY at DFF.Q so the long vertical
+    #    riser segment is on met3, not met2.  A met2 riser at this x
+    #    would cross every ctrl_logic clk/we/cs met2 horizontal rail
+    #    on its way up (DFF.Q is below all 3 rails, trunk is above all
+    #    3) — same-layer met2 crossings merge p_en_bar with cs/we/clk
+    #    and propagate through into the VPWR taps of wl_driver/wd/sa
+    #    via the parent's drops on the same rails.  Met3 vertical
+    #    crosses met2 rails on a different layer (no merge).
     draw_via_stack(top, from_layer="met2", to_layer="met3",
-                   position=(dff_q_x, trunk_y_p_en_bar))
+                   position=(dff_q_x, dff_q_y))
+    draw_wire(top, start=(dff_q_x, dff_q_y),
+              end=(dff_q_x, trunk_y_p_en_bar), layer="met3")
     # 2. Met3 trunk from DFF column EAST to riser_x (outside col_mux)
     draw_wire(top, start=(dff_q_x, trunk_y_p_en_bar),
               end=(riser_x, trunk_y_p_en_bar), layer="met3")
@@ -1420,6 +1427,7 @@ def _route_ctrl_external_pins(
 ) -> None:
     ctrl_origin = fp.positions["control_logic"]
     ctrl_x, ctrl_y = ctrl_origin
+    _, ctrl_h = fp.sizes["control_logic"]
     positions, pins_top_y, _pins_bot_y = _top_pin_layout(p, fp)
     top_stub_top_y = pins_top_y + _PIN_STUB_LEN
 
@@ -1428,14 +1436,28 @@ def _route_ctrl_external_pins(
     _WE_RAIL_Y_LOCAL: float = 11.300
     _CS_RAIL_Y_LOCAL: float = 10.100
 
-    # Each signal lands at a UNIQUE x.  If clk/we/cs all descended
-    # on met3 at the same x, the three verticals would merge into
-    # one net at y levels where the rails don't pre-empt the met3.
-    # we/cs rails only span the NAND2 A/B pin x range (~[4.2, 16.6]
-    # for DFF_W=6.2 placement).  clk rail is full-width.
-    _CLK_LAND_X_LOCAL: float = 2.0    # on clk rail, west of we/cs spans
-    _WE_LAND_X_LOCAL: float = 7.0    # inside we rail x span
-    _CS_LAND_X_LOCAL: float = 13.0   # inside cs rail x span, clear of we
+    # Each signal lands at a UNIQUE x.  Drops MUST sit east of the
+    # row_decoder block to avoid the met2 vertical drop crossing the
+    # row_decoder's internal met2 (specifically stage 0/1 NAND2
+    # Z→pred_out wires).  Row decoder right edge maps to
+    # ctrl_logic-local x = 64.66 for the current floorplan; the gap
+    # between row_decoder and wl_driver runs from x_local 64.66 to
+    # 66.66 (2 µm wide).
+    #
+    # Drop x ORDER matters: each met2 vertical drop traverses every
+    # met2 horizontal rail in ctrl_logic on its way down to its
+    # target rail's y.  If a drop's x is INSIDE another rail's east
+    # extent, the drop crosses that rail and merges nets (this was
+    # the residual `we`/clk/p_en_bar super-net after the first
+    # iteration).  Pair each drop with the per-rail east extent in
+    # control_logic.py:
+    #   we drop  → westernmost  (we_rail_y is the shallowest target)
+    #   cs drop  → middle
+    #   clk drop → easternmost  (clk_rail_y is the deepest target)
+    # Each rail terminates JUST EAST of its own drop x.
+    _WE_LAND_X_LOCAL: float = 65.10  # 0.44 east of row_decoder right edge
+    _CS_LAND_X_LOCAL: float = 65.66
+    _CLK_LAND_X_LOCAL: float = 66.22  # 0.44 west of wl_driver left edge
 
     clk_land_x = ctrl_x + _CLK_LAND_X_LOCAL
     we_land_x = ctrl_x + _WE_LAND_X_LOCAL
@@ -1443,6 +1465,26 @@ def _route_ctrl_external_pins(
     clk_land_y = ctrl_y + _CLK_RAIL_Y_LOCAL
     we_land_y = ctrl_y + _WE_RAIL_Y_LOCAL
     cs_land_y = ctrl_y + _CS_RAIL_Y_LOCAL
+
+    # Layer-transition y: above this y the drop is on met2, below it
+    # on met4.  Met4 isolates the drop from the ctrl_logic clk/we/cs
+    # met2 rails it must traverse en route to its own target rail —
+    # without this isolation a met2 vertical drop crosses every met2
+    # rail in its y-traversal range and merges them (recreating the
+    # cs/we/clk/p_en_bar/VPWR super-net).
+    #
+    # Position chosen to clear:
+    #   1. `_route_control` p_en_bar met3 trunk at y = ctrl_y + ctrl_h
+    #      + 0.3 (~ -1.7) — via stack's met3 pad at the transition
+    #      must not abut this trunk.
+    #   2. The shallowest ctrl_logic rail (we at y_local 11.30, abs
+    #      ~ -2.93) — via stack's met2 pad at the transition must not
+    #      cross the rail.
+    # y = ctrl_y + ctrl_h - 0.4 sits between these (ctrl_y_top=-2.0,
+    # so y=-2.4) with > 0.6 µm clearance to p_en_bar trunk and
+    # > 0.4 µm clearance to we rail — well above met2/met3 min
+    # spacing of 0.14 µm.
+    _LAYER_TRANSITION_Y: float = ctrl_y + ctrl_h - 0.4  # ~ -2.4
 
     def _drop_met3_to_rail(
         pin_x: float, pin_y_top: float,
@@ -1466,14 +1508,15 @@ def _route_ctrl_external_pins(
             start=(west, trunk_y), end=(east, trunk_y),
             layer="met3", width=_CTRL_TRUNK_W,
         )
-        # Vertical drop from trunk to land: MUST be on met2, not met3.
-        # Drop x-positions (clk=2.0, we=7.0, cs=13.0 cell-local) lie
-        # inside the row_decoder block, where stage-2's Z→rail wire
-        # runs horizontally on met3 at y≈51.7 spanning cell-local
-        # x=[9.2, 64.14].  Same-layer met3 crossings short clk/we/cs
-        # to pred2_out_0, propagating via row_decoder addr rails into
-        # an equiv chain cs≡we≡clk≡addr[0..6].  Met2 drops cross the
-        # met3 wire harmlessly.
+        # Vertical drop from trunk to land:
+        #   Trunk_y → _LAYER_TRANSITION_Y on met2  (above ctrl_logic top)
+        #   _LAYER_TRANSITION_Y → land_y on met4   (crosses other rails
+        #     on a different layer, so no merge)
+        # Layer-transition via stacks at top and bottom of the met4
+        # segment.  The met4 strap interactions: macro PDN met4
+        # horizontals at y=210 (VPWR) and y=-32 (VGND) are far outside
+        # this segment's y range (-1.5 to land_y > -11), and PDN met4
+        # verticals are at macro center / edges, not at the drop x.
         draw_via_stack(
             top, from_layer="met2", to_layer="met3",
             position=(land_x, trunk_y),
@@ -1481,17 +1524,32 @@ def _route_ctrl_external_pins(
         draw_wire(
             top,
             start=(land_x, trunk_y),
-            end=(land_x, land_y),
+            end=(land_x, _LAYER_TRANSITION_Y),
             layer="met2", width=_CTRL_TRUNK_W,
         )
-        if rail_layer == "met3":
-            # Need a met2→met3 via at the rail to merge with the rail.
+        draw_via_stack(
+            top, from_layer="met2", to_layer="met4",
+            position=(land_x, _LAYER_TRANSITION_Y),
+        )
+        draw_wire(
+            top,
+            start=(land_x, _LAYER_TRANSITION_Y),
+            end=(land_x, land_y),
+            layer="met4", width=_CTRL_TRUNK_W,
+        )
+        # Land: via stack from met4 down to the rail's layer.  For met2
+        # rail, met4→met2 stack deposits a met2 pad at (land_x, land_y)
+        # that overlaps the rail and merges nets.
+        if rail_layer == "met2":
             draw_via_stack(
-                top, from_layer="met2", to_layer="met3",
+                top, from_layer="met2", to_layer="met4",
                 position=(land_x, land_y),
             )
-        # rail_layer == "met2": the met2 drop bottom directly merges
-        # with the labeled met2 rail; no via needed.
+        elif rail_layer == "met3":
+            draw_via_stack(
+                top, from_layer="met3", to_layer="met4",
+                position=(land_x, land_y),
+            )
 
     # Unique trunk y per signal (met3 horizontal at each y won't short).
     # Stack above the pin stub top with _CTRL_TRUNK_PITCH spacing.

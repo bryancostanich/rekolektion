@@ -203,13 +203,18 @@ def _extract_cell(
     # Each X-line is: `X<inst> <node1> ... <nodeK> <model> <params...>`.
     # Model names in this flow start with "sky130_fd_" — any token with
     # that prefix (or containing '=' for params) terminates the node
-    # list.
+    # list.  EXCEPTION: when the X-line instantiates a foundry subcircuit
+    # (e.g. `sky130_fd_bd_sram__sram_sp_cell_opt1`), Magic emits its
+    # unconnected internal pins as `<inst_name>/<pin>` net tokens — those
+    # ALSO begin with `sky130_` but are nets, not the model.  Distinguish
+    # by the `/` separator: bare `sky130_*` is the model; `sky130_*/...`
+    # is a sub-instance pin reference (treated below as a non-port net).
     def _is_model_or_param(t: str) -> bool:
-        return (
-            "=" in t
-            or t.startswith("sky130_")
-            or t.startswith("sky130")
-        )
+        if "=" in t:
+            return True
+        if t.startswith("sky130") and "/" not in t:
+            return True
+        return False
     used_nets: list[str] = []
     seen: set[str] = set()
     for line in lines[subckt_start + 1 : subckt_end + 1]:
@@ -235,7 +240,9 @@ def _extract_cell(
     _GLOBAL_NETS_FILTERED = {"VPWR", "VGND", "VPB", "VNB", "GND", "VDD"}
     public = [
         n for n in used_nets
-        if "#" not in n and n.upper() not in _GLOBAL_NETS_FILTERED
+        if "#" not in n
+        and "/" not in n  # sub-instance pin refs are internal, not ports
+        and n.upper() not in _GLOBAL_NETS_FILTERED
     ]
     # Stable, deterministic ordering.  Keys handle both the flat
     # peripheral-row signal names (bl_, br_, muxed_*, col_sel_) AND

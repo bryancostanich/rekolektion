@@ -73,12 +73,25 @@ class WriteDriverRow:
         # over one rail position; identical labels merge all cells into
         # one VPWR / VGND net at the write_driver_row boundary.  Same
         # pattern as `row_decoder._label_power_rails` and `wl_driver_row`.
+        # Per-cell muxed_bl_X / muxed_br_X / din{X} .pin shapes so the
+        # write_driver_row exposes one named port per bit instead of
+        # anonymous foundry-instance pin paths.  Same fix as
+        # `sense_amp_row` (see comment there for why this is needed
+        # given the spice_generator's hard-coded port order in Xwd).
+        # WD pin label positions (verified against foundry GDS
+        # labels on layer 68/5):
+        #   BL  at (0.700, 9.905)
+        #   BR  at (1.700, 9.865)
+        #   DIN at (1.425, 0.060)
         from rekolektion.macro_v2.routing import draw_pin_with_label
         _half = 0.07
         _VDD_X = 1.48
         _VDD_Y = 1.05
         _GND_X = 1.31
         _GND_Y = 3.13
+        _BL_X, _BL_Y = 0.700, 9.905
+        _BR_X, _BR_Y = 1.700, 9.865
+        _DIN_X, _DIN_Y = 1.425, 0.060
         for i in range(self.bits):
             cx = i * self.pitch
             draw_pin_with_label(
@@ -90,6 +103,21 @@ class WriteDriverRow:
                 top, text="VGND", layer="met1",
                 rect=(cx + _GND_X - _half, _GND_Y - _half,
                       cx + _GND_X + _half, _GND_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text=f"muxed_bl_{i}", layer="met1",
+                rect=(cx + _BL_X - _half, _BL_Y - _half,
+                      cx + _BL_X + _half, _BL_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text=f"muxed_br_{i}", layer="met1",
+                rect=(cx + _BR_X - _half, _BR_Y - _half,
+                      cx + _BR_X + _half, _BR_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text=f"din{i}", layer="met1",
+                rect=(cx + _DIN_X - _half, _DIN_Y - _half,
+                      cx + _DIN_X + _half, _DIN_Y + _half),
             )
 
         lib.add(top)

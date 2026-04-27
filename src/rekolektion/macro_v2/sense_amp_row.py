@@ -67,12 +67,29 @@ class SenseAmpRow:
         # write_driver_row / wl_driver_row / row_decoder).  Foundry SA
         # met1 power label positions: VDD at cell-local (1.89, 2.00),
         # (1.97, 6.34); GND at (1.90, 0.385), (2.25, 10.055).
+        # Per-cell muxed_bl_X / muxed_br_X / dout{X} .pin shapes so the
+        # sense_amp_row exposes one named port per bit instead of
+        # anonymous foundry-instance pin paths (e.g. `<inst>/BR`).
+        # Without these, the reference SPICE's hard-coded port order
+        # (muxed_bl_0..N muxed_br_0..N s_en dout0..N VPWR VGND) doesn't
+        # align with the extracted Magic port order — netgen passes
+        # the parent's `muxed_bl_0` net into the SA cell's first
+        # extracted port (which happens to be VPWR or some <inst>/BR),
+        # mass-merging top-level nets.
+        # SA pin label positions (verified against foundry GDS labels
+        # on layer 68/5 = met1.label):
+        #   BL   at (1.070, 11.240)
+        #   BR   at (1.430, 11.230)
+        #   DOUT at (0.615,  0.140)
         from rekolektion.macro_v2.routing import draw_pin_with_label
         _half = 0.07
         _VDD_X = 1.89
         _VDD_Y = 2.00
         _GND_X = 1.90
         _GND_Y = 0.385
+        _BL_X, _BL_Y = 1.070, 11.240
+        _BR_X, _BR_Y = 1.430, 11.230
+        _DOUT_X, _DOUT_Y = 0.615, 0.140
         for i in range(self.bits):
             cx = i * self.pitch
             draw_pin_with_label(
@@ -84,6 +101,21 @@ class SenseAmpRow:
                 top, text="VGND", layer="met1",
                 rect=(cx + _GND_X - _half, _GND_Y - _half,
                       cx + _GND_X + _half, _GND_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text=f"muxed_bl_{i}", layer="met1",
+                rect=(cx + _BL_X - _half, _BL_Y - _half,
+                      cx + _BL_X + _half, _BL_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text=f"muxed_br_{i}", layer="met1",
+                rect=(cx + _BR_X - _half, _BR_Y - _half,
+                      cx + _BR_X + _half, _BR_Y + _half),
+            )
+            draw_pin_with_label(
+                top, text=f"dout{i}", layer="met1",
+                rect=(cx + _DOUT_X - _half, _DOUT_Y - _half,
+                      cx + _DOUT_X + _half, _DOUT_Y + _half),
             )
 
         lib.add(top)

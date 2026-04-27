@@ -262,11 +262,27 @@ class ControlLogic:
         draw_label(top, text="cs", layer="met2", position=_nand_b(0))
 
         # Output ports: label each DFF's Q pin with the output net name.
-        # The Q pin is already met2; the label is enough for Magic to
-        # expose it as a port when the parent wires to it.
+        # clk_buf needs an explicit .pin purpose shape — without one,
+        # Magic does not promote it to a ctrl_logic subckt port (the
+        # parent wires DFF0.Q→DFF{1,2,3}.CLK only at the parent level,
+        # so Magic doesn't see external usage of clk_buf inside the
+        # cell and would otherwise leave it as an internal net).
+        # p_en_bar / s_en / w_en already become ports because the
+        # parent's _route_ctrl_external_pins routes them to top
+        # macro pins, but we draw their pin shapes too for symmetry
+        # and to make the LEF / port export robust.
+        from rekolektion.macro_v2.routing import draw_pin_with_label
         q_labels = ["clk_buf", "p_en_bar", "s_en", "w_en"]
+        # _dff_q returns (x, y) at the centre of the DFF's Q met2 pin.
+        # Draw a small met2 .pin rect (0.14 × 0.14) on top of it.
+        _PIN_HALF = 0.07
         for i, label in enumerate(q_labels):
-            draw_label(top, text=label, layer="met2", position=_dff_q(i))
+            qx, qy = _dff_q(i)
+            draw_pin_with_label(
+                top, text=label, layer="met2",
+                rect=(qx - _PIN_HALF, qy - _PIN_HALF,
+                      qx + _PIN_HALF, qy + _PIN_HALF),
+            )
 
         # ------------------------------------------------------------------
         # Power routing (VPWR + VGND rails)
@@ -397,9 +413,12 @@ def _draw_nand_z_to_d_pair(
         position=(nand_z[0], d_y),
     )
 
-    # Label the net.
-    draw_label(top, text=net_name, layer="met2",
-               position=((lo_x + hi_x) / 2, d_y))
+    # No label here — leaving the nand0_z / nand1_z labels on the
+    # net previously caused Magic to promote them to ctrl_logic
+    # subckt ports (they're internal nets in the reference SPICE).
+    # The net's auto-generated name from the foundry NAND2's Z label
+    # propagation is sufficient for extraction; netgen's topological
+    # match handles internal-net naming differences.
 
 
 def _rect(cell: gdstk.Cell, layer: str,

@@ -258,6 +258,20 @@ class RowDecoder:
         #    top-level subckt port) rather than naming the net by
         #    the alphabetically-first of {addr0, addr[0]} = `addr0`
         #    and dropping `addr[0]` from the ext2spice output.
+        # Addr rail .pin shapes: a label-only addr[i] is detected by
+        # Magic as a NET name but is not exposed as a ROW_DECODER PORT
+        # unless a .pin purpose polygon (datatype 16) sits on the same
+        # net.  Without the .pin, the parent macro's met3 feeder lands
+        # on a parent-level addr[i] net that Magic does NOT merge with
+        # the cell's internal addr[i] rail (hierarchical extraction
+        # treats child INTERNAL labeled metal as private when no port
+        # shape exists).  Result observed at activation_bank top-level:
+        # addr[2..5] missing as macro ports while their feeders dangled
+        # on top-level-only nets, contributing 4 of the 6 net delta.
+        # Same fix as `dec_out_X`: draw_pin_with_label which adds both
+        # the .pin shape and the label.
+        from rekolektion.macro_v2.routing import draw_pin_with_label
+        _ADDR_PIN_HALF: float = 0.075   # .pin rect 0.15 × 0.15 µm
         addr_rail_xs: list[float] = []
         for i in range(total_addr):
             rail_x = addr_rail_x0 + i * addr_rail_pitch
@@ -266,9 +280,11 @@ class RowDecoder:
                 top, start=(rail_x, -0.2), end=(rail_x, pred_block_top_y + 0.2),
                 layer="met3",
             )
-            draw_label(
+            pin_y = pred_block_top_y / 2
+            draw_pin_with_label(
                 top, text=f"addr[{i}]", layer="met3",
-                position=(rail_x, pred_block_top_y / 2),
+                rect=(rail_x - _ADDR_PIN_HALF, pin_y - _ADDR_PIN_HALF,
+                      rail_x + _ADDR_PIN_HALF, pin_y + _ADDR_PIN_HALF),
             )
 
         # 4. Wire each predecoder NAND's k inputs to its k addr rails.

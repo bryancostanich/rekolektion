@@ -2593,12 +2593,21 @@ def _draw_power_network(
         vpwr_local=(1.89, 2.00),
         vgnd_local=(1.90, 0.385),
     )
-    # ctrl_logic explicit power rails.  Cell height in control_logic.py:
-    # ctrl_cell_h = NAND2 row at y in [0, 1.99].  VPWR rail at y =
-    # cell_h + 0.3 = 2.29; VGND rail at y = -0.5.
+    # ctrl_logic explicit power rails.  control_logic.py stacks DFF
+    # row (y in [0, 7.545]) + inter-row gap (2.0) + NAND2 row (y in
+    # [9.545, 12.235]).  VPWR rail at y = cell_h + 0.3 = 12.535;
+    # VGND rail at y = -0.5.  An earlier comment misread cell_h as
+    # just the NAND2 row's height (1.99) and put the VPWR tap at
+    # y=2.29 — that location is INSIDE DFF_0's body, where the .pin
+    # shape overlapped foundry-internal DFF metal and bridged the
+    # parent VPWR net to dff_3/CLK (Magic's extractor traced the
+    # short via the DFF's internal connectivity).  The bridge then
+    # propagated VPWR ↔ row_decoder/VPWR ↔ wl_driver/VPWR ↔ sa/VPWR
+    # ↔ wd/VPWR through the per-row WL/dec_out wires, leaving every
+    # block's VPWR labeled `clk` instead of VPWR.
     _tap_block_power(
         "control_logic",
-        vpwr_local=(2.0, 2.29),
+        vpwr_local=(2.0, 12.535),
         vgnd_local=(2.0, -0.5),
     )
 

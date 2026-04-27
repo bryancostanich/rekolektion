@@ -2044,11 +2044,27 @@ def _route_addr_multi_predecoder(
         rail_y_trunk = addr_trunk_y_base + i * _CTRL_TRUNK_PITCH
 
         rail_x_abs = dec_x + _ADDR_RAIL_X0_LOCAL + i * _ADDR_RAIL_PITCH
-        # Landing y: inside the predecoder block's y range.  Use
-        # a conservative 2.0 µm above dec_y (each predecoder stage is
-        # >1.7 µm tall, so 2 µm always lands on a valid portion of the
-        # rail drawn inside the row_decoder cell).
-        land_y = dec_y + 2.0
+        # Landing y: must be ABOVE the predecoder block.  The rails
+        # extend the full row_decoder cell height (up to row_count *
+        # pitch ≈ 202 µm), so any land_y above pred_block_top is
+        # safely on the rail.
+        #
+        # Earlier value of 2.0 µm landed INSIDE the predecoder block
+        # (pred_top ≈ 14 µm for our [2,2,3] split).  Each parent met2
+        # drop at rail_x_abs crossing the predecoder's y range
+        # collided with the cell-internal addr-feed met2 spurs:
+        #   stage-0 (NAND2) A/B spurs at cell-local y=1.095, 0.555
+        #   stage-1 (NAND2) A/B spurs at cell-local y=5.685, 5.245
+        #   stage-2 (NAND3) DETOUR spurs at cell-local y=7.88..8.88
+        # Each stage's A or B spur is a met2 horizontal that extends
+        # from the rail's x EAST through every higher-index rail
+        # (the spur services every cell in the stage column).  So a
+        # parent drop on the same met2 layer crossing that spur's y
+        # bridges multiple rails at once — observed at activation_bank
+        # as row_decoder/addr[2..6] all merging into one parent net.
+        # Landing 1 µm above pred_top (≈ 14) clears every spur.
+        _PRED_TOP_SAFE: float = 15.0
+        land_y = dec_y + _PRED_TOP_SAFE
 
         # (1) met3 feeder from top pin up/down to horizontal trunk y.
         draw_wire(

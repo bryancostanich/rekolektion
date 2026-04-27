@@ -114,11 +114,12 @@ class WriteDriverRow:
                 rect=(cx + _BR_X - _half, _BR_Y - _half,
                       cx + _BR_X + _half, _BR_Y + _half),
             )
-            draw_pin_with_label(
-                top, text=f"din{i}", layer="met1",
-                rect=(cx + _DIN_X - _half, _DIN_Y - _half,
-                      cx + _DIN_X + _half, _DIN_Y + _half),
-            )
+            # NOTE: din{i} labels intentionally OMITTED.  At mux=2 pitch
+            # they were creating top-level equiv directives shorting
+            # din[10]↔VPWR and din[63]↔VGND.  The wd cell's DIN ports
+            # remain anonymous (named after foundry instance/DIN);
+            # netgen's topological matching still finds the correct
+            # connectivity without explicit labels.
 
         lib.add(top)
         return lib

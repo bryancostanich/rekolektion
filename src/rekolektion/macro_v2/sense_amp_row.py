@@ -112,11 +112,11 @@ class SenseAmpRow:
                 rect=(cx + _BR_X - _half, _BR_Y - _half,
                       cx + _BR_X + _half, _BR_Y + _half),
             )
-            draw_pin_with_label(
-                top, text=f"dout{i}", layer="met1",
-                rect=(cx + _DOUT_X - _half, _DOUT_Y - _half,
-                      cx + _DOUT_X + _half, _DOUT_Y + _half),
-            )
+            # NOTE: dout{i} labels intentionally OMITTED — same rationale
+            # as the dinN labels in write_driver_row.py: they created
+            # top-level equiv directives that shorted dout pins to power
+            # at mux=2 pitch.  Netgen's topological matching handles
+            # anonymous foundry-instance/DOUT port names.
 
         lib.add(top)
         return lib

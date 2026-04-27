@@ -2399,16 +2399,16 @@ def _draw_power_network(
     xs_hi = max(
         fp.positions[n][0] + fp.sizes[n][0] for n in fp.positions
     ) + 1.0
-    prec_top = fp.positions["precharge"][1] + fp.sizes["precharge"][1]
-    wd_bot = fp.positions["write_driver"][1]
-    pins_top_y = (
-        prec_top + _PDN_STRAP_MARGIN + _PDN_STRAP_W + _PDN_STRAP_MARGIN
-    )
-    pins_bot_y = (
-        wd_bot
-        - _DIN_BAND_EXTENSION
-        - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
-    )
+    # Use the SAME pins_top_y / pins_bot_y as `_top_pin_layout` —
+    # otherwise `top_rail_y` lands inside the DIN trunk band and the
+    # PDN VPWR via stack's met3 pad physically collides with one of the
+    # bits' met3 trunks (e.g. at mux=2 64-bit, bit 10 trunk_y=214.52
+    # abs collides with mis-placed top_rail_y=214.28 abs, equivalencing
+    # din[10] to VPWR at parent-extracted SPICE).  An earlier inline
+    # calculation used `prec_top + 5.6` (pre-DIN-band) which yielded
+    # the wrong pins_top_y; switching to the canonical layout function
+    # makes the PDN strap top sit above the DIN trunks.
+    _, pins_top_y, pins_bot_y = _top_pin_layout(p, fp)
     import math as _math
     _ROW_PITCH = 2.72
     _ys_lo = pins_bot_y - 0.5

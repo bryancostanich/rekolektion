@@ -57,7 +57,7 @@ _CONTROL_ABOVE_GAP: float = 2.0
 from rekolektion.macro_v2.sense_amp_row import _SA_HEIGHT as _SA_H  # noqa: E402
 from rekolektion.macro_v2.write_driver_row import _WD_HEIGHT as _WD_H  # noqa: E402
 from rekolektion.macro_v2.precharge_row import _PRECHARGE_HEIGHT as _PRECHARGE_H  # noqa: E402
-from rekolektion.macro_v2.column_mux_row import _COLMUX_HEIGHT as _COLMUX_H  # noqa: E402
+from rekolektion.macro_v2.column_mux_row import _COLMUX_HEIGHT_BY_MUX  # noqa: E402
 
 # ControlLogic stack height — DFF row + inter-row gap + NAND2 row.
 _CTRL_H: float = 7.545 + 2.0 + 2.69
@@ -214,9 +214,13 @@ def build_floorplan(p: MacroV2Params) -> Floorplan:
     sizes["precharge"] = (array_w, _PRECHARGE_H)
 
     # Stack col_mux / sense_amp / write_driver below the array.
+    # col_mux height is mux_ratio-specific — use the actual cell height
+    # so the assembler bridge from col_mux_top to array reaches the
+    # actual col_mux top (not a phantom phantom top defined by an
+    # over-reserved floorplan slot).
     y = -_ARRAY_TO_PERIPH_GAP
     for name, h in (
-        ("col_mux", _COLMUX_H),
+        ("col_mux", _COLMUX_HEIGHT_BY_MUX[p.mux_ratio]),
         ("sense_amp", _SA_H),
         ("write_driver", _WD_H),
     ):
@@ -924,34 +928,46 @@ def _route_din(top: gdstk.Cell, p: MacroV2Params, fp: Floorplan) -> None:
     def _pick_drop_x(bit_i: int) -> float:
         """Pick drop_x[i].  Must clear:
           - every PDN strap (with _STRAP_KEEPOUT)
-          - every din_pin_x  (met4 pad at (drop_x, trunk_y))
+          - din_pin_x[j] for j <= bit_i  (only those bits' met4
+            verticals at din_pin_x[j] from pins_top_y down to
+            trunk_y[j] reach trunk_y[bit_i]; higher-index bits stop
+            above trunk_y[bit_i] and don't conflict)
           - every dout_pin_x (DOUT's met3 vertical at dout_pin_x crosses
             the DIN band — a via-stack met3 pad at (drop_x, drop_y) on
             top of it would short DIN to DOUT).
-          - every other bit's wd_din_x (its met2 vertical lives there).
-          - every other bit's sa_dout_x (SA DOUT met2 vertical).
           - every already-picked drop_x (the met4 long vertical at that
             x runs the full macro height; two such verticals at the
             same x merge, and within met4 min-space they short).
         Prefer drop_x = wd_din_x[i] when it clears everything.
+
+        EARLIER VERSION blocked OTHER bits' wd_din_xs and sa_dout_xs.
+        At mux=2 packing (pitch 2.62), those constraints forced drop_x
+        up to 11.5 µm east of wd_din_x for many bits, creating long
+        met1 jogs at drop_y that crossed multiple other bits' met2
+        verticals (causing spurious din[X]↔din[Y] equivs).  Removing
+        those two constraints lets drop_x = wd_din_x for the common
+        case.
+
+        ALSO: an earlier version checked ALL 64 din_pin_xs for the via
+        pad clearance, but a higher-index bit j>i has trunk_y[j] >
+        trunk_y[i], so its met4 vertical (pins_top_y → trunk_y[j])
+        does NOT reach trunk_y[i] — there is no met4 at din_pin_x[j]
+        at the pad's y.  Restricting to j<=i removes a phantom
+        constraint that prevented bit 51 from finding a valid x in the
+        ±12 µm search range, falling back to wd_din_x[51] which
+        actually conflicted with din_pin_x[49] only 0.29 µm away.
         """
         wd_din_x_i = wd_din_xs[bit_i]
+        # Only bits j<=bit_i contribute met4 at trunk_y[bit_i].
+        relevant_din_pin_xs = din_pin_xs[: bit_i + 1]
 
         def _ok(x: float) -> bool:
             if _strap_conflict(x):
                 return False
-            if any(abs(x - px) < _DROP_MARGIN for px in din_pin_xs):
+            if any(abs(x - px) < _DROP_MARGIN for px in relevant_din_pin_xs):
                 return False
             if any(abs(x - px) < _DROP_MARGIN for px in dout_pin_xs):
                 return False
-            for j, wx in enumerate(wd_din_xs):
-                if j == bit_i:
-                    continue
-                if abs(x - wx) < _DROP_MARGIN:
-                    return False
-            for sx in sa_dout_xs:
-                if abs(x - sx) < _DROP_MARGIN:
-                    return False
             for dx in chosen_drop_xs:
                 if abs(x - dx) < _DROP_MARGIN:
                     return False
@@ -2424,7 +2440,16 @@ def _draw_power_network(
     # Per-strap local met2 pad size. Wide enough to back the LEF met2
     # PORT rect and host the via2 stack, small enough to not cross
     # any signal met2 feature elsewhere in the macro.
-    _PAD_HALF_X: float = _PDN_STRAP_W / 2 + 0.3      # ~1.1 µm wide
+    #
+    # Shrunk from 1.10 µm half-width (= strap_half + 0.3) to 0.40 µm
+    # half-width to clear the rightmost wd_din_x on dense mux=2 packs.
+    # At mux=2 64-bit, bit 63's wd_din_x = 166.485 µm and the VGND
+    # right strap centre = 167.380 µm; the old pad spanned x=[166.28,
+    # 168.48], swallowing bit 63's met2 vertical and equivalencing
+    # din[63] to VGND.  The pad only needs to host the via2 stack
+    # (≈0.28 µm wide met2 enclosure) and back the LEF PORT rect; 0.80
+    # µm wide is ample for both.
+    _PAD_HALF_X: float = 0.40                        # 0.80 µm wide
     _PAD_HALF_Y: float = _PDN_MET2_RAIL_W / 2        # 0.20 µm tall
 
     def _draw_local_met2_pad(cx: float, cy: float) -> None:

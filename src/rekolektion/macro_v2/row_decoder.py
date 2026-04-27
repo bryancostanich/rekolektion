@@ -503,53 +503,76 @@ class RowDecoder:
             #   rail_x (merge intended — same layer).  Stage 2 is the
             #   westernmost pred_out rail by construction so the
             #   horizontal never crosses the other pred_out rails.
+            # NAND2 and NAND3 both use a li1→met1→met2 detour with a
+            # final met2→met3 hop AT the destination rail.  The horizontal
+            # leg MUST be on met2 (not met3): for stages 0/1 the rail is
+            # east of other stages' rails, so a met3 horizontal would
+            # cross those other met3 rails on its way east and merge
+            # pred0_out_0 ≡ pred1_out_0 ≡ pred2_out_0 at the parent level.
+            # Routing on met2 keeps the horizontal one layer below all
+            # the met3 rails (different layers don't merge without a via).
+            #
+            # NAND3 (k=3): Z y_local=0.285 (below pins 0.41/0.77/1.13).
+            #   Direct met2 at z_ay would touch every downstream row's
+            #   A-pin spur at z_ay+row*pitch, so detour up to a jog y
+            #   above the cell.
+            #
+            # NAND2 (k=2): Z y_local=1.255 inside the Z li1 strip
+            #   y∈[1.170, 1.340].  Addr feeders to A (y_local=1.095)
+            #   and B (y_local=0.555) run on parent met2.  A's spur is
+            #   only 0.16 µm below z_ay — no z_ay inside the Z strip
+            #   gives met2 clearance.  Detour up to jog_y above the
+            #   cell so the met2 horizontal sits well above every
+            #   addr feeder.
+            #
+            # Step-by-step:
+            #   1. li1→met1 stack at Z (small, contained, lands inside
+            #      the foundry Z li1 strip).
+            #   2. met1 vertical from z_ay up to jog_y (above cell top).
+            #   3. met1→met2 stack at jog_y (intermediate pad).
+            #   4. met2 horizontal east to rail_x — crosses other
+            #      stages' met3 rails harmlessly (different layer).
+            #   5. met2→met3 stack at rail_x lands on the target rail.
             if k == 3:
-                # Can't place the li1→met3 via stack at z_ay: its
-                # intermediate met2 pad (0.32 × 0.32 centred on z)
-                # would overlap every neighbouring NAND3's A-pin
-                # spur at y≈9.79, merging pred_out_0 into addr4.
-                # Instead:
-                #   1. li1→met1 stack at Z (small, contained)
-                #   2. met1 vertical wire north inside cell body
-                #      (NAND3 internal met1 lives at x_local≈1.9;
-                #      z_ax at x_local=3.5 is clear)
-                #   3. met1→met3 stack at jog_y (above all input
-                #      pin pads so its met2 pad is clear of spurs)
-                #   4. met3 horizontal east to rail_x
                 jog_y = g["y_origin"] + 1.7
-                draw_via_stack(
-                    top, from_layer="li1", to_layer="met1",
-                    position=(z_ax, z_ay),
-                )
-                draw_wire(
-                    top, start=(z_ax, z_ay), end=(z_ax, jog_y),
-                    layer="met1",
-                )
-                draw_via_stack(
-                    top, from_layer="met1", to_layer="met3",
-                    position=(z_ax, jog_y),
-                )
-                # met3 horizontal from (z_ax, jog_y) east to rail_x.
-                # Both on met3 — they merge into one net at rail_x.
-                draw_wire(
-                    top, start=(z_ax, jog_y), end=(rail_x, jog_y),
-                    layer="met3",
-                )
-            else:
-                # NAND2: direct met2 horizontal is clear of pin pads.
-                draw_via_stack(
-                    top, from_layer="li1", to_layer="met2",
-                    position=(z_ax, z_ay),
-                )
-                draw_wire(
-                    top, start=(z_ax, z_ay), end=(rail_x, z_ay),
-                    layer="met2",
-                )
-                draw_via_stack(
-                    top, from_layer="met2", to_layer="met3",
-                    position=(rail_x, z_ay),
-                )
-                jog_y = z_ay
+            else:  # k == 2
+                # NAND2 cell height ≈ 1.99 µm; jog above cell top.
+                jog_y = g["y_origin"] + 2.2
+            draw_via_stack(
+                top, from_layer="li1", to_layer="met1",
+                position=(z_ax, z_ay),
+            )
+            draw_wire(
+                top, start=(z_ax, z_ay), end=(z_ax, jog_y),
+                layer="met1",
+            )
+            # met1→met4 stack at z_ax (predecoder block, x≪65 µm
+            # rails area).  Has intermediate met2 and met3 pads, but
+            # they sit at z_ax which is well west of every per-row
+            # spur (those run from x=rail_x≈65.5–67.5 east to the
+            # final-NAND pin), so no conflict.
+            draw_via_stack(
+                top, from_layer="met1", to_layer="met4",
+                position=(z_ax, jog_y),
+            )
+            # met4 horizontal from (z_ax, jog_y) east to rail_x.
+            # met4 has no other consumers in the row_decoder cell —
+            # rails are met3, per-row spurs are met2 — so this layer
+            # is uncluttered for the long east-bound run.
+            draw_wire(
+                top, start=(z_ax, jog_y), end=(rail_x, jog_y),
+                layer="met4",
+            )
+            # met3↔met4 stack at rail_x.  CRUCIAL: from="met3"
+            # to="met4" means the via stack only emits met3 and
+            # met4 pads — NO met2 pad — so the rail-end pad cannot
+            # bridge any of the per-row met2 spurs running through
+            # this x at nearby y values.  The met3 pad lands on the
+            # target pred_out rail (same net).
+            draw_via_stack(
+                top, from_layer="met3", to_layer="met4",
+                position=(rail_x, jog_y),
+            )
             # (c) met3 vertical rail spanning the FULL final-NAND
             # column height (all 128 rows at pitch 1.58), plus the
             # predecoder block height above.  An earlier version
@@ -599,12 +622,39 @@ class RowDecoder:
     }
 
     # NAND Z-output cell-local (x, y) — center of a safe-to-via landing
-    # on the li1 output strip.  The strip is wide on both variants, so
-    # any x inside the strip + a central y works.
-    #   NAND2: li1 Z strip x=[1.05, 4.44], y=[1.57, 1.74]
-    #   NAND3: li1 Z strip spans the cell width from x≈1.6; y=[0.20, 0.37]
+    # on the li1 output strip.  Coordinates verified against the foundry
+    # GDS layout AND clearance-checked against all internal li1/met1
+    # polygons that the via stack's lower-metal pads might bridge.
+    #
+    #   NAND2: li1 Z strip x=[0.940, 4.330], y=[1.170, 1.340].  Z label
+    #          sits at (2.635, 1.255), but x=2.635 is inside an internal
+    #          li1 strip at x=[2.435, 2.605] y=[0.450, 1.170] (drain
+    #          interconnect for the cell's nmos stack).  Landing the
+    #          via stack at the label's x bridged Z's li1 to that
+    #          internal drain through the parent-level li1 pad,
+    #          shorting pred_out_X to addr[Y] (e.g.
+    #          addr[0]↔pred0_out_0).  Clearance map for y=1.255 ± 0.18:
+    #            internal li1 strip [4]    x∈[2.435, 2.605] → avoid (2.275, 2.765)
+    #            internal met1 strip       x∈[1.120, 1.360] → avoid (0.945, 1.535)
+    #            internal met1 strip       x∈[3.240, 3.490] → avoid (3.065, 3.665)
+    #          Picking x=2.0 sits cleanly inside Z's x range and clears
+    #          every internal poly halo by ≥0.27 µm.
+    #
+    #          Earliest (2.75, 1.65) value was OUTSIDE the Z strip
+    #          (y=1.65 vs strip top y=1.340), so the li1→met2 via stack
+    #          landed on EMPTY li1 — the parent-drawn li1 pad created
+    #          an isolated li1 island, and the NAND2's Z output never
+    #          reached the met3 pred_out rail.  Effect: every final
+    #          NAND3 A/B input was driven by a rail whose source was
+    #          floating, dropping each stage-0/stage-1 pred_out's
+    #          fanout from 129 to 128 and adding 2 orphan source-only
+    #          nets to the decoder (Δ_decoder = +2).
+    #
+    #   NAND3: li1 Z strip x=[1.610, 7.510], y=[0.200, 0.370];
+    #          label @ (7.370, 0.285).  (3.5, 0.285) is also inside
+    #          this strip and clears all internal polys, so kept.
     _NAND_Z_PIN_POS: dict[int, tuple[float, float]] = {
-        2: (2.75, 1.65),
+        2: (2.0, 1.255),
         3: (3.5, 0.285),
     }
 

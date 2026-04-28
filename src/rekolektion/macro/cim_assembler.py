@@ -272,20 +272,27 @@ def _add_macro_routing(
     array_x, array_y = fp.positions["array"]
 
     # ---- MBL_PRE external pin (TOP edge) ----
-    # The precharge row has a horizontal poly stripe spanning all 64
-    # cells at row-local Y=_PRE_MBL_PRE_LY.  Add a poly licon stack
-    # at one column position to reach met1, then a met1 stub up to
-    # the macro's TOP edge with the MBL_PRE label.
-    mbl_pre_abs_y = pre_y + _PRE_MBL_PRE_LY
-    mbl_pre_abs_x = pre_x + p.cell_pitch_x  # col 1 (any col is fine)
-    # poly→li1 contact
-    _poly_to_li1_contact(top, mbl_pre_abs_x, mbl_pre_abs_y)
-    # li1→met1 mcon
+    # MBL_PRE poly bus is at Y=0.705 inside the precharge row, where
+    # the VPWR met1 bus also lives.  A direct poly→li1→met1 via stack
+    # at this Y would land its met1 pad on the VPWR bus, shorting
+    # MBL_PRE to VPWR.  Instead: extend MBL_PRE upward as a vertical
+    # poly stripe to Y=pre_top - 0.10 (above both VPWR and VREF rails),
+    # then do the poly→li1→met1 via stack there.
+    mbl_pre_abs_y_in = pre_y + _PRE_MBL_PRE_LY
+    mbl_pre_abs_x = pre_x + p.cell_pitch_x  # col 1
+    pre_top = pre_y + pre_row.height
+    mbl_pre_via_y = pre_top + 0.20    # outside the precharge cell vertically
+    # Vertical poly stripe from MBL_PRE bus Y up past the cell top
+    poly_id_bus, poly_dt_bus = GDS_LAYER["poly"]
+    top.add(gdstk.rectangle(
+        (mbl_pre_abs_x - 0.075, mbl_pre_abs_y_in),
+        (mbl_pre_abs_x + 0.075, mbl_pre_via_y + 0.10),
+        layer=poly_id_bus, datatype=poly_dt_bus,
+    ))
+    _poly_to_li1_contact(top, mbl_pre_abs_x, mbl_pre_via_y)
     draw_via_stack(top, from_layer="li1", to_layer="met1",
-                   position=(mbl_pre_abs_x, mbl_pre_abs_y))
-    # met1 stub up to top edge
-    _draw_vert_strap(top, "met1", mbl_pre_abs_x, mbl_pre_abs_y, macro_h)
-    # macro pin at top edge
+                   position=(mbl_pre_abs_x, mbl_pre_via_y))
+    _draw_vert_strap(top, "met1", mbl_pre_abs_x, mbl_pre_via_y, macro_h)
     draw_pin_with_label(top, text="MBL_PRE", layer="met1",
                         rect=(mbl_pre_abs_x - 0.07, macro_h - 0.14,
                               mbl_pre_abs_x + 0.07, macro_h))
@@ -389,13 +396,12 @@ def _add_macro_routing(
             (strap_x + _STRAP_HALF, strap_y_top),
             layer=m4_id, datatype=m4_dt,
         ))
-        # Per-column MBL[c] label on the strap so each column has a
-        # unique net name (vs all sharing "MBL" if labeled in the cell).
-        # Use texttype=20 (drawing layer) — matches the convention the
-        # bitcell uses for its MET4 MBL label, which Magic recognizes.
+        # Per-column MBL_<c> label on the strap so each column has a
+        # unique net name (matches reference SPICE's MBL_<c> convention
+        # used by the cim_spice_generator's bitcell instance lines).
         strap_mid_y = (strap_y_bot + strap_y_top) / 2.0
         top.add(gdstk.Label(
-            f"MBL[{col}]", (strap_x, strap_mid_y),
+            f"MBL_{col}", (strap_x, strap_mid_y),
             layer=m4_id, texttype=20,
         ))
 

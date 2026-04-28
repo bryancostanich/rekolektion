@@ -215,17 +215,179 @@ def assemble_cim(p: CIMMacroParams) -> tuple[gdstk.Library, CIMMacroParams]:
 
     macro_w, macro_h = fp.macro_size
 
-    # NOTE: The MWL driver row already exposes MWL_EN[row] li1 .pin
-    # shapes at its WEST edge (x=0), which is the macro's west edge —
-    # no separate macro-level pin needed.  Same for MWL[row] at the
-    # row's east edge (where the bitcell array abuts).
-    #
-    # MBL_OUT[col], MBL_PRE, VREF, VBIAS, VPWR/VGND, and MBL[col]
-    # column straps still need explicit macro-level routing.  TODO.
+    # ---- Macro-level routing ----
+    # Connect each row builder's shared-bus internal nets to the macro's
+    # external pins, and stitch per-column / per-row signals between
+    # blocks.  Pin shapes here become top-level macro ports.
+    _add_macro_routing(top, p, fp, mwl_row, pre_row, sense_row)
 
     p.macro_width = macro_w
     p.macro_height = macro_h
     return out_lib, p
+
+
+# ---------------------------------------------------------------------------
+# Macro-level routing
+# ---------------------------------------------------------------------------
+
+# Pin position constants from the row builders (mirrored here for
+# absolute-coord macro routing).
+_PRE_MBL_PRE_LY: float = 0.705   # poly Y inside cim_mbl_precharge
+_PRE_VREF_LY:    float = 0.955   # li1 Y
+_PRE_VPWR_LY:    float = 0.705   # met1 Y (n-tap row)
+_PRE_MBL_LX:     float = 0.720   # x of MBL drain in cell-local coords
+_PRE_MBL_LY:     float = 0.455   # li1 Y for MBL drain
+
+_SENSE_VBIAS_LY: float = 0.405   # poly Y
+_SENSE_MBL_LX:   float = 0.170   # poly X for MBL gate input
+_SENSE_MBL_LY:   float = 1.075   # poly Y
+_SENSE_VSS_LY:   float = 0.155   # li1 Y for source-bottom + body tap
+_SENSE_VDD_LY:   float = 1.325   # li1 Y for driver-drain
+_SENSE_MBL_OUT_LY: float = 0.740  # li1 Y for source-follower output
+_SENSE_MBL_OUT_LX: float = 0.800  # li1 X
+_SENSE_VSS_TAP_LY: float = 0.155  # met1 Y at p-tap
+
+
+def _add_macro_routing(
+    top: gdstk.Cell,
+    p: CIMMacroParams,
+    fp: CIMFloorplan,
+    mwl_row: MWLDriverRow,
+    pre_row: MBLPrechargeRow,
+    sense_row: MBLSenseRow,
+) -> None:
+    """Add top-level routing wires + macro pin labels."""
+    from rekolektion.macro.routing import draw_pin_with_label, draw_via_stack
+    from rekolektion.macro.sky130_drc import GDS_LAYER
+
+    poly_id, poly_dt = GDS_LAYER["poly"]
+    li1_id, li1_dt = GDS_LAYER["li1"]
+    m1_id, m1_dt = GDS_LAYER["met1"]
+    m2_id, m2_dt = GDS_LAYER["met2"]
+    m4_id, m4_dt = GDS_LAYER["met4"]
+
+    macro_w, macro_h = fp.macro_size
+    pre_x, pre_y = fp.positions["mbl_precharge"]
+    sense_x, sense_y = fp.positions["mbl_sense"]
+    array_x, array_y = fp.positions["array"]
+
+    # ---- MBL_PRE external pin (TOP edge) ----
+    # The precharge row has a horizontal poly stripe spanning all 64
+    # cells at row-local Y=_PRE_MBL_PRE_LY.  Add a poly licon stack
+    # at one column position to reach met1, then a met1 stub up to
+    # the macro's TOP edge with the MBL_PRE label.
+    mbl_pre_abs_y = pre_y + _PRE_MBL_PRE_LY
+    mbl_pre_abs_x = pre_x + p.cell_pitch_x  # col 1 (any col is fine)
+    # poly→li1 contact
+    _poly_to_li1_contact(top, mbl_pre_abs_x, mbl_pre_abs_y)
+    # li1→met1 mcon
+    draw_via_stack(top, from_layer="li1", to_layer="met1",
+                   position=(mbl_pre_abs_x, mbl_pre_abs_y))
+    # met1 stub up to top edge
+    _draw_vert_strap(top, "met1", mbl_pre_abs_x, mbl_pre_abs_y, macro_h)
+    # macro pin at top edge
+    draw_pin_with_label(top, text="MBL_PRE", layer="met1",
+                        rect=(mbl_pre_abs_x - 0.07, macro_h - 0.14,
+                              mbl_pre_abs_x + 0.07, macro_h))
+
+    # ---- VREF external pin (TOP edge) ----
+    vref_abs_y = pre_y + _PRE_VREF_LY
+    vref_abs_x = pre_x + 3 * p.cell_pitch_x  # different col to avoid collision
+    # li1→met1 mcon
+    draw_via_stack(top, from_layer="li1", to_layer="met1",
+                   position=(vref_abs_x, vref_abs_y))
+    _draw_vert_strap(top, "met1", vref_abs_x, vref_abs_y, macro_h)
+    draw_pin_with_label(top, text="VREF", layer="met1",
+                        rect=(vref_abs_x - 0.07, macro_h - 0.14,
+                              vref_abs_x + 0.07, macro_h))
+
+    # ---- VBIAS external pin (BOTTOM edge) ----
+    vbias_abs_y = sense_y + _SENSE_VBIAS_LY
+    vbias_abs_x = sense_x + p.cell_pitch_x
+    _poly_to_li1_contact(top, vbias_abs_x, vbias_abs_y)
+    draw_via_stack(top, from_layer="li1", to_layer="met1",
+                   position=(vbias_abs_x, vbias_abs_y))
+    _draw_vert_strap(top, "met1", vbias_abs_x, 0.0, vbias_abs_y)
+    draw_pin_with_label(top, text="VBIAS", layer="met1",
+                        rect=(vbias_abs_x - 0.07, 0.0,
+                              vbias_abs_x + 0.07, 0.14))
+
+    # ---- VPWR external pin (TOP-RIGHT corner) ----
+    vpwr_abs_y = pre_y + _PRE_VPWR_LY
+    vpwr_abs_x = pre_x + (p.cols - 2) * p.cell_pitch_x
+    _draw_vert_strap(top, "met1", vpwr_abs_x, vpwr_abs_y, macro_h)
+    draw_pin_with_label(top, text="VPWR", layer="met1",
+                        rect=(vpwr_abs_x - 0.07, macro_h - 0.14,
+                              vpwr_abs_x + 0.07, macro_h))
+
+    # ---- VGND external pin (BOTTOM-RIGHT corner) ----
+    vgnd_abs_y = sense_y + _SENSE_VSS_TAP_LY
+    vgnd_abs_x = sense_x + (p.cols - 2) * p.cell_pitch_x
+    _draw_vert_strap(top, "met1", vgnd_abs_x, 0.0, vgnd_abs_y)
+    draw_pin_with_label(top, text="VGND", layer="met1",
+                        rect=(vgnd_abs_x - 0.07, 0.0,
+                              vgnd_abs_x + 0.07, 0.14))
+
+    # ---- MBL_OUT[col] external pins (BOTTOM edge) ----
+    # Each sense cell exposes MBL_OUT[col] on li1 at row-local
+    # (_SENSE_MBL_OUT_LX, _SENSE_MBL_OUT_LY).  Add a li1 stub from
+    # that pad down to the macro bottom (y=0), labeled MBL_OUT[col].
+    sense_x_offset = (p.cell_pitch_x - sense_row.cell_w) / 2.0
+    for col in range(p.cols):
+        cx = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_OUT_LX
+        _draw_vert_strap(top, "li1", cx, 0.0, sense_y + _SENSE_MBL_OUT_LY)
+        draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="li1",
+                            rect=(cx - 0.07, 0.0, cx + 0.07, 0.14))
+
+
+def _poly_to_li1_contact(top: gdstk.Cell, cx: float, cy: float) -> None:
+    """Drop a poly licon + li1 pad over a poly polygon at (cx, cy).
+
+    Poly licon (layer 66/44 — same as LICON1 with a poly tag) connects
+    poly to li1.  Use the same LICON1 layer Magic recognizes for both
+    poly and diff contacts.
+    """
+    from rekolektion.macro.sky130_drc import GDS_LAYER
+    licon_id, licon_dt = GDS_LAYER["pc"]   # poly licon (66/44)
+    li1_id, li1_dt = GDS_LAYER["li1"]
+    poly_id, poly_dt = GDS_LAYER["poly"]
+    # Poly enclosure of licon: 0.08 µm
+    LICON = 0.17
+    POLY_ENC = 0.08
+    LI_ENC = 0.08
+    # Widen the poly under the licon (poly.5: licon enclosure 0.05/0.08)
+    poly_pad = LICON + 2 * POLY_ENC
+    top.add(gdstk.rectangle(
+        (cx - poly_pad / 2, cy - poly_pad / 2),
+        (cx + poly_pad / 2, cy + poly_pad / 2),
+        layer=poly_id, datatype=poly_dt,
+    ))
+    # Licon
+    top.add(gdstk.rectangle(
+        (cx - LICON / 2, cy - LICON / 2),
+        (cx + LICON / 2, cy + LICON / 2),
+        layer=licon_id, datatype=licon_dt,
+    ))
+    # Li1 pad
+    li_pad = LICON + 2 * LI_ENC
+    top.add(gdstk.rectangle(
+        (cx - li_pad / 2, cy - li_pad / 2),
+        (cx + li_pad / 2, cy + li_pad / 2),
+        layer=li1_id, datatype=li1_dt,
+    ))
+
+
+def _draw_vert_strap(top: gdstk.Cell, layer: str,
+                     cx: float, y0: float, y1: float,
+                     w: float = 0.20) -> None:
+    """Draw a vertical metal strap from (cx, y0) to (cx, y1)."""
+    from rekolektion.macro.sky130_drc import GDS_LAYER
+    layer_id, layer_dt = GDS_LAYER[layer]
+    yl, yh = (y0, y1) if y0 <= y1 else (y1, y0)
+    top.add(gdstk.rectangle(
+        (cx - w / 2, yl), (cx + w / 2, yh),
+        layer=layer_id, datatype=layer_dt,
+    ))
 
 
 # ---------------------------------------------------------------------------

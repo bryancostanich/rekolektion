@@ -339,6 +339,86 @@ def _add_macro_routing(
         draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="li1",
                             rect=(cx - 0.07, 0.0, cx + 0.07, 0.14))
 
+    # ---- MBL[col] vertical MET4 column straps ----
+    # For each column, draw a met4 strap that spans from the precharge
+    # MBL pin (top of array) to the sense MBL pin (bottom of array),
+    # passing over each bitcell's met4 MBL pad in that column.  The
+    # strap X aligns with the bitcell's MBL pin X (cell_cx within each
+    # column's pitch-relative position).
+    array_x_pos, array_y_pos = fp.positions["array"]
+    array_h = fp.sizes["array"][1]
+    array_w = fp.sizes["array"][0]
+
+    # Bitcell MBL is at cell_cx within the bitcell — equal to half the
+    # geometric width.  For tile_array's mirrored pairing, MBL ends up
+    # at a regular X offset of `bitcell_cx` from each column's start.
+    # We compute it by loading the bitcell info.
+    from rekolektion.bitcell.sky130_6t_lr_cim import load_cim_bitcell, generate_cim_bitcell, CIM_VARIANTS
+    from pathlib import Path as _Path
+    _v = CIM_VARIANTS[p.variant]
+    _bc_gds = _Path("output/cim_variants") / f"sky130_6t_cim_lr_{p.variant.lower().replace('-', '_')}.gds"
+    if not _bc_gds.exists():
+        _bc_gds.parent.mkdir(parents=True, exist_ok=True)
+        generate_cim_bitcell(str(_bc_gds), mim_w=_v["mim_w"], mim_l=_v["mim_l"])
+    _bc = load_cim_bitcell(str(_bc_gds), variant=p.variant)
+    bitcell_mbl_lx = _bc.pins["MBL"].ports[0][0]   # local x of MBL pin in bitcell
+    bitcell_mbl_ly = _bc.pins["MBL"].ports[0][1]   # local y
+
+    # MET4 strap parameters
+    _STRAP_W = 0.40    # met4 strap width
+    _STRAP_HALF = _STRAP_W / 2
+
+    # Y span of the strap: from precharge MBL pin Y down to sense MBL pin Y
+    # (extending slightly past so it overlaps the bitcell MBL pads).
+    # Bitcell MBL pad on met4 is small (~ MIM_M4_OVERLAP-bound).
+    pre_mbl_abs_y = pre_y + _PRE_MBL_LY    # where precharge cell's MBL li1 pad is
+    sense_mbl_abs_y = sense_y + _SENSE_MBL_LY  # where sense cell's MBL gate is
+
+    # Strap spans from sense_mbl_abs_y up to pre_mbl_abs_y.
+    strap_y_bot = min(sense_mbl_abs_y, pre_mbl_abs_y) - 0.30
+    strap_y_top = max(sense_mbl_abs_y, pre_mbl_abs_y) + 0.30
+
+    pre_x_offset = (p.cell_pitch_x - pre_row.cell_w) / 2.0
+
+    for col in range(p.cols):
+        strap_x = array_x_pos + bitcell_mbl_lx + col * p.cell_pitch_x
+
+        # Vertical MET4 strap
+        top.add(gdstk.rectangle(
+            (strap_x - _STRAP_HALF, strap_y_bot),
+            (strap_x + _STRAP_HALF, strap_y_top),
+            layer=m4_id, datatype=m4_dt,
+        ))
+
+        # Precharge MBL li1 pad → met4 strap (li1→m1→m2→m3→m4 via stack)
+        pre_mbl_abs_x = pre_x + col * p.cell_pitch_x + pre_x_offset + _PRE_MBL_LX
+        # Drop a via stack at the precharge MBL pin position
+        draw_via_stack(top, from_layer="li1", to_layer="met4",
+                       position=(pre_mbl_abs_x, pre_mbl_abs_y))
+        # Horizontal met4 jog from precharge MBL X to strap X (at pre_mbl_abs_y)
+        x_lo = min(pre_mbl_abs_x, strap_x) - _STRAP_HALF
+        x_hi = max(pre_mbl_abs_x, strap_x) + _STRAP_HALF
+        top.add(gdstk.rectangle(
+            (x_lo, pre_mbl_abs_y - _STRAP_HALF),
+            (x_hi, pre_mbl_abs_y + _STRAP_HALF),
+            layer=m4_id, datatype=m4_dt,
+        ))
+
+        # Sense MBL poly gate → met4 strap (poly licon→li1→m1→m2→m3→m4)
+        sense_mbl_abs_x = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_LX
+        # Poly licon stack already wires the gate poly to li1 (need to add it)
+        _poly_to_li1_contact(top, sense_mbl_abs_x, sense_mbl_abs_y)
+        draw_via_stack(top, from_layer="li1", to_layer="met4",
+                       position=(sense_mbl_abs_x, sense_mbl_abs_y))
+        # Horizontal met4 jog from sense MBL X to strap X
+        x_lo = min(sense_mbl_abs_x, strap_x) - _STRAP_HALF
+        x_hi = max(sense_mbl_abs_x, strap_x) + _STRAP_HALF
+        top.add(gdstk.rectangle(
+            (x_lo, sense_mbl_abs_y - _STRAP_HALF),
+            (x_hi, sense_mbl_abs_y + _STRAP_HALF),
+            layer=m4_id, datatype=m4_dt,
+        ))
+
 
 def _poly_to_li1_contact(top: gdstk.Cell, cx: float, cy: float) -> None:
     """Drop a poly licon + li1 pad over a poly polygon at (cx, cy).

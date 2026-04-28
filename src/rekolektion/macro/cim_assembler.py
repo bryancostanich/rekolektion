@@ -389,6 +389,13 @@ def _add_macro_routing(
             (strap_x + _STRAP_HALF, strap_y_top),
             layer=m4_id, datatype=m4_dt,
         ))
+        # Per-column MBL[c] label on the strap so each column has a
+        # unique net name (vs all sharing "MBL" if labeled in the cell).
+        strap_mid_y = (strap_y_bot + strap_y_top) / 2.0
+        top.add(gdstk.Label(
+            f"MBL[{col}]", (strap_x, strap_mid_y),
+            layer=m4_id, texttype=5,
+        ))
 
         # Precharge MBL li1 pad → met4 strap (li1→m1→m2→m3→m4 via stack)
         pre_mbl_abs_x = pre_x + col * p.cell_pitch_x + pre_x_offset + _PRE_MBL_LX

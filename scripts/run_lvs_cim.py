@@ -36,9 +36,29 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     eliminates the sub-cell hierarchy and lets Magic produce a flat
     transistor-level netlist that we compare against the (also-
     flattened by netgen) reference.
+
+    Before flattening, strip foundry stdcell internal labels (A, X,
+    VPB, VNB on sky130_fd_sc_hd__buf_2) so they don't get copied 64×
+    into the macro and merged by name into a single net.  The row
+    builder already places appropriate per-row labels (MWL_EN[r],
+    MWL[r]) at the same physical positions to provide net names.
     """
     import gdstk
     src = gdstk.read_gds(str(src_gds))
+    # Strip foundry stdcell internal labels from buf_2 so they don't
+    # get copied 64× into the macro and merged by name into one net.
+    # Keep VPWR/VGND because they're meant to be global; A/X/VPB/VNB
+    # would merge across rows otherwise.  The row builder provides
+    # per-row MWL_EN[r] / MWL[r] li1 stubs at the same physical
+    # positions to provide net names.
+    _STRIP: dict[str, set[str]] = {
+        "sky130_fd_sc_hd__buf_2": {"A", "X", "VPB", "VNB"},
+    }
+    for c in src.cells:
+        if c.name in _STRIP:
+            to_remove = [l for l in c.labels if l.text in _STRIP[c.name]]
+            for l in to_remove:
+                c.remove(l)
     top = next(c for c in src.cells if c.name == top_cell)
     top.flatten()
     out_lib = gdstk.Library(name=f"{top_cell}_flat", unit=src.unit, precision=src.precision)

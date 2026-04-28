@@ -80,18 +80,37 @@ _PORT_LIST: dict[str, list[str]] = {
 
 def _patch_subckt_ports(text: str, cell_name: str) -> str:
     """Rewrite the `.subckt <name> ...` line to include the canonical
-    port list (Magic loses some poly/li1 ports during extraction)."""
+    port list (Magic loses some poly/li1 ports during extraction).
+
+    Also substitute auto-named well/substrate body-bias nets in the
+    body with the conventional supply names (VDD / VSS).  Without
+    this, every flattened bitcell instance in the macro would have a
+    distinct `w_xx_yy#` well net while the layout's flat extraction
+    sees one shared well per N-well region — netgen flags this as
+    a per-instance net mismatch even though the topology is sound.
+    """
     ports = _PORT_LIST.get(cell_name)
     if not ports:
         return text
     lines = text.splitlines(keepends=True)
-    for i, ln in enumerate(lines):
+    out: list[str] = []
+    for ln in lines:
         stripped = ln.strip()
         if stripped.startswith(".subckt"):
-            # Replace the entire .subckt line.
-            lines[i] = f".subckt {cell_name} {' '.join(ports)}\n"
-            break
-    return "".join(lines)
+            out.append(f".subckt {cell_name} {' '.join(ports)}\n")
+            continue
+        if cell_name == "sky130_sram_6t_cim_lr":
+            # Magic auto-names the bitcell's n-well as `w_xx_yy#` and
+            # the p-substrate as VSUBS.  Tie both to the supply rails
+            # globally — this matches the macro-level physical
+            # connectivity (the wells abut and merge into one net per
+            # supply when the array is flattened).
+            import re as _re
+            # Replace any w_<digits>_<digits># token (n-well auto-name)
+            ln = _re.sub(r"\bw_\d+_n?\d+#", "VDD", ln)
+            ln = ln.replace("VSUBS", "VSS")
+        out.append(ln)
+    return "".join(out)
 
 
 def _extract_one(cell_name: str, gds_path: Path) -> Path:

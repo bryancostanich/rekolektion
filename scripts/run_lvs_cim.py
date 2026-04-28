@@ -58,11 +58,22 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
         # but the cell-level labels are generic "MBL"/"MBL_OUT".
         # Without stripping, Magic merges all 64 columns by name.
         # Macro-level labels (MBL_<c> on column straps; MBL_OUT[c]
-        # via the row builder + macro stubs) provide unique per-
-        # column naming.
-        "sky130_sram_6t_cim_lr": {"MBL"},
-        "cim_mbl_precharge": {"MBL"},
-        "cim_mbl_sense": {"MBL", "MBL_OUT"},
+        # via the macro met1 stubs) provide unique per-column
+        # naming.  Sense row builder's per-cell li1 labels are
+        # also stripped — ext2spice doesn't expose li1-only ports
+        # in the macro .subckt port list, so the port must come
+        # from the macro's met1 stub label.
+    }
+    # Wildcard strip from row-builder cells: drop all MBL_OUT[*]
+    # labels because the per-cell li1 labels would otherwise mask
+    # the macro's met1 MBL_OUT[*] label (Magic prefers li1 over
+    # met1 when both are present on the same merged net).
+    _STRIP_WILDCARD: dict[str, list[str]] = {
+        "sky130_sram_6t_cim_lr": ["MBL"],
+        "cim_mbl_precharge": ["MBL"],
+        "cim_mbl_sense": ["MBL"],
+        "cim_mbl_sense_row_64": ["MBL_OUT["],   # strip MBL_OUT[*] from row builder
+        "cim_mbl_precharge_row_64": ["MBL["],
     }
     # Rename labels: bitcell uses VDD/VSS in its layout, but the macro
     # reference (and stdcell convention) is VPWR/VGND.  Rename here so
@@ -78,6 +89,12 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     for c in src.cells:
         if c.name in _STRIP:
             to_remove = [l for l in c.labels if l.text in _STRIP[c.name]]
+            for l in to_remove:
+                c.remove(l)
+        if c.name in _STRIP_WILDCARD:
+            patterns = _STRIP_WILDCARD[c.name]
+            to_remove = [l for l in c.labels
+                         if any(p == l.text or l.text.startswith(p) for p in patterns)]
             for l in to_remove:
                 c.remove(l)
         if c.name in _RENAME:

@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 
-from rekolektion.macro_v2.assembler import MacroV2Params, assemble
+from rekolektion.macro.assembler import MacroParams, assemble
 from rekolektion.verify.lvs import extract_netlist
 
 _ROOT = Path(__file__).parent.parent
@@ -51,7 +51,7 @@ def _scan_shorts(ext_log: Path) -> list[str]:
 def test_mux(mux: int, bits: int = 8, words: int = 32) -> dict:
     out = _OUT / f"test_mux{mux}"
     out.mkdir(parents=True, exist_ok=True)
-    p = MacroV2Params(words=words, bits=bits, mux_ratio=mux)
+    p = MacroParams(words=words, bits=bits, mux_ratio=mux)
     print(f"\n=== mux={mux} === ({p.top_cell_name})", flush=True)
 
     lib, _ = assemble(p)

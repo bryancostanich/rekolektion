@@ -1,4 +1,4 @@
-from rekolektion.macro_v2 import sky130_drc as drc
+from rekolektion.macro import sky130_drc as drc
 
 
 def test_metal_min_widths():

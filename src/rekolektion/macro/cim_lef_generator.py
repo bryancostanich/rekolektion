@@ -17,7 +17,7 @@ import math
 from pathlib import Path
 
 from rekolektion.macro.cim_assembler import CIMMacroParams
-from rekolektion.macro.lef_generator import (
+from rekolektion.macro.lef_helpers import (
     _snap, _pin_rect, _pin_block, _extract_metal_shapes,
     _merge_shapes_to_obs, _GDS_LAYERS, _PIN_WIDTH, _PIN_HEIGHT,
 )

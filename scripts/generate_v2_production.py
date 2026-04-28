@@ -11,8 +11,8 @@ Produces (relative to --output-dir, default output/v2_macros/):
         sram_activation_bank.gds
         sram_activation_bank.sp
 
-Both macros assemble via `rekolektion.macro_v2.assembler.assemble()`
-with different MacroV2Params. Per autonomous_decisions.md D4, the
+Both macros assemble via `rekolektion.macro.assembler.assemble()`
+with different MacroParams. Per autonomous_decisions.md D4, the
 activation_bank runs at mux=4 (not mux=2 as originally spec'd).
 """
 from __future__ import annotations
@@ -24,10 +24,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from rekolektion.macro_v2.assembler import MacroV2Params, assemble
-from rekolektion.macro_v2.lef_generator import generate_lef
-from rekolektion.macro_v2.liberty_generator import generate_liberty
-from rekolektion.macro_v2.spice_generator import generate_reference_spice
+from rekolektion.macro.assembler import MacroParams, assemble
+from rekolektion.macro.lef_generator import generate_lef
+from rekolektion.macro.liberty_generator import generate_liberty
+from rekolektion.macro.spice_generator import generate_reference_spice
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ def _generate_one(m: ProductionMacro, output_root: Path) -> None:
     print(
         f"\n[{m.macro_name}] {m.words} words × {m.bits} bits × mux={m.mux_ratio}"
     )
-    p = MacroV2Params(words=m.words, bits=m.bits, mux_ratio=m.mux_ratio)
+    p = MacroParams(words=m.words, bits=m.bits, mux_ratio=m.mux_ratio)
     rows = p.rows
     cols = p.cols
     print(f"  rows={rows}  cols={cols}  addr_bits={p.num_addr_bits}")

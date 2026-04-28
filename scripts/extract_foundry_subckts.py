@@ -169,7 +169,7 @@ def main() -> None:
         "sky130_fd_bd_sram__openram_write_driver",
     ]
     # Custom/OpenRAM cells at peripherals/cells without a .magic.lef —
-    # skip (the new Python generators replace them for macro_v2 use).
+    # skip (the new Python generators replace them for macro use).
 
     # Bitcell lives in bitcell/cells/
     bitcell_name = "sky130_fd_bd_sram__sram_sp_cell_opt1"

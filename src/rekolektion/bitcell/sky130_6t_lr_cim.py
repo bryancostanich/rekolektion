@@ -279,18 +279,39 @@ def create_cim_bitcell(
     # MIM cap layer
     _rect(cell, LAYER_MIMCAP, cap_x0, cap_y0, cap_x1, cap_y1)
 
-    # M4 top plate (MBL connection)
+    # M4 top plate (MBL routing layer).  In sky130, VIA3 drawn over a
+    # CAPM region etches down to CAPM (top plate metal of the MIM
+    # capacitor) — not to MET3 below — because CAPM is the highest
+    # metal surface in that region during fabrication.  This gives us
+    # MET4 ↔ CAPM contact, which is the only documented sky130
+    # mechanism to access the cap top plate from a routable layer.
     _rect(cell, LAYER_MET4,
           cap_x0 - MIM_M4_OVERLAP, cap_y0 - MIM_M4_OVERLAP,
           cap_x1 + MIM_M4_OVERLAP, cap_y1 + MIM_M4_OVERLAP)
+
+    # VIA3 cut(s) inside the CAPM region — connects MET4 above to
+    # CAPM (cap top plate).  Single centred via for now; multiple
+    # vias improve current handling but a single via is sufficient
+    # for a high-impedance analog accumulation node.
+    _VIA3_SIZE = 0.20            # via3 cut size (sky130 via.1)
+    _VIA3_CAPM_ENC = 0.16        # CAPM enclosure of via3 (capm.7)
+    _VIA3_M4_ENC = 0.085         # MET4 enclosure of via3 (via3.4a)
+    via3_cx = (cap_x0 + cap_x1) / 2.0
+    via3_cy = (cap_y0 + cap_y1) / 2.0
+    _rect(cell, LAYER_VIA3,
+          via3_cx - _VIA3_SIZE / 2, via3_cy - _VIA3_SIZE / 2,
+          via3_cx + _VIA3_SIZE / 2, via3_cy + _VIA3_SIZE / 2)
 
     # =================================================================
     # LABELS
     # =================================================================
     _label(cell, "MWL", LAYERS.POLY.as_tuple,
            g["nmos_diff_x0"] - poly_ext, mwl_cy)
-    _label(cell, "MBL", LAYER_MET4,
-           cell_cx, cell_cy)
+    # MBL label on MET4 — connects to cap top plate (CAPM) via the
+    # VIA3 cut drawn over the CAPM region above.  MET4 is a normal
+    # routing layer, so MBL[c] can be shared across all bitcells in
+    # column c via a vertical MET4 strap drawn at the macro level.
+    _label(cell, "MBL", LAYER_MET4, cell_cx, cell_cy)
 
     return cell
 

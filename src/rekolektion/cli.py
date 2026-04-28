@@ -8,11 +8,12 @@ from pathlib import Path
 
 
 def _cmd_macro(args: argparse.Namespace) -> None:
-    """Generate a complete SRAM macro."""
-    from rekolektion.macro.assembler import generate_sram_macro
-    from rekolektion.macro.outputs import generate_spice, generate_verilog
+    """Generate a complete SRAM macro (V2: foundry-bitcell, mux-aware)."""
+    from rekolektion.macro.assembler import MacroParams, assemble
     from rekolektion.macro.lef_generator import generate_lef
     from rekolektion.macro.liberty_generator import generate_liberty
+    from rekolektion.macro.spice_generator import generate_reference_spice
+    from rekolektion.macro.verilog_generator import generate_verilog
 
     output = Path(args.output)
     print(
@@ -20,66 +21,38 @@ def _cmd_macro(args: argparse.Namespace) -> None:
         f"mux ratio {args.mux}"
     )
 
-    cell_type = getattr(args, "cell", "foundry")
-    write_enable = getattr(args, "write_enable", False)
-    scan_chain = getattr(args, "scan_chain", False)
-    clock_gating = getattr(args, "clock_gating", False)
-    power_gating = getattr(args, "power_gating", False)
-    wl_switchoff = getattr(args, "wl_switchoff", False)
-    burn_in = getattr(args, "burn_in", False)
-    lib, params = generate_sram_macro(
-        words=args.words,
-        bits=args.bits,
-        mux_ratio=args.mux,
-        output_path=output,
-        cell_type=cell_type,
-        write_enable=write_enable,
-        scan_chain=scan_chain,
-        clock_gating=clock_gating,
-        power_gating=power_gating,
-        wl_switchoff=wl_switchoff,
-        burn_in=burn_in,
-    )
-
-    print(f"Array: {params.rows} rows x {params.cols} columns")
-    print(f"Address bits: {params.num_addr_bits} ({params.num_row_bits} row + {params.num_col_bits} col)")
-    print(f"Macro dimensions: {params.macro_width:.3f} x {params.macro_height:.3f} um")
+    p = MacroParams(words=args.words, bits=args.bits, mux_ratio=args.mux)
+    lib, tracker = assemble(p)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lib.write_gds(str(output))
+    print(f"Array: {p.rows} rows x {p.cols} columns")
+    print(f"Address bits: {p.num_addr_bits}")
     print(f"GDS written to {output}")
+    sidecar_path = tracker.write(output, p.top_cell_name)
+    print(f"Net sidecar written to {sidecar_path}")
 
-    # Generate behavioral models alongside the GDS
     stem = output.stem
     out_dir = output.parent
+    macro_name = p.top_cell_name
 
     if args.spice:
-        sp_path = generate_spice(params, out_dir / f"{stem}.sp")
-        print(f"SPICE behavioral model written to {sp_path}")
-
-    if getattr(args, "extracted_spice", False):
-        from rekolektion.verify.lvs import extract_netlist
-        macro_name = f"sram_{args.words}x{args.bits}_mux{args.mux}"
-        ext_dir = out_dir / f"{stem}_extracted"
-        print(f"Extracting transistor-level SPICE from GDS via Magic...")
-        try:
-            ext_path = extract_netlist(
-                output, cell_name=macro_name, output_dir=ext_dir,
-            )
-            lines = ext_path.read_text().splitlines()
-            nfet = sum(1 for l in lines if "nfet" in l)
-            pfet = sum(1 for l in lines if "pfet" in l)
-            print(f"Extracted SPICE: {ext_path} ({nfet + pfet} devices)")
-        except Exception as e:
-            print(f"SPICE extraction failed: {e}")
+        sp_path = out_dir / f"{stem}.sp"
+        generate_reference_spice(p, sp_path, top_subckt_name=macro_name)
+        print(f"SPICE reference model written to {sp_path}")
 
     if args.verilog:
-        v_path = generate_verilog(params, out_dir / f"{stem}.v")
+        v_path = generate_verilog(p, out_dir / f"{stem}.v",
+                                  macro_name=macro_name)
         print(f"Verilog model written to {v_path}")
 
     if args.lef:
-        lef_path = generate_lef(params, out_dir / f"{stem}.lef")
+        lef_path = generate_lef(p, out_dir / f"{stem}.lef",
+                                macro_name=macro_name)
         print(f"LEF abstract written to {lef_path}")
 
     if args.liberty:
-        lib_path = generate_liberty(params, out_dir / f"{stem}.lib")
+        lib_path = generate_liberty(p, out_dir / f"{stem}.lib",
+                                    macro_name=macro_name)
         print(f"Liberty model written to {lib_path}")
 
 
@@ -142,10 +115,9 @@ def main(argv: list[str] | None = None) -> None:
     p_macro = sub.add_parser("macro", help="Generate a complete SRAM macro")
     p_macro.add_argument("--words", type=int, required=True, help="Number of words (memory depth)")
     p_macro.add_argument("--bits", type=int, required=True, help="Word width (data bits)")
-    p_macro.add_argument("--mux", type=int, default=1, choices=[1, 2, 4, 8], help="Column mux ratio (default: 1)")
-    p_macro.add_argument("--cell", default="foundry", choices=["foundry", "lr"], help="Bitcell type (default: foundry)")
+    p_macro.add_argument("--mux", type=int, default=2, choices=[2, 4, 8], help="Column mux ratio (default: 2)")
     p_macro.add_argument("-o", "--output", required=True, help="Output GDS path")
-    p_macro.add_argument("--spice", action="store_true", default=True, help="Generate SPICE model (default: True)")
+    p_macro.add_argument("--spice", action="store_true", default=True, help="Generate SPICE reference model (default: True)")
     p_macro.add_argument("--no-spice", action="store_false", dest="spice", help="Skip SPICE model generation")
     p_macro.add_argument("--verilog", action="store_true", default=True, help="Generate Verilog model (default: True)")
     p_macro.add_argument("--no-verilog", action="store_false", dest="verilog", help="Skip Verilog model generation")
@@ -153,13 +125,6 @@ def main(argv: list[str] | None = None) -> None:
     p_macro.add_argument("--no-lef", action="store_false", dest="lef", help="Skip LEF abstract generation")
     p_macro.add_argument("--liberty", action="store_true", default=True, help="Generate Liberty timing model (default: True)")
     p_macro.add_argument("--no-liberty", action="store_false", dest="liberty", help="Skip Liberty model generation")
-    p_macro.add_argument("--write-enable", action="store_true", default=False, help="Add byte-level write enable (BEN) port")
-    p_macro.add_argument("--scan-chain", action="store_true", default=False, help="Add scan chain DFT wrapper (ScanIn/ScanOut/ScanEnable)")
-    p_macro.add_argument("--clock-gating", action="store_true", default=False, help="Add clock gating ICG cell (CEN pin)")
-    p_macro.add_argument("--power-gating", action="store_true", default=False, help="Add power gating switch cells (SLEEP pin)")
-    p_macro.add_argument("--wl-switchoff", action="store_true", default=False, help="Add wordline switchoff gating (WL_OFF pin)")
-    p_macro.add_argument("--burn-in", action="store_true", default=False, help="Add burn-in test mode (TM pin)")
-    p_macro.add_argument("--extracted-spice", action="store_true", default=False, help="Extract transistor-level SPICE netlist from GDS via Magic")
     p_macro.set_defaults(func=_cmd_macro)
 
     # --- array subcommand ---

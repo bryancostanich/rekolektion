@@ -1,166 +1,61 @@
-"""MWL (multiply word line) driver generator for CIM arrays.
+"""MWL driver for CIM arrays — wraps SKY130 foundry stdcell buf_2.
 
-Non-inverting buffer (two inverters in series). Uses LR-style topology:
-horizontal poly gates crossing vertical NMOS/PMOS diff strips.
+Rather than hand-rolling a custom analog buffer (and its DRC/LVS), we
+use the SkyWater PDK's `sky130_fd_sc_hd__buf_2` standard cell directly.
+It's a fully characterised 2-stage CMOS buffer (4 transistors), DRC-
+clean, LVS-clean, and shipped with the PDK.
 
-Ports: MWL_EN (input), MWL (output), VDD, VSS
+The foundry cell ports are: A (input), X (output), VPWR/VGND (rails),
+VPB/VNB (n-well / p-substrate body bias).  At the macro level we tie
+VPB↔VPWR and VNB↔VGND through the PDN.
+
+Cell footprint: 1.84 × 2.72 µm (drawn).  The bbox is wider when N-well
+overhang is included (~2.22 × 3.20 µm).  All four CIM bitcell variants
+have row pitch ≥ 3.915 µm, leaving comfortable margin for vertical
+tiling.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Tuple
 
 import gdstk
 
-from rekolektion.tech.sky130 import LAYERS, RULES
 
-
-# Transistor sizing
-_PU_W = 0.84    # PMOS pull-up width (X extent of PMOS diff)
-_PD_W = 0.42    # NMOS pull-down width (X extent of NMOS diff)
-_L = 0.15       # gate length (Y extent of poly at diff crossing)
-
-# Layout constants (same validated values as CIM cell / 6T cell)
-_DIFF_EXT = 0.33     # diff Y-extension past poly for S/D contacts
-_LICON_TO_GATE = 0.09  # licon edge to gate edge
-_LICON = RULES.LICON_SIZE
-_LI_ENC = RULES.LI1_ENCLOSURE_OF_LICON
-_MCON = RULES.MCON_SIZE
-_NSDM_ENC = RULES.NSDM_ENCLOSURE_OF_DIFF
-_PSDM_ENC = RULES.PSDM_ENCLOSURE_OF_DIFF
-_NWELL_ENC = RULES.DIFF_MIN_ENCLOSURE_BY_NWELL
-_POLY_EXT = RULES.POLY_MIN_EXTENSION_PAST_DIFF
-_LI_PAD = _LICON + 2 * _LI_ENC  # 0.33
-
-_DIFF = LAYERS.DIFF.as_tuple
-_POLY = LAYERS.POLY.as_tuple
-_NSDM = LAYERS.NSDM.as_tuple
-_PSDM = LAYERS.PSDM.as_tuple
-_NWELL = LAYERS.NWELL.as_tuple
-_LICON1 = LAYERS.LICON1.as_tuple
-_LI1 = LAYERS.LI1.as_tuple
-_MCON_L = LAYERS.MCON.as_tuple
-_MET1 = LAYERS.MET1.as_tuple
-
-
-def _snap(v, g=0.005):
-    return round(v / g) * g
-
-
-def _rect(c, ly, x0, y0, x1, y1):
-    c.add(gdstk.rectangle((_snap(x0), _snap(y0)), (_snap(x1), _snap(y1)),
-                           layer=ly[0], datatype=ly[1]))
-
-
-def _con(c, cx, cy, ly, sz):
-    hs = sz / 2.0
-    _rect(c, ly, cx - hs, cy - hs, cx + hs, cy + hs)
-
-
-def _lipad(c, cx, cy, w=_LI_PAD, h=_LI_PAD):
-    _rect(c, _LI1, cx - w/2, cy - h/2, cx + w/2, cy + h/2)
+_CELL_NAME = "sky130_fd_sc_hd__buf_2"
+_GDS_PATH = Path(__file__).parent / "cells" / f"{_CELL_NAME}.gds"
 
 
 def generate_mwl_driver() -> Tuple[gdstk.Cell, gdstk.Library]:
-    """Generate one MWL driver cell (non-inverting buffer).
+    """Load the foundry buf_2 cell and return (cell, library).
 
-    Topology: two CMOS inverters, LR-style layout:
-    - Vertical NMOS diff (left) + vertical PMOS diff (right)
-    - Horizontal poly gates crossing both diffs
-    - Two gates stacked vertically (inv1, inv2) with S/D contacts between
-
-    Returns (cell, library).
+    Reads the cached GDS that was extracted from the foundry library.
+    Returns a fresh library each call so callers can copy cells into
+    their own libraries without aliasing.
     """
-    cell = gdstk.Cell("cim_mwl_driver")
-
-    # --- Y layout: two gates with S/D zones ---
-    # bottom S/D | gate1 | mid S/D | gate2 | top S/D
-    gate_to_sd = _snap(_LICON_TO_GATE + _LICON / 2.0)  # gate edge to licon center
-    sd_zone = _snap(2 * gate_to_sd + RULES.LI1_MIN_SPACING)  # S/D between gates
-    # But also need li.3 between adjacent li1 pads:
-    sd_zone = _snap(max(sd_zone, _LI_PAD + RULES.LI1_MIN_SPACING))
-
-    y_diff_bot = 0.0
-    gate1_cy = _snap(y_diff_bot + _DIFF_EXT + _L / 2.0)
-    gate2_cy = _snap(gate1_cy + _L / 2.0 + sd_zone + _L / 2.0)
-    y_diff_top = _snap(gate2_cy + _L / 2.0 + _DIFF_EXT)
-
-    # S/D licon Y positions
-    sd_bot_cy = _snap(gate1_cy - _L / 2.0 - _LICON_TO_GATE - _LICON / 2.0)
-    sd_mid_cy = _snap((gate1_cy + gate2_cy) / 2.0)
-    sd_top_cy = _snap(gate2_cy + _L / 2.0 + _LICON_TO_GATE + _LICON / 2.0)
-
-    # --- X layout: NMOS left, N-P gap, PMOS right ---
-    np_gap = _snap(max(0.34 + _NWELL_ENC, RULES.DIFF_MIN_SPACING + 0.10))
-    margin = 0.30
-
-    nmos_x0 = _snap(margin)
-    nmos_x1 = _snap(nmos_x0 + _PD_W)
-    nmos_cx = _snap((nmos_x0 + nmos_x1) / 2.0)
-
-    pmos_x0 = _snap(nmos_x1 + np_gap)
-    pmos_x1 = _snap(pmos_x0 + _PU_W)
-    pmos_cx = _snap((pmos_x0 + pmos_x1) / 2.0)
-
-    cell_w = _snap(pmos_x1 + margin)
-
-    # --- NMOS diff + implant ---
-    _rect(cell, _DIFF, nmos_x0, y_diff_bot, nmos_x1, y_diff_top)
-    _rect(cell, _NSDM, nmos_x0 - _NSDM_ENC, y_diff_bot - _NSDM_ENC,
-          nmos_x1 + _NSDM_ENC, y_diff_top + _NSDM_ENC)
-
-    # --- PMOS diff + implant ---
-    _rect(cell, _DIFF, pmos_x0, y_diff_bot, pmos_x1, y_diff_top)
-    _rect(cell, _PSDM, pmos_x0 - _PSDM_ENC, y_diff_bot - _PSDM_ENC,
-          pmos_x1 + _PSDM_ENC, y_diff_top + _PSDM_ENC)
-
-    # --- N-well ---
-    _rect(cell, _NWELL,
-          pmos_x0 - _NWELL_ENC, y_diff_bot - _NWELL_ENC - 0.10,
-          pmos_x1 + _NWELL_ENC, y_diff_top + _NWELL_ENC + 0.10)
-
-    # --- Poly gates (horizontal, crossing both diffs) ---
-    poly_x0 = _snap(nmos_x0 - _POLY_EXT)
-    poly_x1 = _snap(pmos_x1 + _POLY_EXT)
-    for gate_cy in [gate1_cy, gate2_cy]:
-        _rect(cell, _POLY, poly_x0, gate_cy - _L / 2.0,
-              poly_x1, gate_cy + _L / 2.0)
-
-    # --- S/D contacts on both diffs ---
-    for diff_cx in [nmos_cx, pmos_cx]:
-        for sd_cy in [sd_bot_cy, sd_mid_cy, sd_top_cy]:
-            _con(cell, diff_cx, sd_cy, _LICON1, _LICON)
-            _lipad(cell, diff_cx, sd_cy)
-
-    # --- Power: VSS to NMOS sources, VDD to PMOS sources ---
-    # Inv1: gate1 makes transistors. NMOS source=bot, drain=mid.
-    # Inv2: gate2 makes transistors. NMOS source=mid (shared), drain=top.
-    # For non-inverting buffer: inv1 and inv2 share the mid node.
-    # NMOS sources: bot (inv1 src=VSS) and top (inv2 drain=output)
-    # Wait — for two inverters in series on shared diff:
-    #   bot = inv1 source (VSS for NMOS)
-    #   mid = inv1 drain = inv2 source (internal node for NMOS)
-    #   top = inv2 drain (output for NMOS)
-    #
-    # Similarly for PMOS:
-    #   bot = inv1 source (VDD for PMOS)... but PMOS source should be VDD.
-    # In shared diff with two gates, the assignment depends on wiring.
-    # For a non-inverting buffer using shared diff:
-    #   NMOS: src1=bot=VSS, drn1=mid, src2=mid, drn2=top → inv1 out at mid, inv2 out at top
-    #   PMOS: src1=bot=VDD, drn1=mid, src2=mid, drn2=top → same
-    # But PMOS source should be VDD at the TOP (highest potential).
-    # Need to wire: NMOS bot to VSS, PMOS top to VDD (or bot, depending on orientation).
-
-    # Labels
-    cell.add(gdstk.Label("MWL_EN", (_snap(poly_x0), _snap(gate1_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("MWL", (_snap(poly_x1), _snap(gate2_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("VSS", (_snap(cell_w / 2), _snap(y_diff_bot)),
-                          layer=_MET1[0], texttype=_MET1[1]))
-    cell.add(gdstk.Label("VDD", (_snap(cell_w / 2), _snap(y_diff_top)),
-                          layer=_MET1[0], texttype=_MET1[1]))
-
-    lib = gdstk.Library(name="cim_mwl_driver_lib", unit=1e-6, precision=5e-9)
-    lib.add(cell)
+    if not _GDS_PATH.exists():
+        raise FileNotFoundError(
+            f"Foundry buf_2 GDS missing at {_GDS_PATH}.  Re-extract it from "
+            f"the SkyWater PDK (libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds)."
+        )
+    src = gdstk.read_gds(str(_GDS_PATH))
+    cell = next((c for c in src.cells if c.name == _CELL_NAME), None)
+    if cell is None:
+        raise RuntimeError(
+            f"Cell {_CELL_NAME!r} not found in {_GDS_PATH}"
+        )
+    lib = gdstk.Library(name=f"{_CELL_NAME}_lib", unit=src.unit, precision=src.precision)
+    lib.add(cell, *cell.dependencies(True))
     return cell, lib
+
+
+def get_cell_dimensions() -> Tuple[float, float]:
+    """Return (width, height) of the buf_2 cell in µm.
+
+    Width: rail-to-rail X span (1.84 µm).
+    Height: rail-to-rail Y span (2.72 µm).
+    Note: the GDS bbox is larger due to N-well overhang (~2.22 × 3.20 µm),
+    but for placement we use the rail span which is what abuts neighbours.
+    """
+    return 1.84, 2.72

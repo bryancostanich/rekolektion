@@ -1,255 +1,282 @@
-"""CIM SRAM macro assembler.
+"""CIM SRAM macro assembler — v2-style modular block placement.
 
-Places all CIM components — bitcell array, MWL drivers, MBL precharge,
-MBL sense buffers — into a single GDS macro.
+Builds a CIM macro by composing four block-builder classes:
 
-Separate from the standard SRAM assembler because CIM macros have
-fundamentally different peripherals (analog MBL path, no column mux,
-no sense amp/write driver in the traditional sense).
+    CIMBitcellArray     — tiled custom CIM bitcell (sky130_6t_lr_cim)
+    MWLDriverRow        — vertical stack of MWL drivers, LEFT of array
+    MBLPrechargeRow     — horizontal row of MBL precharges, ABOVE array
+    MBLSenseRow         — horizontal row of MBL sense buffers, BELOW array
 
-Usage::
+Floorplan (cell-local coords, origin at bottom-left of macro):
 
-    from rekolektion.macro.cim_assembler import generate_cim_macro
-    generate_cim_macro("SRAM-A", output_path="output/cim_sram_a.gds")
+    +--------------------------------------------------+
+    |                                                  |  <- pre row (TOP)
+    |                                                  |
+    |  MWL    +-----------------------------+          |
+    |  drvs   |                             |          |
+    |  (LEFT) |       BITCELL ARRAY         |          |
+    |         |                             |          |
+    |         +-----------------------------+          |
+    |                                                  |  <- sense row (BOTTOM)
+    +--------------------------------------------------+
+
+The legacy public API `generate_cim_macro(variant, ...)` is preserved
+as a thin wrapper around `assemble_cim()` so external callers
+(particularly khalkulo) keep working.
 """
-
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict
+from typing import Optional
 
 import gdstk
 
-from rekolektion.bitcell.sky130_6t_lr_cim import (
-    CIM_VARIANTS, load_cim_bitcell, generate_cim_bitcell,
-)
-from rekolektion.array.tiler import tile_array
+from rekolektion.bitcell.sky130_6t_lr_cim import CIM_VARIANTS, load_cim_bitcell
+from rekolektion.macro.cim_bitcell_array import CIMBitcellArray
+from rekolektion.macro.cim_mwl_driver_row import MWLDriverRow
+from rekolektion.macro.cim_mbl_precharge_row import MBLPrechargeRow
+from rekolektion.macro.cim_mbl_sense_row import MBLSenseRow
+from rekolektion.macro.routing import draw_pin_with_label
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Params
+# ---------------------------------------------------------------------------
+
 @dataclass
 class CIMMacroParams:
-    """Parameters for a CIM SRAM macro."""
-    variant: str       # "SRAM-A", "SRAM-B", etc.
-    rows: int
-    cols: int
-    mim_w: float
-    mim_l: float
-    cap_fF: float
-    cell_pitch_x: float
-    cell_pitch_y: float
+    """Parameters for a CIM SRAM macro.
+
+    Variant-driven (one of "SRAM-A".."SRAM-D") — the variant determines
+    bitcell dimensions, MIM cap geometry, and array shape.  All other
+    fields are computed from the variant.
+    """
+    variant: str
+    rows: int = 0
+    cols: int = 0
+    mim_w: float = 0.0
+    mim_l: float = 0.0
+    cap_fF: float = 0.0
+    cell_pitch_x: float = 0.0
+    cell_pitch_y: float = 0.0
     macro_width: float = 0.0
     macro_height: float = 0.0
 
+    @classmethod
+    def from_variant(cls, variant: str) -> "CIMMacroParams":
+        if variant not in CIM_VARIANTS:
+            raise ValueError(
+                f"Unknown CIM variant {variant!r}. "
+                f"Valid: {sorted(CIM_VARIANTS)}"
+            )
+        v = CIM_VARIANTS[variant]
+        return cls(
+            variant=variant,
+            rows=v["rows"], cols=v["cols"],
+            mim_w=v["mim_w"], mim_l=v["mim_l"],
+            cap_fF=v["mim_w"] * v["mim_l"] * 2.0,
+        )
+
+    @property
+    def top_cell_name(self) -> str:
+        slug = self.variant.lower().replace("-", "_")
+        return f"cim_{slug}_{self.rows}x{self.cols}"
+
+
+# ---------------------------------------------------------------------------
+# Floorplan
+# ---------------------------------------------------------------------------
+
+# Margins between blocks (μm).
+_LEFT_GAP: float = 1.0     # between MWL driver column and array
+_TOP_GAP: float = 0.5      # between array top and MBL precharge row
+_BOTTOM_GAP: float = 0.5   # between MBL sense row and array bottom
+
+
+@dataclass
+class CIMFloorplan:
+    """Absolute (x, y) positions and sizes of every CIM block."""
+    positions: dict[str, tuple[float, float]] = field(default_factory=dict)
+    sizes: dict[str, tuple[float, float]] = field(default_factory=dict)
+    macro_size: tuple[float, float] = (0.0, 0.0)
+
+
+def build_cim_floorplan(p: CIMMacroParams) -> CIMFloorplan:
+    """Compute placement coordinates for every block in the CIM macro."""
+    # Materialise the bitcell to read its pitches.
+    bca = CIMBitcellArray(p.variant, p.rows, p.cols)
+    cell_w = bca.cell_pitch_x
+    cell_h = bca.cell_pitch_y
+
+    # Stash pitches on the params for downstream consumers.
+    p.cell_pitch_x = cell_w
+    p.cell_pitch_y = cell_h
+
+    array_w = p.cols * cell_w
+    array_h = p.rows * cell_h
+
+    mwl_row = MWLDriverRow(rows=p.rows, row_pitch=cell_h)
+    pre_row = MBLPrechargeRow(cols=p.cols, col_pitch=cell_w)
+    sense_row = MBLSenseRow(cols=p.cols, col_pitch=cell_w)
+
+    fp = CIMFloorplan()
+
+    # MWL driver column at the LEFT (x=0).
+    fp.positions["mwl_driver"] = (0.0, _BOTTOM_GAP + sense_row.height)
+    fp.sizes["mwl_driver"] = (mwl_row.width, mwl_row.height)
+
+    # Bitcell array east of the MWL drivers.
+    array_x = mwl_row.width + _LEFT_GAP
+    array_y = _BOTTOM_GAP + sense_row.height
+    fp.positions["array"] = (array_x, array_y)
+    fp.sizes["array"] = (array_w, array_h)
+
+    # MBL precharge row at the TOP of the array.
+    fp.positions["mbl_precharge"] = (array_x, array_y + array_h + _TOP_GAP)
+    fp.sizes["mbl_precharge"] = (pre_row.width, pre_row.height)
+
+    # MBL sense row at the BOTTOM of the array.
+    fp.positions["mbl_sense"] = (array_x, 0.0)
+    fp.sizes["mbl_sense"] = (sense_row.width, sense_row.height)
+
+    macro_w = array_x + array_w + 1.0    # +1 µm right margin
+    macro_h = (
+        _BOTTOM_GAP + sense_row.height +
+        array_h + _TOP_GAP + pre_row.height
+    )
+    fp.macro_size = (macro_w, macro_h)
+    return fp
+
+
+# ---------------------------------------------------------------------------
+# Assemble
+# ---------------------------------------------------------------------------
+
+def assemble_cim(p: CIMMacroParams) -> tuple[gdstk.Library, CIMMacroParams]:
+    """Build the full CIM macro library by composing the four block builders.
+
+    Returns (library, populated CIMMacroParams).  The library has a
+    single top cell named `p.top_cell_name`; all sub-blocks live as
+    referenced sub-cells.
+    """
+    fp = build_cim_floorplan(p)
+
+    # Build each block library independently.
+    bca = CIMBitcellArray(p.variant, p.rows, p.cols)
+    array_lib = bca.build()
+    array_cell_in_src = bca.array_cell(array_lib)
+
+    mwl_row = MWLDriverRow(rows=p.rows, row_pitch=p.cell_pitch_y)
+    mwl_lib = mwl_row.build()
+    mwl_cell_in_src = next(
+        c for c in mwl_lib.cells if c.name == mwl_row.top_cell_name
+    )
+
+    pre_row = MBLPrechargeRow(cols=p.cols, col_pitch=p.cell_pitch_x)
+    pre_lib = pre_row.build()
+    pre_cell_in_src = next(
+        c for c in pre_lib.cells if c.name == pre_row.top_cell_name
+    )
+
+    sense_row = MBLSenseRow(cols=p.cols, col_pitch=p.cell_pitch_x)
+    sense_lib = sense_row.build()
+    sense_cell_in_src = next(
+        c for c in sense_lib.cells if c.name == sense_row.top_cell_name
+    )
+
+    # Compose into a single parent library.
+    out_lib = gdstk.Library(name=f"{p.top_cell_name}_lib")
+    cell_map: dict[str, gdstk.Cell] = {}
+    for src_lib in (array_lib, mwl_lib, pre_lib, sense_lib):
+        for c in src_lib.cells:
+            if c.name in cell_map:
+                continue
+            copy = c.copy(c.name)
+            cell_map[c.name] = copy
+            out_lib.add(copy)
+
+    top = gdstk.Cell(p.top_cell_name)
+    out_lib.add(top)
+
+    # Place each block at its floorplan position.
+    for block_name, src_cell in (
+        ("array",         array_cell_in_src),
+        ("mwl_driver",    mwl_cell_in_src),
+        ("mbl_precharge", pre_cell_in_src),
+        ("mbl_sense",     sense_cell_in_src),
+    ):
+        local = cell_map[src_cell.name]
+        x, y = fp.positions[block_name]
+        top.add(gdstk.Reference(local, origin=(x, y)))
+
+    macro_w, macro_h = fp.macro_size
+
+    # NOTE: The MWL driver row already exposes MWL_EN[row] li1 .pin
+    # shapes at its WEST edge (x=0), which is the macro's west edge —
+    # no separate macro-level pin needed.  Same for MWL[row] at the
+    # row's east edge (where the bitcell array abuts).
+    #
+    # MBL_OUT[col], MBL_PRE, VREF, VBIAS, VPWR/VGND, and MBL[col]
+    # column straps still need explicit macro-level routing.  TODO.
+
+    p.macro_width = macro_w
+    p.macro_height = macro_h
+    return out_lib, p
+
+
+# ---------------------------------------------------------------------------
+# Legacy public API (back-compat for khalkulo / scripts)
+# ---------------------------------------------------------------------------
 
 def generate_cim_macro(
     variant: str,
-    output_path: str | Path | None = None,
-    macro_name: str | None = None,
+    output_path: Optional[str | Path] = None,
+    macro_name: Optional[str] = None,
     *,
-    flatten: bool = False,  # hierarchical GDS avoids flatten distortion
+    flatten: bool = False,
 ) -> tuple[gdstk.Library, CIMMacroParams]:
     """Generate a complete CIM SRAM macro GDS.
 
-    Parameters
-    ----------
-    variant : str
-        CIM variant name ("SRAM-A", "SRAM-B", "SRAM-C", "SRAM-D").
-    output_path : path, optional
-        Write GDS to this file.
-    macro_name : str, optional
-        Name for the top-level cell.
-    flatten : bool
-        Flatten before writing (default True).
-
-    Returns
-    -------
-    (gdstk.Library, CIMMacroParams)
+    Thin wrapper around `assemble_cim()` for back-compat.  Optionally
+    writes the GDS and optionally flattens the top cell (default
+    hierarchical to avoid flatten distortion).
     """
-    if variant not in CIM_VARIANTS:
-        raise ValueError(f"Unknown CIM variant: {variant}. "
-                         f"Valid: {sorted(CIM_VARIANTS.keys())}")
-
-    v = CIM_VARIANTS[variant]
-    rows, cols = v["rows"], v["cols"]
-    mim_w, mim_l = v["mim_w"], v["mim_l"]
-    name = macro_name or f"cim_{variant.lower().replace('-', '_')}_{rows}x{cols}"
-
-    # --- Load CIM bitcell ---
-    gds_dir = Path("output/cim_variants")
-    gds_dir.mkdir(parents=True, exist_ok=True)
-    cell_gds = gds_dir / f"sky130_6t_cim_lr_{variant.lower().replace('-', '_')}.gds"
-    if not cell_gds.exists():
-        generate_cim_bitcell(str(cell_gds), mim_w=mim_w, mim_l=mim_l)
-    bitcell = load_cim_bitcell(str(cell_gds), variant=variant)
-
-    params = CIMMacroParams(
-        variant=variant,
-        rows=rows,
-        cols=cols,
-        mim_w=mim_w,
-        mim_l=mim_l,
-        cap_fF=mim_w * mim_l * 2.0,
-        cell_pitch_x=bitcell.cell_width,
-        cell_pitch_y=bitcell.cell_height,
-    )
-
-    # --- Tile the bitcell array ---
-    array_lib = tile_array(
-        bitcell,
-        num_rows=rows,
-        num_cols=cols,
-        with_routing=False,  # CIM routing handled separately
-    )
-
-    array_cell = None
-    for c in array_lib.cells:
-        if "array" in c.name:
-            array_cell = c
-            break
-    if array_cell is None:
-        array_cell = array_lib.cells[0]
-
-    array_bb = array_cell.bounding_box()
-    array_w = array_bb[1][0] - array_bb[0][0] if array_bb else cols * bitcell.cell_width
-    array_h = array_bb[1][1] - array_bb[0][1] if array_bb else rows * bitcell.cell_height
-
-    # --- Load CIM peripheral cells ---
-    from rekolektion.array.support_cells import get_cim_peripheral
-
-    mwl_info = get_cim_peripheral("cim_mwl_driver")
-    pre_info = get_cim_peripheral("cim_mbl_precharge")
-    sense_info = get_cim_peripheral("cim_mbl_sense")
-
-    # --- Build macro library ---
-    lib = gdstk.Library(name=f"{name}_lib")
-    cell_map: Dict[str, gdstk.Cell] = {}
-
-    # Add array and its dependencies
-    for c in array_lib.cells:
-        if c.name not in cell_map:
-            new_cell = c.copy(c.name)
-            cell_map[c.name] = new_cell
-            lib.add(new_cell)
-
-    # Load peripheral cells
-    for info in [mwl_info, pre_info, sense_info]:
-        src_lib = gdstk.read_gds(str(info.gds_path))
-        for c in src_lib.cells:
-            if c.name not in cell_map:
-                new_cell = c.copy(c.name)
-                cell_map[c.name] = new_cell
-                lib.add(new_cell)
-
-    mwl_cell = cell_map[mwl_info.cell_name]
-    pre_cell = cell_map[pre_info.cell_name]
-    sense_cell = cell_map[sense_info.cell_name]
-
-    # --- Placement ---
-    # Layout:
-    #   MWL drivers (left) | Bitcell Array (center) | (right margin)
-    #   MBL precharge at top of array
-    #   MBL sense buffers at bottom of array
-
-    top_cell = gdstk.Cell(name)
-    lib.add(top_cell)
-
-    mwl_margin = mwl_info.width + 1.0  # MWL drivers + gap
-    pre_margin = pre_info.height + 0.5  # precharge + gap
-    sense_margin = sense_info.height + 0.5
-
-    x_offset = mwl_margin
-    y_offset = sense_margin
-
-    # Place array
-    array_ref = gdstk.Reference(
-        cell_map[array_cell.name],
-        origin=(x_offset, y_offset),
-    )
-    top_cell.add(array_ref)
-
-    # Place MWL drivers (one per row, left side)
-    for row in range(rows):
-        y_drv = y_offset + row * bitcell.cell_height + bitcell.cell_height / 2.0
-        ref = gdstk.Reference(
-            mwl_cell,
-            origin=(0.0, y_drv - mwl_info.height / 2.0),
-        )
-        top_cell.add(ref)
-
-    # Place MBL precharge (one per column, top)
-    for col in range(cols):
-        x_pre = x_offset + col * bitcell.cell_width + bitcell.cell_width / 2.0
-        ref = gdstk.Reference(
-            pre_cell,
-            origin=(x_pre - pre_info.width / 2.0,
-                    y_offset + array_h + 0.5),
-        )
-        top_cell.add(ref)
-
-    # Place MBL sense buffers (one per column, bottom)
-    for col in range(cols):
-        x_sense = x_offset + col * bitcell.cell_width + bitcell.cell_width / 2.0
-        ref = gdstk.Reference(
-            sense_cell,
-            origin=(x_sense - sense_info.width / 2.0, 0.0),
-        )
-        top_cell.add(ref)
-
-    # --- Port labels ---
-    _MET1 = (68, 20)
-    _MET4 = (71, 20)
-    _POLY = (66, 20)
-
-    def _add_label(name, x, y, layer=_MET1):
-        top_cell.add(gdstk.Label(name, (x, y), layer=layer[0], texttype=layer[1]))
-
-    # MWL_EN pins (left edge, one per row)
-    for row in range(rows):
-        y_pin = y_offset + row * bitcell.cell_height + bitcell.cell_height / 2.0
-        _add_label(f"MWL_EN[{row}]", 0.0, y_pin)
-
-    # MBL_OUT pins (bottom edge, one per column)
-    for col in range(cols):
-        x_pin = x_offset + col * bitcell.cell_width + bitcell.cell_width / 2.0
-        _add_label(f"MBL_OUT[{col}]", x_pin, 0.0)
-
-    # Control pins
-    macro_w = x_offset + array_w + 1.0
-    macro_h = y_offset + array_h + pre_margin
-    _add_label("MBL_PRE", macro_w / 2.0, macro_h, _POLY)
-    _add_label("VREF", macro_w * 0.3, macro_h)
-    _add_label("VBIAS", macro_w * 0.7, 0.0)
-    _add_label("VDD", macro_w, macro_h / 2.0)
-    _add_label("VSS", 0.0, 0.0)
-
-    # --- Compute final dimensions ---
-    bb = top_cell.bounding_box()
-    if bb is not None:
-        params.macro_width = bb[1][0] - bb[0][0]
-        params.macro_height = bb[1][1] - bb[0][1]
+    p = CIMMacroParams.from_variant(variant)
+    if macro_name is not None:
+        # Custom name override — assemble uses p.top_cell_name, so swap
+        # by post-renaming the top cell after assembly.
+        lib, p = assemble_cim(p)
+        for c in lib.cells:
+            if c.name == p.top_cell_name:
+                c.name = macro_name
+                break
     else:
-        params.macro_width = macro_w
-        params.macro_height = macro_h
+        lib, p = assemble_cim(p)
 
-    # --- Flatten ---
     if flatten:
-        top_cell.flatten()
-        sub_cells = [c for c in lib.cells if c.name != top_cell.name]
+        for c in lib.cells:
+            if c.name == (macro_name or p.top_cell_name):
+                c.flatten()
+                break
+        # Drop sub-cells once flattened.
+        sub_cells = [
+            c for c in lib.cells
+            if c.name != (macro_name or p.top_cell_name)
+        ]
         for c in sub_cells:
             lib.remove(c)
 
-    # --- Write ---
     if output_path is not None:
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         lib.write_gds(str(out))
         logger.info("Wrote CIM macro GDS to %s", out)
 
-    return lib, params
+    return lib, p
 
 
 def generate_all_cim_macros(output_dir: str = "output/cim_macros") -> None:
@@ -259,10 +286,15 @@ def generate_all_cim_macros(output_dir: str = "output/cim_macros") -> None:
 
     for variant in CIM_VARIANTS:
         v = CIM_VARIANTS[variant]
-        gds_name = f"cim_{variant.lower().replace('-', '_')}_{v['rows']}x{v['cols']}.gds"
+        gds_name = (
+            f"cim_{variant.lower().replace('-', '_')}_"
+            f"{v['rows']}x{v['cols']}.gds"
+        )
         lib, params = generate_cim_macro(
             variant,
             output_path=out / gds_name,
         )
-        print(f"{variant}: {params.macro_width:.1f} x {params.macro_height:.1f} um "
-              f"({params.rows}x{params.cols}, ~{params.cap_fF:.0f} fF cap)")
+        print(
+            f"{variant}: {params.macro_width:.1f} x {params.macro_height:.1f} um "
+            f"({params.rows}x{params.cols}, ~{params.cap_fF:.0f} fF cap)"
+        )

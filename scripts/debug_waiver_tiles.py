@@ -12,7 +12,7 @@ from pathlib import Path
 
 import gdstk
 
-from rekolektion.macro_v2.assembler import MacroV2Params, assemble
+from rekolektion.macro.assembler import MacroParams, assemble
 from rekolektion.tech.sky130 import pdk_path, magic_techfile, magic_rcfile
 import sys as _sys
 _sys.path.insert(0, str(Path(__file__).parent))
@@ -30,7 +30,7 @@ def main() -> None:
         sys.exit(1)
     target = sys.argv[1]
 
-    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    p = MacroParams(words=32, bits=8, mux_ratio=4)
     tmp = Path(tempfile.mkdtemp(prefix="rekolektion_debug_"))
     lib, _ = assemble(p)
     gds = tmp / f"{p.top_cell_name}.gds"

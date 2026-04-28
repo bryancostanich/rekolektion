@@ -108,13 +108,22 @@ def generate_mbl_precharge() -> Tuple[gdstk.Cell, gdstk.Library]:
     _con(cell, diff_cx, drn_cy, _LICON1, _LICON)
     _lipad(cell, diff_cx, drn_cy)
 
-    # Labels
-    cell.add(gdstk.Label("MBL_PRE", (_snap(diff_x0 - _POLY_EXT), _snap(gate_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("VREF", (_snap(diff_cx), _snap(src_cy)),
-                          layer=_LI1[0], texttype=_LI1[1]))
-    cell.add(gdstk.Label("MBL", (_snap(diff_cx), _snap(drn_cy)),
-                          layer=_LI1[0], texttype=_LI1[1]))
+    # Labels + .pin purpose shapes (datatype 16) for Magic port detection.
+    _PIN_HALF = 0.07
+    _POLY_PIN = (_POLY[0], 16)
+    _LI1_PIN = (_LI1[0], 16)
+    for label, pos, drawing, pin_dt in (
+        ("MBL_PRE", (_snap(diff_x0 - _POLY_EXT), _snap(gate_cy)), _POLY, _POLY_PIN),
+        ("VREF",    (_snap(diff_cx), _snap(src_cy)),               _LI1, _LI1_PIN),
+        ("MBL",     (_snap(diff_cx), _snap(drn_cy)),               _LI1, _LI1_PIN),
+    ):
+        cx, cy = pos
+        cell.add(gdstk.rectangle(
+            (cx - _PIN_HALF, cy - _PIN_HALF),
+            (cx + _PIN_HALF, cy + _PIN_HALF),
+            layer=pin_dt[0], datatype=pin_dt[1],
+        ))
+        cell.add(gdstk.Label(label, pos, layer=drawing[0], texttype=drawing[1]))
 
     lib = gdstk.Library(name="cim_mbl_precharge_lib", unit=1e-6, precision=5e-9)
     lib.add(cell)

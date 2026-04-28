@@ -151,15 +151,28 @@ def generate_mwl_driver() -> Tuple[gdstk.Cell, gdstk.Library]:
     # But PMOS source should be VDD at the TOP (highest potential).
     # Need to wire: NMOS bot to VSS, PMOS top to VDD (or bot, depending on orientation).
 
-    # Labels
-    cell.add(gdstk.Label("MWL_EN", (_snap(poly_x0), _snap(gate1_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("MWL", (_snap(poly_x1), _snap(gate2_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("VSS", (_snap(cell_w / 2), _snap(y_diff_bot)),
-                          layer=_MET1[0], texttype=_MET1[1]))
-    cell.add(gdstk.Label("VDD", (_snap(cell_w / 2), _snap(y_diff_top)),
-                          layer=_MET1[0], texttype=_MET1[1]))
+    # Labels + .pin purpose shapes (datatype 16) for Magic port detection.
+    # Labels alone are recognised as named nets but do not promote to
+    # subckt ports unless co-located with a .pin shape on the same
+    # metal/poly layer.  Pad size matches sky130 LEF convention
+    # (~0.14 µm) — small enough to not introduce DRC issues, large
+    # enough for Magic to associate the label with the rect.
+    _PIN_HALF = 0.07
+    _POLY_PIN = (_POLY[0], 16)   # poly.pin
+    _MET1_PIN = (_MET1[0], 16)   # met1.pin
+    for label, pos, drawing, pin_dt in (
+        ("MWL_EN", (_snap(poly_x0), _snap(gate1_cy)), _POLY, _POLY_PIN),
+        ("MWL",    (_snap(poly_x1), _snap(gate2_cy)), _POLY, _POLY_PIN),
+        ("VSS",    (_snap(cell_w / 2), _snap(y_diff_bot)), _MET1, _MET1_PIN),
+        ("VDD",    (_snap(cell_w / 2), _snap(y_diff_top)), _MET1, _MET1_PIN),
+    ):
+        cx, cy = pos
+        cell.add(gdstk.rectangle(
+            (cx - _PIN_HALF, cy - _PIN_HALF),
+            (cx + _PIN_HALF, cy + _PIN_HALF),
+            layer=pin_dt[0], datatype=pin_dt[1],
+        ))
+        cell.add(gdstk.Label(label, pos, layer=drawing[0], texttype=drawing[1]))
 
     lib = gdstk.Library(name="cim_mwl_driver_lib", unit=1e-6, precision=5e-9)
     lib.add(cell)

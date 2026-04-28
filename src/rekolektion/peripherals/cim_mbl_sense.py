@@ -116,17 +116,24 @@ def generate_mbl_sense() -> Tuple[gdstk.Cell, gdstk.Library]:
         _con(cell, diff_cx, sd_cy, _LICON1, _LICON)
         _lipad(cell, diff_cx, sd_cy)
 
-    # Labels
-    cell.add(gdstk.Label("VBIAS", (_snap(poly_x0), _snap(gate1_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("MBL", (_snap(poly_x0), _snap(gate2_cy)),
-                          layer=_POLY[0], texttype=_POLY[1]))
-    cell.add(gdstk.Label("VSS", (_snap(diff_cx), _snap(sd_bot_cy)),
-                          layer=_LI1[0], texttype=_LI1[1]))
-    cell.add(gdstk.Label("MBL_OUT", (_snap(diff_cx), _snap(sd_mid_cy)),
-                          layer=_LI1[0], texttype=_LI1[1]))
-    cell.add(gdstk.Label("VDD", (_snap(diff_cx), _snap(sd_top_cy)),
-                          layer=_LI1[0], texttype=_LI1[1]))
+    # Labels + .pin purpose shapes (datatype 16) for Magic port detection.
+    _PIN_HALF = 0.07
+    _POLY_PIN = (_POLY[0], 16)
+    _LI1_PIN = (_LI1[0], 16)
+    for label, pos, drawing, pin_dt in (
+        ("VBIAS",   (_snap(poly_x0), _snap(gate1_cy)),  _POLY, _POLY_PIN),
+        ("MBL",     (_snap(poly_x0), _snap(gate2_cy)),  _POLY, _POLY_PIN),
+        ("VSS",     (_snap(diff_cx), _snap(sd_bot_cy)), _LI1,  _LI1_PIN),
+        ("MBL_OUT", (_snap(diff_cx), _snap(sd_mid_cy)), _LI1,  _LI1_PIN),
+        ("VDD",     (_snap(diff_cx), _snap(sd_top_cy)), _LI1,  _LI1_PIN),
+    ):
+        cx, cy = pos
+        cell.add(gdstk.rectangle(
+            (cx - _PIN_HALF, cy - _PIN_HALF),
+            (cx + _PIN_HALF, cy + _PIN_HALF),
+            layer=pin_dt[0], datatype=pin_dt[1],
+        ))
+        cell.add(gdstk.Label(label, pos, layer=drawing[0], texttype=drawing[1]))
 
     lib = gdstk.Library(name="cim_mbl_sense_lib", unit=1e-6, precision=5e-9)
     lib.add(cell)

@@ -246,7 +246,15 @@ def run_lvs(
     # at chip level they're globally connected to VPWR and VGND.
     # Our reference SPICE doesn't split them, so without these
     # equates the extracted side sees VPB/VNB as distinct nets.
-    for c1, c2 in [("VPB", "VPWR"), ("VNB", "VGND")]:
+    #
+    # VSUBS is the substrate node for the foundry mux/sram_array
+    # subckts.  Magic's GDS extraction ties the substrate to VGND
+    # (chip-level convention), so the extracted top-level VGND net
+    # absorbs every VSUBS connection from those subckts.  The
+    # reference SPICE keeps VSUBS as a separate global net (matching
+    # the foundry SPICE).  Equate them so netgen treats VSUBS as
+    # VGND in both circuits.
+    for c1, c2 in [("VPB", "VPWR"), ("VNB", "VGND"), ("VSUBS", "VGND")]:
         lines.append(f'catch {{equate nets "-circuit1 {c1}" "-circuit1 {c2}"}}')
         lines.append(f'catch {{equate nets "-circuit2 {c1}" "-circuit2 {c2}"}}')
     for cell in flatten_cells:

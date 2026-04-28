@@ -1328,11 +1328,34 @@ def _route_control(
     # sa_y + 10.97). Trunk at trunk_y_s_en (below ctrl_logic); for
     # each bit we drop met2 from trunk down to the pin, then via
     # to met1.
+    #
+    # Drop layer: MET4 (not met2).  DFF 2's Q sits at ctrl_logic-local
+    # x=17.975, which is INSIDE the cell-internal D-row met2 wire (drawn
+    # by control_logic._draw_nand_z_to_d_pair connecting NAND2_1.Z →
+    # DFF2.D and DFF3.D, spanning x=[13.25, max(19.45, NAND_Z_x)]).  A
+    # parent met2 vertical drop straight down from DFF2.Q would
+    # physically overlap that D-row wire on met2 at y=2.82, bridging
+    # s_en into nand1_z.  Switching the drop to met4 keeps the only
+    # met-2 contact AT DFF2.Q itself (same net = Q), and the long
+    # vertical run is on met4 which the DFF foundry cell does not use.
+    # Requires NAND_Z_LOCAL relocated to x=4.0 in control_logic so the
+    # via-stack's intermediate met3 pad at DFF2.Q clears NAND2_1's met3
+    # drop (otherwise the met3 pad would bridge them).
     dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 2)
-    # DFF Q (met2) -> vertical met2 DOWN to the trunk y (trunk below)
+    # via stack met2->met4 at DFF.Q (lands met2 pad on the foundry Q
+    # metal; intermediate met2/met3 pads sit clear of cell-internal
+    # met2/met3 because (a) D-row met2 wire is at y=2.82, well below
+    # the pad at y=dff_q_y=3.175, and (b) NAND2_1's met3 drop is now
+    # at NAND2_1.Z + 4.0 = 20.215, far from DFF2.Q at 17.975).
+    draw_via_stack(top, from_layer="met2", to_layer="met4",
+                   position=(dff_q_x, dff_q_y))
+    # met4 vertical from DFF.Q down to trunk_y (cell-internal layers
+    # are met1/met2/met3 only; met4 traverses cleanly).
     draw_wire(top, start=(dff_q_x, dff_q_y),
-              end=(dff_q_x, trunk_y_s_en), layer="met2")
-    draw_via_stack(top, from_layer="met2", to_layer="met3",
+              end=(dff_q_x, trunk_y_s_en), layer="met4")
+    # met4 -> met3 stack at trunk_y (met3 pad lands on the trunk
+    # below, no met2 pad in this stack so no extra collisions).
+    draw_via_stack(top, from_layer="met3", to_layer="met4",
                    position=(dff_q_x, trunk_y_s_en))
     # Trunk extends from DFF column east to last bit's SA EN x + margin.
     rail_x_end_s = sa_x + (p.bits - 1) * mux_pitch + _SA_EN_X_LOCAL + 1.0

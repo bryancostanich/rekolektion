@@ -447,6 +447,14 @@ def _write_top_subckt(
             return f"bl_{portname.split('_')[2]}"
         if portname.startswith("br_0_"):
             return f"br_{portname.split('_')[2]}"
+        # Tie VSUBS to VGND at the parent level.  Magic's GDS extraction
+        # always ties the foundry substrate to VGND (chip convention),
+        # so the extracted top has no separate VSUBS net.  Wiring the
+        # reference VSUBS port directly to VGND here makes both sides
+        # match without a netgen `equate nets` (which fails silently
+        # because VSUBS isn't a top-level node in the extracted side).
+        if portname == "VSUBS":
+            return "VGND"
         return portname
     mapped_array_args = [_map_array_port(pt) for pt in array_body.ports]
     f.write(
@@ -464,8 +472,10 @@ def _write_top_subckt(
     )
 
     f.write("\n* Column mux row (Magic-extracted port order)\n")
+    # Same VSUBS→VGND remap as Xarray above (see comment there).
+    mapped_mux_args = ["VGND" if pt == "VSUBS" else pt for pt in mux_body.ports]
     f.write(
-        f"Xcolmux {' '.join(mux_body.ports)} {mux_body.name}\n"
+        f"Xcolmux {' '.join(mapped_mux_args)} {mux_body.name}\n"
     )
 
     f.write("\n* Sense amp row (one per bit on muxed output)\n")

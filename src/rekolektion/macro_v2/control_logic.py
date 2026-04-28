@@ -106,7 +106,21 @@ _NAND_H: float = 2.690  # GDS bbox height (y=-0.7..1.99)
 # Pin positions from GDS (NOT LEF — LEF ORIGIN makes LEF coords differ).
 _NAND_A_LOCAL: tuple[float, float] = (0.405, 1.095)     # li1 pin rect center
 _NAND_B_LOCAL: tuple[float, float] = (0.405, 0.555)     # li1
-_NAND_Z_LOCAL: tuple[float, float] = (2.000, 1.255)     # li1 (wide top strip)
+_NAND_Z_LOCAL: tuple[float, float] = (4.000, 1.255)     # li1 (wide top strip)
+# x=4.000 (was 2.000): the NAND2's met3 vertical drop from Z down to
+# d_y is at this x at the parent level.  At x=2.000 (abs 18.215 for
+# NAND2_1) it was only 0.24 µm from DFF2.Q (abs 17.975), so the
+# parent's via-stack met3 pad (~0.38 µm wide) at DFF2.Q overlapped
+# the NAND drop met3, bridging s_en (DFF2.Q net) into nand1_z
+# (NAND2_1.Z net).  Moving to x=4.000 (abs 20.215) gives 2.24 µm of
+# clearance.  Clears all internal foundry NAND2 polys at the new x:
+#   li1 strip [4] x=[2.435, 2.605]: clear (2.605 + 0.18 = 2.785 < 3.8)
+#   internal met1 at [3.240, 3.490] y=[0.45, 1.61]: clear (3.490 + 0.16
+#     = 3.65 < 3.81)
+#   internal met1 at [4.115, 4.450] y=[0.450, 0.490]: y NO overlap
+#     with pad y=[1.07, 1.45]
+# The Z li1 strip extends to x=4.330, so x=4.0 + pad half (0.16) = 4.16
+# is well inside the strip.
 _NAND_VDD_X_LOCAL: float = 3.365                        # met1 vertical rail x-center
 _NAND_GND_X_LOCAL: float = 1.240                        # met1 vertical rail x-center
 _NAND_RAIL_Y_LO: float = 0.450                          # met1 rail y range

@@ -337,14 +337,97 @@ def _add_macro_routing(
 
     # ---- MBL_OUT[col] external pins (BOTTOM edge) ----
     # Each sense cell exposes MBL_OUT[col] on li1 at row-local
-    # (_SENSE_MBL_OUT_LX, _SENSE_MBL_OUT_LY).  Add a li1 stub from
-    # that pad down to the macro bottom (y=0), labeled MBL_OUT[col].
+    # (_SENSE_MBL_OUT_LX, _SENSE_MBL_OUT_LY).  Cannot run a li1 stub
+    # straight from the cell pad down to y=0 — it would cross the
+    # sense row's VSS li1 bus at y=0.155 and short MBL_OUT to VGND.
+    # Drop an mcon at the MBL_OUT li1 pad to convert to met1, run
+    # the vertical stub on met1 (above the VSS bus), then mcon back
+    # to li1 at y=0 for the macro pin label.
     sense_x_offset = (p.cell_pitch_x - sense_row.cell_w) / 2.0
     for col in range(p.cols):
         cx = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_OUT_LX
-        _draw_vert_strap(top, "li1", cx, 0.0, sense_y + _SENSE_MBL_OUT_LY)
-        draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="li1",
+        cell_mbl_out_y = sense_y + _SENSE_MBL_OUT_LY
+        # mcon at the cell's MBL_OUT li1 pad → met1
+        draw_via_stack(top, from_layer="li1", to_layer="met1",
+                       position=(cx, cell_mbl_out_y))
+        # met1 vertical stub from cell MBL_OUT y down to y=0
+        _draw_vert_strap(top, "met1", cx, 0.0, cell_mbl_out_y)
+        # met1 pin label at the bottom edge
+        draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="met1",
                             rect=(cx - 0.07, 0.0, cx + 0.07, 0.14))
+
+    # ---- MWL[row] horizontal bridges: driver east → array MWL poly ----
+    # Each row builder exposes MWL[r] on li1 at the row builder's east
+    # edge.  The bitcell array's MWL poly stripe (per row, in
+    # mirror-pair tiling) enters at the array's west edge at a
+    # different Y per row.  Bridge with: li1 horizontal in LEFT_GAP →
+    # poly licon → vertical poly to align Y → enters array MWL poly.
+    from rekolektion.bitcell.sky130_6t_lr_cim import (
+        load_cim_bitcell as _load_bc_mwl,
+        generate_cim_bitcell as _gen_bc_mwl,
+        CIM_VARIANTS as _cv_mwl,
+    )
+    _v_mwl = _cv_mwl[p.variant]
+    _bc_gds_mwl = Path("output/cim_variants") / f"sky130_6t_cim_lr_{p.variant.lower().replace('-', '_')}.gds"
+    if not _bc_gds_mwl.exists():
+        _bc_gds_mwl.parent.mkdir(parents=True, exist_ok=True)
+        _gen_bc_mwl(str(_bc_gds_mwl), mim_w=_v_mwl["mim_w"], mim_l=_v_mwl["mim_l"])
+    _bc = _load_bc_mwl(str(_bc_gds_mwl), variant=p.variant)
+    mwl_x_local, mwl_y_base = fp.positions["mwl_driver"]
+    array_x_pos_local, array_y_pos_local = fp.positions["array"]
+    rb_w = mwl_row.width
+    slack_y = p.cell_pitch_y - mwl_row.driver_h
+    _BUF2_X_OUT_Y = 1.87       # buf_2's X pin Y in cell-local coords
+
+    # Bitcell MWL local Y (poly stripe centre Y in bitcell coords).
+    bitcell_mwl_local_y = _bc.pins["MWL"].ports[0][1]
+
+    li1_id_bridge, li1_dt_bridge = GDS_LAYER["li1"]
+    poly_id_bridge, poly_dt_bridge = GDS_LAYER["poly"]
+
+    for row in range(p.rows):
+        rb_mwl_y = mwl_y_base + row * p.cell_pitch_y + slack_y / 2.0 + _BUF2_X_OUT_Y
+        # Array MWL Y for row r (pair-mirror tiling).
+        pair_idx = row // 2
+        if row % 2 == 0:
+            arr_mwl_y = array_y_pos_local + pair_idx * (2 * p.cell_pitch_y) + bitcell_mwl_local_y
+        else:
+            # Mirror origin Y observed at 7.45 within pair pitch 7.83.
+            arr_mwl_y = array_y_pos_local + pair_idx * (2 * p.cell_pitch_y) + 7.45 - bitcell_mwl_local_y
+
+        # 1. li1 stub from row builder east edge across LEFT_GAP, but
+        #    end BEFORE the array boundary (which has bitcell content
+        #    that the vertical poly would cross).  bridge_x is in the
+        #    empty LEFT_GAP region.  Start the bridge slightly west of
+        #    the row builder boundary so it overlaps the row's own
+        #    MWL[r] li1 stub (sharing an edge alone may not register
+        #    as a connection in Magic's extraction).
+        bridge_x_west = rb_w - 0.10
+        bridge_x = array_x_pos_local - 0.10
+        top.add(gdstk.rectangle(
+            (bridge_x_west, rb_mwl_y - 0.075),
+            (bridge_x, rb_mwl_y + 0.075),
+            layer=li1_id_bridge, datatype=li1_dt_bridge,
+        ))
+        # 2. Poly licon at bridge_x converts li1 to poly.
+        _poly_to_li1_contact(top, bridge_x, rb_mwl_y)
+        # 3. Vertical poly stripe from rb_mwl_y to arr_mwl_y at bridge_x
+        #    (outside the array — no diff to cross).
+        y_lo = min(rb_mwl_y, arr_mwl_y)
+        y_hi = max(rb_mwl_y, arr_mwl_y)
+        top.add(gdstk.rectangle(
+            (bridge_x - 0.075, y_lo),
+            (bridge_x + 0.075, y_hi),
+            layer=poly_id_bridge, datatype=poly_dt_bridge,
+        ))
+        # 4. Horizontal poly stub from bridge_x east into the array's
+        #    MWL poly stripe (which starts at array_x_pos and spans
+        #    full cell width on the same Y).
+        top.add(gdstk.rectangle(
+            (bridge_x - 0.075, arr_mwl_y - 0.075),
+            (array_x_pos_local + 0.20, arr_mwl_y + 0.075),
+            layer=poly_id_bridge, datatype=poly_dt_bridge,
+        ))
 
     # ---- MBL[col] vertical MET4 column straps ----
     # For each column, draw a met4 strap that spans from the precharge

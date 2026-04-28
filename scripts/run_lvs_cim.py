@@ -54,13 +54,15 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     # positions to provide net names.
     _STRIP: dict[str, set[str]] = {
         "sky130_fd_sc_hd__buf_2": {"A", "X", "VPB", "VNB"},
-        # Strip MBL from bitcell + precharge + sense cells — each cell
-        # uses a generic "MBL" label that Magic merges by name across
-        # all 64 columns into one global net.  The macro's per-column
-        # MBL_<c> strap labels provide the unique per-column naming.
+        # Strip MBL/MBL_OUT from cells — they're per-column nets
+        # but the cell-level labels are generic "MBL"/"MBL_OUT".
+        # Without stripping, Magic merges all 64 columns by name.
+        # Macro-level labels (MBL_<c> on column straps; MBL_OUT[c]
+        # via the row builder + macro stubs) provide unique per-
+        # column naming.
         "sky130_sram_6t_cim_lr": {"MBL"},
         "cim_mbl_precharge": {"MBL"},
-        "cim_mbl_sense": {"MBL"},
+        "cim_mbl_sense": {"MBL", "MBL_OUT"},
     }
     # Rename labels: bitcell uses VDD/VSS in its layout, but the macro
     # reference (and stdcell convention) is VPWR/VGND.  Rename here so

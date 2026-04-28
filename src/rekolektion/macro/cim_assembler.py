@@ -403,11 +403,11 @@ def _add_macro_routing(
         # 1. li1 stub from row builder east edge across LEFT_GAP, but
         #    end BEFORE the array boundary (which has bitcell content
         #    that the vertical poly would cross).  bridge_x is in the
-        #    empty LEFT_GAP region.  Start the bridge slightly west of
-        #    the row builder boundary so it overlaps the row's own
-        #    MWL[r] li1 stub (sharing an edge alone may not register
-        #    as a connection in Magic's extraction).
-        bridge_x_west = rb_w - 0.10
+        #    empty LEFT_GAP region.  The row builder's MWL[r] li1
+        #    stub extends past x=rb_w by 0.10 µm, so starting the
+        #    bridge AT x=rb_w gives 0.10 µm of overlap on the row-
+        #    builder side without entering the buf_2 cell.
+        bridge_x_west = rb_w
         bridge_x = array_x_pos_local - 0.10
         top.add(gdstk.rectangle(
             (bridge_x_west, rb_mwl_y - 0.075),

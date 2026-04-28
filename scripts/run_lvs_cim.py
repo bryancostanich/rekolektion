@@ -121,6 +121,13 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
                                               # promoting the macro met2 strap label
         "cim_mbl_sense_row_64": ["MBL_OUT[", "VBIAS"],
         "cim_mbl_precharge_row_64": ["MBL["],
+        # Strip row builder's MWL[r] labels (bracketed) — they conflict
+        # with the bitcell array's MWL_<r> labels (underscored, after
+        # per-row rename) and cause the buf_2 X output net to take the
+        # row builder's name instead of merging with the bitcell row's
+        # MWL net.  Keep MWL_EN[r] (the buf_2 input label) since
+        # there's no other label naming that net.
+        "cim_mwl_driver_col_64": ["MWL["],
     }
     # Rename labels: bitcell uses VDD/VSS in its layout, but the macro
     # reference (and stdcell convention) is VPWR/VGND.  Rename here so

@@ -141,13 +141,15 @@ class MWLDriverRow:
             )
 
             # MWL[row] — buf_2 X pin on li1 at (1.145, 1.87).  Extend
-            # an li1 stub EAST out to the row builder's right edge so
-            # the parent macro can connect MWL[row] to the bitcell
-            # array's MWL[row] poly stripe.
+            # an li1 stub EAST past the row builder's right edge by
+            # 0.10 µm so the parent macro's MWL bridge can overlap
+            # cleanly without starting inside the buf_2 cell (which
+            # has internal li1/met1 features that would short the
+            # bridge to other nets).
             x_cy = y_off + _X_LOCAL_Y
             top.add(gdstk.rectangle(
                 (_X_LOCAL_X - _PIN_HALF, x_cy - _PIN_HALF),
-                (_CELL_W, x_cy + _PIN_HALF),
+                (_CELL_W + 0.10, x_cy + _PIN_HALF),
                 layer=li1_id, datatype=li1_dt,
             ))
             draw_pin_with_label(

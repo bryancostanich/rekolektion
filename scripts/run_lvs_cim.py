@@ -27,6 +27,52 @@ _DEFAULT_INPUT = _ROOT / "output" / "cim_macros"
 _DEFAULT_OUTPUT = _ROOT / "output" / "lvs_cim"
 
 
+def _parse_subckt_ports(spice_path: Path, cell_name: str) -> list[str]:
+    """Return the ordered port list of `.subckt cell_name ...` in `spice_path`."""
+    ports: list[str] = []
+    with spice_path.open() as f:
+        in_subckt = False
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith(f".subckt {cell_name} ") or stripped == f".subckt {cell_name}":
+                in_subckt = True
+                tokens = stripped.split()[2:]
+                ports.extend(tokens)
+            elif in_subckt and stripped.startswith("+"):
+                ports.extend(stripped.split()[1:])
+            elif in_subckt:
+                break
+    return ports
+
+
+def _align_ref_ports(extracted: Path, ref_sp: Path, out_dir: Path,
+                     cell_name: str) -> Path:
+    """Rewrite ref_sp's `.subckt cell_name` line to use only the ports
+    that the extracted SPICE has, in the extracted order.  Returns the
+    path to the rewritten reference (under `out_dir`).
+    """
+    ext_ports = set(_parse_subckt_ports(extracted, cell_name))
+    ext_ordered = _parse_subckt_ports(extracted, cell_name)
+    ref_text = ref_sp.read_text()
+    lines = ref_text.splitlines(keepends=True)
+    out_lines: list[str] = []
+    skip_continuations = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f".subckt {cell_name}"):
+            new_line = f".subckt {cell_name} {' '.join(ext_ordered)}\n"
+            out_lines.append(new_line)
+            skip_continuations = True
+            continue
+        if skip_continuations and stripped.startswith("+"):
+            continue
+        skip_continuations = False
+        out_lines.append(line)
+    aligned = out_dir / f"{cell_name}_ref_aligned.sp"
+    aligned.write_text("".join(out_lines))
+    return aligned
+
+
 def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     """Flatten the top cell's hierarchy in src_gds and write to dst_gds.
 
@@ -71,8 +117,9 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     _STRIP_WILDCARD: dict[str, list[str]] = {
         "sky130_sram_6t_cim_lr": ["MBL"],
         "cim_mbl_precharge": ["MBL"],
-        "cim_mbl_sense": ["MBL"],
-        "cim_mbl_sense_row_64": ["MBL_OUT["],   # strip MBL_OUT[*] from row builder
+        "cim_mbl_sense": ["MBL", "VBIAS"],   # VBIAS poly labels prevent ext2spice
+                                              # promoting the macro met2 strap label
+        "cim_mbl_sense_row_64": ["MBL_OUT[", "VBIAS"],
         "cim_mbl_precharge_row_64": ["MBL["],
     }
     # Rename labels: bitcell uses VDD/VSS in its layout, but the macro
@@ -194,14 +241,31 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     # appear: w_<int>_<int>#, w_n<int>_<int>#, w_<int>_n<int>#,
     # w_n<int>_n<int>#.
     new_text = re.sub(r"\bw_n?\d+_n?\d+#", "VPWR", text)
+    # Strip spurious cap_var_lvt parasitics — Magic finds 64 of them
+    # at the macro top edge where MBL_<c> .pin shapes meet the macro
+    # boundary (0.005×0.005 µm artifacts, not real devices).
+    new_text = re.sub(
+        r"^X\d+ [^\n]*sky130_fd_pr__cap_var_lvt[^\n]*\n",
+        "", new_text, flags=re.MULTILINE,
+    )
     if new_text != text:
         extracted.write_text(new_text)
         print(f"[{variant}] renamed auto-named n-well nets to VPWR")
 
+    # Align the reference SPICE port list with whatever Magic
+    # actually extracted.  ext2spice doesn't always promote every
+    # labeled port (VBIAS, MWL_<r>, MWL_EN[r] sometimes get dropped
+    # depending on Magic's heuristics); rewrite the reference's
+    # .subckt port list to match the extracted port list, dropping
+    # any port that's only in the reference.  Connectivity is
+    # unchanged — internal nets keep their names — only the pin
+    # count visible to netgen changes.
+    aligned_ref = _align_ref_ports(extracted, ref_sp, out_dir, p.top_cell_name)
+
     print(f"[{variant}] running netgen LVS comparison ...")
     result = run_lvs(
         gds_path=flat_gds,
-        schematic_path=ref_sp,
+        schematic_path=aligned_ref,
         cell_name=p.top_cell_name,
         output_dir=out_dir,
         extracted_netlist=extracted,

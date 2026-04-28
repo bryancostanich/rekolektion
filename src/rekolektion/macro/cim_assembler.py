@@ -343,23 +343,22 @@ def _add_macro_routing(
 
     # ---- MBL_OUT[col] external pins (BOTTOM edge) ----
     # Each sense cell exposes MBL_OUT[col] on li1 at row-local
-    # (_SENSE_MBL_OUT_LX, _SENSE_MBL_OUT_LY).  Cannot run a li1 stub
-    # straight from the cell pad down to y=0 — it would cross the
-    # sense row's VSS li1 bus at y=0.155 and short MBL_OUT to VGND.
-    # Drop an mcon at the MBL_OUT li1 pad to convert to met1, run
-    # the vertical stub on met1 (above the VSS bus), then mcon back
-    # to li1 at y=0 for the macro pin label.
+    # (_SENSE_MBL_OUT_LX, _SENSE_MBL_OUT_LY).  A li1 stub down to y=0
+    # would cross the sense row's VSS li1 bus at y=0.155.  A met1
+    # stub would cross the VSS-tap met1 bus at y=0.155.  Route on
+    # met2 (above met1) — the via stack's met1 intermediate is at
+    # cell_mbl_out_y=0.740 (above both VSS buses), no conflict.
     sense_x_offset = (p.cell_pitch_x - sense_row.cell_w) / 2.0
     for col in range(p.cols):
         cx = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_OUT_LX
         cell_mbl_out_y = sense_y + _SENSE_MBL_OUT_LY
-        # mcon at the cell's MBL_OUT li1 pad → met1
-        draw_via_stack(top, from_layer="li1", to_layer="met1",
+        # li1 → met2 via stack at the cell's MBL_OUT pad
+        draw_via_stack(top, from_layer="li1", to_layer="met2",
                        position=(cx, cell_mbl_out_y))
-        # met1 vertical stub from cell MBL_OUT y down to y=0
-        _draw_vert_strap(top, "met1", cx, 0.0, cell_mbl_out_y)
-        # met1 pin label at the bottom edge
-        draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="met1",
+        # met2 vertical stub from cell MBL_OUT y down to y=0
+        _draw_vert_strap(top, "met2", cx, 0.0, cell_mbl_out_y)
+        # met2 pin label at the bottom edge
+        draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="met2",
                             rect=(cx - 0.07, 0.0, cx + 0.07, 0.14))
 
     # ---- MWL[row] horizontal bridges: driver east → array MWL poly ----

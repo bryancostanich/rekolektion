@@ -282,12 +282,18 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     aligned_ref = _align_ref_ports(extracted, ref_sp, out_dir, p.top_cell_name)
 
     print(f"[{variant}] running netgen LVS comparison ...")
+    # 256-row variants (SRAM-A/B) push netgen well past the default 1 hr
+    # graph-iso check; the smaller 64-row variants always finish in
+    # minutes.  Bump the timeout per-variant rather than globally so a
+    # truly stuck run still bails out before consuming a workday.
+    netgen_timeout = 6 * 3600 if p.rows >= 128 else 3600
     result = run_lvs(
         gds_path=flat_gds,
         schematic_path=aligned_ref,
         cell_name=p.top_cell_name,
         output_dir=out_dir,
         extracted_netlist=extracted,
+        netgen_timeout=netgen_timeout,
     )
     return {
         "variant": variant,

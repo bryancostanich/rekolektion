@@ -20,6 +20,9 @@ from rekolektion.macro.cim_assembler import (
     CIMMacroParams, generate_cim_macro,
 )
 from rekolektion.macro.cim_spice_generator import generate_cim_reference_spice
+from rekolektion.macro.cim_lef_generator import generate_cim_lef
+from rekolektion.macro.cim_liberty_generator import generate_cim_liberty
+from rekolektion.macro.cim_blackbox import generate_cim_blackbox
 
 
 _OUT_ROOT = Path("output/cim_macros")
@@ -32,6 +35,15 @@ def build_variant(variant: str) -> CIMMacroParams:
 
     gds_path = out_dir / f"{p.top_cell_name}.gds"
     sp_path = out_dir / f"{p.top_cell_name}.sp"
+    # Tapeout-consumable artefacts live alongside the GDS so an
+    # integrator gets the complete drop (LEF abstract, Liberty timing,
+    # Verilog blackbox) from one directory.  Regenerated on every
+    # invocation to stay in lock-step with the GDS — the previous
+    # copies under `output/cim_macros/` drifted because this script
+    # never wrote them.
+    lef_path = out_dir / f"{p.top_cell_name}.lef"
+    lib_path = out_dir / f"{p.top_cell_name}.lib"
+    bb_path = out_dir / f"{p.top_cell_name}_bb.v"
 
     print(f"\n[{variant}] {p.rows} rows × {p.cols} cols × {p.cap_fF:.1f} fF")
     _, p = generate_cim_macro(variant, output_path=gds_path)
@@ -39,6 +51,15 @@ def build_variant(variant: str) -> CIMMacroParams:
 
     generate_cim_reference_spice(p, sp_path)
     print(f"  wrote {sp_path}")
+
+    # Pass gds_path so OBS reflects the macro's actual internal metal
+    # usage rather than the LEF generator's full-rect placeholder.
+    generate_cim_lef(p, lef_path, gds_path=gds_path)
+    print(f"  wrote {lef_path}")
+    generate_cim_liberty(p, lib_path)
+    print(f"  wrote {lib_path}")
+    generate_cim_blackbox(p, bb_path)
+    print(f"  wrote {bb_path}")
     return p
 
 

@@ -33,14 +33,22 @@ _LICON_TO_GATE = 0.09
 _LICON = RULES.LICON_SIZE
 _LI_ENC = RULES.LI1_ENCLOSURE_OF_LICON
 _NSDM_ENC = RULES.NSDM_ENCLOSURE_OF_DIFF
+_PSDM_ENC = RULES.PSDM_ENCLOSURE_OF_DIFF
 _POLY_EXT = RULES.POLY_MIN_EXTENSION_PAST_DIFF
-_LI_PAD = _LICON + 2 * _LI_ENC
+_DIFF_TAP_SPACE = RULES.DIFF_MIN_SPACING        # 0.27
+_LI_PAD = _LICON + 2 * _LI_ENC                  # 0.33
+_MCON = RULES.MCON_SIZE
+_MCON_M1_ENC = RULES.MET1_ENCLOSURE_OF_MCON_OTHER
+_M1_PAD = _MCON + 2 * _MCON_M1_ENC
 
 _DIFF = LAYERS.DIFF.as_tuple
+_TAP = LAYERS.TAP.as_tuple
 _POLY = LAYERS.POLY.as_tuple
 _NSDM = LAYERS.NSDM.as_tuple
+_PSDM = LAYERS.PSDM.as_tuple
 _LICON1 = LAYERS.LICON1.as_tuple
 _LI1 = LAYERS.LI1.as_tuple
+_MCON_L = LAYERS.MCON.as_tuple
 _MET1 = LAYERS.MET1.as_tuple
 
 
@@ -93,39 +101,66 @@ def generate_mbl_sense() -> Tuple[gdstk.Cell, gdstk.Library]:
     sd_mid_cy = _snap((gate1_cy + gate2_cy) / 2.0)  # MBL_OUT
     sd_top_cy = _snap(gate2_cy + _L / 2.0 + _LICON_TO_GATE + _LICON / 2.0)  # VDD
 
-    # X layout
+    # X layout: NMOS diff on left, P-tap to its right
     diff_x0 = _snap(margin)
     diff_x1 = _snap(diff_x0 + diff_w)
     diff_cx = _snap((diff_x0 + diff_x1) / 2.0)
-    cell_w = _snap(diff_x1 + margin)
 
-    # NMOS diff + implant
+    # P-tap region (in p-substrate, for body bias to VSS)
+    tap_x0 = _snap(diff_x1 + _DIFF_TAP_SPACE)
+    tap_w = 0.30
+    tap_x1 = _snap(tap_x0 + tap_w)
+    tap_cx = _snap((tap_x0 + tap_x1) / 2.0)
+    cell_w = _snap(tap_x1 + margin)
+
+    # NMOS diff + NSDM implant
     _rect(cell, _DIFF, diff_x0, y_diff_bot, diff_x1, y_diff_top)
     _rect(cell, _NSDM, diff_x0 - _NSDM_ENC, y_diff_bot - _NSDM_ENC,
           diff_x1 + _NSDM_ENC, y_diff_top + _NSDM_ENC)
 
-    # Poly gates (horizontal)
+    # P-tap (TAP + PSDM) — extends vertically to give a contact strip
+    # along the cell.  Place it at the y of the bottom S/D contact
+    # (same Y as VSS so they tie cleanly).
+    tap_y0 = _snap(sd_bot_cy - tap_w / 2)
+    tap_y1 = _snap(sd_bot_cy + tap_w / 2)
+    _rect(cell, _TAP, tap_x0, tap_y0, tap_x1, tap_y1)
+    _rect(cell, _PSDM, tap_x0 - _PSDM_ENC, tap_y0 - _PSDM_ENC,
+          tap_x1 + _PSDM_ENC, tap_y1 + _PSDM_ENC)
+
+    # Poly gates (horizontal across NMOS only — not over the P-tap)
     poly_x0 = _snap(diff_x0 - _POLY_EXT)
     poly_x1 = _snap(diff_x1 + _POLY_EXT)
     for gate_cy in [gate1_cy, gate2_cy]:
         _rect(cell, _POLY, poly_x0, gate_cy - _L / 2.0,
               poly_x1, gate_cy + _L / 2.0)
 
-    # S/D contacts
+    # NMOS S/D contacts
     for sd_cy in [sd_bot_cy, sd_mid_cy, sd_top_cy]:
         _con(cell, diff_cx, sd_cy, _LICON1, _LICON)
         _lipad(cell, diff_cx, sd_cy)
 
-    # Labels + .pin purpose shapes (datatype 16) for Magic port detection.
+    # P-tap contact stack: licon → li1 → mcon → met1 (VSS rail at this y)
+    _con(cell, tap_cx, sd_bot_cy, _LICON1, _LICON)
+    _lipad(cell, tap_cx, sd_bot_cy)
+    _con(cell, tap_cx, sd_bot_cy, _MCON_L, _MCON)
+    _rect(cell, _MET1,
+          tap_cx - _M1_PAD / 2, sd_bot_cy - _M1_PAD / 2,
+          tap_cx + _M1_PAD / 2, sd_bot_cy + _M1_PAD / 2)
+
+    # Labels + .pin shapes for Magic port detection.
     _PIN_HALF = 0.07
     _POLY_PIN = (_POLY[0], 16)
     _LI1_PIN = (_LI1[0], 16)
+    _MET1_PIN = LAYERS.MET1_PIN.as_tuple
     for label, pos, drawing, pin_dt in (
         ("VBIAS",   (_snap(poly_x0), _snap(gate1_cy)),  _POLY, _POLY_PIN),
         ("MBL",     (_snap(poly_x0), _snap(gate2_cy)),  _POLY, _POLY_PIN),
         ("VSS",     (_snap(diff_cx), _snap(sd_bot_cy)), _LI1,  _LI1_PIN),
         ("MBL_OUT", (_snap(diff_cx), _snap(sd_mid_cy)), _LI1,  _LI1_PIN),
         ("VDD",     (_snap(diff_cx), _snap(sd_top_cy)), _LI1,  _LI1_PIN),
+        # VSS body-tie pin on met1 over the P-tap contact (Magic uses
+        # this label to fold the P-tap-via-mcon into the VSS net).
+        ("VSS",     (_snap(tap_cx),  _snap(sd_bot_cy)), _MET1, _MET1_PIN),
     ):
         cx, cy = pos
         cell.add(gdstk.rectangle(

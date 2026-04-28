@@ -72,6 +72,7 @@ def generate_cim_reference_spice(
 
     top_name = top_subckt_name or p.top_cell_name
     bitcell_subckt = "sky130_sram_6t_cim_lr"
+    mwl_driver_subckt = "sky130_fd_sc_hd__buf_2"
 
     with out.open("w") as f:
         f.write(
@@ -82,7 +83,9 @@ def generate_cim_reference_spice(
         f.write(".global VDD VSS VSUBS VPWR VGND\n\n")
 
         # Per-cell subckt definitions (pre-extracted from layout).
-        _write_extracted(f, _read_extracted("cim_mwl_driver.subckt.sp"))
+        # MWL driver = foundry sky130_fd_sc_hd__buf_2.  MBL precharge and
+        # MBL sense are custom analog cells.
+        _write_extracted(f, _read_extracted(f"{mwl_driver_subckt}.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_precharge.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_sense.subckt.sp"))
         _write_extracted(f, _read_extracted(_bitcell_subckt_filename(p.variant)))
@@ -123,12 +126,14 @@ def generate_cim_reference_spice(
         f.write("\n")
 
         # ---- MWL drivers (one per row) ----
-        # Drives MWL[r] from MWL_EN[r] input.
-        f.write(f"* {p.rows} MWL drivers\n")
+        # Drives MWL[r] from MWL_EN[r] input.  Foundry buf_2 ports:
+        # A (input), VGND, VNB (p-substrate body bias = VGND), VPB
+        # (n-well body bias = VPWR), VPWR, X (output).
+        f.write(f"* {p.rows} MWL drivers (foundry buf_2)\n")
         for r in range(p.rows):
-            # cim_mwl_driver port order (extracted): MWL_EN MWL VSS VDD
             f.write(
-                f"Xmwl_{r} MWL_EN[{r}] MWL_{r} VGND VPWR cim_mwl_driver\n"
+                f"Xmwl_{r} MWL_EN[{r}] VGND VGND VPWR VPWR MWL_{r} "
+                f"{mwl_driver_subckt}\n"
             )
         f.write("\n")
 

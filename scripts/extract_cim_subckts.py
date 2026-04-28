@@ -63,10 +63,12 @@ def _ensure_bitcell_gds(variant: str) -> tuple[str, Path]:
 # We patch the declaration post-extraction with the canonical port
 # list we know each cell exposes.
 _PORT_LIST: dict[str, list[str]] = {
-    "cim_mwl_driver":    ["MWL_EN", "MWL", "VSS", "VDD"],
-    "cim_mbl_precharge": ["MBL_PRE", "VREF", "MBL"],
-    "cim_mbl_sense":     ["VBIAS", "MBL", "VSS", "MBL_OUT", "VDD"],
-    "sky130_sram_6t_cim_lr": ["BL", "BLB", "WL", "MWL", "MBL", "VDD", "VSS"],
+    # Foundry buf_2 stdcell — Magic extraction promotes most ports already;
+    # the explicit list ensures consistency with the foundry CDL.
+    "sky130_fd_sc_hd__buf_2": ["A", "VGND", "VNB", "VPB", "VPWR", "X"],
+    "cim_mbl_precharge":      ["MBL_PRE", "VREF", "MBL"],
+    "cim_mbl_sense":          ["VBIAS", "MBL", "VSS", "MBL_OUT", "VDD"],
+    "sky130_sram_6t_cim_lr":  ["BL", "BLB", "WL", "MWL", "MBL", "VDD", "VSS"],
 }
 
 
@@ -119,10 +121,13 @@ def _extract_one_with_alias(
 
 def main() -> int:
     print("Extracting CIM peripherals...")
+    # Note: cim_mwl_driver is now the foundry sky130_fd_sc_hd__buf_2 stdcell;
+    # generate_mwl_driver() returns a library whose top cell carries the
+    # foundry name, so we extract under that name.
     periph_specs = [
-        ("cim_mwl_driver",    generate_mwl_driver),
-        ("cim_mbl_precharge", generate_mbl_precharge),
-        ("cim_mbl_sense",     generate_mbl_sense),
+        ("sky130_fd_sc_hd__buf_2", generate_mwl_driver),
+        ("cim_mbl_precharge",      generate_mbl_precharge),
+        ("cim_mbl_sense",          generate_mbl_sense),
     ]
     for cell_name, gen in periph_specs:
         gds = _ensure_periph_gds(cell_name, gen)

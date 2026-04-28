@@ -17,6 +17,7 @@ import gdstk
 
 from rekolektion.peripherals.cim_mbl_sense import generate_mbl_sense
 from rekolektion.macro.routing import draw_pin_with_label
+from rekolektion.macro.sky130_drc import GDS_LAYER
 
 
 _SENSE_CELL_NAME: str = "cim_mbl_sense"
@@ -104,6 +105,41 @@ class MBLSenseRow:
         for col in range(self.cols):
             origin = (col * self.col_pitch + x_offset, 0.0)
             top.add(gdstk.Reference(local_sense, origin=origin))
+
+        # Horizontal shared-bus stripes spanning the full row width.
+        # MBL is per-column so it does NOT get a horizontal stripe;
+        # everything else (VBIAS, VSS, VDD, VSS-tap) is shared.
+        row_w = self.cols * self.col_pitch
+        poly_id, poly_dt = GDS_LAYER["poly"]
+        li1_id, li1_dt = GDS_LAYER["li1"]
+        m1_id, m1_dt = GDS_LAYER["met1"]
+        _BUS_HALF = 0.075
+
+        # VBIAS bus on poly at Y=_VBIAS_LY (0.405)
+        top.add(gdstk.rectangle(
+            (0.0, _VBIAS_LY - _BUS_HALF),
+            (row_w, _VBIAS_LY + _BUS_HALF),
+            layer=poly_id, datatype=poly_dt,
+        ))
+        # VSS bus on li1 at Y=_VSS_LY (0.155)
+        top.add(gdstk.rectangle(
+            (0.0, _VSS_LY - _BUS_HALF),
+            (row_w, _VSS_LY + _BUS_HALF),
+            layer=li1_id, datatype=li1_dt,
+        ))
+        # VDD bus on li1 at Y=_VDD_LY (1.325)
+        top.add(gdstk.rectangle(
+            (0.0, _VDD_LY - _BUS_HALF),
+            (row_w, _VDD_LY + _BUS_HALF),
+            layer=li1_id, datatype=li1_dt,
+        ))
+        # VSS-tap bus on met1 at Y=_VSS_TAP_LY (0.155) — same Y as the
+        # VSS li1 bus, providing met1 backbone for vertical PDN reach.
+        top.add(gdstk.rectangle(
+            (0.0, _VSS_TAP_LY - _BUS_HALF),
+            (row_w, _VSS_TAP_LY + _BUS_HALF),
+            layer=m1_id, datatype=m1_dt,
+        ))
 
         # Pin shapes at the cell's actual pin coordinates and layers.
         # Pin layers per the cell:

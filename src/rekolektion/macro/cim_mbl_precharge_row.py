@@ -18,6 +18,7 @@ import gdstk
 
 from rekolektion.peripherals.cim_mbl_precharge import generate_mbl_precharge
 from rekolektion.macro.routing import draw_pin_with_label
+from rekolektion.macro.sky130_drc import GDS_LAYER
 
 
 _PRE_CELL_NAME: str = "cim_mbl_precharge"
@@ -92,6 +93,36 @@ class MBLPrechargeRow:
         for col in range(self.cols):
             origin = (col * self.col_pitch + x_offset, 0.0)
             top.add(gdstk.Reference(local_pre, origin=origin))
+
+        # Horizontal shared-bus stripes spanning the full row width.
+        # Each connects the per-cell pin position across all columns
+        # into a single named net.  Layer must match the cell's pin
+        # layer at that Y so the stripes physically merge with the
+        # underlying cell poly/li1/met1.
+        row_w = self.cols * self.col_pitch
+        poly_id, poly_dt = GDS_LAYER["poly"]
+        li1_id, li1_dt = GDS_LAYER["li1"]
+        m1_id, m1_dt = GDS_LAYER["met1"]
+        _BUS_HALF = 0.075   # bus half-width
+
+        # MBL_PRE bus on poly at Y=_MBL_PRE_LY (0.705)
+        top.add(gdstk.rectangle(
+            (0.0, _MBL_PRE_LY - _BUS_HALF),
+            (row_w, _MBL_PRE_LY + _BUS_HALF),
+            layer=poly_id, datatype=poly_dt,
+        ))
+        # VREF bus on li1 at Y=_VREF_LY (0.955)
+        top.add(gdstk.rectangle(
+            (0.0, _VREF_LY - _BUS_HALF),
+            (row_w, _VREF_LY + _BUS_HALF),
+            layer=li1_id, datatype=li1_dt,
+        ))
+        # VPWR bus on met1 at Y=_VPWR_LY (0.705)
+        top.add(gdstk.rectangle(
+            (0.0, _VPWR_LY - _BUS_HALF),
+            (row_w, _VPWR_LY + _BUS_HALF),
+            layer=m1_id, datatype=m1_dt,
+        ))
 
         # Pin shapes are placed AT the cell's actual pin coordinates
         # ON the cell's actual pin layers — otherwise the parent .pin

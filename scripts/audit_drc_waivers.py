@@ -27,7 +27,7 @@ from pathlib import Path
 
 import gdstk
 
-from rekolektion.macro_v2.assembler import MacroV2Params, assemble
+from rekolektion.macro.assembler import MacroParams, assemble
 from rekolektion.tech.sky130 import pdk_path, magic_techfile, magic_rcfile
 from rekolektion.verify.drc import _KNOWN_WAIVER_RULES, _KNOWN_WAIVER_MESSAGES
 
@@ -132,7 +132,7 @@ def _tile_inside(
     return x0 <= cx <= x1 and y0 <= cy <= y1
 
 
-def run_audit(p: MacroV2Params) -> dict:
+def run_audit(p: MacroParams) -> dict:
     tmp = Path(tempfile.mkdtemp(prefix="rekolektion_audit_"))
     lib = assemble(p)
     gds = tmp / f"{p.top_cell_name}.gds"
@@ -239,7 +239,7 @@ def _rule_ids_in(msg: str) -> list[str]:
 
 
 def main() -> None:
-    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    p = MacroParams(words=32, bits=8, mux_ratio=4)
     audit = run_audit(p)
     print(
         f"\nFootprints: {audit['foundry_bboxes_count']} foundry-cell "

@@ -9,8 +9,8 @@ import re
 import sys
 from pathlib import Path
 
-from rekolektion.macro_v2.assembler import MacroV2Params, assemble
-from rekolektion.macro_v2.spice_generator import generate_reference_spice
+from rekolektion.macro.assembler import MacroParams, assemble
+from rekolektion.macro.spice_generator import generate_reference_spice
 from rekolektion.verify.lvs import extract_netlist, run_lvs
 
 
@@ -36,7 +36,7 @@ def _count_devices(sp: Path) -> dict[str, int]:
 
 def main() -> int:
     _OUT.mkdir(parents=True, exist_ok=True)
-    p = MacroV2Params(words=32, bits=8, mux_ratio=4)
+    p = MacroParams(words=32, bits=8, mux_ratio=4)
 
     print(f"Assembling {p.top_cell_name} ...", flush=True)
     lib = assemble(p)

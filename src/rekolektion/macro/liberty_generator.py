@@ -16,13 +16,11 @@ Key parameters are derived from:
 
 Usage::
 
-    from rekolektion.macro.assembler import compute_macro_params
+    from rekolektion.macro.assembler import MacroParams, build_floorplan
     from rekolektion.macro.liberty_generator import generate_liberty
 
-    params = compute_macro_params(words=1024, bits=32, mux_ratio=8)
-    params.macro_width = 500.0
-    params.macro_height = 400.0
-    generate_liberty(params, "output/sram_1024x32.lib")
+    p = MacroParams(words=256, bits=64, mux_ratio=2)
+    generate_liberty(p, "output/sram_256x64.lib")
 """
 
 from __future__ import annotations
@@ -31,8 +29,71 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from rekolektion.macro.assembler import MacroParams
-from rekolektion.macro.outputs import _pn
+
+# ---------------------------------------------------------------------------
+# Internal liberty params dataclass
+# ---------------------------------------------------------------------------
+# Carved out of the deleted V1 `assembler.py`.  The Liberty emission
+# engine below works against this flat dataclass; the public
+# `generate_liberty(MacroParams, ...)` API at the bottom of this file
+# adapts the modern V2 MacroParams (foundry-bitcell, mux-aware) into
+# this internal shape.
+
+@dataclass
+class _LibertyMacroParams:
+    """Internal flat parameter shape for the liberty emission engine."""
+    words: int
+    bits: int
+    mux_ratio: int
+    rows: int
+    cols: int
+    num_addr_bits: int
+    num_row_bits: int
+    num_col_bits: int
+    cell_name: str = ""
+    cell_width: float = 0.0
+    cell_height: float = 0.0
+    macro_width: float = 0.0
+    macro_height: float = 0.0
+    write_enable: bool = False
+    scan_chain: bool = False
+    clock_gating: bool = False
+    power_gating: bool = False
+    wl_switchoff: bool = False
+    burn_in: bool = False
+
+    @property
+    def num_ben_bits(self) -> int:
+        if not self.write_enable:
+            return 0
+        return max(1, self.bits // 8)
+
+    @property
+    def num_scan_flops(self) -> int:
+        if not self.scan_chain:
+            return 0
+        return self.num_addr_bits + 2 + self.bits + self.num_ben_bits
+
+
+# Backwards-compatible alias for code that still references the
+# legacy `MacroParams` symbol from this module.
+MacroParams = _LibertyMacroParams
+
+
+def _pn(name: str, upper: bool) -> str:
+    """Convert pin name to uppercase if requested.
+
+    Handles bus notation: ``addr[3]`` → ``ADDR[3]``.
+    Already-uppercase names (``VPWR``, ``VGND``) pass through unchanged.
+    """
+    if not upper:
+        return name
+    idx = name.find('[')
+    if idx >= 0:
+        return name[:idx].upper() + name[idx:]
+    if name == name.upper():
+        return name
+    return name.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +264,10 @@ def compute_timing(params: MacroParams) -> SRAMTiming:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Liberty emission engine (operates on the internal _LibertyMacroParams)
 # ---------------------------------------------------------------------------
 
-def generate_liberty(
+def _emit_liberty(
     params: MacroParams,
     output_path: str | Path,
     macro_name: str | None = None,
@@ -517,3 +578,56 @@ def _output_bus_with_timing(
         lines.append(f'      pin ({name}[{i}]) {{ }}')
     lines.append(f'    }}')
     return lines
+
+
+# ---------------------------------------------------------------------------
+# Public API: V2 (foundry-cell, mux-aware) MacroParams adapter
+# ---------------------------------------------------------------------------
+
+def generate_liberty(
+    p,                     # rekolektion.macro.assembler.MacroParams (v2)
+    output_path: str | Path,
+    macro_name: str | None = None,
+    *,
+    uppercase_ports: bool = True,
+) -> Path:
+    """Write a Liberty (.lib) file for a v2 SRAM macro.
+
+    Builds an internal `_LibertyMacroParams` from the v2 params + the
+    floorplan + the foundry bitcell info, then dispatches to the
+    analytical emission engine `_emit_liberty`.
+
+    Defaults to ``uppercase_ports=True`` to match the v2 LEF
+    convention.
+    """
+    # Imported here to avoid a circular import (assembler -> ... ->
+    # liberty_generator at module load time).
+    from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
+    from rekolektion.macro.assembler import build_floorplan
+
+    fp = build_floorplan(p)
+    bc = load_foundry_sp_bitcell()
+    macro_w, macro_h = fp.macro_size
+    num_row_bits = int(math.log2(p.rows))
+    num_col_bits = int(math.log2(p.mux_ratio))
+    legacy = _LibertyMacroParams(
+        words=p.words,
+        bits=p.bits,
+        mux_ratio=p.mux_ratio,
+        rows=p.rows,
+        cols=p.cols,
+        num_addr_bits=p.num_addr_bits,
+        num_row_bits=num_row_bits,
+        num_col_bits=num_col_bits,
+        cell_name=bc.cell_name,
+        cell_width=bc.cell_width,
+        cell_height=bc.cell_height,
+        macro_width=macro_w,
+        macro_height=macro_h,
+    )
+    return _emit_liberty(
+        legacy,
+        output_path,
+        macro_name=macro_name or p.top_cell_name,
+        uppercase_ports=uppercase_ports,
+    )

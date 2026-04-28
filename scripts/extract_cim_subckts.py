@@ -66,8 +66,14 @@ _PORT_LIST: dict[str, list[str]] = {
     # Foundry buf_2 stdcell — Magic extraction promotes most ports already;
     # the explicit list ensures consistency with the foundry CDL.
     "sky130_fd_sc_hd__buf_2": ["A", "VGND", "VNB", "VPB", "VPWR", "X"],
-    "cim_mbl_precharge":      ["MBL_PRE", "VREF", "MBL"],
+    # Custom analog cells — VPWR/VGND included as ports so the macro
+    # ties all instances to the same supply nets (otherwise Magic
+    # extracts the well as an internal floating net per instance).
+    "cim_mbl_precharge":      ["MBL_PRE", "VREF", "MBL", "VPWR"],
     "cim_mbl_sense":          ["VBIAS", "MBL", "VSS", "MBL_OUT", "VDD"],
+    # Bitcell labels its supplies VDD/VSS in the layout; keep those
+    # names so they match the body of the extracted subckt.  The
+    # macro's bitcell instances pass macro-VPWR/VGND into VDD/VSS.
     "sky130_sram_6t_cim_lr":  ["BL", "BLB", "WL", "MWL", "MBL", "VDD", "VSS"],
 }
 

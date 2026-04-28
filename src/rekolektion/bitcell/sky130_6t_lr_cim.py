@@ -289,8 +289,12 @@ def create_cim_bitcell(
     # =================================================================
     _label(cell, "MWL", LAYERS.POLY.as_tuple,
            g["nmos_diff_x0"] - poly_ext, mwl_cy)
-    _label(cell, "MBL", LAYER_MET4,
-           cell_cx, cell_cy)
+    # MBL label on the MIMCAP layer (the cap top plate itself) — this is
+    # the net Magic extracts as the cap_mim_m3_1 top terminal.  Labeling
+    # MET4 above the cap doesn't work: Magic treats MIMCAP and MET4 as
+    # separate nets unless explicitly connected, and the MIMCAP layer
+    # can't be vias'd to MET4 with a normal via stack.
+    _label(cell, "MBL", LAYER_MIMCAP, cell_cx, cell_cy)
 
     return cell
 

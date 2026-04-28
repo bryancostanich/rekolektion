@@ -391,10 +391,12 @@ def _add_macro_routing(
         ))
         # Per-column MBL[c] label on the strap so each column has a
         # unique net name (vs all sharing "MBL" if labeled in the cell).
+        # Use texttype=20 (drawing layer) — matches the convention the
+        # bitcell uses for its MET4 MBL label, which Magic recognizes.
         strap_mid_y = (strap_y_bot + strap_y_top) / 2.0
         top.add(gdstk.Label(
             f"MBL[{col}]", (strap_x, strap_mid_y),
-            layer=m4_id, texttype=5,
+            layer=m4_id, texttype=20,
         ))
 
         # Precharge MBL li1 pad → met4 strap (li1→m1→m2→m3→m4 via stack)

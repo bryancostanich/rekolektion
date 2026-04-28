@@ -12,13 +12,14 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from rekolektion.bitcell.sky130_6t_lr_cim import CIM_VARIANTS
 from rekolektion.macro.cim_assembler import CIMMacroParams
-from rekolektion.verify.lvs import run_lvs
+from rekolektion.verify.lvs import run_lvs, extract_netlist
 
 
 _ROOT = Path(__file__).parent.parent
@@ -53,6 +54,11 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     # positions to provide net names.
     _STRIP: dict[str, set[str]] = {
         "sky130_fd_sc_hd__buf_2": {"A", "X", "VPB", "VNB"},
+        # Strip MBL from inside the bitcell — the macro's per-column
+        # MBL[c] labels on the MET4 column straps name each column
+        # uniquely.  If we keep "MBL" inside the bitcell, Magic merges
+        # all 4096 cap top plates into a single net named "MBL".
+        "sky130_sram_6t_cim_lr": {"MBL"},
     }
     for c in src.cells:
         if c.name in _STRIP:
@@ -87,12 +93,34 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     print(f"[{variant}] flattening macro GDS hierarchy → {flat_gds.name} ...")
     _flatten_gds(gds, flat_gds, p.top_cell_name)
 
-    print(f"[{variant}] running full LVS: extract GDS + netgen ...")
+    # Extract first so we can post-process the SPICE before netgen.
+    print(f"[{variant}] extracting flat netlist via Magic ...")
+    extracted = extract_netlist(
+        flat_gds, p.top_cell_name, output_dir=out_dir,
+    )
+    # Rename all auto-named n-well nodes (`w_<n>_<n>#`) to VPWR.  The
+    # bitcell layout has 1024 disconnected n-well groups (NWELL gaps
+    # between mirrored row-pair boundaries prevent full merge), but
+    # the reference SPICE substitutes the same auto-named tokens to
+    # VDD which is already mapped to macro VPWR via cell port order.
+    # Renaming to VPWR ties them all to the same macro net for LVS.
+    text = extracted.read_text()
+    # Match Magic's auto-named well node tokens.  Magic encodes
+    # negative coordinates with `n` prefixes, so any of these can
+    # appear: w_<int>_<int>#, w_n<int>_<int>#, w_<int>_n<int>#,
+    # w_n<int>_n<int>#.
+    new_text = re.sub(r"\bw_n?\d+_n?\d+#", "VPWR", text)
+    if new_text != text:
+        extracted.write_text(new_text)
+        print(f"[{variant}] renamed auto-named n-well nets to VPWR")
+
+    print(f"[{variant}] running netgen LVS comparison ...")
     result = run_lvs(
         gds_path=flat_gds,
         schematic_path=ref_sp,
         cell_name=p.top_cell_name,
         output_dir=out_dir,
+        extracted_netlist=extracted,
     )
     return {
         "variant": variant,

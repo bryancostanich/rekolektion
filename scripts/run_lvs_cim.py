@@ -179,29 +179,41 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     # Group each label text's positions independently to assign
     # row/column indices.
     _TOL = 0.05    # 50 nm tolerance for grouping coords
-    def _build_index(labels, axis: int) -> dict[float, int]:
-        coords = sorted({round(l.origin[axis], 2) for l in labels})
-        return {c: i for i, c in enumerate(coords)}
-    def _lookup(idx_map: dict[float, int], v: float) -> int:
-        for k, vi in idx_map.items():
-            if abs(v - k) < _TOL:
-                return vi
+    def _build_index(labels, axis: int) -> list[float]:
+        # Cluster nearby coords with single-link agglomerative grouping.
+        # Plain `round(x, 2)` is fragile at decision boundaries (e.g.
+        # 7.365 may surface as 7.364999... in one mirrored instance and
+        # 7.365 in another, splitting a single column into two buckets);
+        # cluster centers within _TOL into one representative coord so
+        # mirror-tiled labels at the same logical X get the same index.
+        raw = sorted(l.origin[axis] for l in labels)
+        clusters: list[list[float]] = []
+        for v in raw:
+            if clusters and abs(v - clusters[-1][-1]) < _TOL:
+                clusters[-1].append(v)
+            else:
+                clusters.append([v])
+        return [sum(c) / len(c) for c in clusters]
+    def _lookup(centers: list[float], v: float) -> int:
+        for i, c in enumerate(centers):
+            if abs(v - c) < _TOL:
+                return i
         return -1
 
     for text, labels in col_labels.items():
         if not labels:
             continue
-        idx_map = _build_index(labels, axis=0)
+        centers = _build_index(labels, axis=0)
         for lbl in labels:
-            ci = _lookup(idx_map, lbl.origin[0])
+            ci = _lookup(centers, lbl.origin[0])
             if ci >= 0:
                 lbl.text = f"{text}_{ci}"
     for text, labels in row_labels.items():
         if not labels:
             continue
-        idx_map = _build_index(labels, axis=1)
+        centers = _build_index(labels, axis=1)
         for lbl in labels:
-            ri = _lookup(idx_map, lbl.origin[1])
+            ri = _lookup(centers, lbl.origin[1])
             if ri >= 0:
                 lbl.text = f"{text}_{ri}"
 

@@ -140,20 +140,25 @@ class MWLDriverRow:
                       0.07, a_cy + _PIN_HALF),
             )
 
-            # MWL[row] — buf_2 X pin on li1 at (1.145, 1.87).  Extend
-            # an li1 stub EAST past the row builder's right edge by
-            # 0.10 µm so the parent macro's MWL bridge can overlap
-            # cleanly without starting inside the buf_2 cell (which
-            # has internal li1/met1 features that would short the
-            # bridge to other nets).
+            # MWL[row] — buf_2 X pin is on li1 at cell-local
+            # (1.145, 1.87).  The buf_2's TOP LI1 (VPWR rail region)
+            # extends DOWN to y=1.485 at x=[1.49, 1.75], so a li1
+            # stub at y=1.87 from x=1.145 to cell_w would cross that
+            # VPWR li1 segment and short MWL[row] to VPWR.  Bridge
+            # on met1 instead: drop a li1→met1 mcon over the X pin,
+            # then run met1 east past the cell boundary.  Met1
+            # doesn't conflict with the buf_2's li1-only rails.
             x_cy = y_off + _X_LOCAL_Y
+            draw_via_stack(top, from_layer="li1", to_layer="met1",
+                           position=(_X_LOCAL_X, x_cy))
+            m1_id, m1_dt = GDS_LAYER["met1"]
             top.add(gdstk.rectangle(
                 (_X_LOCAL_X - _PIN_HALF, x_cy - _PIN_HALF),
                 (_CELL_W + 0.10, x_cy + _PIN_HALF),
-                layer=li1_id, datatype=li1_dt,
+                layer=m1_id, datatype=m1_dt,
             ))
             draw_pin_with_label(
-                top, text=f"MWL[{row}]", layer="li1",
+                top, text=f"MWL[{row}]", layer="met1",
                 rect=(_CELL_W - 0.07, x_cy - _PIN_HALF,
                       _CELL_W, x_cy + _PIN_HALF),
             )
@@ -185,20 +190,21 @@ class MWLDriverRow:
             layer=m2_id, datatype=m2_dt,
         ))
 
-        # Per-row via stacks: drop met2 strap into met1 rails of each
-        # foundry cell.
+        # Per-row via stacks: drop met2 strap into the cell's li1
+        # power rails.  The foundry buf_2 cell's VPWR/VGND rails are
+        # on LI1 only (no met1 in the cell), so the via stack must
+        # start at li1 (mcon → met1 → via1 → met2) to actually
+        # connect the macro PDN to the cell's supplies.
         for row in range(self.rows):
             y_off = self._row_y_offset(row)
             vpwr_cy = y_off + _VPWR_LOCAL_Y
             vgnd_cy = y_off + _VGND_LOCAL_Y
-            # VPWR via from met2 strap to cell's met1 VPWR rail
             draw_via_stack(
-                top, from_layer="met1", to_layer="met2",
+                top, from_layer="li1", to_layer="met2",
                 position=(vpwr_strap_x, vpwr_cy),
             )
-            # VGND via — same x offset on the GND strap
             draw_via_stack(
-                top, from_layer="met1", to_layer="met2",
+                top, from_layer="li1", to_layer="met2",
                 position=(vgnd_strap_x, vgnd_cy),
             )
 

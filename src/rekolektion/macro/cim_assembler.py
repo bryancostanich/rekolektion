@@ -315,8 +315,21 @@ def _add_macro_routing(
     # met1) to avoid shorting VBIAS to VGND.  The via stack's met1
     # intermediate hop is at Y=0.405 (above the VSS bus at Y=0.155),
     # so it doesn't conflict.
+    #
+    # X position: place the poly licon in col 0's LEFT MARGIN.  The
+    # sense cell's NMOS diff spans x_local=[0.30, 1.30] and the
+    # P-tap spans x_local=[1.57, 1.87], so any licon dropped onto
+    # the VBIAS poly bus inside a cell either lands on the diff
+    # (turning the licon into a diff contact and shorting VBIAS to
+    # an NMOS S/D) or on the tap (shorting VBIAS to VSS).  The
+    # cell's left margin x_local=[0, 0.30] has no diff and no tap;
+    # placing the licon at x_local=0.05 puts the 0.33 µm li1 pad at
+    # x_local=[-0.115, 0.215], which clears every per-cell li1/diff
+    # feature.  The pad's western half spills into the LEFT_GAP
+    # between the row builder and the sense row, where there is
+    # nothing else routed.
     vbias_abs_y = sense_y + _SENSE_VBIAS_LY
-    vbias_abs_x = sense_x + p.cell_pitch_x
+    vbias_abs_x = sense_x + 0.05
     _poly_to_li1_contact(top, vbias_abs_x, vbias_abs_y)
     draw_via_stack(top, from_layer="li1", to_layer="met2",
                    position=(vbias_abs_x, vbias_abs_y))
@@ -386,6 +399,19 @@ def _add_macro_routing(
 
     # Bitcell MWL local Y (poly stripe centre Y in bitcell coords).
     bitcell_mwl_local_y = _bc.pins["MWL"].ports[0][1]
+    # Mirror-row placement origin Y (within a pair).  tile_array's
+    # `_place_cell` uses `oy = origin_y + cell_height` where
+    # `cell_height` = `bitcell.geometry_height` (the cell's GDS bbox
+    # height — 3.535 µm for every variant), NOT `cell_pitch_y` (the
+    # row pitch — varies per variant: 3.915 for D, 5.155 for A, etc.).
+    # So a y-mirrored row's MWL ends up at:
+    #   y_array = (cell_pitch_y + geometry_height) - bitcell_mwl_local_y
+    # within its pair, NOT at `2*cell_pitch_y - bitcell_mwl_local_y`
+    # (which would be the formula if the placement used the row pitch
+    # for the mirror).  Using the per-variant geometry_height makes
+    # the bridge align with all 4 macros — hardcoding 7.45 only worked
+    # for SRAM-C/D (where 3.915+3.535=7.45).
+    _mirror_oy = p.cell_pitch_y + _bc.geometry_height
 
     li1_id_bridge, li1_dt_bridge = GDS_LAYER["li1"]
     poly_id_bridge, poly_dt_bridge = GDS_LAYER["poly"]
@@ -397,27 +423,37 @@ def _add_macro_routing(
         if row % 2 == 0:
             arr_mwl_y = array_y_pos_local + pair_idx * (2 * p.cell_pitch_y) + bitcell_mwl_local_y
         else:
-            # Mirror origin Y observed at 7.45 within pair pitch 7.83.
-            arr_mwl_y = array_y_pos_local + pair_idx * (2 * p.cell_pitch_y) + 7.45 - bitcell_mwl_local_y
+            arr_mwl_y = array_y_pos_local + pair_idx * (2 * p.cell_pitch_y) + _mirror_oy - bitcell_mwl_local_y
 
-        # 1. li1 stub from row builder east edge across LEFT_GAP, but
-        #    end BEFORE the array boundary (which has bitcell content
-        #    that the vertical poly would cross).  bridge_x is in the
-        #    empty LEFT_GAP region.  The row builder's MWL[r] li1
-        #    stub extends past x=rb_w by 0.10 µm, so starting the
-        #    bridge AT x=rb_w gives 0.10 µm of overlap on the row-
-        #    builder side without entering the buf_2 cell.
+        # 1. met1 stub from row builder east edge across LEFT_GAP.
+        #    The row builder's MWL[r] stub is on met1 (was li1, but
+        #    that shorted to the buf_2 VPWR li1 rail extension), so
+        #    the bridge stays on met1 here too.  bridge_x sits inside
+        #    the empty LEFT_GAP region, kept far enough from the array
+        #    west edge that the via-stack mcon's met1 pad (half-width
+        #    ~0.145 µm) does NOT extend past the array boundary onto
+        #    the bitcell's VGND/VPWR met1 rails (which start at
+        #    array_x_pos_local).
         bridge_x_west = rb_w
-        bridge_x = array_x_pos_local - 0.10
+        bridge_x = array_x_pos_local - 0.30
+        m1_id_bridge, m1_dt_bridge = GDS_LAYER["met1"]
         top.add(gdstk.rectangle(
             (bridge_x_west, rb_mwl_y - 0.075),
             (bridge_x, rb_mwl_y + 0.075),
-            layer=li1_id_bridge, datatype=li1_dt_bridge,
+            layer=m1_id_bridge, datatype=m1_dt_bridge,
         ))
-        # 2. Poly licon at bridge_x converts li1 to poly.
+        # 2. Via stack at bridge_x: met1 → mcon → li1.  Lands the
+        #    horizontal met1 stub onto the li1 pad we'll convert to
+        #    poly via licon below.
+        draw_via_stack(top, from_layer="li1", to_layer="met1",
+                       position=(bridge_x, rb_mwl_y))
+        # 3. Poly licon at bridge_x converts li1 → poly at rb_mwl_y.
+        #    Co-located with the via stack pad — overlapping li1
+        #    pads merge.
         _poly_to_li1_contact(top, bridge_x, rb_mwl_y)
-        # 3. Vertical poly stripe from rb_mwl_y to arr_mwl_y at bridge_x
-        #    (outside the array — no diff to cross).
+        # 4. Vertical poly stripe at bridge_x from rb_mwl_y to
+        #    arr_mwl_y (entirely in the empty LEFT_GAP — no diff
+        #    crossings).
         y_lo = min(rb_mwl_y, arr_mwl_y)
         y_hi = max(rb_mwl_y, arr_mwl_y)
         top.add(gdstk.rectangle(
@@ -425,9 +461,10 @@ def _add_macro_routing(
             (bridge_x + 0.075, y_hi),
             layer=poly_id_bridge, datatype=poly_dt_bridge,
         ))
-        # 4. Horizontal poly stub from bridge_x east into the array's
-        #    MWL poly stripe (which starts at array_x_pos and spans
-        #    full cell width on the same Y).
+        # 5. Horizontal poly stub from bridge_x east into the array's
+        #    MWL poly stripe (which spans x=0..cw within the bitcell
+        #    on the same Y), overlapping the leftmost column's MWL
+        #    poly to make the connection.
         top.add(gdstk.rectangle(
             (bridge_x - 0.075, arr_mwl_y - 0.075),
             (array_x_pos_local + 0.20, arr_mwl_y + 0.075),

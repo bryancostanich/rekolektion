@@ -254,9 +254,20 @@ def run_lvs(
     # reference SPICE keeps VSUBS as a separate global net (matching
     # the foundry SPICE).  Equate them so netgen treats VSUBS as
     # VGND in both circuits.
-    for c1, c2 in [("VPB", "VPWR"), ("VNB", "VGND"), ("VSUBS", "VGND")]:
-        lines.append(f'catch {{equate nets "-circuit1 {c1}" "-circuit1 {c2}"}}')
-        lines.append(f'catch {{equate nets "-circuit2 {c1}" "-circuit2 {c2}"}}')
+    # Supply name aliases.  CIM bitcell labels its rails VDD/VSS while
+    # the macro-level reference uses VPWR/VGND (foundry stdcell
+    # convention); after flat extraction the macro has both names.
+    # Same for VPB/VNB body-bias on hd cells.
+    _equate_pairs = [
+        ("VPB", "VPWR"),
+        ("VNB", "VGND"),
+        ("VSUBS", "VGND"),
+        ("VDD", "VPWR"),
+        ("VSS", "VGND"),
+    ]
+    for c1, c2 in _equate_pairs:
+        lines.append(f"catch {{equate nets -circuit1 {c1} {c2}}}")
+        lines.append(f"catch {{equate nets -circuit2 {c1} {c2}}}")
     for cell in flatten_cells:
         lines.append(f'catch {{flatten class "-circuit1 {cell}"}}')
         lines.append(f'catch {{flatten class "-circuit2 {cell}"}}')

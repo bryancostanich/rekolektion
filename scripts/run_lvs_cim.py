@@ -60,11 +60,26 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
         # all 4096 cap top plates into a single net named "MBL".
         "sky130_sram_6t_cim_lr": {"MBL"},
     }
+    # Rename labels: bitcell uses VDD/VSS in its layout, but the macro
+    # reference (and stdcell convention) is VPWR/VGND.  Rename here so
+    # the flat-extracted top has VPWR/VGND directly, no equate needed.
+    _RENAME: dict[str, dict[str, str]] = {
+        "sky130_sram_6t_cim_lr": {"VDD": "VPWR", "VSS": "VGND"},
+        # mbl_sense and its row builder use VDD/VSS; rename to
+        # macro convention (VPWR/VGND) so flat extraction has one
+        # supply name per polarity.
+        "cim_mbl_sense": {"VDD": "VPWR", "VSS": "VGND"},
+        "cim_mbl_sense_row_64": {"VDD": "VPWR", "VSS": "VGND"},
+    }
     for c in src.cells:
         if c.name in _STRIP:
             to_remove = [l for l in c.labels if l.text in _STRIP[c.name]]
             for l in to_remove:
                 c.remove(l)
+        if c.name in _RENAME:
+            for label in c.labels:
+                if label.text in _RENAME[c.name]:
+                    label.text = _RENAME[c.name][label.text]
     top = next(c for c in src.cells if c.name == top_cell)
     top.flatten()
     out_lib = gdstk.Library(name=f"{top_cell}_flat", unit=src.unit, precision=src.precision)

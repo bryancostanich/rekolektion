@@ -309,13 +309,19 @@ def _add_macro_routing(
                               vref_abs_x + 0.07, macro_h))
 
     # ---- VBIAS external pin (BOTTOM edge) ----
+    # VBIAS poly bus is at sense-cell-local Y=0.405, but the strap
+    # path from VBIAS Y down to the macro bottom edge crosses the
+    # sense row's VSS-tap met1 bus at Y=0.155.  Route on met2 (above
+    # met1) to avoid shorting VBIAS to VGND.  The via stack's met1
+    # intermediate hop is at Y=0.405 (above the VSS bus at Y=0.155),
+    # so it doesn't conflict.
     vbias_abs_y = sense_y + _SENSE_VBIAS_LY
     vbias_abs_x = sense_x + p.cell_pitch_x
     _poly_to_li1_contact(top, vbias_abs_x, vbias_abs_y)
-    draw_via_stack(top, from_layer="li1", to_layer="met1",
+    draw_via_stack(top, from_layer="li1", to_layer="met2",
                    position=(vbias_abs_x, vbias_abs_y))
-    _draw_vert_strap(top, "met1", vbias_abs_x, 0.0, vbias_abs_y)
-    draw_pin_with_label(top, text="VBIAS", layer="met1",
+    _draw_vert_strap(top, "met2", vbias_abs_x, 0.0, vbias_abs_y)
+    draw_pin_with_label(top, text="VBIAS", layer="met2",
                         rect=(vbias_abs_x - 0.07, 0.0,
                               vbias_abs_x + 0.07, 0.14))
 
@@ -464,9 +470,11 @@ def _add_macro_routing(
     pre_mbl_abs_y = pre_y + _PRE_MBL_LY    # where precharge cell's MBL li1 pad is
     sense_mbl_abs_y = sense_y + _SENSE_MBL_LY  # where sense cell's MBL gate is
 
-    # Strap spans from sense_mbl_abs_y up to pre_mbl_abs_y.
+    # Strap spans from sense_mbl_abs_y to pre_mbl_abs_y, then extended
+    # north to the macro top edge so the net touches the cell boundary
+    # (Magic's port-detection requires this for top-level promotion).
     strap_y_bot = min(sense_mbl_abs_y, pre_mbl_abs_y) - 0.30
-    strap_y_top = max(sense_mbl_abs_y, pre_mbl_abs_y) + 0.30
+    strap_y_top = macro_h
 
     pre_x_offset = (p.cell_pitch_x - pre_row.cell_w) / 2.0
 
@@ -479,14 +487,14 @@ def _add_macro_routing(
             (strap_x + _STRAP_HALF, strap_y_top),
             layer=m4_id, datatype=m4_dt,
         ))
-        # Per-column MBL_<c> label on the strap so each column has a
-        # unique net name (matches reference SPICE's MBL_<c> convention
-        # used by the cim_spice_generator's bitcell instance lines).
-        strap_mid_y = (strap_y_bot + strap_y_top) / 2.0
-        top.add(gdstk.Label(
-            f"MBL_{col}", (strap_x, strap_mid_y),
-            layer=m4_id, texttype=20,
-        ))
+        # Per-column MBL_<c> .pin + label at the TOP edge of the
+        # macro (where the strap reaches the cell boundary).  This
+        # makes MBL_<c> a top-level port that Magic promotes.
+        draw_pin_with_label(
+            top, text=f"MBL_{col}", layer="met4",
+            rect=(strap_x - 0.07, macro_h - 0.14,
+                  strap_x + 0.07, macro_h),
+        )
 
         # Precharge MBL li1 pad → met4 strap (li1→m1→m2→m3→m4 via stack)
         pre_mbl_abs_x = pre_x + col * p.cell_pitch_x + pre_x_offset + _PRE_MBL_LX

@@ -91,11 +91,19 @@ def generate_cim_reference_spice(
         _write_extracted(f, _read_extracted(_bitcell_subckt_filename(p.variant)))
 
         # Top-level subckt port list — matches the macro's external
-        # pins as drawn by `cim_assembler.assemble_cim`.
+        # pins as drawn by `cim_assembler.assemble_cim`.  Includes
+        # BL/BLB/WL/MWL nets as macro ports because Magic's flat
+        # extraction promotes them via the per-row/col labels we
+        # add at the cell boundaries (see run_lvs_cim.py).
         ports = (
             [f"MWL_EN[{r}]" for r in range(p.rows)]
             + ["MBL_PRE", "VREF", "VBIAS"]
             + [f"MBL_OUT[{c}]" for c in range(p.cols)]
+            + [f"BL_{c}" for c in range(p.cols)]
+            + [f"BLB_{c}" for c in range(p.cols)]
+            + [f"WL_{r}" for r in range(p.rows)]
+            + [f"MWL_{r}" for r in range(p.rows)]
+            + [f"MBL_{c}" for c in range(p.cols)]
             + ["VPWR", "VGND"]
         )
         # SPICE doesn't allow brackets in port names by default; emit

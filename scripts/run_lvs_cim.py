@@ -26,6 +26,28 @@ _DEFAULT_INPUT = _ROOT / "output" / "cim_macros"
 _DEFAULT_OUTPUT = _ROOT / "output" / "lvs_cim"
 
 
+def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
+    """Flatten the top cell's hierarchy in src_gds and write to dst_gds.
+
+    Magic's hierarchical extraction strips bitcell ports that abut
+    between cells (BL columns, WL/MWL rows, MBL columns), so the
+    macro-extracted bitcell sub-cell has fewer ports than the
+    reference.  Flattening the entire macro before extraction
+    eliminates the sub-cell hierarchy and lets Magic produce a flat
+    transistor-level netlist that we compare against the (also-
+    flattened by netgen) reference.
+    """
+    import gdstk
+    src = gdstk.read_gds(str(src_gds))
+    top = next(c for c in src.cells if c.name == top_cell)
+    top.flatten()
+    out_lib = gdstk.Library(name=f"{top_cell}_flat", unit=src.unit, precision=src.precision)
+    out_lib.add(top)
+    dst_gds.parent.mkdir(parents=True, exist_ok=True)
+    out_lib.write_gds(str(dst_gds))
+    return dst_gds
+
+
 def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     p = CIMMacroParams.from_variant(variant)
     cell_dir = input_root / p.top_cell_name
@@ -39,9 +61,15 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     out_dir = output_root / p.top_cell_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Flatten the macro hierarchy before extraction so Magic produces
+    # a flat transistor-level netlist (no sub-cell port stripping).
+    flat_gds = out_dir / f"{p.top_cell_name}_flat.gds"
+    print(f"[{variant}] flattening macro GDS hierarchy → {flat_gds.name} ...")
+    _flatten_gds(gds, flat_gds, p.top_cell_name)
+
     print(f"[{variant}] running full LVS: extract GDS + netgen ...")
     result = run_lvs(
-        gds_path=gds,
+        gds_path=flat_gds,
         schematic_path=ref_sp,
         cell_name=p.top_cell_name,
         output_dir=out_dir,

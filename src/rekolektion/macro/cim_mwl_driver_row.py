@@ -118,23 +118,42 @@ class MWLDriverRow:
         # but for VPWR/VGND we use li1 too because the rail also has li1
         # underneath the met1.  (Same pattern V2 wl_driver_row uses.)
         _PIN_HALF = 0.07
+        li1_id, li1_dt = GDS_LAYER["li1"]
         for row in range(self.rows):
             y_off = self._row_y_offset(row)
 
-            # MWL_EN[row] over the A pin position (input to buffer)
+            # MWL_EN[row] — the buf_2 A pin is on li1 at cell-local
+            # (0.23, 1.19).  Draw an li1 stub from x=0 (row's left edge,
+            # which becomes the macro's left edge when this row builder
+            # is placed at the LEFT of the macro) to the A pin.  Place
+            # the .pin shape at the boundary so Magic promotes
+            # MWL_EN[row] as a top-level macro port.
             a_cy = y_off + _A_LOCAL_Y
+            top.add(gdstk.rectangle(
+                (0.0, a_cy - _PIN_HALF),
+                (_A_LOCAL_X + _PIN_HALF, a_cy + _PIN_HALF),
+                layer=li1_id, datatype=li1_dt,
+            ))
             draw_pin_with_label(
                 top, text=f"MWL_EN[{row}]", layer="li1",
-                rect=(_A_LOCAL_X - _PIN_HALF, a_cy - _PIN_HALF,
-                      _A_LOCAL_X + _PIN_HALF, a_cy + _PIN_HALF),
+                rect=(0.0, a_cy - _PIN_HALF,
+                      0.07, a_cy + _PIN_HALF),
             )
 
-            # MWL[row] over the X pin position (output of buffer)
+            # MWL[row] — buf_2 X pin on li1 at (1.145, 1.87).  Extend
+            # an li1 stub EAST out to the row builder's right edge so
+            # the parent macro can connect MWL[row] to the bitcell
+            # array's MWL[row] poly stripe.
             x_cy = y_off + _X_LOCAL_Y
+            top.add(gdstk.rectangle(
+                (_X_LOCAL_X - _PIN_HALF, x_cy - _PIN_HALF),
+                (_CELL_W, x_cy + _PIN_HALF),
+                layer=li1_id, datatype=li1_dt,
+            ))
             draw_pin_with_label(
                 top, text=f"MWL[{row}]", layer="li1",
-                rect=(_X_LOCAL_X - _PIN_HALF, x_cy - _PIN_HALF,
-                      _X_LOCAL_X + _PIN_HALF, x_cy + _PIN_HALF),
+                rect=(_CELL_W - 0.07, x_cy - _PIN_HALF,
+                      _CELL_W, x_cy + _PIN_HALF),
             )
 
         # ---- PDN: bridge per-row VPWR/VGND rails ----

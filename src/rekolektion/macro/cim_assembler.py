@@ -213,64 +213,15 @@ def assemble_cim(p: CIMMacroParams) -> tuple[gdstk.Library, CIMMacroParams]:
         x, y = fp.positions[block_name]
         top.add(gdstk.Reference(local, origin=(x, y)))
 
-    # Top-level port labels (.pin shapes) on macro boundary.  Each block
-    # already exposes its per-cell ports via .pin shapes; here we mirror
-    # them up to the macro top so external SoC routing can reach them.
     macro_w, macro_h = fp.macro_size
-    _PIN_HALF = 0.10
 
-    # MWL_EN[row] external pins on the LEFT edge — one per row.
-    mwl_x, mwl_y = fp.positions["mwl_driver"]
-    for row in range(p.rows):
-        cy = mwl_y + row * p.cell_pitch_y + p.cell_pitch_y / 2.0
-        # x=0 is the macro's west edge; pin pad protrudes inward.
-        draw_pin_with_label(
-            top, text=f"MWL_EN[{row}]", layer="met1",
-            rect=(0.0, cy - _PIN_HALF, 2 * _PIN_HALF, cy + _PIN_HALF),
-        )
-
-    # MBL_OUT[col] external pins on the BOTTOM edge — one per col.
-    sense_x, sense_y = fp.positions["mbl_sense"]
-    for col in range(p.cols):
-        cx = sense_x + col * p.cell_pitch_x + p.cell_pitch_x / 2.0
-        draw_pin_with_label(
-            top, text=f"MBL_OUT[{col}]", layer="met1",
-            rect=(cx - _PIN_HALF, 0.0, cx + _PIN_HALF, 2 * _PIN_HALF),
-        )
-
-    # MBL_PRE / VREF on the TOP edge.
-    pre_x, pre_y = fp.positions["mbl_precharge"]
-    pre_h = fp.sizes["mbl_precharge"][1]
-    pre_top_y = pre_y + pre_h
-    draw_pin_with_label(
-        top, text="MBL_PRE", layer="met1",
-        rect=(pre_x + 0.30, pre_top_y - 2 * _PIN_HALF,
-              pre_x + 0.30 + 2 * _PIN_HALF, pre_top_y),
-    )
-    draw_pin_with_label(
-        top, text="VREF", layer="met1",
-        rect=(pre_x + pre_row.width - 0.30 - 2 * _PIN_HALF,
-              pre_top_y - 2 * _PIN_HALF,
-              pre_x + pre_row.width - 0.30, pre_top_y),
-    )
-
-    # VBIAS on the BOTTOM edge near the sense row.
-    draw_pin_with_label(
-        top, text="VBIAS", layer="met1",
-        rect=(sense_x + sense_row.width - 0.30 - 2 * _PIN_HALF, 0.0,
-              sense_x + sense_row.width - 0.30, 2 * _PIN_HALF),
-    )
-
-    # VPWR / VGND on top/bottom edges (corners) for chip-PDN access.
-    draw_pin_with_label(
-        top, text="VPWR", layer="met1",
-        rect=(macro_w - 2 * _PIN_HALF, macro_h - 2 * _PIN_HALF,
-              macro_w, macro_h),
-    )
-    draw_pin_with_label(
-        top, text="VGND", layer="met1",
-        rect=(0.0, 0.0, 2 * _PIN_HALF, 2 * _PIN_HALF),
-    )
+    # NOTE: The MWL driver row already exposes MWL_EN[row] li1 .pin
+    # shapes at its WEST edge (x=0), which is the macro's west edge —
+    # no separate macro-level pin needed.  Same for MWL[row] at the
+    # row's east edge (where the bitcell array abuts).
+    #
+    # MBL_OUT[col], MBL_PRE, VREF, VBIAS, VPWR/VGND, and MBL[col]
+    # column straps still need explicit macro-level routing.  TODO.
 
     p.macro_width = macro_w
     p.macro_height = macro_h

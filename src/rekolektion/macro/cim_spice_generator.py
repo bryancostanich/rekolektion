@@ -140,9 +140,10 @@ def generate_cim_reference_spice(
         # ---- MBL precharges (one per column) ----
         f.write(f"* {p.cols} MBL precharges\n")
         for c in range(p.cols):
-            # cim_mbl_precharge port order: MBL_PRE VREF MBL
+            # cim_mbl_precharge port order: MBL_PRE VREF MBL VPWR
+            # (VPWR ties the n-well via the cell's internal N-tap)
             f.write(
-                f"Xpre_{c} MBL_PRE VREF MBL_{c} cim_mbl_precharge\n"
+                f"Xpre_{c} MBL_PRE VREF MBL_{c} VPWR cim_mbl_precharge\n"
             )
         f.write("\n")
 

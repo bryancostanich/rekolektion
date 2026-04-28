@@ -142,12 +142,13 @@ def create_cim_bitcell(
           g["nmos_diff_x1"] + RULES.NSDM_ENCLOSURE_OF_DIFF,
           t7_diff_top + RULES.NSDM_ENCLOSURE_OF_DIFF)
 
-    # MWL poly gate — extend full cell width for array connectivity
-    # At T7's Y position, only the T7 NMOS diff exists (PMOS diff is
-    # at the 6T level below), so MWL creates only one transistor.
+    # MWL poly gate — extend FULL cell width (x=0 to x=cw) for array
+    # connectivity.  Adjacent rows in the array see the same MWL poly
+    # via boundary abutment, AND Magic's hierarchical extraction
+    # promotes the net as a port because it touches the sub-cell
+    # boundary on both east and west edges.
     _rect(cell, LAYERS.POLY.as_tuple,
-          g["nmos_diff_x0"] - poly_ext, mwl_y0,
-          g["pmos_diff_x1"] + poly_ext, mwl_y1)
+          0.0, mwl_y0, cw, mwl_y1)
 
     # T7 source licon + li1
     _contact(cell, nmos_cx, t7_src_cy, LAYERS.LICON1.as_tuple, licon_sz)
@@ -305,13 +306,35 @@ def create_cim_bitcell(
     # =================================================================
     # LABELS
     # =================================================================
-    _label(cell, "MWL", LAYERS.POLY.as_tuple,
-           g["nmos_diff_x0"] - poly_ext, mwl_cy)
+    # MWL label on POLY_LABEL purpose (texttype 5) so Magic recognizes
+    # it as a net name.  Position it at the cell's horizontal centre
+    # (well inside the poly stripe, away from the T7 channel region)
+    # so the label and .pin shape are co-located on the same poly net.
+    _label(cell, "MWL", LAYERS.POLY_LABEL.as_tuple,
+           _snap(cw / 2.0), mwl_cy)
     # MBL label on MET4 — connects to cap top plate (CAPM) via the
     # VIA3 cut drawn over the CAPM region above.  MET4 is a normal
     # routing layer, so MBL[c] can be shared across all bitcells in
     # column c via a vertical MET4 strap drawn at the macro level.
     _label(cell, "MBL", LAYER_MET4, cell_cx, cell_cy)
+
+    # .pin shapes on MWL (poly) and MBL (met4) so the bitcell subckt
+    # exposes them as definite ports.  Without these, Magic's
+    # hierarchical extraction auto-merges abutting MWL polys (across
+    # rows) and CAPM/MET4 (across columns) into parent-level nets,
+    # dropping the ports from the sub-cell and forcing netgen to
+    # flatten the bitcell at macro LVS.
+    _PIN_HALF = 0.07
+    _MWL_PIN_LAYER = (LAYERS.POLY.gds_layer, 16)
+    _MBL_PIN_LAYER = (LAYER_MET4[0], 16)
+    # Place the MWL .pin co-located with the MWL label at cell centre.
+    mwl_pin_cx = _snap(cw / 2.0)
+    _rect(cell, _MWL_PIN_LAYER,
+          mwl_pin_cx - _PIN_HALF, mwl_cy - _PIN_HALF,
+          mwl_pin_cx + _PIN_HALF, mwl_cy + _PIN_HALF)
+    _rect(cell, _MBL_PIN_LAYER,
+          cell_cx - _PIN_HALF, cell_cy - _PIN_HALF,
+          cell_cx + _PIN_HALF, cell_cy + _PIN_HALF)
 
     return cell
 

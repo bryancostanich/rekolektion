@@ -10,6 +10,8 @@ type ServiceBackend = {
     OpenGds : string -> Async<Result<Model.LoadedMacro, string>>
     RunMacro: Msg.RunMacroParams -> (string -> unit) -> Async<Result<string, int>>
     // ^ second arg = log-line callback for streaming stderr.
+    DeriveNets: Rekolektion.Viz.Core.Gds.Types.Library
+                  -> Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>>
 }
 
 let private appendLog (line: string) (model: Model.Model) : Model.Model =
@@ -31,7 +33,25 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let recents =
             macro.Path :: (model.RecentFiles |> List.filter (fun p -> p <> macro.Path))
             |> List.truncate 10
-        { model with Macro = Some macro; RecentFiles = recents; Selection = None }, Cmd.none
+        // If nets came from a sidecar, we're done. Otherwise schedule
+        // a background LabelFlood — it can take 10+ s for production
+        // macros, so we render the layers immediately and fill in
+        // nets when ready. NetsLoaded carries the path so a stale
+        // result for a previously-open file is dropped.
+        let cmd =
+            if macro.NetsFromSidecar then Cmd.none
+            else
+                Cmd.OfAsync.either
+                    backend.DeriveNets macro.Library
+                    (fun nets -> Msg.NetsLoaded (macro.Path, nets))
+                    (fun ex -> Msg.LogLine (sprintf "net derivation failed: %s" ex.Message))
+        { model with Macro = Some macro; RecentFiles = recents; Selection = None }, cmd
+    | Msg.NetsLoaded (path, nets) ->
+        // Drop the result if the user has loaded a different file
+        // since we kicked off the derivation.
+        match model.Macro with
+        | Some m when m.Path = path -> { model with Macro = Some { m with Nets = nets } }, Cmd.none
+        | _ -> model, Cmd.none
     | Msg.LoadFailed (path, reason) ->
         appendLog (sprintf "load failed: %s — %s" path reason) model, Cmd.none
     | Msg.ToggleLayer (key, vis) ->

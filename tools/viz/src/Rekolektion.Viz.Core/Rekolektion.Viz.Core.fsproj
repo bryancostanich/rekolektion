@@ -11,6 +11,7 @@
     <Compile Include="Layout/Layer.fs" />
     <Compile Include="Layout/Hierarchy.fs" />
     <Compile Include="Layout/Picking.fs" />
+    <Compile Include="Layout/Flatten.fs" />
     <Compile Include="Sidecar/Types.fs" />
     <Compile Include="Sidecar/Loader.fs" />
     <Compile Include="Net/LabelFlood.fs" />

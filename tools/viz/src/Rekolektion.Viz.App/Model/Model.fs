@@ -9,15 +9,16 @@ type Tab = View2D | View3D
 type LoadedMacro = {
     Path     : string
     Library  : Library
+    // Flattened polygons after walking SRef/ARef hierarchy. The
+    // renderers (LayerPainter, Extruder) iterate this rather than
+    // raw `Library.Structures` so hierarchical macros render their
+    // full content (e.g. an SRAM macro's bitcell array) instead of
+    // showing only the top cell's polygons. Computed once at load
+    // time in GdsLoading.load.
+    FlatPolygons : Layout.Flatten.FlatPolygon array
     Nets     : Map<string, NetEntry>
     Blocks   : Layout.Hierarchy.Block list
     NetsFromSidecar : bool       // false → derived from labels
-    // Some msg when a sidecar file existed alongside the GDS but
-    // failed to parse (malformed JSON, wrong version, missing
-    // fields). LabelFlood is used as the fallback in that case so
-    // nets still resolve, but the UI should surface the message —
-    // a corrupted sidecar is a bug in the Python emitter that we
-    // do NOT want to silently absorb.
     SidecarError : string option
 }
 

@@ -159,11 +159,20 @@ type RunDialog() as this =
 
     /// Show as a modal dialog over `owner`, pre-fill with `initial`,
     /// and return when the user clicks Run / Cancel / closes the
-    /// window.
+    /// window. Marshals control mutation + ShowDialog onto the UI
+    /// thread; without that, Async.StartAsTask schedules the body
+    /// on the thread pool and Avalonia throws "Call from invalid
+    /// thread" the moment we touch a control property.
     member this.ShowAsync (owner: Window) (initial: Msg.RunMacroParams) : Async<Msg.RunMacroParams option> =
         async {
-            this.Apply initial
-            let! _ = this.ShowDialog<obj>(owner) |> Async.AwaitTask
+            let! showTask =
+                Avalonia.Threading.Dispatcher.UIThread.InvokeAsync<Task<obj>>(
+                    System.Func<Task<obj>>(fun () ->
+                        this.Apply initial
+                        this.ShowDialog<obj>(owner)))
+                    .GetTask()
+                |> Async.AwaitTask
+            let! _ = showTask |> Async.AwaitTask
             return! tcs.Task |> Async.AwaitTask
         }
 

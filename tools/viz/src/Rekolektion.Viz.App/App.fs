@@ -79,6 +79,7 @@ type MainWindow() as this =
 
         let backend : ServiceBackend = {
             OpenGds = GdsLoading.load
+            DeriveNets = GdsLoading.deriveNets
             RunMacro = fun p onLog -> async {
                 let args = RekolektionCli.buildMacroArgs p
                 let! exit = RekolektionCli.runProcess "rekolektion" args onLog

@@ -10,6 +10,14 @@ open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Render.Mesh
 
+/// Pointer drag modes. Left = orbit (yaw/pitch). Right or middle =
+/// pan (translate target in the screen-aligned plane). NoDrag means
+/// no button is held.
+type private DragMode =
+    | NoDrag
+    | OrbitDrag
+    | PanDrag
+
 /// Z exaggeration multiplier applied to vertex Z on upload.
 /// 1.0 = physical SKY130 stack heights (matches the legacy GLB
 /// tool). For a typical bitcell with xy ≈ 2.4×3.7 µm and Z stack
@@ -32,6 +40,18 @@ type StackCanvasControl() =
     let mutable vao : uint32 = 0u
     let mutable program : uint32 = 0u
     let mutable indexCount : int = 0
+    // Mesh upload caching. Re-extruding 400k polygons (production
+    // SRAM macro) every frame would saturate the CPU and drop the
+    // canvas to <1 fps. We extrude + upload only when the input
+    // (FlatPolygons) or per-vertex visibility (Toggle) actually
+    // changes; rotate / zoom / pan re-use the existing GPU buffers.
+    let mutable meshDirty : bool = true
+    // The cached extruded mesh (positions + per-vertex layer key).
+    // Kept across frames so toggle changes can rebuild only the
+    // visibility flag without re-running the triangulator.
+    let mutable cachedMesh : Extruder.ExtrudedMesh option = None
+    let mutable lastUploadedToggle : Visibility.ToggleState = Visibility.empty
+    let mutable hasUploadedAny : bool = false
     // Avalonia.OpenGlControlBase 11.3.14 doesn't include a depth
     // attachment on the FBO it provides. Without depth, the cube
     // collapses into a 2D draw-order collage. We allocate our own
@@ -50,14 +70,20 @@ type StackCanvasControl() =
     // assigned; defaults work if Library is never set.
     let mutable target : System.Numerics.Vector3 = System.Numerics.Vector3.Zero
     let mutable extent : float = 80.0
-    // Drag state for pointer-driven orbit. `Avalonia.Point` is
+    // Drag state for pointer-driven orbit + pan. `Avalonia.Point` is
     // qualified because Rekolektion.Viz.Core.Gds.Types.Point is
-    // also in scope and would otherwise shadow it.
-    let mutable dragging : bool = false
+    // also in scope and would otherwise shadow it. `dragMode` is
+    // None when no mouse button is held, OrbitDrag for left button
+    // (rotates yaw/pitch), PanDrag for right or middle button
+    // (translates target in the screen-aligned plane).
+    let mutable dragMode : DragMode = NoDrag
     let mutable lastPos : Avalonia.Point = Avalonia.Point()
 
     static member val LibraryProperty : StyledProperty<Library option> =
         AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
+        with get
+    static member val FlatPolygonsProperty : StyledProperty<Layout.Flatten.FlatPolygon array> =
+        AvaloniaProperty.Register<StackCanvasControl, Layout.Flatten.FlatPolygon array>("FlatPolygons", [||])
         with get
     static member val ToggleProperty : StyledProperty<Visibility.ToggleState> =
         AvaloniaProperty.Register<StackCanvasControl, Visibility.ToggleState>("Toggle", Visibility.empty)
@@ -66,6 +92,10 @@ type StackCanvasControl() =
     member this.Library
         with get() : Library option = this.GetValue(StackCanvasControl.LibraryProperty)
         and set(v: Library option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
+
+    member this.FlatPolygons
+        with get() : Layout.Flatten.FlatPolygon array = this.GetValue(StackCanvasControl.FlatPolygonsProperty)
+        and set(v: Layout.Flatten.FlatPolygon array) = this.SetValue(StackCanvasControl.FlatPolygonsProperty, v) |> ignore
 
     member this.Toggle
         with get() : Visibility.ToggleState = this.GetValue(StackCanvasControl.ToggleProperty)
@@ -82,34 +112,30 @@ type StackCanvasControl() =
     /// `lib`. Called when Library is assigned. Without this, a small
     /// bitcell renders as a single pixel inside the default 80-µm
     /// frustum.
-    member private this.FitCameraTo (lib: Library) =
+    member private this.FitCameraTo (lib: Library) (flat: Layout.Flatten.FlatPolygon array) =
         let mutable xMin, xMax = System.Single.MaxValue, System.Single.MinValue
         let mutable yMin, yMax = System.Single.MaxValue, System.Single.MinValue
-        // Z range from the layer table for layers actually present
-        // in the macro — gives true vertical extent so target.Z
-        // lands at stack mid and the frustum encloses the stack at
-        // any rotation.
         let mutable zMinPhysical = System.Double.MaxValue
         let mutable zMaxPhysical = System.Double.MinValue
-        for s in lib.Structures do
-            for el in s.Elements do
-                match el with
-                | Boundary b ->
-                    for p in b.Points do
-                        let x = float32 ((float p.X) * lib.UserUnitsPerDbUnit)
-                        let y = float32 ((float p.Y) * lib.UserUnitsPerDbUnit)
-                        if x < xMin then xMin <- x
-                        if x > xMax then xMax <- x
-                        if y < yMin then yMin <- y
-                        if y > yMax then yMax <- y
-                    match Layout.Layer.bySky130Number b.Layer b.DataType with
-                    | Some (layer: Layout.Layer.Layer) ->
-                        let zBot = layer.StackZ
-                        let zTop = layer.StackZ + layer.Thickness
-                        if zBot < zMinPhysical then zMinPhysical <- zBot
-                        if zTop > zMaxPhysical then zMaxPhysical <- zTop
-                    | None -> ()
-                | _ -> ()
+        // Use FlatPolygons (post-hierarchy) so the bbox correctly
+        // includes SRef/ARef-instanced content (e.g. an SRAM macro's
+        // bitcell array). With raw lib.Structures the bbox would
+        // only cover the top cell's polygons.
+        for poly in flat do
+            for p in poly.Points do
+                let x = float32 ((float p.X) * lib.UserUnitsPerDbUnit)
+                let y = float32 ((float p.Y) * lib.UserUnitsPerDbUnit)
+                if x < xMin then xMin <- x
+                if x > xMax then xMax <- x
+                if y < yMin then yMin <- y
+                if y > yMax then yMax <- y
+            match Layout.Layer.bySky130Number poly.Layer poly.DataType with
+            | Some (layer: Layout.Layer.Layer) ->
+                let zBot = layer.StackZ
+                let zTop = layer.StackZ + layer.Thickness
+                if zBot < zMinPhysical then zMinPhysical <- zBot
+                if zTop > zMaxPhysical then zMaxPhysical <- zTop
+            | None -> ()
         let zMin = zMinPhysical * Z_EXAGGERATION
         let zMax = zMaxPhysical * Z_EXAGGERATION
         if xMin > xMax then
@@ -144,26 +170,37 @@ type StackCanvasControl() =
 
     override this.OnPropertyChanged e =
         base.OnPropertyChanged e
-        if e.Property = StackCanvasControl.LibraryProperty then
+        if e.Property = StackCanvasControl.LibraryProperty
+           || e.Property = StackCanvasControl.FlatPolygonsProperty then
+            // Either a new GDS or a re-flatten — extruded mesh is
+            // stale, recompute on next render.
+            meshDirty <- true
             match this.Library with
-            | Some lib -> this.FitCameraTo lib
+            | Some lib -> this.FitCameraTo lib this.FlatPolygons
             | None -> ()
             this.RequestNextFrameRendering()
         elif e.Property = StackCanvasControl.ToggleProperty then
             this.RequestNextFrameRendering()
 
-    // ---- Pointer-driven orbit + wheel zoom ----
+    // ---- Pointer-driven orbit / pan + wheel zoom ----
 
     override this.OnPointerPressed e =
         base.OnPointerPressed e
-        dragging <- true
-        lastPos <- e.GetPosition this
-        e.Pointer.Capture this
-        this.Focus () |> ignore
+        let props = e.GetCurrentPoint(this).Properties
+        dragMode <-
+            if props.IsRightButtonPressed || props.IsMiddleButtonPressed then PanDrag
+            elif props.IsLeftButtonPressed then OrbitDrag
+            else NoDrag
+        if dragMode <> NoDrag then
+            lastPos <- e.GetPosition this
+            e.Pointer.Capture this
+            this.Focus () |> ignore
 
     override this.OnPointerMoved e =
         base.OnPointerMoved e
-        if dragging then
+        match dragMode with
+        | NoDrag -> ()
+        | OrbitDrag ->
             let p = e.GetPosition this
             let dx = p.X - lastPos.X
             let dy = p.Y - lastPos.Y
@@ -171,10 +208,42 @@ type StackCanvasControl() =
             pitchDeg <- max -89.0 (min 89.0 (pitchDeg + dy * 0.4))
             lastPos <- p
             this.RequestNextFrameRendering()
+        | PanDrag ->
+            // Translate `target` in the screen-aligned plane so the
+            // geometry under the cursor moves with the pointer. dx
+            // moves along camera-right, dy along camera-up. Scale by
+            // (extent / canvas height) so a one-canvas-height drag
+            // pans by roughly one extent — matches what users
+            // expect from CAD viewers.
+            let p = e.GetPosition this
+            let dxPx = p.X - lastPos.X
+            let dyPx = p.Y - lastPos.Y
+            let scale = extent / max this.Bounds.Height 1.0
+            let yawRad = float32 (yawDeg * System.Math.PI / 180.0)
+            let pitchRad = float32 (pitchDeg * System.Math.PI / 180.0)
+            // zaxis (back) = camOffset.normalized = camera-relative
+            // forward axis pointing AWAY from target.
+            let zaxis = System.Numerics.Vector3(
+                            MathF.Cos(pitchRad) * MathF.Sin(yawRad),
+                            MathF.Cos(pitchRad) * MathF.Cos(yawRad),
+                            MathF.Sin(pitchRad))
+            let up = System.Numerics.Vector3.UnitZ
+            let right = System.Numerics.Vector3.Normalize(System.Numerics.Vector3.Cross(up, zaxis))
+            let camUp = System.Numerics.Vector3.Cross(zaxis, right)
+            // Drag right (positive dxPx) moves geometry right, so
+            // target moves LEFT in world (camera target translates
+            // -right). Drag down (positive dyPx) moves geometry
+            // down, so target moves UP in world (camera target
+            // translates +camUp).
+            let panRight = float32 (-dxPx * scale)
+            let panUp    = float32 (dyPx * scale)
+            target <- target + right * panRight + camUp * panUp
+            lastPos <- p
+            this.RequestNextFrameRendering()
 
     override this.OnPointerReleased e =
         base.OnPointerReleased e
-        dragging <- false
+        dragMode <- NoDrag
         e.Pointer.Capture null
 
     override this.OnPointerWheelChanged e =
@@ -267,35 +336,46 @@ type StackCanvasControl() =
     override this.OnOpenGlRender(_gli, fb) =
         match gl, this.Library with
         | Some g, Some lib ->
-            let mesh = Extruder.extrude lib
-            indexCount <- mesh.Indices.Length
-            // Build interleaved buffer: pos(3) + color(3) + vis(1)
-            // = 7 floats per vertex.
+            let flat = this.FlatPolygons
             let toggle = this.Toggle
-            let stride = 7
-            let arr = Array.zeroCreate<float32> (mesh.Vertices.Length * stride)
-            for i in 0 .. mesh.Vertices.Length - 1 do
-                let v = mesh.Vertices.[i]
-                let layerOpt = Layout.Layer.bySky130Number (fst v.LayerKey) (snd v.LayerKey)
-                let r, gC, b =
-                    match layerOpt with
-                    | Some l -> float32 l.Color.R / 255.0f, float32 l.Color.G / 255.0f, float32 l.Color.B / 255.0f
-                    | None -> 0.5f, 0.5f, 0.5f
-                let vis = if Visibility.isLayerVisible toggle v.LayerKey then 1.0f else 0.0f
-                let off = i * stride
-                arr.[off]     <- v.X
-                arr.[off + 1] <- v.Y
-                arr.[off + 2] <- v.Z * float32 Z_EXAGGERATION
-                arr.[off + 3] <- r
-                arr.[off + 4] <- gC
-                arr.[off + 5] <- b
-                arr.[off + 6] <- vis
-
+            // (Re-)extrude only when geometry source changed.
+            if meshDirty && flat.Length > 0 then
+                cachedMesh <- Some (Extruder.extrude lib.UserUnitsPerDbUnit flat)
+                meshDirty <- false
+            // (Re-)upload buffer only when extrusion changed OR
+            // visibility toggle changed. Rotation / zoom / pan
+            // never trigger a re-upload.
+            let toggleChanged = not (System.Object.ReferenceEquals(toggle, lastUploadedToggle))
+            match cachedMesh with
+            | Some mesh when (not hasUploadedAny || toggleChanged) ->
+                indexCount <- mesh.Indices.Length
+                let stride = 7
+                let arr = Array.zeroCreate<float32> (mesh.Vertices.Length * stride)
+                for i in 0 .. mesh.Vertices.Length - 1 do
+                    let v = mesh.Vertices.[i]
+                    let layerOpt = Layout.Layer.bySky130Number (fst v.LayerKey) (snd v.LayerKey)
+                    let r, gC, b =
+                        match layerOpt with
+                        | Some l -> float32 l.Color.R / 255.0f, float32 l.Color.G / 255.0f, float32 l.Color.B / 255.0f
+                        | None -> 0.5f, 0.5f, 0.5f
+                    let vis = if Visibility.isLayerVisible toggle v.LayerKey then 1.0f else 0.0f
+                    let off = i * stride
+                    arr.[off]     <- v.X
+                    arr.[off + 1] <- v.Y
+                    arr.[off + 2] <- v.Z * float32 Z_EXAGGERATION
+                    arr.[off + 3] <- r
+                    arr.[off + 4] <- gC
+                    arr.[off + 5] <- b
+                    arr.[off + 6] <- vis
+                g.BindVertexArray(vao)
+                g.BindBuffer(GLEnum.ArrayBuffer, vbo)
+                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
+                g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
+                g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.DynamicDraw)
+                hasUploadedAny <- true
+                lastUploadedToggle <- toggle
+            | _ -> ()
             g.BindVertexArray(vao)
-            g.BindBuffer(GLEnum.ArrayBuffer, vbo)
-            g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
-            g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
-            g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.DynamicDraw)
 
             // Avalonia's OpenGlControlBase doesn't pre-set the
             // viewport; set it ourselves to the FBO's physical pixel
@@ -333,7 +413,7 @@ type StackCanvasControl() =
             g.Enable(GLEnum.DepthTest)
 
             g.UseProgram(program)
-            let strideBytes = uint32 (stride * sizeof<float32>)
+            let strideBytes = uint32 (7 * sizeof<float32>)
             g.EnableVertexAttribArray(0u)
             g.VertexAttribPointer(0u, 3, GLEnum.Float, false, strideBytes, nativeint 0)
             g.EnableVertexAttribArray(1u)

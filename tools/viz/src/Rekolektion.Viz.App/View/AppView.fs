@@ -18,6 +18,10 @@ let private gds2DLibraryAttr (v: Library option) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Library option>(
         GdsCanvasControl.LibraryProperty, v, ValueNone)
 
+let private gds2DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Layout.Flatten.FlatPolygon array>(
+        GdsCanvasControl.FlatPolygonsProperty, v, ValueNone)
+
 let private gds2DToggleAttr (v: Visibility.ToggleState) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Visibility.ToggleState>(
         GdsCanvasControl.ToggleProperty, v, ValueNone)
@@ -26,21 +30,31 @@ let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
 
+let private stack3DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Layout.Flatten.FlatPolygon array>(
+        StackCanvasControl.FlatPolygonsProperty, v, ValueNone)
+
 let private stack3DToggleAttr (v: Visibility.ToggleState) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Visibility.ToggleState>(
         StackCanvasControl.ToggleProperty, v, ValueNone)
 
 let private canvas (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
     let lib = model.Macro |> Option.map (fun m -> m.Library)
+    let flat =
+        model.Macro
+        |> Option.map (fun m -> m.FlatPolygons)
+        |> Option.defaultValue [||]
 
     let canvas2D : IView =
         ViewBuilder.Create<GdsCanvasControl>
             [ gds2DLibraryAttr lib
+              gds2DFlatAttr    flat
               gds2DToggleAttr   model.Toggle ]
 
     let canvas3D : IView =
         ViewBuilder.Create<StackCanvasControl>
             [ stack3DLibraryAttr lib
+              stack3DFlatAttr    flat
               stack3DToggleAttr   model.Toggle ]
 
     let activeIndex =

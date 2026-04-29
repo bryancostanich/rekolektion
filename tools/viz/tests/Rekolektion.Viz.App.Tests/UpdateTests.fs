@@ -8,6 +8,7 @@ open Rekolektion.Viz.Core
 let private stubBackend : Update.ServiceBackend = {
     OpenGds = fun _ -> async { return Error "stub" }
     RunMacro = fun _ _ -> async { return Error 1 }
+    DeriveNets = fun _ -> async { return Map.empty }
 }
 
 [<Fact>]

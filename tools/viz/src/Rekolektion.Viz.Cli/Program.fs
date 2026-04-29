@@ -8,6 +8,7 @@
 module Rekolektion.Viz.Cli.Program
 
 open Rekolektion.Viz.Core.Gds
+open Avalonia.VisualTree
 
 let private printUsage () =
     printfn "rekolektion-viz <command> [options]"
@@ -153,6 +154,159 @@ let cmdVizRender (args: string list) : int =
             parsed.HoldMs
             preRenderMsgs
 
+/// Headless test probe: boots the App, finds the "Run macro..."
+/// button by walking the visual tree, simulates a click on it, and
+/// reports what happens. Used to drive UI flows from CI / agents
+/// without a real GUI session. Output goes to stderr so it can be
+/// piped to a log.
+let cmdRunMacroProbe (_args: string list) : int =
+    System.Environment.SetEnvironmentVariable("REKOLEKTION_VIZ_HEADLESS", "1")
+    use session = Avalonia.Headless.HeadlessUnitTestSession.StartNew(
+                        typeof<Rekolektion.Viz.App.HeadlessApp>)
+    let task =
+        session.Dispatch((fun () ->
+            let window = Rekolektion.Viz.App.MainWindow()
+            window.Width <- 1400.0
+            window.Height <- 900.0
+            window.Show()
+            // Pump frames so layout completes
+            let pump (ms: int64) =
+                let sw = System.Diagnostics.Stopwatch.StartNew()
+                while sw.ElapsedMilliseconds < ms do
+                    Avalonia.Threading.Dispatcher.UIThread.RunJobs()
+                    System.Threading.Thread.Sleep 16
+            pump 500L
+            // Walk the visual tree to find the Run macro button.
+            let rec findRunButton (v: Avalonia.Visual) : Avalonia.Controls.Button option =
+                match v with
+                | :? Avalonia.Controls.Button as b when (b.Content :? string) ->
+                    if (b.Content :?> string) = "Run macro..." then Some b
+                    else v.GetVisualChildren() |> Seq.tryPick findRunButton
+                | _ ->
+                    v.GetVisualChildren() |> Seq.tryPick findRunButton
+            match findRunButton (window :> Avalonia.Visual) with
+            | None ->
+                eprintfn "[probe] Run macro button NOT FOUND in visual tree"
+            | Some btn ->
+                eprintfn "[probe] found button, IsEnabled=%b IsVisible=%b bounds=%A"
+                    btn.IsEnabled btn.IsVisible btn.Bounds
+                let tl =
+                    Avalonia.VisualExtensions.TranslatePoint(
+                        btn :> Avalonia.Visual,
+                        Avalonia.Point(0.0, 0.0),
+                        window :> Avalonia.Visual)
+                if tl.HasValue then
+                    let p = tl.Value
+                    let center = Avalonia.Point(
+                                    p.X + btn.Bounds.Width / 2.0,
+                                    p.Y + btn.Bounds.Height / 2.0)
+                    eprintfn "[probe] clicking at window-coord %A" center
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseDown(
+                        window, center,
+                        Avalonia.Input.MouseButton.Left,
+                        Avalonia.Input.RawInputModifiers.None)
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseUp(
+                        window, center,
+                        Avalonia.Input.MouseButton.Left,
+                        Avalonia.Input.RawInputModifiers.None)
+                else
+                    eprintfn "[probe] could not translate button to window coords"
+            // Pump for a second so click handler + dialog have a chance
+            pump 2000L
+            eprintfn "[probe] done"
+        ), System.Threading.CancellationToken.None)
+    task.GetAwaiter().GetResult()
+    0
+
+/// Probe: load a GDS into the App headlessly, simulate left-drag
+/// (orbit), right-drag (pan), wheel (zoom), and verify the
+/// interactive 3D camera handlers run without throwing. Reports
+/// any exceptions to stderr.
+let cmdInteractProbe (args: string list) : int =
+    let gdsPath =
+        args
+        |> List.tryFindIndex (fun s -> s = "--gds")
+        |> Option.bind (fun i -> args |> List.tryItem (i + 1))
+        |> Option.defaultValue "tools/viz/testdata/bitcell_lr.gds"
+    System.Environment.SetEnvironmentVariable("REKOLEKTION_VIZ_HEADLESS", "1")
+    use session = Avalonia.Headless.HeadlessUnitTestSession.StartNew(
+                        typeof<Rekolektion.Viz.App.HeadlessApp>)
+    let task =
+        session.Dispatch((fun () ->
+            let window = Rekolektion.Viz.App.MainWindow()
+            window.Width <- 1400.0
+            window.Height <- 900.0
+            window.Show()
+            let pump (ms: int64) =
+                let sw = System.Diagnostics.Stopwatch.StartNew()
+                while sw.ElapsedMilliseconds < ms do
+                    Avalonia.Threading.Dispatcher.UIThread.RunJobs()
+                    System.Threading.Thread.Sleep 16
+            pump 200L
+            // Load the GDS via Msg dispatch.
+            Rekolektion.Viz.App.AppDispatch.send (
+                Rekolektion.Viz.App.Model.Msg.OpenFile gdsPath)
+            pump 500L
+            // Switch to 3D so the StackCanvasControl is the active
+            // surface. SetTab is dispatched; we then need a tick
+            // for the TabControl to swap content.
+            Rekolektion.Viz.App.AppDispatch.send (
+                Rekolektion.Viz.App.Model.Msg.SetTab Rekolektion.Viz.App.Model.Model.View3D)
+            pump 200L
+            // Find the 3D canvas and exercise pointer events on it.
+            let rec findCanvas (v: Avalonia.Visual)
+                    : Rekolektion.Viz.App.Canvas3D.StackCanvasControl.StackCanvasControl option =
+                match v with
+                | :? Rekolektion.Viz.App.Canvas3D.StackCanvasControl.StackCanvasControl as c ->
+                    Some c
+                | _ ->
+                    v.GetVisualChildren() |> Seq.tryPick findCanvas
+            match findCanvas (window :> Avalonia.Visual) with
+            | None -> eprintfn "[probe] StackCanvasControl not found"
+            | Some canvas ->
+                let ctlBounds = canvas.Bounds
+                let tl =
+                    Avalonia.VisualExtensions.TranslatePoint(
+                        canvas :> Avalonia.Visual,
+                        Avalonia.Point(0.0, 0.0),
+                        window :> Avalonia.Visual)
+                if not tl.HasValue then
+                    eprintfn "[probe] could not translate canvas to window coords"
+                else
+                    let p = tl.Value
+                    let centerX = p.X + ctlBounds.Width / 2.0
+                    let centerY = p.Y + ctlBounds.Height / 2.0
+                    let center = Avalonia.Point(centerX, centerY)
+                    let offset (dx, dy) = Avalonia.Point(centerX + dx, centerY + dy)
+                    eprintfn "[probe] canvas at %A center %A" ctlBounds center
+                    // Left-drag: orbit
+                    eprintfn "[probe] left-drag orbit"
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseDown(
+                        window, center, Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseMove(
+                        window, offset(50.0, 30.0), Avalonia.Input.RawInputModifiers.None)
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseUp(
+                        window, offset(50.0, 30.0), Avalonia.Input.MouseButton.Left, Avalonia.Input.RawInputModifiers.None)
+                    pump 100L
+                    // Right-drag: pan
+                    eprintfn "[probe] right-drag pan"
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseDown(
+                        window, center, Avalonia.Input.MouseButton.Right, Avalonia.Input.RawInputModifiers.None)
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseMove(
+                        window, offset(40.0, -20.0), Avalonia.Input.RawInputModifiers.None)
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseUp(
+                        window, offset(40.0, -20.0), Avalonia.Input.MouseButton.Right, Avalonia.Input.RawInputModifiers.None)
+                    pump 100L
+                    // Wheel: zoom
+                    eprintfn "[probe] wheel zoom"
+                    Avalonia.Headless.HeadlessWindowExtensions.MouseWheel(
+                        window, center, Avalonia.Vector(0.0, 1.0), Avalonia.Input.RawInputModifiers.None)
+                    pump 100L
+            eprintfn "[probe] done"
+        ), System.Threading.CancellationToken.None)
+    task.GetAwaiter().GetResult()
+    0
+
 [<EntryPoint>]
 let main argv =
     match argv |> Array.toList with
@@ -161,5 +315,7 @@ let main argv =
     | "mesh" :: rest        -> cmdMesh rest
     | "app" :: rest         -> cmdApp rest
     | "viz-render" :: rest  -> cmdVizRender rest
+    | "runmacro-probe" :: rest -> cmdRunMacroProbe rest
+    | "interact-probe" :: rest -> cmdInteractProbe rest
     | "--help" :: _ | "-h" :: _ | [] -> printUsage(); 0
     | cmd :: _ -> printfn "Unknown command: %s" cmd; printUsage(); 1

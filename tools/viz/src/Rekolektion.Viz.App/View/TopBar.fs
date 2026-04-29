@@ -72,12 +72,19 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
 
     let runClick (e: Avalonia.Interactivity.RoutedEventArgs) =
         let src = e.Source
+        // Async.StartAsTask used inside openRunDialog schedules onto
+        // the thread pool, so any exception there would be silently
+        // dropped by `ignore`. Log to stderr explicitly so the
+        // failure mode is visible if the dialog can't open.
         ignore (
             task {
-                let! result = openRunDialog src RunDialog.defaultParams
-                match result with
-                | Some p -> dispatch (Msg.RunMacroRequested p)
-                | None -> ()
+                try
+                    let! result = openRunDialog src RunDialog.defaultParams
+                    match result with
+                    | Some p -> dispatch (Msg.RunMacroRequested p)
+                    | None -> ()
+                with ex ->
+                    eprintfn "[viz] Run macro dialog failed: %s\n%s" ex.Message ex.StackTrace
             })
 
     DockPanel.create [

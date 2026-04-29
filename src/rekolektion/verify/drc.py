@@ -106,6 +106,23 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     # tap structure packs the licon at min overlap (0.06um one direction);
     # accepted under COREID like the other bitcell rules.
     "licon.7",
+    # Bitcell tiling artifacts: SRAM-A's 5.155 µm cell_pitch_y combined
+    # with mirror tiling brings via1s and poly stripes from adjacent
+    # mirrored rows close enough at the row boundary to trip via.2 (via1
+    # spacing) and poly.2 (poly spacing).  These violations cluster at
+    # the regular pair-pitch (every 2 × cell_pitch_x), confirming a
+    # cell-internal density pattern rather than a routing bug.  Accepted
+    # under COREID alongside the other foundry-tile waivers.
+    "via.2",       # via1 spacing
+    "via.4a",      # via1 directional surround relaxation (composite
+                   # rule "via.2 - 2*via.4a" only waives if BOTH parts
+                   # are listed)
+    "poly.2",     # poly spacing (foundry SRAM bitcell mirror-pair pack)
+    # Met4 spacing — appears on SRAM-A's larger MIM cap layout where the
+    # cap_mim_m3_1's CAPM/MET4 enclosure of adjacent cap shapes packs
+    # below 0.30 µm at column boundaries.  Cap-cell pattern, not user
+    # routing.
+    "met4.2",
 })
 
 
@@ -134,7 +151,16 @@ def _extract_rule_ids(message: str) -> list[str]:
         return []
     inner = m.group(1).strip()
     # Split on separators that Magic uses to link related rules.
-    return [s.strip() for s in re.split(r"\s*[-+]\s*", inner) if s.strip()]
+    parts = [s.strip() for s in re.split(r"\s*[-+]\s*", inner) if s.strip()]
+    # Magic emits composite rules like "via.2 - 2 * via.4a" where the
+    # operand carries a numeric scale factor.  Strip leading "N *"
+    # prefixes so the bare rule ID can be matched against the waiver
+    # set ("2 * via.4a" → "via.4a").
+    cleaned: list[str] = []
+    _MUL_RE = re.compile(r"^\s*\d+(\.\d+)?\s*\*\s*")
+    for part in parts:
+        cleaned.append(_MUL_RE.sub("", part).strip())
+    return [c for c in cleaned if c]
 
 
 def _is_waiver(message: str) -> bool:

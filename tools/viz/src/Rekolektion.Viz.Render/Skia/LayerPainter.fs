@@ -40,11 +40,11 @@ let private project (vb: ViewBox) (p: Point) : SKPoint =
 /// Iterates `flat` (post-hierarchy expansion), so a hierarchical
 /// macro renders its full content (e.g. SRAM bitcell array) instead
 /// of just the top cell's polygons.
-let paint (canvas: SKCanvas) (size: int * int) (flat: FlatPolygon array) (toggle: Visibility.ToggleState) : unit =
-    let (w, h) = size
-    let (xmin, ymin, xmax, ymax) = boundsOfFlat flat
-    let vb = { MinX = xmin; MinY = ymin; MaxX = xmax; MaxY = ymax; PixelW = w; PixelH = h }
-
+///
+/// `vb` defines the world-coordinate window that maps to the canvas
+/// pixel rectangle. Callers compute `vb` from current pan + zoom
+/// state and pass it in; for auto-fit, use `paint` (no `_vb` arg).
+let paintIn (canvas: SKCanvas) (vb: ViewBox) (flat: FlatPolygon array) (toggle: Visibility.ToggleState) : unit =
     // Group polys by layer key for layer-ordered draw. Faster to
     // group once than to sort each polygon's draw call.
     let byLayer =
@@ -76,3 +76,14 @@ let paint (canvas: SKCanvas) (size: int * int) (flat: FlatPolygon array) (toggle
                         path.Close()
                         canvas.DrawPath(path, fill)
                         canvas.DrawPath(path, stroke)
+
+/// Auto-fit variant: ViewBox derived from polygon bbox.
+let paint (canvas: SKCanvas) (size: int * int) (flat: FlatPolygon array) (toggle: Visibility.ToggleState) : unit =
+    let (w, h) = size
+    let (xmin, ymin, xmax, ymax) = boundsOfFlat flat
+    let vb = { MinX = xmin; MinY = ymin; MaxX = xmax; MaxY = ymax; PixelW = w; PixelH = h }
+    paintIn canvas vb flat toggle
+
+/// Compute the bbox of the flat polygons in world DBU coordinates.
+let bboxOf (flat: FlatPolygon array) : (int64 * int64 * int64 * int64) =
+    boundsOfFlat flat

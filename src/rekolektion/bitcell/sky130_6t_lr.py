@@ -606,6 +606,14 @@ def create_bitcell(
     # has no shared structure between the two stripes and they extract
     # as separate anonymous gate nets.  Label X uses nmos_cx because the
     # poly only exists over NMOS diff after truncation.
+    # Both WL access poly stripes (wl_bot for PG_L, wl_top for PG_R) are
+    # labelled "WL" so Magic's standalone-cell extraction merges them as
+    # a single bitcell port.  At array (flat) extraction, Magic auto-
+    # suffixes them per-row → WL_<row> for wl_bot and WL_<row+rows> for
+    # wl_top (128 total in a 64-row array).  Chip-top is responsible
+    # for tying each row's wl_bot and wl_top.  Renaming to WL_BOT/WL_TOP
+    # was tried — it caused Magic to merge ALL 4096 instances by name
+    # into a single global WL_BOT net, which is worse for LVS.
     _label(cell, "WL", L.POLY_LABEL.as_tuple, g["nmos_cx"], g["wl_bot_cy"])
     _label(cell, "WL", L.POLY_LABEL.as_tuple, g["nmos_cx"], g["wl_top_cy"])
 

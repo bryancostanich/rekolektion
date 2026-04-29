@@ -298,6 +298,7 @@ def _emit_write_phase(
     #              fall          t_start+1.20         (50 ps fall)
     GROUP_PERIOD_NS = 1.50
     BL_STEP_NS = 0.05
+    BL_STEP_DT_NS = 0.001        # 1 ps PWL "step" width to keep transitions sharp
     WL_RISE_START_NS = 0.10
     WL_RISE_END_NS = 0.15
     WL_FALL_START_NS = 1.15
@@ -320,11 +321,21 @@ def _emit_write_phase(
     for col_pattern, row_list in groups:
         # Step BL/BLB to the column pattern's drive levels.
         # Q=1 → BL=Vpwr, BLB=0;  Q=0 → BL=0, BLB=Vpwr.
+        # Emit a hold-then-step pair only when the value actually changes;
+        # otherwise PWL would linearly ramp across the group boundary.
+        t_step = t_group + BL_STEP_NS
+        t_hold = t_step - BL_STEP_DT_NS
         for c in range(cols):
             bl_target = vpwr if col_pattern[c] == 1 else 0.0
             blb_target = 0.0 if col_pattern[c] == 1 else vpwr
-            bl_pwl[c].append((t_group + BL_STEP_NS, bl_target))
-            blb_pwl[c].append((t_group + BL_STEP_NS, blb_target))
+            prev_bl = bl_pwl[c][-1][1]
+            prev_blb = blb_pwl[c][-1][1]
+            if bl_target != prev_bl:
+                bl_pwl[c].append((t_hold, prev_bl))
+                bl_pwl[c].append((t_step, bl_target))
+            if blb_target != prev_blb:
+                blb_pwl[c].append((t_hold, prev_blb))
+                blb_pwl[c].append((t_step, blb_target))
 
         # Pulse WL for every row in this group, simultaneously.
         for r in row_list:

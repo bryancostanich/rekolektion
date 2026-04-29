@@ -71,27 +71,52 @@ _PORT_LIST: dict[str, list[str]] = {
     # extracts the well as an internal floating net per instance).
     "cim_mbl_precharge":      ["MBL_PRE", "VREF", "MBL", "VPWR"],
     "cim_mbl_sense":          ["VBIAS", "MBL", "VSS", "MBL_OUT", "VDD"],
-    # Bitcell labels its supplies VDD/VSS in the layout; keep those
-    # names so they match the body of the extracted subckt.  The
-    # macro's bitcell instances pass macro-VPWR/VGND into VDD/VSS.
-    "sky130_sram_6t_cim_lr":  ["BL", "BLB", "WL", "MWL", "MBL", "VDD", "VSS"],
+    # Bitcell port list uses VPWR/VGND to match the macro's supply
+    # naming (the body of the extracted subckt is rewritten to use
+    # VPWR/VGND too — see _patch_subckt_ports).
+    "sky130_sram_6t_cim_lr":  ["BL", "BLB", "WL", "MWL", "MBL", "VPWR", "VGND"],
 }
 
 
 def _patch_subckt_ports(text: str, cell_name: str) -> str:
     """Rewrite the `.subckt <name> ...` line to include the canonical
-    port list (Magic loses some poly/li1 ports during extraction)."""
+    port list (Magic loses some poly/li1 ports during extraction).
+
+    Also substitute auto-named well/substrate body-bias nets in the
+    body with the conventional supply names (VDD / VSS).  Without
+    this, every flattened bitcell instance in the macro would have a
+    distinct `w_xx_yy#` well net while the layout's flat extraction
+    sees one shared well per N-well region — netgen flags this as
+    a per-instance net mismatch even though the topology is sound.
+    """
     ports = _PORT_LIST.get(cell_name)
     if not ports:
         return text
     lines = text.splitlines(keepends=True)
-    for i, ln in enumerate(lines):
+    out: list[str] = []
+    for ln in lines:
         stripped = ln.strip()
         if stripped.startswith(".subckt"):
-            # Replace the entire .subckt line.
-            lines[i] = f".subckt {cell_name} {' '.join(ports)}\n"
-            break
-    return "".join(lines)
+            out.append(f".subckt {cell_name} {' '.join(ports)}\n")
+            continue
+        if cell_name == "sky130_sram_6t_cim_lr":
+            # Magic auto-names the bitcell's n-well as `w_xx_yy#` and
+            # the p-substrate as VSUBS.  Tie both to the supply rails
+            # globally — this matches the macro-level physical
+            # connectivity (the wells abut and merge into one net per
+            # supply when the array is flattened).  Use VPWR/VGND
+            # names so the bitcell's body terminals match the macro's
+            # supply naming directly (no equate needed in netgen).
+            import re as _re
+            ln = _re.sub(r"\bw_\d+_n?\d+#", "VPWR", ln)
+            ln = ln.replace("VSUBS", "VGND")
+            # Also rename VDD/VSS port references in the body to
+            # VPWR/VGND so the bitcell's instances pass the macro's
+            # supplies directly.
+            ln = _re.sub(r"\bVDD\b", "VPWR", ln)
+            ln = _re.sub(r"\bVSS\b", "VGND", ln)
+        out.append(ln)
+    return "".join(out)
 
 
 def _extract_one(cell_name: str, gds_path: Path) -> Path:

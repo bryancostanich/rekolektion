@@ -499,6 +499,26 @@ def create_bitcell(
     _label(cell, "BLB", L.MET1_LABEL.as_tuple, g["nmos_cx"], g["bl_top_cy"])
     _label(cell, "WL", L.POLY_LABEL.as_tuple, _snap(cw / 2.0), g["wl_bot_cy"])
 
+    # .pin purpose shapes on each labeled net.  Without these, Magic's
+    # hierarchical extraction auto-merges abutting cell-boundary nets
+    # (BL/BLB columns, WL/MWL rows) up to the parent and the bitcell
+    # subckt loses those ports — netgen then flattens the bitcell at
+    # macro LVS.  The .pin shape (datatype 16) anchors the label as a
+    # definite port of the bitcell sub-cell.
+    _PIN_HALF = 0.07
+    for label, layer_drawing, cx, cy in (
+        ("VSS",  L.MET1, vgnd_cx, g["pwr_cy"]),
+        ("VDD",  L.MET1, vpwr_cx, g["pwr_cy"]),
+        ("BL",   L.MET1, g["nmos_cx"], g["bl_bot_cy"]),
+        ("BLB",  L.MET1, g["nmos_cx"], g["bl_top_cy"]),
+        ("WL",   L.POLY, _snap(cw / 2.0), g["wl_bot_cy"]),
+    ):
+        # Pin layer for met1 = (68, 16); for poly = (66, 16).
+        pin_layer = (layer_drawing.gds_layer, 16)
+        _rect(cell, pin_layer,
+              cx - _PIN_HALF, cy - _PIN_HALF,
+              cx + _PIN_HALF, cy + _PIN_HALF)
+
     return cell
 
 

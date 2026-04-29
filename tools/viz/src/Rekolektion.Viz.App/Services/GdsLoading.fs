@@ -15,10 +15,19 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
     try
         let lib = Reader.readGds path
         let sidecarPath = Path.ChangeExtension(path, ".nets.json")
-        let nets, fromSidecar =
+        // Loader.load returns Result<Sidecar option, string>:
+        //   Ok (Some sc)  — sidecar present and parsed; use its nets
+        //   Ok None       — no sidecar file; LabelFlood fallback (silent)
+        //   Error msg     — sidecar file exists but is corrupt; LabelFlood
+        //                   fallback BUT also record the error on
+        //                   LoadedMacro so the UI can surface it. Silently
+        //                   absorbing a malformed sidecar masks bugs in
+        //                   the Python emitter (rekolektion macro).
+        let nets, fromSidecar, sidecarError =
             match Loader.load sidecarPath with
-            | Some sc -> sc.Nets, true
-            | None -> LabelFlood.derive lib, false
+            | Ok (Some sc) -> sc.Nets, true, None
+            | Ok None      -> LabelFlood.derive lib, false, None
+            | Error msg    -> LabelFlood.derive lib, false, Some msg
         let blocks = Layout.Hierarchy.detect lib
         return Ok {
             Path = path
@@ -26,6 +35,7 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             Nets = nets
             Blocks = blocks
             NetsFromSidecar = fromSidecar
+            SidecarError = sidecarError
         }
     with ex -> return Error ex.Message
 }

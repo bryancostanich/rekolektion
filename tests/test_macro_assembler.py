@@ -247,24 +247,24 @@ def test_assemble_tiny_macro_with_wl_routing_drc_clean(tmp_path):
 # C6.3 — BL/BR fanout: array strip extension into peripheral rows
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    reason="BL routing implementation diverged from this test's count "
-           "expectation: with mux_ratio=4 only the 8 muxed columns "
-           "extend up to precharge, not all 64 BL+BR per-cell strips.  "
-           "Test needs a rewrite against the current routing topology, "
-           "not just the shift-coordinate fix.",
-    strict=False,
-)
 def test_bl_extends_strips_above_array_to_precharge():
+    """One BL + one BR per column bridges the array → precharge gap.
+
+    `_route_bl` runs each strip from `array_top` (the bitcell rail
+    end) to `prec_y` — the precharge cell BOTTOM, NOT its top: BL/BR
+    enter the precharge through its bottom edge and the precharge
+    handles its own internal connection.  An earlier version of this
+    test asserted strips reached `prec_top`; that was never what the
+    implementation built and would have failed regardless of the
+    coordinate-frame shift.
+    """
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     fp = build_floorplan(p)
     _dx, dy = _macro_shift(p, fp)
     lib = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     array_top_y = fp.positions["array"][1] + fp.sizes["array"][1] + dy
-    prec_top_y = fp.positions["precharge"][1] + fp.sizes["precharge"][1] + dy
-    # Count top-level met1 polygons whose bbox spans the array-top to
-    # precharge-top channel (vertical strips).
+    prec_bot_y = fp.positions["precharge"][1] + dy
     count = 0
     for poly in top.polygons:
         if (poly.layer, poly.datatype) != (68, 20):
@@ -273,7 +273,7 @@ def test_bl_extends_strips_above_array_to_precharge():
         if bb is None:
             continue
         if (bb[0][1] <= array_top_y + 0.05
-                and bb[1][1] >= prec_top_y - 0.05
+                and bb[1][1] >= prec_bot_y - 0.05
                 and (bb[1][0] - bb[0][0]) < 0.3):
             count += 1
     # 2 strips (BL + BR) per column, 32 cols -> 64 strips minimum
@@ -282,20 +282,24 @@ def test_bl_extends_strips_above_array_to_precharge():
     )
 
 
-@pytest.mark.xfail(
-    reason="See sibling test_bl_extends_strips_above_array_to_precharge. "
-           "Same root cause: BL down-extension topology diverged from "
-           "the 2*cols-per-column expectation.",
-    strict=False,
-)
 def test_bl_extends_strips_below_array_through_peripherals():
+    """One BL + one BR per column bridges the col_mux → array gap.
+
+    `_route_bl` does NOT extend BL/BR all the way down to write_driver
+    — col_mux emits muxed_BL/muxed_BR on its bottom edge for SA/WD,
+    so raw BL/BR only needs to reach col_mux.  Strip y-range is
+    therefore [col_mux_top, array_bot], not [wd_bot, array_bot] as
+    an earlier version of this test asserted.
+    """
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     fp = build_floorplan(p)
     _dx, dy = _macro_shift(p, fp)
     lib = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     array_bot_y = fp.positions["array"][1] + dy
-    wd_bot_y = fp.positions["write_driver"][1] + dy
+    col_mux_top_y = (
+        fp.positions["col_mux"][1] + fp.sizes["col_mux"][1] + dy
+    )
     count = 0
     for poly in top.polygons:
         if (poly.layer, poly.datatype) != (68, 20):
@@ -303,7 +307,7 @@ def test_bl_extends_strips_below_array_through_peripherals():
         bb = poly.bounding_box()
         if bb is None:
             continue
-        if (bb[0][1] <= wd_bot_y + 0.05
+        if (bb[0][1] <= col_mux_top_y + 0.05
                 and bb[1][1] >= array_bot_y - 0.05
                 and (bb[1][0] - bb[0][0]) < 0.3):
             count += 1

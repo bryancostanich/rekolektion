@@ -328,16 +328,30 @@ def create_bitcell(
           g["pmos_diff_x1"] + psdm_enc, g["diff_top"] + psdm_enc)
 
     # ===================================================================
-    # POLY GATES — 4 horizontal stripes across both diff regions
+    # POLY GATES — 4 horizontal stripes
+    # Inverter gates (gate_A, gate_B) span BOTH NMOS and PMOS diff so each
+    # stripe forms one NMOS pull-down + one PMOS pull-up (the standard 6T
+    # inverter pair).  WL access gates (wl_bot, wl_top) span ONLY NMOS diff
+    # because the access transistors are NMOS — extending WL poly across
+    # pdiff would create spurious PMOS gates that aren't in the schematic
+    # (verified: pre-fix extraction reported 4 PMOS / 4 NMOS instead of
+    # the schematic's 2 PMOS / 4 NMOS).  Cell-to-cell WL continuity is
+    # now the array-level integrator's responsibility (poly tap → M2).
     # ===================================================================
     poly_x0 = g["nmos_diff_x0"] - poly_ext
-    poly_x1 = g["pmos_diff_x1"] + poly_ext
+    poly_x1_full = g["pmos_diff_x1"] + poly_ext     # spans both diffs
+    poly_x1_nmos = g["nmos_diff_x1"] + poly_ext     # NMOS-only
 
+    # Inverter gates: full width (NMOS + PMOS).
+    for y0_key, y1_key in [("gate_a_y0", "gate_a_y1"),
+                            ("gate_b_y0", "gate_b_y1")]:
+        _rect(cell, L.POLY.as_tuple, poly_x0, g[y0_key], poly_x1_full, g[y1_key])
+
+    # WL access gates: NMOS-only.  Stops at right edge of NMOS diff +
+    # the standard poly extension; never enters the PMOS diff.
     for y0_key, y1_key in [("wl_bot_y0", "wl_bot_y1"),
-                            ("gate_a_y0", "gate_a_y1"),
-                            ("gate_b_y0", "gate_b_y1"),
                             ("wl_top_y0", "wl_top_y1")]:
-        _rect(cell, L.POLY.as_tuple, poly_x0, g[y0_key], poly_x1, g[y1_key])
+        _rect(cell, L.POLY.as_tuple, poly_x0, g[y0_key], poly_x1_nmos, g[y1_key])
 
     # Gate A poly contact pad in gap (for cross-coupling)
     _rect(cell, L.POLY.as_tuple,
@@ -497,7 +511,14 @@ def create_bitcell(
     _label(cell, "VDD", L.MET1_LABEL.as_tuple, vpwr_cx, g["pwr_cy"])
     _label(cell, "BL", L.MET1_LABEL.as_tuple, g["nmos_cx"], g["bl_bot_cy"])
     _label(cell, "BLB", L.MET1_LABEL.as_tuple, g["nmos_cx"], g["bl_top_cy"])
-    _label(cell, "WL", L.POLY_LABEL.as_tuple, _snap(cw / 2.0), g["wl_bot_cy"])
+    # WL has TWO poly stripes (top+bottom access gates).  Both need the
+    # "WL" label so Magic merges them onto a single WL net — without
+    # this, the truncated poly (NMOS-only since the spurious-PMOS fix)
+    # has no shared structure between the two stripes and they extract
+    # as separate anonymous gate nets.  Label X uses nmos_cx because the
+    # poly only exists over NMOS diff after truncation.
+    _label(cell, "WL", L.POLY_LABEL.as_tuple, g["nmos_cx"], g["wl_bot_cy"])
+    _label(cell, "WL", L.POLY_LABEL.as_tuple, g["nmos_cx"], g["wl_top_cy"])
 
     # .pin purpose shapes on each labeled net.  Without these, Magic's
     # hierarchical extraction auto-merges abutting cell-boundary nets
@@ -511,7 +532,8 @@ def create_bitcell(
         ("VDD",  L.MET1, vpwr_cx, g["pwr_cy"]),
         ("BL",   L.MET1, g["nmos_cx"], g["bl_bot_cy"]),
         ("BLB",  L.MET1, g["nmos_cx"], g["bl_top_cy"]),
-        ("WL",   L.POLY, _snap(cw / 2.0), g["wl_bot_cy"]),
+        ("WL",   L.POLY, g["nmos_cx"], g["wl_bot_cy"]),
+        ("WL",   L.POLY, g["nmos_cx"], g["wl_top_cy"]),
     ):
         # Pin layer for met1 = (68, 16); for poly = (66, 16).
         pin_layer = (layer_drawing.gds_layer, 16)

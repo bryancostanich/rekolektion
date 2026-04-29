@@ -25,16 +25,50 @@ from pathlib import Path
 from rekolektion.macro.cim_assembler import CIMMacroParams
 
 
-# CIM timing parameters (analytical estimates)
+# CIM timing parameters.  MWL RC is per-row poly load and is ~constant
+# across variants (all use the same column count = 64).  Charge-sharing
+# time depends on the MIM cap : MBL parasitic ratio, which IS variant-
+# specific — see _charge_share_ns() below.
 _MWL_RC_NS = 0.10        # MWL poly RC delay per row
-_CHARGE_SHARE_NS = 2.0   # charge sharing settling time (conservative)
-_SENSE_BUFFER_NS = 0.50  # source follower delay
+_SENSE_BUFFER_NS = 0.50  # source follower delay (NMOS source follower)
 _PRECHARGE_NS = 1.0      # MBL precharge time
-
-_CIM_COMPUTE_NS = _MWL_RC_NS + _CHARGE_SHARE_NS + _SENSE_BUFFER_NS  # ~2.6 ns
 
 _SETUP_NS = _PRECHARGE_NS  # MBL_PRE must be deasserted before MWL_EN
 _HOLD_NS = 0.2             # MBL_PRE hold after MWL_EN falls
+
+# MBL parasitic capacitance per bitcell (estimated from layout):
+# - PMOS S/D area on the precharge node: ~1.5 fF
+# - Diff area on the sense input: ~0.5 fF
+# - Routing parasitic (met2 + met4 strap): ~0.3 fF/cell
+# Total ~2.3 fF per cell on the per-column MBL stripe.
+_MBL_PARASITIC_PER_CELL_FF: float = 2.3
+
+
+def _charge_share_ns(rows: int, cap_fF: float) -> float:
+    """Variant-specific charge-share settling time.
+
+    When `n` rows assert their MWL_EN simultaneously, the n MIM caps
+    drive into one MBL stripe with parasitic load `rows × C_par`.  The
+    voltage divider settles in ~5τ where τ ≈ R_access × C_total.
+
+    For SRAM-D (C=2.9 fF, 64 rows):
+      C_par = 64 × 2.3 fF = 147 fF, much larger than C_mim — the MIM
+      caps see a near-virtual-ground.  Settling is gated by the access
+      transistor R_on (~10 kΩ) into C_total = C_par.  τ ≈ 1.5 ns.
+
+    For SRAM-A (C=8.1 fF, 256 rows):
+      C_par = 256 × 2.3 fF = 590 fF; τ ≈ 5.9 ns.
+    """
+    R_ACCESS_OHM = 10_000.0
+    C_par_fF = rows * _MBL_PARASITIC_PER_CELL_FF
+    # Worst-case: all cap fF dominates initial transfer; settle to 5τ.
+    tau_ns = R_ACCESS_OHM * C_par_fF * 1e-15 * 1e9   # → ns
+    return 5.0 * tau_ns
+
+
+def _cim_compute_ns(rows: int, cap_fF: float) -> float:
+    """Total MWL_EN → MBL_OUT compute latency (ns)."""
+    return _MWL_RC_NS + _charge_share_ns(rows, cap_fF) + _SENSE_BUFFER_NS
 
 # SKY130 thin-oxide capacitance per gate area.  tox≈4.1 nm, εr=3.9 →
 # Cox = ε0·εr/tox ≈ 8.5 fF/µm².
@@ -206,6 +240,8 @@ def generate_cim_liberty(
     # Use MBL_PRE as related_pin (scalar) to avoid STA-1216 bus width mismatch
     # with MWL_EN. The real CIM compute is triggered by MWL_EN, but from STA's
     # perspective, MBL_PRE falling edge starts the compute cycle.
+    compute_ns = _cim_compute_ns(rows, params.cap_fF)
+    settle_ns = _charge_share_ns(rows, params.cap_fF)
     lines += [
         f'    bus (MBL_OUT) {{',
         f'      bus_type : mbl_out_type ;',
@@ -214,10 +250,10 @@ def generate_cim_liberty(
         f'      timing () {{',
         f'        related_pin : "MBL_PRE" ;',
         f'        timing_type : falling_edge ;',
-        f'        cell_rise (scalar) {{ values ("{_CIM_COMPUTE_NS:.4f}") ; }}',
-        f'        cell_fall (scalar) {{ values ("{_CIM_COMPUTE_NS:.4f}") ; }}',
-        f'        rise_transition (scalar) {{ values ("{_CHARGE_SHARE_NS:.4f}") ; }}',
-        f'        fall_transition (scalar) {{ values ("{_CHARGE_SHARE_NS:.4f}") ; }}',
+        f'        cell_rise (scalar) {{ values ("{compute_ns:.4f}") ; }}',
+        f'        cell_fall (scalar) {{ values ("{compute_ns:.4f}") ; }}',
+        f'        rise_transition (scalar) {{ values ("{settle_ns:.4f}") ; }}',
+        f'        fall_transition (scalar) {{ values ("{settle_ns:.4f}") ; }}',
         f'      }}',
     ]
     for i in range(cols):

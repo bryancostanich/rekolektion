@@ -127,14 +127,19 @@ def _compute_cell_geometry(
     # but different Y levels. No outer pad needed on NMOS left side.
     # Need met1.2 clearance between VGND via pad and BL met1 pad at nmos_cx.
     # VGND via pad right edge ~0.23, BL pad left ~nmos_cx-0.145.
-    # margin_left must accommodate the gate_a outer-left poly tap (track
-    # 05 cross-couple fix).  Required: nmos_diff_x0 >= 0.41 so that the
-    # outer_tap_cx can sit at >= 0.135 (poly_pad_w_x/2, fits poly pad
-    # within cell) AND have licon-to-ndiff clearance of 0.275 from
-    # nmos_diff_x0.  With vgnd_x1 = rail_w = 0.14, that means
-    # margin_left = 0.41 - 0.14 = 0.27.  Pre-fix this was 0.17 (just
-    # MET1.spacing >= 0.14); +0.10 µm cell-width growth.
-    margin_left = 0.27
+    # margin_left must accommodate the gate_a outer-left poly tap with
+    # enough setback from cell edge that array-tiled X-mirrored
+    # neighbours don't abut and merge their gate_a polys (which would
+    # short QB nets across columns).  X-mirror puts cell column N's
+    # gate_a poly LEFT edge at array X = (2N+1)·cell_w − poly_x0_local.
+    # For the next column's mirrored RIGHT edge gap to be ≥ poly.2
+    # (0.21 µm spacing): 2 · poly_x0_local ≥ 0.21 → poly_x0_local
+    # ≥ 0.105.  The licon pad spans (outer_tap_cx ± pad_w_x/2), so
+    # pad LEFT = outer_tap_cx − 0.135 must be ≥ 0.105 → outer_tap_cx
+    # ≥ 0.24.  With licon.14 (0.275) clearance to ndiff: nmos_diff_x0
+    # ≥ 0.515.  margin_left = 0.515 − 0.14 = 0.375; rounded to 0.385
+    # for ~10 nm DRC margin.
+    margin_left = 0.385
 
     margin_right = 0.15  # PMOS side: just PSDM clearance (0.125) + buffer
 

@@ -259,11 +259,16 @@ def _node(port: str) -> str:
 
 
 def _macro_port_list(rows: int, cols: int) -> list[str]:
-    """Macro .subckt port order — must match cim_spice_generator output."""
+    """Macro .subckt port order — must match cim_spice_generator output.
+
+    Canonical order (from cim_spice_generator.py:99-102):
+      MWL_EN[0..r-1] | MBL_PRE | VREF | VBIAS | MBL_OUT[0..c-1]
+      | BL_* | BLB_* | WL_* | MWL_* | MBL_* | VPWR | VGND
+    """
     ports: list[str] = []
     ports += [f"MWL_EN[{i}]" for i in range(rows)]
-    ports += [f"MBL_OUT[{i}]" for i in range(cols)]
     ports += ["MBL_PRE", "VREF", "VBIAS"]
+    ports += [f"MBL_OUT[{i}]" for i in range(cols)]
     ports += [f"BL_{i}" for i in range(cols)]
     ports += [f"BLB_{i}" for i in range(cols)]
     ports += [f"WL_{i}" for i in range(rows)]

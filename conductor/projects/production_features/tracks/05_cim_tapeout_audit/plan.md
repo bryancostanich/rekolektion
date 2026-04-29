@@ -78,6 +78,12 @@ respin**.
 **Estimated effort:** 3–5 designer-days work + ~3 days overnight
 compute.  Single biggest item in this track.
 
+**Schedule risk:** SRAM-A and SRAM-B (256-row variants, 4× SRAM-D
+cell count) are expected to exceed a single-night budget for the
+NLDM grid; per-variant queue time will be quantified after SRAM-D
+pattern-sweep wallclock is measured.  Multi-night queue is acceptable
+and not a respin signal — it just affects scheduling.
+
 ---
 
 ## Phase 2: Bitcell margin under CIM disturb

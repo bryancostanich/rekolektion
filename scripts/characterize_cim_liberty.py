@@ -108,32 +108,52 @@ def _build_testbench(p: CIMMacroParams, work: Path) -> Path:
     lines.append(f".include {macro_sp}")
     lines.append("")
     lines.append("* Supplies")
-    lines.append("Vpwr  vpwr  0  1.8")
-    lines.append("Vgnd  vgnd  0  0")
-    lines.append("Vvref vref  0  1.5")
-    lines.append("Vvbias vbias 0 0.7")
+    lines.append("Vpwr   vpwr   0 1.8")
+    lines.append("Vgnd   vgnd   0 0")
+    lines.append("Vvref  vref   0 1.5")
+    lines.append("Vvbias vbias  0 0.7")
     lines.append("")
-    lines.append("* Stimulus: MBL_PRE held HIGH for 5 ns precharge, then falling.")
+    lines.append("* === Phase 1: WRITE =================================================")
+    lines.append("* Pulse WL=high while driving BL=VPWR / BLB=GND so every bitcell")
+    lines.append("* latches Q=1 (and Q-bar=0).  Without this, the cross-coupled inverter")
+    lines.append("* internal nodes (Q/QB) are floating at DC and ngspice's matrix is")
+    lines.append("* singular — fall-through into source-stepping with random initial")
+    lines.append("* state.  After the WL pulse falls, the latched state holds for the")
+    lines.append("* rest of the sim.")
+    lines.append("* === Phase 2: PRECHARGE =============================================")
+    lines.append("* WL=0 (access transistors off, bitcell holds state).  MBL_PRE=high")
+    lines.append("* drives MBL via the per-column PMOS.  MWL_EN=0 keeps T7 off.")
+    lines.append("* === Phase 3: CIM COMPUTE ===========================================")
+    lines.append("* MBL_PRE falls AND MWL_EN[0] rises.  T7 in row 0 conducts, the MIM")
+    lines.append("* cap in col 0 sees Q=1 on its bottom plate, MBL voltage settles to")
+    lines.append("* a charge-shared value.  All 64 columns of row 0 contribute; for the")
+    lines.append("* timing measurement we read MBL_OUT[0].")
+    lines.append("")
+    lines.append("* WL: 0 → 1.8 V at t=1 ns, hold to t=2 ns, fall to 0 by t=2.1 ns.")
+    lines.append("* All rows pulsed simultaneously so every cell latches Q=1.")
+    for i in range(rows):
+        lines.append(f"Vwl{i} wl_{i} 0 PWL(0 0 1n 0 1.05n 1.8 2n 1.8 2.1n 0)")
+    lines.append("")
+    lines.append("* BL/BLB during write: BL=VPWR, BLB=0 to write Q=1.  After WL falls")
+    lines.append("* (t > 2.1 ns) cells hold state; we keep BL/BLB at the same DC level")
+    lines.append("* so the access transistors stay off-biased after WL drops.")
+    for i in range(cols):
+        lines.append(f"Vbl{i}  bl_{i}  0 1.8")
+        lines.append(f"Vblb{i} blb_{i} 0 0")
+    lines.append("")
+    lines.append("* MBL_PRE: HIGH from t=0 (precharge MBL during write+settle), then")
+    lines.append("* falls at t=5 ns to start the CIM compute phase.")
     lines.append("Vmpre mbl_pre 0 PWL(0 1.8 5n 1.8 5.1n 0)")
     lines.append("")
-    lines.append("* MWL_EN[0] asserts simultaneously with MBL_PRE falling.")
+    lines.append("* MWL_EN[0]: rises at t=5 ns simultaneous with MBL_PRE falling.")
     lines.append("Vmwl0 mwl_en_0 0 PWL(0 0 5n 0 5.1n 1.8)")
-    # Other MWL_EN[r]: held LOW
-    lines.append("* Other MWL_EN[r] tied LOW so only row 0 contributes.")
+    lines.append("* Other MWL_EN[r] tied LOW — only row 0 contributes to MBL.")
     for i in range(1, rows):
         lines.append(f"Vmwl{i} mwl_en_{i} 0 0")
     lines.append("")
-    lines.append("* BL_<c> / BLB_<c>: precharged HIGH (no SRAM access).")
-    for i in range(cols):
-        lines.append(f"Vbl{i}  bl_{i}  0 1.8")
-        lines.append(f"Vblb{i} blb_{i} 0 1.8")
-    lines.append("")
-    lines.append("* WL_<r>: held LOW so 6T access transistors are off.")
-    for i in range(rows):
-        lines.append(f"Vwl{i} wl_{i} 0 0")
-    lines.append("")
-    lines.append("* MWL_<r> and MBL_<c> are internally driven by the macro;")
-    lines.append("* tie via 1 MΩ high-Z to ground so ngspice has a node.")
+    lines.append("* MWL_<r> and MBL_<c> are internally driven by the macro; tie via")
+    lines.append("* 1 MΩ high-Z to ground so ngspice has a node and singular-matrix")
+    lines.append("* warnings on these don't show up.")
     for i in range(rows):
         lines.append(f"Rmwl{i}_tie mwl_{i} 0 1Meg")
     for i in range(cols):
@@ -154,9 +174,25 @@ def _build_testbench(p: CIMMacroParams, work: Path) -> Path:
     lines.append("")
     lines.append("* --- analyses ---")
     lines.append(".tran 0.05n 30n")
-    lines.append(".measure tran t50 WHEN v(mbl_out_0)=0.9 RISE=1 TD=5n")
-    lines.append(".measure tran t90 WHEN v(mbl_out_0)=1.62 RISE=1 TD=5n")
-    lines.append(".measure tran v_settle FIND v(mbl_out_0) AT=25n")
+    lines.append("")
+    lines.append("* Analog-friendly Liberty arc surrogates:")
+    lines.append("*   v_quiescent = MBL_OUT[0] just before MWL_EN edge (t=4.95 ns)")
+    lines.append("*   v_compute   = MBL_OUT[0] settled value (t=25 ns)")
+    lines.append("*   t_50pct,90pct,95pct = times MBL_OUT[0] reaches successive %s")
+    lines.append("*                  of its eventual swing post-MWL_EN edge.")
+    lines.append("* Post-processing computes t_settle = time to reach midpoint;")
+    lines.append("* ngspice's `.measure ... PARAM=` only accepts param names known")
+    lines.append("* before .measure runs, so we sample at fixed thresholds and let")
+    lines.append("* the Python parser interpolate.  The thresholds here cover the")
+    lines.append("* expected analog swing (precharge ≈ 1.8 V, settled ≈ 1.0 – 1.5 V).")
+    lines.append(".measure tran v_quiescent FIND v(mbl_out_0) AT=4.95n")
+    lines.append(".measure tran v_compute   FIND v(mbl_out_0) AT=25n")
+    # Sample MBL_OUT at a sweep of thresholds; the parser picks the
+    # first threshold the trace crosses past v_quiescent toward v_compute.
+    for i, thresh in enumerate((1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9)):
+        lines.append(
+            f".measure tran t_at_{i} WHEN v(mbl_out_0)={thresh:.3f} CROSS=1 TD=5n"
+        )
     lines.append(".end")
     tb.write_text("\n".join(lines))
     return tb
@@ -173,11 +209,37 @@ def _run_ngspice(tb: Path, work: Path, timeout: int = 1800) -> tuple[bool, str]:
 
 
 def _parse_measurements(stdout: str) -> dict[str, float]:
-    """Pull `.measure` results out of ngspice stdout."""
+    """Pull `.measure` results out of ngspice stdout, then interpolate
+    the analog `t_settle` (time to reach midpoint of the swing)."""
     out: dict[str, float] = {}
-    pat = re.compile(r"^\s*(t50|t90|v_settle)\s*=\s*([0-9.eE+\-]+)", re.M)
+    pat = re.compile(
+        r"^\s*(v_quiescent|v_compute|t_at_\d+)\s*=\s*([0-9.eE+\-]+)",
+        re.M,
+    )
     for m in pat.finditer(stdout):
         out[m.group(1)] = float(m.group(2))
+
+    # `.measure ... CROSS=1 TD=5n` returns 0 (or a sentinel) when the
+    # trace never crosses that threshold within [TD, end].  Reconstruct
+    # t_settle by picking the closest threshold to (v_q + v_c) / 2.
+    vq = out.get("v_quiescent")
+    vc = out.get("v_compute")
+    if vq is None or vc is None:
+        return out
+    vmid = (vq + vc) / 2.0
+    out["v_swing"] = vc - vq
+    # Map sweep-index → threshold (must mirror generator order).
+    thresholds = (1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9)
+    best = None
+    for i, th in enumerate(thresholds):
+        t = out.get(f"t_at_{i}")
+        if t is None or t <= 0:
+            continue
+        if best is None or abs(th - vmid) < abs(best[0] - vmid):
+            best = (th, t)
+    if best is not None:
+        out["t_settle"] = best[1]
+        out["v_threshold"] = best[0]
     return out
 
 
@@ -217,15 +279,18 @@ def main(argv: list[str]) -> int:
         raise SystemExit(f"sky130 ngspice models not at {_PDK_NGSPICE}")
     results = [_char_one(v) for v in variants]
     print("\n=== CIM SPICE Characterisation ===")
-    print(f"{'variant':<10} {'t50 (ns)':>10} {'t90 (ns)':>10} {'V@25ns':>10}  log")
+    print(f"{'variant':<10} {'V_quies':>9} {'V_comp':>9} {'V_swing':>9} "
+          f"{'t_settle':>10}  log")
     for r in results:
         if not r["ok"]:
             print(f"{r['variant']:<10}  FAILED  {r['log']}")
             continue
-        t50 = r.get("t50", 0) * 1e9
-        t90 = r.get("t90", 0) * 1e9
-        v25 = r.get("v_settle", 0)
-        print(f"{r['variant']:<10} {t50:>10.3f} {t90:>10.3f} {v25:>10.4f}  {r['log']}")
+        vq = r.get("v_quiescent", 0)
+        vc = r.get("v_compute", 0)
+        vs = r.get("v_swing", 0)
+        ts = r.get("t_settle", 0) * 1e9
+        print(f"{r['variant']:<10} {vq:>9.4f} {vc:>9.4f} {vs:>9.4f} "
+              f"{ts:>10.3f}  {r['log']}")
     return 0 if all(r["ok"] for r in results) else 1
 
 

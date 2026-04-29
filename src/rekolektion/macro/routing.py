@@ -525,3 +525,65 @@ def draw_pdn_strap(
             cls=cls,
         )
     return rect
+
+
+def draw_vert_strap(
+    cell: gdstk.Cell,
+    layer: str,
+    cx: float,
+    y0: float,
+    y1: float,
+    *,
+    width: float = 0.20,
+) -> None:
+    """Draw a vertical metal strap on `layer` from (cx, y0) to (cx, y1).
+
+    Helper for the common pattern of "centreline X, span between two
+    Ys, fixed strap width".  For orientation flexibility use
+    `draw_pdn_strap`; this one is a thin wrapper for the per-cell
+    routing case where you've already chosen vertical and a
+    sub-min-width-checked width.
+    """
+    layer_id, layer_dt = GDS_LAYER[layer]
+    yl, yh = (y0, y1) if y0 <= y1 else (y1, y0)
+    cell.add(gdstk.rectangle(
+        (cx - width / 2, yl), (cx + width / 2, yh),
+        layer=layer_id, datatype=layer_dt,
+    ))
+
+
+def draw_poly_to_li1_contact(cell: gdstk.Cell, cx: float, cy: float) -> None:
+    """Drop a poly licon + co-located li1 pad over a poly polygon at (cx, cy).
+
+    Poly licon (layer 66/44 — same LICON1 layer Magic recognises for
+    both poly and diff contacts) connects poly to li1.  This helper
+    emits the full stack: a widened poly pad under the licon, the
+    licon cut itself, and the li1 pad on top, all centred at the same
+    (cx, cy).
+
+    Constants are taken from the `poly.5` rule (licon enclosure
+    0.05/0.08 µm; widened to 0.08 here for symmetric clearance).
+    """
+    licon_id, licon_dt = GDS_LAYER["pc"]   # poly licon (66/44)
+    li1_id,   li1_dt   = GDS_LAYER["li1"]
+    poly_id,  poly_dt  = GDS_LAYER["poly"]
+    LICON = 0.17
+    POLY_ENC = 0.08
+    LI_ENC = 0.08
+    poly_pad = LICON + 2 * POLY_ENC
+    li_pad = LICON + 2 * LI_ENC
+    cell.add(gdstk.rectangle(
+        (cx - poly_pad / 2, cy - poly_pad / 2),
+        (cx + poly_pad / 2, cy + poly_pad / 2),
+        layer=poly_id, datatype=poly_dt,
+    ))
+    cell.add(gdstk.rectangle(
+        (cx - LICON / 2, cy - LICON / 2),
+        (cx + LICON / 2, cy + LICON / 2),
+        layer=licon_id, datatype=licon_dt,
+    ))
+    cell.add(gdstk.rectangle(
+        (cx - li_pad / 2, cy - li_pad / 2),
+        (cx + li_pad / 2, cy + li_pad / 2),
+        layer=li1_id, datatype=li1_dt,
+    ))

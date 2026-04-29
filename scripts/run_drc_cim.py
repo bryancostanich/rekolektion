@@ -25,8 +25,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import gdstk
 
 from rekolektion.bitcell.sky130_6t_lr_cim import CIM_VARIANTS
-from rekolektion.macro.cim_assembler import CIMMacroParams
+from rekolektion.macro.cim_assembler import CIMMacroParams, build_cim_floorplan
 from rekolektion.verify.drc import run_drc, find_pdk_root
+
+
+# Inflate every foundry-cell footprint by this much to absorb cell
+# overhangs (each cell's GDS bbox extends past its tiling pitch by
+# 0.17–0.5 µm to allow shared nwell / SDM with mirror-tiled neighbors).
+# Without this margin tiles inside an overhang region are misclassified
+# as outside.
+_OVERHANG_MARGIN: float = 0.6
+
+
+def _foundry_footprints(p: CIMMacroParams) -> list[tuple[str, float, float, float, float]]:
+    """Returns [(name, x0, y0, x1, y1), ...] for each region whose
+    interior is allowed to host foundry-density-pattern waivers."""
+    fp = build_cim_floorplan(p)
+    out: list[tuple[str, float, float, float, float]] = []
+    m = _OVERHANG_MARGIN
+    for name in ("array", "mwl_driver", "mbl_sense", "mbl_precharge"):
+        x, y = fp.positions[name]
+        w, h = fp.sizes[name]
+        out.append((name, x - m, y - m, x + w + m, y + h + m))
+    return out
 
 
 _MACRO_ROOT = Path("output/cim_macros")
@@ -67,11 +88,16 @@ def _drc_one(variant: str, *, hier: bool) -> tuple[str, int, int, str]:
         print(f"[{variant}] flattening {macro_gds.name} ...", flush=True)
         _flatten(macro_gds, gds_for_drc, p.top_cell_name)
     print(f"[{variant}] running {suffix} DRC on {gds_for_drc.name} ...", flush=True)
+    # Pass per-variant foundry footprints so the spatial waiver check
+    # in run_drc() can flag any rule-id-on-the-waiver-list tile that
+    # falls OUTSIDE a foundry cell — those would have been silently
+    # waived under the legacy global filter and might be real bugs.
     res = run_drc(
         gds_for_drc,
         cell_name=p.top_cell_name,
         pdk_root=find_pdk_root(),
         output_dir=out_dir,
+        waiver_footprints=_foundry_footprints(p),
     )
     return (variant, res.error_count, res.real_error_count, str(res.log_path))
 

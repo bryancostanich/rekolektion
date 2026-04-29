@@ -533,8 +533,10 @@ def _build_testbench(cfg: SimConfig, work: Path) -> tuple[Path, dict]:
         ]
         for c in cfg.measure_cols:
             for ni, node in enumerate(cell_nodes):
-                node_safe = node.replace("#", "_h").replace(".", "_")
-                node_path = f"xbc_0_{c}.{node}"
+                # Full path from top: xdut.xbc_<row>_<col>.<internal_node>
+                # ngspice's .measure FIND v(...) wants the absolute path
+                # (relative paths produce 'can't parse' warnings).
+                node_path = f"xdut.xbc_0_{c}.{node}"
                 for ti, t in enumerate(sample_times_ns):
                     lines.append(
                         f".measure tran probe_{c}_{ni}_{ti} FIND "

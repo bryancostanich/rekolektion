@@ -39,8 +39,12 @@ def _cmd_macro(args: argparse.Namespace) -> None:
         print(f"SPICE reference model written to {sp_path}")
 
     if args.verilog:
-        v_path = generate_verilog(p, out_dir / f"{stem}.v",
-                                  macro_name=macro_name)
+        # generate_verilog has no macro_name kwarg — _write_top_module
+        # already uses p.top_cell_name, which equals the macro_name we
+        # would pass.  Add the kwarg here only if a future caller
+        # actually wants to override the top module name (matching
+        # what LEF/Liberty support).
+        v_path = generate_verilog(p, out_dir / f"{stem}.v")
         print(f"Verilog model written to {v_path}")
 
     if args.lef:

@@ -381,17 +381,22 @@ def _emit_compute_phase(
 ) -> tuple[list[str], float]:
     """Emit PRECHARGE+COMPUTE phase. Returns (lines, t_compute_edge_ns).
 
-    MBL_PRE is high from t=0 through t_compute_start (precharge during
-    write+settle).  At t_compute_start, MBL_PRE falls (50 ps) and the
-    MWL_EN[r] for r in active_rows rises with the configured slew.
+    MBL_PRE is ACTIVE LOW: cim_mbl_precharge gates a single PFET with
+    G=MBL_PRE, S=MBL, D=VREF.  PFET conducts when MBL_PRE is low,
+    pulling MBL to VREF.  So MBL_PRE = 0 during precharge phase (PFET
+    on, MBL = VREF) and rises to Vpwr at t_edge (PFET off, MBL floats,
+    charge-sharing with MIM caps via T7 produces the compute output).
+
+    MWL_EN[r] for r in active_rows rises at t_edge with the configured
+    slew, simultaneous with MBL_PRE rising.
     """
     vpwr = cfg.corner.vpwr
-    fall_ns = 0.05
-    rise_ns = cfg.slew_ps / 1000.0  # ps → ns
+    rise_ns_pre = 0.05                # MBL_PRE de-assert edge
+    rise_ns_mwl = cfg.slew_ps / 1000.0  # ps → ns
 
     t_edge = t_compute_start_ns
-    t_pre_low = t_edge + fall_ns
-    t_mwl_high = t_edge + rise_ns
+    t_pre_high = t_edge + rise_ns_pre
+    t_mwl_high = t_edge + rise_ns_mwl
 
     lines: list[str] = []
     lines.append(
@@ -399,8 +404,8 @@ def _emit_compute_phase(
         f"slew {cfg.slew_ps:.0f} ps, active rows {list(cfg.active_rows)}) ==="
     )
     lines.append(
-        f"Vmpre mbl_pre 0 PWL(0 {vpwr:.4f} {t_edge:.3f}n {vpwr:.4f} "
-        f"{t_pre_low:.3f}n 0)"
+        f"Vmpre mbl_pre 0 PWL(0 0 {t_edge:.3f}n 0 "
+        f"{t_pre_high:.3f}n {vpwr:.4f})"
     )
     for r in range(p.rows):
         if r in cfg.active_rows:

@@ -94,17 +94,16 @@ LVS (Magic flat-extract + netgen) and DRC (Magic) signed off against the
 SKY130B PDK. Bitcell density-pattern violations are waived under COREID;
 the rule list lives in `src/rekolektion/verify/drc.py::_KNOWN_WAIVER_RULES`.
 
-| Variant | LVS                       | DRC (flat)             | DRC (hier)             |
-|---------|---------------------------|-----------------------:|-----------------------:|
-| SRAM-A  | matching device + net cnt | 0 real / 64321 waiver  | 0 real / 63978 waiver  |
-| SRAM-B  | matching device + net cnt | 0 real / 13820 waiver  | 0 real / 77860 waiver  |
-| SRAM-C  | match unique              | 0 real /  9100 waiver  | 0 real / 23526 waiver  |
-| SRAM-D  | match unique              | 0 real /  8984 waiver  | 0 real / 23400 waiver  |
+| Variant | LVS          | DRC (flat)             | DRC (hier)             |
+|---------|--------------|-----------------------:|-----------------------:|
+| SRAM-A  | match unique | 0 real / 64321 waiver  | 0 real / 63978 waiver  |
+| SRAM-B  | match unique | 0 real / 13820 waiver  | 0 real / 77860 waiver  |
+| SRAM-C  | match unique | 0 real /  9100 waiver  | 0 real / 23526 waiver  |
+| SRAM-D  | match unique | 0 real /  8984 waiver  | 0 real / 23400 waiver  |
 
-256-row variants take 60+ minutes in netgen's graph-iso check; the LVS
-runner uses a 6-hour timeout for variants ≥128 rows. Device + net
-counts match in the netgen pre-check, which is the same architectural
-correctness signal that's gated SRAM-C/D to "match unique".
+256-row variants (SRAM-A/B) take ~4 hours each in netgen's graph-iso
+check — the LVS runner sets `netgen_timeout = 6 * 3600` for any
+variant with ≥128 rows.  Run them overnight or use `-j 2` to overlap.
 
 Common waiver categories (all foundry-cell density patterns):
 

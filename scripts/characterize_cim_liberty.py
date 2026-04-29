@@ -523,9 +523,18 @@ def _build_testbench(cfg: SimConfig, work: Path) -> tuple[Path, dict]:
 # ---------------------------------------------------------------------------
 
 def _run_ngspice(
-    tb: Path, work: Path, timeout: int = 7200,
+    tb: Path, work: Path, timeout: int = 14400,
 ) -> tuple[bool, str, float]:
-    """Run ngspice on `tb`. Returns (ok, stdout, wallclock_seconds)."""
+    """Run ngspice on `tb`. Returns (ok, stdout, wallclock_seconds).
+
+    Default 4 hr timeout — covers SRAM-A/B (256-row, 16k+ cells) under
+    super-linear ngspice solver scaling with margin.  Empirical SRAM-D
+    (64×64) wallclock is ~28 min; linear scaling × 4 = 112 min, but
+    BSIM4 model evaluation + sparse-matrix factorisation on 16k-cell
+    macros tends super-linear in practice.  4 hr leaves headroom for
+    a 1.5× super-linear factor without paying the operational cost of
+    a multi-day hung-sim wait.
+    """
     log = work / "ngspice.log"
     t0 = time.time()
     res = subprocess.run(

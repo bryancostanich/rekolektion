@@ -82,6 +82,17 @@ VIA2_MIN_SPACE: float = 0.20
 VIA3_MIN_SPACE: float = 0.20
 VIA4_MIN_SPACE: float = 0.80
 
+# Metal minimum-area rules (um^2).  SKY130 enforces these on every
+# metal shape (or net-fragment); an isolated via-stack pad sized purely
+# from the via enclosure can fall well under these for met3/met4.  A
+# square pad must therefore be at least sqrt(MIN_AREA) on a side.
+LI1_MIN_AREA: float = 0.0561
+MET1_MIN_AREA: float = 0.083
+MET2_MIN_AREA: float = 0.0676
+MET3_MIN_AREA: float = 0.240
+MET4_MIN_AREA: float = 0.240
+MET5_MIN_AREA: float = 4.000
+
 
 # GDS layer numbers (SKY130)
 GDS_LAYER: dict[str, tuple[int, int]] = {

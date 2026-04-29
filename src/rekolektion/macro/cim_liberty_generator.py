@@ -4,7 +4,15 @@ Generates Liberty timing files with CIM-specific timing arcs:
   MWL_EN → MBL_OUT:  CIM compute latency (charge sharing + settling)
   MBL_PRE setup/hold: precharge timing relative to MWL_EN assertion
 
-Timing values are analytical estimates based on:
+Per-pin input capacitances are computed analytically from each cell's
+transistor sizing × SKY130 thin-oxide Cox plus a 30% margin for routing
+parasitic.  Replaces the old universal 0.005 pF placeholder, which was
+~10–20× off on the high-fanout pins (MBL_PRE / VBIAS each gate 64
+column transistors).  A future SPICE-characterisation pass should
+replace these analytical numbers with sim-extracted values; the
+function signature is unchanged so the SPICE flow can drop in.
+
+Timing arcs remain analytical estimates:
   - MIM cap charge sharing with MBL parasitic (~256 fF per 64-cell column)
   - Source follower buffer delay (~0.5 ns)
   - MWL poly RC delay across row (~0.1 ns for 64 columns)
@@ -17,24 +25,111 @@ from pathlib import Path
 from rekolektion.macro.cim_assembler import CIMMacroParams
 
 
-# CIM timing parameters (analytical estimates)
+# CIM timing parameters.  MWL RC is per-row poly load and is ~constant
+# across variants (all use the same column count = 64).  Charge-sharing
+# time depends on the MIM cap : MBL parasitic ratio, which IS variant-
+# specific — see _charge_share_ns() below.
 _MWL_RC_NS = 0.10        # MWL poly RC delay per row
-_CHARGE_SHARE_NS = 2.0   # charge sharing settling time (conservative)
-_SENSE_BUFFER_NS = 0.50  # source follower delay
+_SENSE_BUFFER_NS = 0.50  # source follower delay (NMOS source follower)
 _PRECHARGE_NS = 1.0      # MBL precharge time
-
-_CIM_COMPUTE_NS = _MWL_RC_NS + _CHARGE_SHARE_NS + _SENSE_BUFFER_NS  # ~2.6 ns
 
 _SETUP_NS = _PRECHARGE_NS  # MBL_PRE must be deasserted before MWL_EN
 _HOLD_NS = 0.2             # MBL_PRE hold after MWL_EN falls
 
-_INPUT_CAP_PF = 0.005
-_MWL_CAP_PF = 0.010       # MWL poly load
-_MBL_OUT_CAP_PF = 0.50    # max output load (pad + ADC input)
+# MBL parasitic capacitance per bitcell (estimated from layout):
+# - PMOS S/D area on the precharge node: ~1.5 fF
+# - Diff area on the sense input: ~0.5 fF
+# - Routing parasitic (met2 + met4 strap): ~0.3 fF/cell
+# Total ~2.3 fF per cell on the per-column MBL stripe.
+_MBL_PARASITIC_PER_CELL_FF: float = 2.3
+
+
+def _charge_share_ns(rows: int, cap_fF: float) -> float:
+    """Variant-specific charge-share settling time.
+
+    When `n` rows assert their MWL_EN simultaneously, the n MIM caps
+    drive into one MBL stripe with parasitic load `rows × C_par`.  The
+    voltage divider settles in ~5τ where τ ≈ R_access × C_total.
+
+    For SRAM-D (C=2.9 fF, 64 rows):
+      C_par = 64 × 2.3 fF = 147 fF, much larger than C_mim — the MIM
+      caps see a near-virtual-ground.  Settling is gated by the access
+      transistor R_on (~10 kΩ) into C_total = C_par.  τ ≈ 1.5 ns.
+
+    For SRAM-A (C=8.1 fF, 256 rows):
+      C_par = 256 × 2.3 fF = 590 fF; τ ≈ 5.9 ns.
+    """
+    R_ACCESS_OHM = 10_000.0
+    C_par_fF = rows * _MBL_PARASITIC_PER_CELL_FF
+    # Worst-case: all cap fF dominates initial transfer; settle to 5τ.
+    tau_ns = R_ACCESS_OHM * C_par_fF * 1e-15 * 1e9   # → ns
+    return 5.0 * tau_ns
+
+
+def _cim_compute_ns(rows: int, cap_fF: float) -> float:
+    """Total MWL_EN → MBL_OUT compute latency (ns)."""
+    return _MWL_RC_NS + _charge_share_ns(rows, cap_fF) + _SENSE_BUFFER_NS
+
+# SKY130 thin-oxide capacitance per gate area.  tox≈4.1 nm, εr=3.9 →
+# Cox = ε0·εr/tox ≈ 8.5 fF/µm².
+_COX_FF_PER_UM2: float = 8.5
+
+# Routing-parasitic uplift applied to the raw gate-cap calculation
+# (poly sheet R, li1 / met1 stub area, mcon).  Conservative 30%.
+_PARASITIC_UPLIFT: float = 1.30
+
+# Foundry buf_2 input pin capacitance.  Datasheet: ~3 fF on the A pin
+# (sky130_fd_sc_hd__buf_2 — single inverter cascade input).  Used for
+# MWL_EN[r], which gates exactly one buf_2 driver per row.
+_BUF2_A_INPUT_FF: float = 3.0
+
+# Cell transistor widths (µm).  Mirrors the constants in the cell
+# generators (`peripherals/cim_mbl_precharge.py::_PU_W`,
+# `peripherals/cim_mbl_sense.py::_DRV_W` / `_BIAS_W`).  Kept here so
+# the Liberty file can be regenerated without parsing the source.
+_PRECHARGE_PMOS_W: float = 0.84   # MBL precharge PMOS, one per column
+_SENSE_BIAS_NMOS_W: float = 0.50  # Sense-amp bias NMOS, one per column
+_SENSE_DRV_NMOS_W: float = 1.00   # Sense-amp driver NMOS, one per column
+_GATE_L: float = 0.15             # All transistors
+
+# Source / drain parasitic per column on VREF (precharge PMOS source).
+# Diff area ≈ W × min-S/D length (0.29 µm) × Cj_pmos (~0.4 fF/µm²
+# bottom + 0.2 fF/µm sidewall).  Roughly 0.3 fF per column.
+_VREF_PER_COL_FF: float = 0.3
+
+# Output load assumptions (analytical placeholder until characterised).
+_MBL_OUT_CAP_PF: float = 0.50   # max output load (pad + ADC input)
 
 _NOM_PROCESS = 1.0
 _NOM_VOLTAGE = 1.2         # CIM operates at 1.2V (not 1.8V) per Track 21
 _NOM_TEMPERATURE = 25.0
+
+
+def _gate_cap_ff(w_um: float, l_um: float = _GATE_L) -> float:
+    """Single-transistor gate capacitance in fF, with parasitic uplift."""
+    return w_um * l_um * _COX_FF_PER_UM2 * _PARASITIC_UPLIFT
+
+
+def _input_cap_pf(net: str, cols: int) -> float:
+    """Analytical input capacitance per pin, in pF.
+
+    `net` is one of: MWL_EN, MBL_PRE, VBIAS, VREF.  `cols` scales the
+    column-shared signals.
+    """
+    if net == "MWL_EN":
+        # One foundry buf_2 input per row; not column-scaled.
+        return _BUF2_A_INPUT_FF * _PARASITIC_UPLIFT / 1000.0
+    if net == "MBL_PRE":
+        # `cols` PMOS gates in parallel.
+        return cols * _gate_cap_ff(_PRECHARGE_PMOS_W) / 1000.0
+    if net == "VBIAS":
+        # `cols` NMOS gates in parallel.
+        return cols * _gate_cap_ff(_SENSE_BIAS_NMOS_W) / 1000.0
+    if net == "VREF":
+        # `cols` PMOS source/drain regions (no gate).  Uplift already
+        # baked into _VREF_PER_COL_FF.
+        return cols * _VREF_PER_COL_FF / 1000.0
+    raise ValueError(f"unknown net {net!r}")
 
 
 def generate_cim_liberty(
@@ -125,12 +220,17 @@ def generate_cim_liberty(
         f'',
     ]
 
+    mwl_en_cap = _input_cap_pf("MWL_EN", cols)
+    mbl_pre_cap = _input_cap_pf("MBL_PRE", cols)
+    vbias_cap = _input_cap_pf("VBIAS", cols)
+    vref_cap = _input_cap_pf("VREF", cols)
+
     # MWL_EN bus (input, with setup/hold relative to MBL_PRE)
     lines += [
         f'    bus (MWL_EN) {{',
         f'      bus_type : mwl_en_type ;',
         f'      direction : input ;',
-        f'      capacitance : {_MWL_CAP_PF} ;',
+        f'      capacitance : {mwl_en_cap:.6f} ;',
     ]
     for i in range(rows):
         lines.append(f'      pin (MWL_EN[{i}]) {{ }}')
@@ -140,6 +240,8 @@ def generate_cim_liberty(
     # Use MBL_PRE as related_pin (scalar) to avoid STA-1216 bus width mismatch
     # with MWL_EN. The real CIM compute is triggered by MWL_EN, but from STA's
     # perspective, MBL_PRE falling edge starts the compute cycle.
+    compute_ns = _cim_compute_ns(rows, params.cap_fF)
+    settle_ns = _charge_share_ns(rows, params.cap_fF)
     lines += [
         f'    bus (MBL_OUT) {{',
         f'      bus_type : mbl_out_type ;',
@@ -148,10 +250,10 @@ def generate_cim_liberty(
         f'      timing () {{',
         f'        related_pin : "MBL_PRE" ;',
         f'        timing_type : falling_edge ;',
-        f'        cell_rise (scalar) {{ values ("{_CIM_COMPUTE_NS:.4f}") ; }}',
-        f'        cell_fall (scalar) {{ values ("{_CIM_COMPUTE_NS:.4f}") ; }}',
-        f'        rise_transition (scalar) {{ values ("{_CHARGE_SHARE_NS:.4f}") ; }}',
-        f'        fall_transition (scalar) {{ values ("{_CHARGE_SHARE_NS:.4f}") ; }}',
+        f'        cell_rise (scalar) {{ values ("{compute_ns:.4f}") ; }}',
+        f'        cell_fall (scalar) {{ values ("{compute_ns:.4f}") ; }}',
+        f'        rise_transition (scalar) {{ values ("{settle_ns:.4f}") ; }}',
+        f'        fall_transition (scalar) {{ values ("{settle_ns:.4f}") ; }}',
         f'      }}',
     ]
     for i in range(cols):
@@ -162,17 +264,20 @@ def generate_cim_liberty(
     lines += [
         f'    pin (MBL_PRE) {{',
         f'      direction : input ;',
-        f'      capacitance : {_INPUT_CAP_PF} ;',
+        f'      capacitance : {mbl_pre_cap:.6f} ;',
         f'    }}',
         f'',
     ]
 
     # VREF, VBIAS (analog — no timing)
-    for pin_name, direction in [("VREF", "inout"), ("VBIAS", "input")]:
+    for pin_name, direction, cap in [
+        ("VREF",  "inout", vref_cap),
+        ("VBIAS", "input", vbias_cap),
+    ]:
         lines += [
             f'    pin ({pin_name}) {{',
             f'      direction : {direction} ;',
-            f'      capacitance : {_INPUT_CAP_PF} ;',
+            f'      capacitance : {cap:.6f} ;',
             f'    }}',
             f'',
         ]

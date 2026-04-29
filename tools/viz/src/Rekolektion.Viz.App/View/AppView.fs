@@ -56,10 +56,22 @@ let private canvas (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
         TabControl.viewItems [
             TabItem.create [
                 TabItem.header "2D"
+                // FluentTheme dark variant binds the tab header text
+                // colour to the TabItem's Foreground via a template
+                // binding; setting Foreground here propagates down
+                // through the template so the label is visible
+                // regardless of selected/hover state. Setting
+                // FontSize keeps the headers readable on retina.
+                TabItem.foreground "#ffffff"
+                TabItem.fontSize 16.0
+                TabItem.fontWeight Avalonia.Media.FontWeight.SemiBold
                 TabItem.content canvas2D
             ]
             TabItem.create [
                 TabItem.header "3D"
+                TabItem.foreground "#ffffff"
+                TabItem.fontSize 16.0
+                TabItem.fontWeight Avalonia.Media.FontWeight.SemiBold
                 TabItem.content canvas3D
             ]
         ]

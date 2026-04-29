@@ -30,6 +30,9 @@ let private pickGds (source: obj) : System.Threading.Tasks.Task<string option> =
             opts.AllowMultiple <- false
             let filter = FilePickerFileType("GDS files")
             filter.Patterns <- List<string>([ "*.gds"; "*.gds2" ])
+            filter.AppleUniformTypeIdentifiers <-
+                List<string>([ "public.data"; "public.item" ])
+            filter.MimeTypes <- List<string>([ "application/octet-stream" ])
             opts.FileTypeFilter <- List<FilePickerFileType>([ filter ])
             let! files = win.StorageProvider.OpenFilePickerAsync(opts)
             if files.Count = 0 then return None

@@ -2,6 +2,7 @@ module Rekolektion.Viz.App.Canvas3D.StackCanvasControl
 
 open System
 open Avalonia
+open Avalonia.Input
 open Avalonia.OpenGL
 open Avalonia.OpenGL.Controls
 open Silk.NET.OpenGL
@@ -9,11 +10,19 @@ open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Render.Mesh
 
+/// Z exaggeration multiplier applied to vertex Z on upload.
+/// 1.0 = physical SKY130 stack heights (matches the legacy GLB
+/// tool). For a typical bitcell with xy ≈ 2.4×3.7 µm and Z stack
+/// ≈ 3.6 µm the proportions are roughly cubic at 1.0; bumping
+/// above 1.0 turns small cells into towers.
+[<Literal>]
+let private Z_EXAGGERATION = 1.0
+
 /// Avalonia OpenGlControlBase loads a GL context for us; we use
 /// Silk.NET.OpenGL.GL on top of it for typed bindings. The control
-/// owns one VBO + one shader program. Mesh changes when Library
-/// changes; toggle changes are handled by per-vertex layer visibility
-/// uniforms.
+/// owns one VBO + one EBO + one shader program. Mesh changes when
+/// Library changes; toggle changes are handled by per-vertex layer
+/// visibility uniforms.
 type StackCanvasControl() =
     inherit OpenGlControlBase()
 
@@ -23,9 +32,29 @@ type StackCanvasControl() =
     let mutable vao : uint32 = 0u
     let mutable program : uint32 = 0u
     let mutable indexCount : int = 0
+    // Avalonia.OpenGlControlBase 11.3.14 doesn't include a depth
+    // attachment on the FBO it provides. Without depth, the cube
+    // collapses into a 2D draw-order collage. We allocate our own
+    // depth renderbuffer and attach it to the FBO each frame
+    // (cheap, since it's the same RBO unless the size changes).
+    let mutable depthRbo : uint32 = 0u
+    let mutable depthRboW : int = 0
+    let mutable depthRboH : int = 0
     let mutable yawDeg = 30.0
-    let mutable pitchDeg = -25.0
+    // ~20° pitch keeps the camera above the substrate but at a
+    // shallow enough angle to see layer thickness in the metal
+    // stack rather than just the top of met5.
+    let mutable pitchDeg = 20.0
     let mutable zoom = 1.0
+    // Camera target + extent. Set by FitCameraTo when a Library is
+    // assigned; defaults work if Library is never set.
+    let mutable target : System.Numerics.Vector3 = System.Numerics.Vector3.Zero
+    let mutable extent : float = 80.0
+    // Drag state for pointer-driven orbit. `Avalonia.Point` is
+    // qualified because Rekolektion.Viz.Core.Gds.Types.Point is
+    // also in scope and would otherwise shadow it.
+    let mutable dragging : bool = false
+    let mutable lastPos : Avalonia.Point = Avalonia.Point()
 
     static member val LibraryProperty : StyledProperty<Library option> =
         AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
@@ -48,10 +77,111 @@ type StackCanvasControl() =
         zoom <- z
         this.RequestNextFrameRendering()
 
+    /// Auto-fit `target` (camera look-at point) and `extent` (longest
+    /// axis of the macro 3D bbox) so the camera frames whatever's in
+    /// `lib`. Called when Library is assigned. Without this, a small
+    /// bitcell renders as a single pixel inside the default 80-µm
+    /// frustum.
+    member private this.FitCameraTo (lib: Library) =
+        let mutable xMin, xMax = System.Single.MaxValue, System.Single.MinValue
+        let mutable yMin, yMax = System.Single.MaxValue, System.Single.MinValue
+        // Z range from the layer table for layers actually present
+        // in the macro — gives true vertical extent so target.Z
+        // lands at stack mid and the frustum encloses the stack at
+        // any rotation.
+        let mutable zMinPhysical = System.Double.MaxValue
+        let mutable zMaxPhysical = System.Double.MinValue
+        for s in lib.Structures do
+            for el in s.Elements do
+                match el with
+                | Boundary b ->
+                    for p in b.Points do
+                        let x = float32 ((float p.X) * lib.UserUnitsPerDbUnit)
+                        let y = float32 ((float p.Y) * lib.UserUnitsPerDbUnit)
+                        if x < xMin then xMin <- x
+                        if x > xMax then xMax <- x
+                        if y < yMin then yMin <- y
+                        if y > yMax then yMax <- y
+                    match Layout.Layer.bySky130Number b.Layer b.DataType with
+                    | Some (layer: Layout.Layer.Layer) ->
+                        let zBot = layer.StackZ
+                        let zTop = layer.StackZ + layer.Thickness
+                        if zBot < zMinPhysical then zMinPhysical <- zBot
+                        if zTop > zMaxPhysical then zMaxPhysical <- zTop
+                    | None -> ()
+                | _ -> ()
+        let zMin = zMinPhysical * Z_EXAGGERATION
+        let zMax = zMaxPhysical * Z_EXAGGERATION
+        if xMin > xMax then
+            target <- System.Numerics.Vector3.Zero
+            extent <- 80.0
+        else
+            let zMid =
+                if zMin > zMax then 0.0
+                else (zMin + zMax) * 0.5
+            target <- System.Numerics.Vector3(
+                            (xMin + xMax) * 0.5f,
+                            (yMin + yMax) * 0.5f,
+                            float32 zMid)
+            // Use the largest 3D dimension so the frustum encloses
+            // the entire mesh at any rotation. Min 5 µm so a tiny
+            // bitcell doesn't render at sub-pixel scale.
+            let xExt = float (xMax - xMin)
+            let yExt = float (yMax - yMin)
+            let zExt = if zMax > zMin then zMax - zMin else 0.0
+            extent <- max xExt (max yExt zExt) |> max 5.0
+
+    /// Fill a transparent rect covering the control bounds so
+    /// Avalonia's hit-test treats every point inside Bounds as a
+    /// hit. Without this, pointer events fall THROUGH the GL canvas
+    /// (the GL framebuffer isn't part of Avalonia's visual tree for
+    /// hit-test purposes) and PointerPressed never fires.
+    override this.Render (context: Avalonia.Media.DrawingContext) =
+        base.Render context
+        context.FillRectangle(
+            Avalonia.Media.Brushes.Transparent,
+            Avalonia.Rect(this.Bounds.Size))
+
     override this.OnPropertyChanged e =
         base.OnPropertyChanged e
-        if e.Property = StackCanvasControl.LibraryProperty || e.Property = StackCanvasControl.ToggleProperty then
+        if e.Property = StackCanvasControl.LibraryProperty then
+            match this.Library with
+            | Some lib -> this.FitCameraTo lib
+            | None -> ()
             this.RequestNextFrameRendering()
+        elif e.Property = StackCanvasControl.ToggleProperty then
+            this.RequestNextFrameRendering()
+
+    // ---- Pointer-driven orbit + wheel zoom ----
+
+    override this.OnPointerPressed e =
+        base.OnPointerPressed e
+        dragging <- true
+        lastPos <- e.GetPosition this
+        e.Pointer.Capture this
+        this.Focus () |> ignore
+
+    override this.OnPointerMoved e =
+        base.OnPointerMoved e
+        if dragging then
+            let p = e.GetPosition this
+            let dx = p.X - lastPos.X
+            let dy = p.Y - lastPos.Y
+            yawDeg   <- yawDeg + dx * 0.4
+            pitchDeg <- max -89.0 (min 89.0 (pitchDeg + dy * 0.4))
+            lastPos <- p
+            this.RequestNextFrameRendering()
+
+    override this.OnPointerReleased e =
+        base.OnPointerReleased e
+        dragging <- false
+        e.Pointer.Capture null
+
+    override this.OnPointerWheelChanged e =
+        base.OnPointerWheelChanged e
+        let factor = if e.Delta.Y > 0.0 then 1.15 else 1.0 / 1.15
+        zoom <- max 0.05 (min 50.0 (zoom * factor))
+        this.RequestNextFrameRendering()
 
     override this.OnOpenGlInit(gli) =
         let g = GL.GetApi(fun n -> gli.GetProcAddress(n))
@@ -59,7 +189,10 @@ type StackCanvasControl() =
         vbo <- g.GenBuffer()
         ebo <- g.GenBuffer()
         vao <- g.GenVertexArray()
-        // Minimal vertex shader (position + color + visibility) + frag shader
+        // Vertex shader passes world position so the fragment shader
+        // can compute a flat per-triangle normal via screen-space
+        // derivatives — avoids needing per-vertex normals in the
+        // buffer.
         let vsSrc = "
             #version 330 core
             layout(location=0) in vec3 aPos;
@@ -68,20 +201,31 @@ type StackCanvasControl() =
             uniform mat4 uMVP;
             out vec3 vColor;
             out float vVis;
+            out vec3 vWorldPos;
             void main() {
                 gl_Position = uMVP * vec4(aPos, 1.0);
                 vColor = aColor;
                 vVis = aLayerVisible;
+                vWorldPos = aPos;
             }
         "
+        // uLightDir is camera-forward (head-mounted light): faces
+        // facing the camera light up, faces facing away dim. A
+        // world-fixed light makes camera rotation read as flat
+        // because face brightness is invariant.
         let fsSrc = "
             #version 330 core
             in vec3 vColor;
             in float vVis;
+            in vec3 vWorldPos;
             out vec4 FragColor;
+            uniform vec3 uLightDir;
             void main() {
                 if (vVis < 0.5) discard;
-                FragColor = vec4(vColor, 1.0);
+                vec3 n = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+                float lambert = max(dot(n, -uLightDir), 0.0);
+                float intensity = 0.20 + 0.80 * lambert;
+                FragColor = vec4(vColor * intensity, 1.0);
             }
         "
         let compile (src: string) (kind: ShaderType) =
@@ -115,14 +259,18 @@ type StackCanvasControl() =
             g.DeleteBuffer(ebo)
             g.DeleteVertexArray vao
             g.DeleteProgram(program)
+            if depthRbo <> 0u then
+                g.DeleteRenderbuffer depthRbo
+                depthRbo <- 0u
         | None -> ()
 
-    override this.OnOpenGlRender(_gli, _fb) =
+    override this.OnOpenGlRender(_gli, fb) =
         match gl, this.Library with
         | Some g, Some lib ->
             let mesh = Extruder.extrude lib
             indexCount <- mesh.Indices.Length
-            // Build interleaved buffer: pos(3) + color(3) + layerVisible(1) = 7 floats per vertex
+            // Build interleaved buffer: pos(3) + color(3) + vis(1)
+            // = 7 floats per vertex.
             let toggle = this.Toggle
             let stride = 7
             let arr = Array.zeroCreate<float32> (mesh.Vertices.Length * stride)
@@ -137,7 +285,7 @@ type StackCanvasControl() =
                 let off = i * stride
                 arr.[off]     <- v.X
                 arr.[off + 1] <- v.Y
-                arr.[off + 2] <- v.Z
+                arr.[off + 2] <- v.Z * float32 Z_EXAGGERATION
                 arr.[off + 3] <- r
                 arr.[off + 4] <- gC
                 arr.[off + 5] <- b
@@ -149,12 +297,42 @@ type StackCanvasControl() =
             g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
             g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.DynamicDraw)
 
+            // Avalonia's OpenGlControlBase doesn't pre-set the
+            // viewport; set it ourselves to the FBO's physical pixel
+            // size (logical bounds × DPI scale).
+            let scale =
+                match this.VisualRoot with
+                | null -> 1.0
+                | vr -> vr.RenderScaling
+            let fbW = max 1 (int (this.Bounds.Width * scale))
+            let fbH = max 1 (int (this.Bounds.Height * scale))
+            g.BindFramebuffer(GLEnum.Framebuffer, uint32 fb)
+            // Lazily create / resize a depth renderbuffer matching
+            // the FBO and attach it. Avalonia's FBO arrives without
+            // depth; without depth, glEnable(DEPTH_TEST) is a no-op
+            // and triangles render in draw-order rather than by
+            // distance to camera.
+            if depthRbo = 0u then
+                depthRbo <- g.GenRenderbuffer()
+            if depthRboW <> fbW || depthRboH <> fbH then
+                g.BindRenderbuffer(GLEnum.Renderbuffer, depthRbo)
+                g.RenderbufferStorage(
+                    GLEnum.Renderbuffer,
+                    GLEnum.DepthComponent24,
+                    uint32 fbW, uint32 fbH)
+                depthRboW <- fbW
+                depthRboH <- fbH
+            g.FramebufferRenderbuffer(
+                GLEnum.Framebuffer,
+                GLEnum.DepthAttachment,
+                GLEnum.Renderbuffer,
+                depthRbo)
+            g.Viewport(0, 0, uint32 fbW, uint32 fbH)
             g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f)
             g.Clear(uint32 (GLEnum.ColorBufferBit ||| GLEnum.DepthBufferBit))
             g.Enable(GLEnum.DepthTest)
 
             g.UseProgram(program)
-            // Vertex attribs: stride is bytes, offset is byte offset as void*
             let strideBytes = uint32 (stride * sizeof<float32>)
             g.EnableVertexAttribArray(0u)
             g.VertexAttribPointer(0u, 3, GLEnum.Float, false, strideBytes, nativeint 0)
@@ -163,11 +341,37 @@ type StackCanvasControl() =
             g.EnableVertexAttribArray(2u)
             g.VertexAttribPointer(2u, 1, GLEnum.Float, false, strideBytes, nativeint (6 * sizeof<float32>))
 
-            // Build a simple MVP: orthographic projection looking down at the die,
-            // then rotate by yaw/pitch.
-            let mvp = Matrix4x4Helpers.buildOrbitMvp yawDeg pitchDeg zoom (this.Bounds.Width, this.Bounds.Height)
+            let mvp =
+                Matrix4x4Helpers.buildOrbitMvp
+                    yawDeg pitchDeg zoom target extent
+                    (this.Bounds.Width, this.Bounds.Height)
+            // Camera-forward direction in world space — used as the
+            // light direction so faces facing the camera are lit
+            // and faces facing away dim. Recomputed each frame from
+            // the same yaw/pitch as the camera; light orbits with
+            // the camera (head-mounted), which is what gives camera
+            // rotation a true 3D feel rather than a 2D-billboard
+            // rotation.
+            let yawRad = float32 (yawDeg * System.Math.PI / 180.0)
+            let pitchRad = float32 (pitchDeg * System.Math.PI / 180.0)
+            let camForward =
+                System.Numerics.Vector3(
+                    -MathF.Cos(pitchRad) * MathF.Sin(yawRad),
+                    -MathF.Cos(pitchRad) * MathF.Cos(yawRad),
+                    -MathF.Sin(pitchRad))
+            let lightLoc = g.GetUniformLocation(program, "uLightDir")
+            g.Uniform3(lightLoc, camForward)
+            // transpose=FALSE is correct for System.Numerics matrices
+            // here. .NET stores Matrix4x4 fields in row-major order
+            // (M11, M12, M13, M14, M21, ...); GL with transpose=false
+            // takes those bytes as column-major — the net effect is
+            // GL applies the matrix correctly under row-vector
+            // convention. transpose=true would double-transpose,
+            // inverting axes and producing a billboard-rotation
+            // pseudo-3D effect instead of true camera orbit.
+            // Verified in tools/viz/src/Rekolektion.Viz.GlTest.
             let loc = g.GetUniformLocation(program, "uMVP")
             let mvpArr = Matrix4x4Helpers.toFloatArray mvp
-            g.UniformMatrix4(loc, 1u, true, ReadOnlySpan<float32>(mvpArr))
+            g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
             g.DrawElements(GLEnum.Triangles, uint32 indexCount, GLEnum.UnsignedInt, IntPtr.Zero.ToPointer())
         | _ -> ()

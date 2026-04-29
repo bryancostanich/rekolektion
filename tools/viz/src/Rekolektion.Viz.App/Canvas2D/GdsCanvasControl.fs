@@ -25,9 +25,20 @@ type private SkiaDraw(bounds: Rect, lib: Library, toggle: Visibility.ToggleState
                 let canvas = lease.SkCanvas
                 let w = int bounds.Width
                 let h = int bounds.Height
-                canvas.Clear(SKColors.Black)
+                // canvas here is the WHOLE WINDOW's SkSurface, not a
+                // per-control surface. canvas.Clear() would erase
+                // anything Avalonia already drew (tab strip, panels)
+                // — so instead clip to our bounds and fill that
+                // sub-rect with black before painting layers.
+                let saved = canvas.Save ()
+                let clipRect =
+                    SKRect(0.0f, 0.0f, float32 w, float32 h)
+                canvas.ClipRect(clipRect, SKClipOperation.Intersect)
+                use bg = new SKPaint(Style = SKPaintStyle.Fill, Color = SKColors.Black)
+                canvas.DrawRect(clipRect, bg)
                 LayerPainter.paint canvas (w, h) lib toggle
                 LabelPainter.paint canvas (w, h) lib
+                canvas.RestoreToCount saved
 
 type GdsCanvasControl() =
     inherit Control()
@@ -46,6 +57,22 @@ type GdsCanvasControl() =
     member this.Toggle
         with get() : Visibility.ToggleState = this.GetValue(GdsCanvasControl.ToggleProperty)
         and set(v: Visibility.ToggleState) = this.SetValue(GdsCanvasControl.ToggleProperty, v) |> ignore
+
+    /// Without this override Avalonia's default Control.MeasureCore
+    /// returns `Size.Empty`, which causes the parent TabControl to
+    /// give this canvas zero height when it has unbounded layout
+    /// space — and worse, lays the tab-strip ABOVE this control at
+    /// zero height, which makes the "2D"/"3D" tab labels invisible
+    /// on the 2D tab. Returning the constraint claims all available
+    /// space (exactly what a viewport canvas should do).
+    override _.MeasureOverride(constraint': Size) : Size =
+        let w =
+            if System.Double.IsInfinity constraint'.Width then 200.0
+            else constraint'.Width
+        let h =
+            if System.Double.IsInfinity constraint'.Height then 200.0
+            else constraint'.Height
+        Size(w, h)
 
     override this.OnPropertyChanged(e) =
         base.OnPropertyChanged e

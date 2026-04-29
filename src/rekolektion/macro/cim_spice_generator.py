@@ -50,6 +50,28 @@ def _write_extracted(f: TextIO, lines: list[str]) -> None:
     f.write("\n")
 
 
+_BITCELL_SCHEMATIC_PATH: Path = (
+    Path(__file__).parent.parent.parent.parent / "output/sky130_6t_cim_lr.spice"
+)
+
+
+def _write_bitcell_schematic(f: TextIO) -> None:
+    """Inline the hand-written bitcell schematic (validated by
+    `scripts/run_lvs_bitcell.py`) as the bitcell .subckt definition.
+    The schematic uses fixed cap dims (1.0 × 1.0); device-class topology
+    is what LVS compares, not parameter values."""
+    if not _BITCELL_SCHEMATIC_PATH.exists():
+        raise FileNotFoundError(
+            f"Missing bitcell schematic {_BITCELL_SCHEMATIC_PATH}. "
+            f"Regenerate with `python3 -c \"from rekolektion.bitcell."
+            f"sky130_6t_lr_cim import generate_cim_bitcell; "
+            f"generate_cim_bitcell('output/sky130_6t_cim_lr.gds')\"`"
+        )
+    f.write("\n")
+    f.write(_BITCELL_SCHEMATIC_PATH.read_text())
+    f.write("\n")
+
+
 def generate_cim_reference_spice(
     p: CIMMacroParams,
     output_path: str | Path,
@@ -82,13 +104,23 @@ def generate_cim_reference_spice(
         )
         f.write(".global VDD VSS VSUBS VPWR VGND\n\n")
 
-        # Per-cell subckt definitions (pre-extracted from layout).
-        # MWL driver = foundry sky130_fd_sc_hd__buf_2.  MBL precharge and
-        # MBL sense are custom analog cells.
+        # Per-cell subckt definitions.  MWL driver, MBL precharge, and
+        # MBL sense are pre-extracted from layout (small, simple cells).
+        # The BITCELL specifically is sourced from the hand-written
+        # SCHEMATIC (output/sky130_6t_cim_lr.spice) — track 05 trustworthy
+        # LVS fix.  Pre-fix this read the extracted bitcell, which made
+        # the macro LVS a self-reference (extracted-vs-extracted, can't
+        # catch broken cells).  Now the schematic asserts the bitcell's
+        # intended topology and the macro LVS verifies the layout truly
+        # implements that topology.  The bitcell schematic uses fixed
+        # MIM cap dimensions (1.0 × 1.0); per-variant cap dimensions are
+        # sized at the actual layout but netgen compares cap topology
+        # only (cap_mim_m3_1 is a 2-terminal class) so this is a safe
+        # value-only difference, not a connectivity mismatch.
         _write_extracted(f, _read_extracted(f"{mwl_driver_subckt}.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_precharge.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_sense.subckt.sp"))
-        _write_extracted(f, _read_extracted(_bitcell_subckt_filename(p.variant)))
+        _write_bitcell_schematic(f)
 
         # Top-level subckt port list — matches the macro's external
         # pins as drawn by `cim_assembler.assemble_cim`.  Includes

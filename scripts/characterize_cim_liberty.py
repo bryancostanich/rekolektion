@@ -215,6 +215,7 @@ class SimConfig:
     seed: int = 0
     vbias: float = 0.7
     vref: float = 1.5
+    probe_internals: bool = False    # diagnostic: probe internal cell nodes
 
     @property
     def slug(self) -> str:
@@ -514,6 +515,38 @@ def _build_testbench(cfg: SimConfig, work: Path) -> tuple[Path, dict]:
                 f".measure tran v_at_{c}_{i:02d} FIND v(mbl_out_{c}) "
                 f"AT={t_sample:.4f}n"
             )
+
+    # Optional diagnostic: probe internal cell nodes for measure_cols.
+    # Path is xbc_0_<c>.<internal_net>.  Internal net names come from the
+    # extracted .ext.spice and mostly look like a_<x>_<y>#.
+    if cfg.probe_internals:
+        lines.append("* --- Internal-node probes (diagnostic) ---")
+        # Sample at: t_quiescent (pre-edge) and at every 5th ladder point
+        sample_times_ns = [t_quiescent_ns] + [
+            t_edge_ns + offsets[i] for i in range(0, len(offsets), 5)
+        ]
+        cell_nodes = [
+            "a_36_272#",   # bitcell internal — Q candidate (gate of X6 PMOS)
+            "a_36_372#",   # bitcell internal — QB candidate (gate of X1 PMOS)
+            "a_36_164#",   # T7 source (= MBL when T7 on)
+            "a_62_616#",   # MIM cap bottom plate (= weight node)
+        ]
+        for c in cfg.measure_cols:
+            for ni, node in enumerate(cell_nodes):
+                node_safe = node.replace("#", "_h").replace(".", "_")
+                node_path = f"xbc_0_{c}.{node}"
+                for ti, t in enumerate(sample_times_ns):
+                    lines.append(
+                        f".measure tran probe_{c}_{ni}_{ti} FIND "
+                        f"v({node_path}) AT={t:.4f}n"
+                    )
+            # Also probe MBL[c] (the analog node before the source follower).
+            for ti, t in enumerate(sample_times_ns):
+                lines.append(
+                    f".measure tran probe_mbl_{c}_{ti} FIND v(mbl_{c}) "
+                    f"AT={t:.4f}n"
+                )
+
     lines.append(".end")
 
     tb = work / "tb.sp"
@@ -561,7 +594,7 @@ def _run_ngspice(
 # ---------------------------------------------------------------------------
 
 _MEAS_PAT = re.compile(
-    r"^\s*(v_quiescent_\d+|v_compute_\d+|v_at_\d+_\d+)\s*=\s*([0-9.eE+\-]+)",
+    r"^\s*(v_quiescent_\d+|v_compute_\d+|v_at_\d+_\d+|probe_\w+_\d+_\d+|probe_mbl_\d+_\d+)\s*=\s*([0-9.eE+\-]+)",
     re.M,
 )
 
@@ -648,6 +681,7 @@ def _config_to_dict(cfg: SimConfig) -> dict:
         "seed": cfg.seed,
         "vbias": cfg.vbias,
         "vref": cfg.vref,
+        "probe_internals": cfg.probe_internals,
     }
 
 
@@ -796,6 +830,8 @@ def main(argv: list[str]) -> int:
                     help="Corners for --nldm-grid (comma list)")
     ap.add_argument("--bias-sweep", action="store_true",
                     help="Run 3x3 VBIAS/VREF sensitivity at TT/25")
+    ap.add_argument("--probe-internals", action="store_true",
+                    help="Diagnostic: probe internal cell nodes (Q/QB/MBL/MIM)")
     args = ap.parse_args(argv[1:])
 
     for v in args.variants:
@@ -822,6 +858,7 @@ def main(argv: list[str]) -> int:
                     slew_ps=args.slew_ps, load_fF=args.load_ff,
                     active_rows=active_rows, measure_cols=measure_cols,
                     seed=args.seed, vbias=args.vbias, vref=args.vref,
+                    probe_internals=args.probe_internals,
                 )
                 for cfg in _pattern_sweep_configs(variant)
             ]
@@ -834,6 +871,7 @@ def main(argv: list[str]) -> int:
                         slew_ps=cfg.slew_ps, load_fF=cfg.load_fF,
                         active_rows=active_rows, measure_cols=measure_cols,
                         seed=args.seed, vbias=args.vbias, vref=args.vref,
+                        probe_internals=args.probe_internals,
                     )
                     for cfg in _nldm_grid_configs(variant, args.pattern, corner)
                 ]
@@ -844,6 +882,7 @@ def main(argv: list[str]) -> int:
                     slew_ps=args.slew_ps, load_fF=args.load_ff,
                     active_rows=active_rows, measure_cols=measure_cols,
                     seed=args.seed, vbias=cfg.vbias, vref=cfg.vref,
+                    probe_internals=args.probe_internals,
                 )
                 for cfg in _bias_sweep_configs(variant)
             ]
@@ -854,6 +893,7 @@ def main(argv: list[str]) -> int:
                 slew_ps=args.slew_ps, load_fF=args.load_ff,
                 active_rows=active_rows, measure_cols=measure_cols,
                 seed=args.seed, vbias=args.vbias, vref=args.vref,
+                probe_internals=args.probe_internals,
             ))
 
     print(f"Queue: {len(configs)} sim{'' if len(configs) == 1 else 's'}")

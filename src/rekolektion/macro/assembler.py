@@ -414,14 +414,14 @@ def assemble(p: MacroParams) -> tuple[gdstk.Library, NetsTracker]:
     return lib, tracker
 
 
-def _shift_top_to_zero_origin(
-    top: gdstk.Cell,
-    p: MacroParams,
-    fp: Floorplan,
-) -> None:
-    """Translate every shape in `top` by (-xs_lo, -ys_lo) so the cell's
-    bounding box begins at (0, 0).  Uses the same xs_lo/ys_lo formulas
-    the LEF generator uses, so the GDS and LEF agree on coordinates."""
+def _macro_shift_origin(p: MacroParams, fp: Floorplan) -> tuple[float, float]:
+    """Compute the (xs_lo, ys_lo) origin used to shift the top cell so
+    its bounding box begins at (0, 0).  Single source of truth for the
+    formulas — `_shift_top_to_zero_origin` shifts by (-xs_lo, -ys_lo),
+    the LEF generator emits pin RECTs in the same frame, and tests
+    that compare against pre-shift floorplan coordinates add the
+    inverse to their expected values.
+    """
     xs_lo = min(x for x, _ in fp.positions.values()) - 1.0
     prec_top = fp.positions["precharge"][1] + fp.sizes["precharge"][1]
     wd_bot = fp.positions["write_driver"][1]
@@ -432,6 +432,18 @@ def _shift_top_to_zero_origin(
         - _PDN_STRAP_MARGIN - _PDN_STRAP_W - _PDN_STRAP_MARGIN
     )
     ys_lo = pins_bot_y - 0.5
+    return xs_lo, ys_lo
+
+
+def _shift_top_to_zero_origin(
+    top: gdstk.Cell,
+    p: MacroParams,
+    fp: Floorplan,
+) -> None:
+    """Translate every shape in `top` by (-xs_lo, -ys_lo) so the cell's
+    bounding box begins at (0, 0).  Uses the same xs_lo/ys_lo formulas
+    the LEF generator uses, so the GDS and LEF agree on coordinates."""
+    xs_lo, ys_lo = _macro_shift_origin(p, fp)
     dx, dy = -xs_lo, -ys_lo
     for poly in top.polygons:
         poly.translate(dx, dy)

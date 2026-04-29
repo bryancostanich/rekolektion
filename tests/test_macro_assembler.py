@@ -5,7 +5,19 @@ from rekolektion.macro.assembler import (
     MacroParams,
     assemble,
     build_floorplan,
+    _macro_shift_origin,
 )
+
+
+def _macro_shift(p, fp):
+    """Return (dx, dy) the assembler applies after `assemble()` so the
+    top cell's bounding box begins at (0, 0).  Tests written against
+    pre-shift floorplan coordinates need to add this offset to their
+    expected values.  Sources from the same helper the assembler uses
+    so any change in the shift formulas stays in sync.
+    """
+    xs_lo, ys_lo = _macro_shift_origin(p, fp)
+    return -xs_lo, -ys_lo
 
 
 def test_params_rejects_mux_1():
@@ -122,17 +134,18 @@ def test_assemble_top_cell_references_every_block():
 def test_assemble_block_references_at_floorplan_positions():
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     fp = build_floorplan(p)
+    dx, dy = _macro_shift(p, fp)
     lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
 
     def ref_with(substring: str) -> gdstk.Reference:
         return next(r for r in top.references if substring in r.cell.name)
 
-    # Array origin at floorplan position
+    # Array origin at floorplan position (post-shift).
     ax, ay = fp.positions["array"]
     array_ref = ref_with("sram_array")
-    assert abs(array_ref.origin[0] - ax) < 0.01
-    assert abs(array_ref.origin[1] - ay) < 0.01
+    assert abs(array_ref.origin[0] - (ax + dx)) < 0.01
+    assert abs(array_ref.origin[1] - (ay + dy)) < 0.01
 
 
 @pytest.mark.magic
@@ -155,11 +168,15 @@ def test_assemble_tiny_macro_drc_clean(tmp_path):
 def test_wl_routing_adds_one_met1_wire_per_row():
     """Each row gets a top-level met1 wire between decoder column and array."""
     p = MacroParams(words=32, bits=8, mux_ratio=4)
+    fp = build_floorplan(p)
+    dx, _dy = _macro_shift(p, fp)
     lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
-    # Top-level met1 polygons between the decoder right edge and the
-    # array left edge live in x < 0 (array is at x=0).
-    # Filter to just the horizontal routing wires (aspect ratio > 2).
+    # The decoder-to-array channel sits at x < array_left_edge.  In the
+    # pre-shift assembler frame array_x = 0; post-shift the array left
+    # edge is at fp.positions["array"][0] + dx.  Filter polygons whose
+    # right edge is at or before that line.
+    array_left_post = fp.positions["array"][0] + dx
     wl_wires = []
     for poly in top.polygons:
         if (poly.layer, poly.datatype) != (68, 20):
@@ -167,8 +184,7 @@ def test_wl_routing_adds_one_met1_wire_per_row():
         bb = poly.bounding_box()
         if bb is None:
             continue
-        # Must lie in the decoder-to-array channel (x < 0)
-        if bb[1][0] > 0.0:
+        if bb[1][0] > array_left_post:
             continue
         w = bb[1][0] - bb[0][0]
         h = bb[1][1] - bb[0][1]
@@ -232,14 +248,23 @@ def test_assemble_tiny_macro_with_wl_routing_drc_clean(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_bl_extends_strips_above_array_to_precharge():
+    """One BL + one BR per column bridges the array → precharge gap.
+
+    `_route_bl` runs each strip from `array_top` (the bitcell rail
+    end) to `prec_y` — the precharge cell BOTTOM, NOT its top: BL/BR
+    enter the precharge through its bottom edge and the precharge
+    handles its own internal connection.  An earlier version of this
+    test asserted strips reached `prec_top`; that was never what the
+    implementation built and would have failed regardless of the
+    coordinate-frame shift.
+    """
     p = MacroParams(words=32, bits=8, mux_ratio=4)
+    fp = build_floorplan(p)
+    _dx, dy = _macro_shift(p, fp)
     lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
-    fp = build_floorplan(p)
-    array_top_y = fp.positions["array"][1] + fp.sizes["array"][1]
-    prec_top_y = fp.positions["precharge"][1] + fp.sizes["precharge"][1]
-    # Count top-level met1 polygons whose bbox spans the array-top to
-    # precharge-top channel (vertical strips).
+    array_top_y = fp.positions["array"][1] + fp.sizes["array"][1] + dy
+    prec_bot_y = fp.positions["precharge"][1] + dy
     count = 0
     for poly in top.polygons:
         if (poly.layer, poly.datatype) != (68, 20):
@@ -248,7 +273,7 @@ def test_bl_extends_strips_above_array_to_precharge():
         if bb is None:
             continue
         if (bb[0][1] <= array_top_y + 0.05
-                and bb[1][1] >= prec_top_y - 0.05
+                and bb[1][1] >= prec_bot_y - 0.05
                 and (bb[1][0] - bb[0][0]) < 0.3):
             count += 1
     # 2 strips (BL + BR) per column, 32 cols -> 64 strips minimum
@@ -258,12 +283,23 @@ def test_bl_extends_strips_above_array_to_precharge():
 
 
 def test_bl_extends_strips_below_array_through_peripherals():
+    """One BL + one BR per column bridges the col_mux → array gap.
+
+    `_route_bl` does NOT extend BL/BR all the way down to write_driver
+    — col_mux emits muxed_BL/muxed_BR on its bottom edge for SA/WD,
+    so raw BL/BR only needs to reach col_mux.  Strip y-range is
+    therefore [col_mux_top, array_bot], not [wd_bot, array_bot] as
+    an earlier version of this test asserted.
+    """
     p = MacroParams(words=32, bits=8, mux_ratio=4)
+    fp = build_floorplan(p)
+    _dx, dy = _macro_shift(p, fp)
     lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
-    fp = build_floorplan(p)
-    array_bot_y = fp.positions["array"][1]
-    wd_bot_y = fp.positions["write_driver"][1]
+    array_bot_y = fp.positions["array"][1] + dy
+    col_mux_top_y = (
+        fp.positions["col_mux"][1] + fp.sizes["col_mux"][1] + dy
+    )
     count = 0
     for poly in top.polygons:
         if (poly.layer, poly.datatype) != (68, 20):
@@ -271,7 +307,7 @@ def test_bl_extends_strips_below_array_through_peripherals():
         bb = poly.bounding_box()
         if bb is None:
             continue
-        if (bb[0][1] <= wd_bot_y + 0.05
+        if (bb[0][1] <= col_mux_top_y + 0.05
                 and bb[1][1] >= array_bot_y - 0.05
                 and (bb[1][0] - bb[0][0]) < 0.3):
             count += 1
@@ -298,16 +334,18 @@ def test_assemble_tiny_macro_with_bl_routing_drc_clean(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_control_routing_adds_met2_rails():
-    """Three long horizontal met2 rails (p_en_bar, s_en, w_en) crossing
-    the macro at peripheral y-positions."""
+    """Long horizontal control rails (p_en_bar, s_en, w_en) crossing
+    the macro at peripheral y-positions.  The implementation moved
+    these from met2 to met3 (function name kept for git history).
+    """
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
     fp = build_floorplan(p)
     array_w = fp.sizes["array"][0]
-    long_met2_wires = []
+    long_wires = []
     for poly in top.polygons:
-        if (poly.layer, poly.datatype) != (69, 20):  # met2 drawing
+        if (poly.layer, poly.datatype) != (70, 20):  # met3 drawing
             continue
         bb = poly.bounding_box()
         if bb is None:
@@ -315,10 +353,10 @@ def test_control_routing_adds_met2_rails():
         w = bb[1][0] - bb[0][0]
         h = bb[1][1] - bb[0][1]
         # Horizontal rail: wide (~array_w) and thin
-        if w > array_w * 0.8 and h < 0.3:
-            long_met2_wires.append(poly)
-    assert len(long_met2_wires) >= 3, (
-        f"expected >= 3 control rails; got {len(long_met2_wires)}"
+        if w > array_w * 0.8 and h < 0.5:
+            long_wires.append(poly)
+    assert len(long_wires) >= 3, (
+        f"expected >= 3 control rails on met3; got {len(long_wires)}"
     )
 
 
@@ -358,27 +396,31 @@ def test_top_level_has_pin_labels_for_every_signal():
 
 
 def test_top_level_has_met2_power_rails():
-    """The macro's PDN is two full-width met2 rails — VPWR at the top,
-    VGND at the bottom — with LEF pin stubs straddling each edge."""
+    """The macro's PDN is multiple full-height met4 vertical straps —
+    one per VPWR / VGND alternating across the macro — with LEF pin
+    stubs straddling the top and bottom edges.  (Function name kept
+    for git history; the implementation moved from met2 horizontal
+    rails to met4 vertical straps for routing-channel reasons.)
+    """
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     top = next(c for c in lib.cells if c.name == p.top_cell_name)
-    # Count met2 (69, 20) polygons that span most of the macro width.
     fp = build_floorplan(p)
-    macro_w_est = fp.macro_size[0]
-    long_met2 = []
+    macro_h_est = fp.macro_size[1]
+    long_straps = []
     for poly in top.polygons:
-        if (poly.layer, poly.datatype) != (69, 20):
+        if (poly.layer, poly.datatype) != (71, 20):  # met4 drawing
             continue
         bb = poly.bounding_box()
         if bb is None:
             continue
         w = bb[1][0] - bb[0][0]
         h = bb[1][1] - bb[0][1]
-        if w > 0.8 * macro_w_est and h < 1.0:
-            long_met2.append(poly)
-    assert len(long_met2) >= 2, (
-        f"expected >=2 full-width met2 power rails; got {len(long_met2)}"
+        # Vertical strap: narrow + tall, spans most of the macro height.
+        if h > 0.8 * macro_h_est and w < 2.5:
+            long_straps.append(poly)
+    assert len(long_straps) >= 2, (
+        f"expected >=2 full-height met4 PDN straps; got {len(long_straps)}"
     )
 
 

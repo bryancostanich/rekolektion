@@ -106,7 +106,34 @@ from rekolektion.macro.sky130_drc import (
     VIA2_MIN_SPACE,
     VIA3_MIN_SPACE,
     VIA4_MIN_SPACE,
+    LI1_MIN_AREA,
+    MET1_MIN_AREA,
+    MET2_MIN_AREA,
+    MET3_MIN_AREA,
+    MET4_MIN_AREA,
+    MET5_MIN_AREA,
 )
+import math
+
+
+# Per-metal minimum side length for an isolated SQUARE pad to satisfy
+# its min-area rule.  Only met3/met4/met5 need clamping: their
+# enclosure-derived pad sides (0.33–0.38 µm) sit well below met3.6 /
+# met4.6 (0.24 µm²) — an isolated stack pad otherwise fails DRC.
+# li1/met1/met2 were INTENTIONALLY left out: their min-area floors
+# (sqrt(0.0561)=0.237 for li1, sqrt(0.083)=0.288 for met1) are LARGER
+# than the enclosure-derived pad, so clamping there grows every mcon
+# / via1 li1+met1+met2 pad and creates new li.3/met1.2 spacing
+# violations against adjacent foundry-bitcell features that the
+# original 0.17–0.21 pads cleared.  In practice the li1/met1/met2
+# pads are always followed by a horizontal wire stub on the same
+# metal, so the connected net's combined area satisfies the min-area
+# rule without a pad clamp.
+_METAL_MIN_PAD_SIDE: dict[str, float] = {
+    "met3": math.sqrt(MET3_MIN_AREA),
+    "met4": math.sqrt(MET4_MIN_AREA),
+    "met5": math.sqrt(MET5_MIN_AREA),
+}
 
 # Via ladder steps: (lower_metal, via_layer, upper_metal, via_size_um,
 #                    lower_enclosure_um, upper_enclosure_um, via_min_space_um)
@@ -169,6 +196,14 @@ def draw_via_stack(
             continue
         pad_size[m_lower] = max(pad_size.get(m_lower, 0.0), via_size + 2 * enc_lower)
         pad_size[m_upper] = max(pad_size.get(m_upper, 0.0), via_size + 2 * enc_upper)
+
+    # Clamp pad side up to the per-metal minimum-area floor so an
+    # isolated landing pad (e.g. met3 between via2 and via3 in a
+    # standalone li1→met4 stack) doesn't trip met3.6 / met4.6.
+    for metal, side in list(pad_size.items()):
+        floor = _METAL_MIN_PAD_SIDE.get(metal, 0.0)
+        if side < floor:
+            pad_size[metal] = floor
 
     # Second pass: emit cuts. Landing pads are emitted ONCE per metal
     # using the max size computed above.

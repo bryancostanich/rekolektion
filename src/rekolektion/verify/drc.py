@@ -219,6 +219,7 @@ def run_drc(
     cell_name: str = "",
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
+    waiver_footprints: list[tuple[str, float, float, float, float]] | None = None,
 ) -> DRCResult:
     """Run Magic DRC on a GDS file.
 
@@ -227,6 +228,15 @@ def run_drc(
         cell_name: Top cell name. If empty, uses the first cell found.
         pdk_root: Path to PDK root. Auto-detected if not provided.
         output_dir: Directory for DRC output files. Uses temp dir if not provided.
+        waiver_footprints: Optional list of `(name, x0, y0, x1, y1)` µm
+            rectangles defining where rule-id-based waivers are
+            allowed.  When supplied, a tile from a known-waiver rule
+            is counted as a waiver ONLY if its centre falls inside
+            one of these footprints; tiles outside (e.g. user-routing
+            channels between foundry cells) escalate to real errors
+            and trip `clean=False`.  When None (default), behaviour
+            is the legacy global rule-id filter — every tile from a
+            waiver rule is silently waived no matter where it lives.
 
     Returns:
         DRCResult with error count and details.
@@ -337,29 +347,76 @@ quit -noprompt
             except ValueError:
                 pass
 
-    # Parse detailed errors from log. Lines are "Violation (N tiles): <msg>".
-    # Split into waivers vs real based on each rule's ID (see _is_waiver).
+    # Parse detailed errors from log. Headers are "Violation (N tiles):
+    # <msg>" followed by N "  at: x0 y0 x1 y1" rows.  Coordinates are
+    # Magic DBU = 1/200 µm.
+    #
+    # Without footprints: classify all N tiles together by rule-id
+    # (legacy global filter).
+    # With footprints: for waiver rules, classify each tile
+    # individually based on whether its centre is inside any
+    # footprint.  Tiles outside the footprints escalate to real even
+    # if the rule is on the waiver list.
     errors: list[str] = []
     real_errors: list[str] = []
     waiver_tiles = 0
     real_tiles = 0
+    suspect_outside = 0    # waiver rule, tile outside any footprint
     line_re = re.compile(r"^Violation \((\d+) tiles\): (.*)$")
+    tile_re = re.compile(r"^\s*at:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
+    _DBU = 200.0
     if log_path.exists():
-        for line in log_path.read_text().splitlines():
-            if not line.startswith("Violation "):
+        log_lines = log_path.read_text().splitlines()
+        i = 0
+        while i < len(log_lines):
+            header = log_lines[i]
+            i += 1
+            if not header.startswith("Violation "):
                 continue
-            errors.append(line)
-            m = line_re.match(line)
+            errors.append(header)
+            m = line_re.match(header)
             if not m:
-                real_errors.append(line)
+                real_errors.append(header)
                 continue
             n = int(m.group(1))
             msg = m.group(2)
-            if _is_waiver(msg):
-                waiver_tiles += n
-            else:
+            rule_is_waiver = _is_waiver(msg)
+            # Pull the next N "at:" lines.
+            tiles: list[tuple[float, float]] = []
+            while len(tiles) < n and i < len(log_lines):
+                tm = tile_re.match(log_lines[i])
+                i += 1
+                if tm is None:
+                    continue
+                x0, y0, x1, y1 = (int(c) / _DBU for c in tm.groups())
+                tiles.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+            if not rule_is_waiver:
                 real_tiles += n
-                real_errors.append(line)
+                real_errors.append(header)
+                continue
+            if not waiver_footprints:
+                # Legacy: every tile from this rule waived globally.
+                waiver_tiles += n
+                continue
+            # Spatial check: only tiles inside a footprint are waivers.
+            inside_n = 0
+            for cx, cy in tiles:
+                hit = False
+                for _name, fx0, fy0, fx1, fy1 in waiver_footprints:
+                    if fx0 <= cx <= fx1 and fy0 <= cy <= fy1:
+                        hit = True
+                        break
+                if hit:
+                    inside_n += 1
+            outside_n = n - inside_n
+            waiver_tiles += inside_n
+            real_tiles += outside_n
+            suspect_outside += outside_n
+            if outside_n > 0:
+                real_errors.append(
+                    f"{header}  -- {outside_n}/{n} tiles outside foundry "
+                    f"footprints (suspect)"
+                )
 
     return DRCResult(
         clean=(real_tiles == 0),

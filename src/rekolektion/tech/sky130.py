@@ -114,6 +114,7 @@ class SKY130Layers:
     MET3 = Layer(70, 20)        # Metal 3
 
     # Labels and pins
+    NWELL_LABEL = Layer(64, 5)  # SKY130 nwell label purpose
     POLY_LABEL = Layer(66, 5)
     LI1_LABEL = Layer(67, 5)
     MET1_LABEL = Layer(68, 5)

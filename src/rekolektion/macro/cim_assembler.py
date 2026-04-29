@@ -38,7 +38,11 @@ from rekolektion.macro.cim_bitcell_array import CIMBitcellArray
 from rekolektion.macro.cim_mwl_driver_row import MWLDriverRow
 from rekolektion.macro.cim_mbl_precharge_row import MBLPrechargeRow
 from rekolektion.macro.cim_mbl_sense_row import MBLSenseRow
-from rekolektion.macro.routing import draw_pin_with_label
+from rekolektion.macro.routing import (
+    draw_pin_with_label,
+    draw_poly_to_li1_contact,
+    draw_vert_strap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -289,10 +293,10 @@ def _add_macro_routing(
         (mbl_pre_abs_x + 0.075, mbl_pre_via_y + 0.10),
         layer=poly_id_bus, datatype=poly_dt_bus,
     ))
-    _poly_to_li1_contact(top, mbl_pre_abs_x, mbl_pre_via_y)
+    draw_poly_to_li1_contact(top, mbl_pre_abs_x, mbl_pre_via_y)
     draw_via_stack(top, from_layer="li1", to_layer="met1",
                    position=(mbl_pre_abs_x, mbl_pre_via_y))
-    _draw_vert_strap(top, "met1", mbl_pre_abs_x, mbl_pre_via_y, macro_h)
+    draw_vert_strap(top, "met1", mbl_pre_abs_x, mbl_pre_via_y, macro_h)
     draw_pin_with_label(top, text="MBL_PRE", layer="met1",
                         rect=(mbl_pre_abs_x - 0.07, macro_h - 0.14,
                               mbl_pre_abs_x + 0.07, macro_h))
@@ -303,7 +307,7 @@ def _add_macro_routing(
     # li1→met1 mcon
     draw_via_stack(top, from_layer="li1", to_layer="met1",
                    position=(vref_abs_x, vref_abs_y))
-    _draw_vert_strap(top, "met1", vref_abs_x, vref_abs_y, macro_h)
+    draw_vert_strap(top, "met1", vref_abs_x, vref_abs_y, macro_h)
     draw_pin_with_label(top, text="VREF", layer="met1",
                         rect=(vref_abs_x - 0.07, macro_h - 0.14,
                               vref_abs_x + 0.07, macro_h))
@@ -330,10 +334,10 @@ def _add_macro_routing(
     # nothing else routed.
     vbias_abs_y = sense_y + _SENSE_VBIAS_LY
     vbias_abs_x = sense_x + 0.05
-    _poly_to_li1_contact(top, vbias_abs_x, vbias_abs_y)
+    draw_poly_to_li1_contact(top, vbias_abs_x, vbias_abs_y)
     draw_via_stack(top, from_layer="li1", to_layer="met2",
                    position=(vbias_abs_x, vbias_abs_y))
-    _draw_vert_strap(top, "met2", vbias_abs_x, 0.0, vbias_abs_y)
+    draw_vert_strap(top, "met2", vbias_abs_x, 0.0, vbias_abs_y)
     draw_pin_with_label(top, text="VBIAS", layer="met2",
                         rect=(vbias_abs_x - 0.07, 0.0,
                               vbias_abs_x + 0.07, 0.14))
@@ -341,7 +345,7 @@ def _add_macro_routing(
     # ---- VPWR external pin (TOP-RIGHT corner) ----
     vpwr_abs_y = pre_y + _PRE_VPWR_LY
     vpwr_abs_x = pre_x + (p.cols - 2) * p.cell_pitch_x
-    _draw_vert_strap(top, "met1", vpwr_abs_x, vpwr_abs_y, macro_h)
+    draw_vert_strap(top, "met1", vpwr_abs_x, vpwr_abs_y, macro_h)
     draw_pin_with_label(top, text="VPWR", layer="met1",
                         rect=(vpwr_abs_x - 0.07, macro_h - 0.14,
                               vpwr_abs_x + 0.07, macro_h))
@@ -349,7 +353,7 @@ def _add_macro_routing(
     # ---- VGND external pin (BOTTOM-RIGHT corner) ----
     vgnd_abs_y = sense_y + _SENSE_VSS_TAP_LY
     vgnd_abs_x = sense_x + (p.cols - 2) * p.cell_pitch_x
-    _draw_vert_strap(top, "met1", vgnd_abs_x, 0.0, vgnd_abs_y)
+    draw_vert_strap(top, "met1", vgnd_abs_x, 0.0, vgnd_abs_y)
     draw_pin_with_label(top, text="VGND", layer="met1",
                         rect=(vgnd_abs_x - 0.07, 0.0,
                               vgnd_abs_x + 0.07, 0.14))
@@ -369,7 +373,7 @@ def _add_macro_routing(
         draw_via_stack(top, from_layer="li1", to_layer="met2",
                        position=(cx, cell_mbl_out_y))
         # met2 vertical stub from cell MBL_OUT y down to y=0
-        _draw_vert_strap(top, "met2", cx, 0.0, cell_mbl_out_y)
+        draw_vert_strap(top, "met2", cx, 0.0, cell_mbl_out_y)
         # met2 pin label at the bottom edge
         draw_pin_with_label(top, text=f"MBL_OUT[{col}]", layer="met2",
                             rect=(cx - 0.07, 0.0, cx + 0.07, 0.14))
@@ -450,7 +454,7 @@ def _add_macro_routing(
         # 3. Poly licon at bridge_x converts li1 → poly at rb_mwl_y.
         #    Co-located with the via stack pad — overlapping li1
         #    pads merge.
-        _poly_to_li1_contact(top, bridge_x, rb_mwl_y)
+        draw_poly_to_li1_contact(top, bridge_x, rb_mwl_y)
         # 4. Vertical poly stripe at bridge_x from rb_mwl_y to
         #    arr_mwl_y (entirely in the empty LEFT_GAP — no diff
         #    crossings).
@@ -549,7 +553,7 @@ def _add_macro_routing(
         # Sense MBL poly gate → met4 strap (poly licon→li1→m1→m2→m3→m4)
         sense_mbl_abs_x = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_LX
         # Poly licon stack already wires the gate poly to li1 (need to add it)
-        _poly_to_li1_contact(top, sense_mbl_abs_x, sense_mbl_abs_y)
+        draw_poly_to_li1_contact(top, sense_mbl_abs_x, sense_mbl_abs_y)
         draw_via_stack(top, from_layer="li1", to_layer="met4",
                        position=(sense_mbl_abs_x, sense_mbl_abs_y))
         # Horizontal met4 jog from sense MBL X to strap X
@@ -562,58 +566,8 @@ def _add_macro_routing(
         ))
 
 
-def _poly_to_li1_contact(top: gdstk.Cell, cx: float, cy: float) -> None:
-    """Drop a poly licon + li1 pad over a poly polygon at (cx, cy).
-
-    Poly licon (layer 66/44 — same as LICON1 with a poly tag) connects
-    poly to li1.  Use the same LICON1 layer Magic recognizes for both
-    poly and diff contacts.
-    """
-    from rekolektion.macro.sky130_drc import GDS_LAYER
-    licon_id, licon_dt = GDS_LAYER["pc"]   # poly licon (66/44)
-    li1_id, li1_dt = GDS_LAYER["li1"]
-    poly_id, poly_dt = GDS_LAYER["poly"]
-    # Poly enclosure of licon: 0.08 µm
-    LICON = 0.17
-    POLY_ENC = 0.08
-    LI_ENC = 0.08
-    # Widen the poly under the licon (poly.5: licon enclosure 0.05/0.08)
-    poly_pad = LICON + 2 * POLY_ENC
-    top.add(gdstk.rectangle(
-        (cx - poly_pad / 2, cy - poly_pad / 2),
-        (cx + poly_pad / 2, cy + poly_pad / 2),
-        layer=poly_id, datatype=poly_dt,
-    ))
-    # Licon
-    top.add(gdstk.rectangle(
-        (cx - LICON / 2, cy - LICON / 2),
-        (cx + LICON / 2, cy + LICON / 2),
-        layer=licon_id, datatype=licon_dt,
-    ))
-    # Li1 pad
-    li_pad = LICON + 2 * LI_ENC
-    top.add(gdstk.rectangle(
-        (cx - li_pad / 2, cy - li_pad / 2),
-        (cx + li_pad / 2, cy + li_pad / 2),
-        layer=li1_id, datatype=li1_dt,
-    ))
-
-
-def _draw_vert_strap(top: gdstk.Cell, layer: str,
-                     cx: float, y0: float, y1: float,
-                     w: float = 0.20) -> None:
-    """Draw a vertical metal strap from (cx, y0) to (cx, y1)."""
-    from rekolektion.macro.sky130_drc import GDS_LAYER
-    layer_id, layer_dt = GDS_LAYER[layer]
-    yl, yh = (y0, y1) if y0 <= y1 else (y1, y0)
-    top.add(gdstk.rectangle(
-        (cx - w / 2, yl), (cx + w / 2, yh),
-        layer=layer_id, datatype=layer_dt,
-    ))
-
-
 # ---------------------------------------------------------------------------
-# Legacy public API (back-compat for khalkulo / scripts)
+# Legacy public API (back-compat for downstream scripts)
 # ---------------------------------------------------------------------------
 
 def generate_cim_macro(

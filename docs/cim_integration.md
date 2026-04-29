@@ -60,6 +60,35 @@ At 1.8V, the signal degrades severely (10.5 mV TT, only 6/15 corners > 10 mV).
 The Liberty files specify `nom_voltage: 1.2V` — chip-level integration must
 provide a 1.2V supply domain for CIM arrays.
 
+## Consumption contract
+
+The chip-level repo (khalkulo) sits as a sibling of rekolektion and
+points its P&R flow at this repo's per-variant drop directory by
+relative path:
+
+```
+../rekolektion/output/cim_macros/<top_cell>/<top_cell>.{gds,lef,lib,sp,_bb.v}
+```
+
+Where `<top_cell>` is one of `cim_sram_a_256x64`, `cim_sram_b_256x64`,
+`cim_sram_c_64x64`, `cim_sram_d_64x64`.
+
+Anything that breaks this contract is breaking the consumer — change
+with care:
+
+- **Drop path layout** (`output/cim_macros/<top_cell>/<top_cell>.<ext>`):
+  set by `_OUT_ROOT` in `scripts/generate_cim_production.py` and by
+  `CIMMacroParams.top_cell_name`.  Renaming either breaks khalkulo's
+  path lookup.
+- **Top-cell name** (`cim_sram_<variant_letter>_<rows>x<cols>`): same
+  source.
+- **Port names** (`MWL_EN[r]`, `MBL_OUT[c]`, `MBL_PRE`, `VREF`,
+  `VBIAS`, `VPWR`, `VGND`): match across LEF brackets, Liberty
+  `bus(...)`, and Verilog vector ports.  Renaming any of these breaks
+  the consumer's netlist binding.
+- **Pin layer** (everything on `met2`): matches what khalkulo's pin
+  access flow expects.
+
 ## Output Artifacts
 
 Each variant produces 5 files in

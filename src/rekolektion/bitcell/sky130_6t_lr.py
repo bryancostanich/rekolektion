@@ -458,18 +458,33 @@ def create_bitcell(
     #   vertical LI1 at outer_tap_cx connects gate_A's tap pad to
     #   int_top_cy where it meets the M1 jumper via the NMOS_int_top
     #   mcon.
-    # Use the LARGER of the two M1-enclosure-of-mcon rules (0.06) so the
-    # mcons at each end have ≥0.06 µm enclosure on top+bottom.  The
-    # default 0.03 only satisfies the other-direction rule (met1.4) but
-    # the route is purely horizontal and depends on the wider Y to clear
-    # met1.5 at the trace's ENDS where mcons sit.
-    met1_jumper_h = max(R.MET1_MIN_WIDTH,
-                        mcon_sz + 2 * R.MET1_ENCLOSURE_OF_MCON_OTHER)
-    _rect(cell, L.MET1.as_tuple,
-          g["nmos_cx"] - met1_jumper_h / 2.0, g["int_top_cy"] - met1_jumper_h / 2.0,
-          g["pmos_cx"] + met1_jumper_h / 2.0, g["int_top_cy"] + met1_jumper_h / 2.0)
-    _contact(cell, g["nmos_cx"], g["int_top_cy"], L.MCON.as_tuple, mcon_sz)
-    _contact(cell, g["pmos_cx"], g["int_top_cy"], L.MCON.as_tuple, mcon_sz)
+    # Bridge runs on M2 (NOT M1).  An M1 jumper would block the CIM
+    # extension's Q-to-T7-source M1 vertical at gap_licon_cx (which
+    # passes through int_top_cy in the gap) — they'd merge and short
+    # Q to QB.  M2 is on a different layer, so the CIM cell's M1
+    # vertical can pass freely under it.  M2 at int_top_cy is well
+    # below the M2 VPWR stripe at the top of the cell, no conflict.
+    via_sz = R.VIA_SIZE
+    # Pads generously sized: 0.085 µm enclosure on every side of both
+    # mcon (0.17) and via1 (0.15).  Satisfies met1.5/met1.4/via.5a/
+    # via.4a/met2.5/met2.4 with margin, plus met1.6 min-area
+    # (0.083 µm² → 0.34² = 0.1156, ample headroom).
+    m1_via_pad = max(mcon_sz, via_sz) + 2 * 0.085  # 0.34
+    m2_via_pad = via_sz + 2 * 0.085  # 0.32 — distinct because via1 is 0.15
+    m2_route_hw = R.MET2_MIN_WIDTH / 2.0
+    for cx in (g["nmos_cx"], g["pmos_cx"]):
+        _contact(cell, cx, g["int_top_cy"], L.MCON.as_tuple, mcon_sz)
+        _rect(cell, L.MET1.as_tuple,
+              cx - m1_via_pad / 2.0, g["int_top_cy"] - m1_via_pad / 2.0,
+              cx + m1_via_pad / 2.0, g["int_top_cy"] + m1_via_pad / 2.0)
+        _contact(cell, cx, g["int_top_cy"], L.VIA.as_tuple, via_sz)
+        _rect(cell, L.MET2.as_tuple,
+              cx - m2_via_pad / 2.0, g["int_top_cy"] - m2_via_pad / 2.0,
+              cx + m2_via_pad / 2.0, g["int_top_cy"] + m2_via_pad / 2.0)
+    # M2 horizontal bridge between the two M2 pads
+    _rect(cell, L.MET2.as_tuple,
+          g["nmos_cx"] - m2_via_pad / 2.0, g["int_top_cy"] - m2_route_hw,
+          g["pmos_cx"] + m2_via_pad / 2.0, g["int_top_cy"] + m2_route_hw)
     # LI1 leg from NMOS_int_top leftward to gate_A's outer-left tap.
     _rect(cell, L.LI1.as_tuple,
           outer_tap_cx - li_w / 2.0, g["int_top_cy"] - li_w / 2.0,

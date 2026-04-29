@@ -160,43 +160,39 @@ def create_cim_bitcell(
     _li_pad(cell, nmos_cx, t7_drn_cy, li_w, li_pad_h)
 
     # =================================================================
-    # Q-TO-T7 SOURCE ROUTE (M1 through N-P gap)
+    # Q-TO-T7 SOURCE ROUTE (M1 vertical through N-P gap)
     # =================================================================
-    # The latched Q net is on Route 1 li1 (PMOS int_bot + gate_A poly).
-    # Tap into Route 1 li1 with mcon in the gap, run M1 vertically at
-    # X=route_x, then horizontal to T7 source.
+    # Q net is on the LR cell's int_bot LI1 horizontal (NMOS↔PMOS bridge
+    # at int_bot_cy).  Tap with mcon in the gap, run M1 vertically up to
+    # T7 source level, then M1 horizontal across to T7 source mcon.
+    #
+    # The LR cell's QB inverter-output bridge at int_top_cy is on M2
+    # (not M1) specifically so this M1 vertical can pass through the
+    # gap at int_top_cy without shorting Q to QB.
 
-    route_x = _snap(1.10)  # in the N-P gap, clear of all 6T M1
-    q_tap_y = g["int_bot_cy"]  # 0.645, on Route 1 li1
+    route_x = _snap(1.10)
+    q_tap_y = g["int_bot_cy"]
 
-    # Mcon on Route 1 li1 → M1 access to Q
     _contact(cell, route_x, q_tap_y, LAYERS.MCON.as_tuple, mcon_sz)
-
-    # M1 pad at Q tap
-    m1_enc = RULES.MET1_ENCLOSURE_OF_MCON        # 0.03
-    m1_enc_o = RULES.MET1_ENCLOSURE_OF_MCON_OTHER  # 0.06
-    m1_pad_w = mcon_sz + 2 * m1_enc_o  # wider direction
-    m1_pad_h = mcon_sz + 2 * m1_enc    # narrower direction
+    m1_enc = RULES.MET1_ENCLOSURE_OF_MCON
+    m1_enc_o = RULES.MET1_ENCLOSURE_OF_MCON_OTHER
+    m1_pad_w = mcon_sz + 2 * m1_enc_o
+    m1_pad_h = mcon_sz + 2 * m1_enc
+    m1_route_hw = RULES.MET1_MIN_WIDTH / 2.0
 
     # M1 vertical strip at route_x from Q tap up to T7 source level
-    m1_route_hw = RULES.MET1_MIN_WIDTH / 2.0  # half-width of vertical M1
-    m1_route_y_bot = _snap(q_tap_y - m1_pad_h / 2.0)
-    m1_route_y_top = _snap(t7_src_cy + m1_pad_h / 2.0)
     _rect(cell, LAYERS.MET1.as_tuple,
-          route_x - m1_route_hw, m1_route_y_bot,
-          route_x + m1_route_hw, m1_route_y_top)
-
-    # Widen M1 at Q tap for mcon enclosure
+          route_x - m1_route_hw, q_tap_y - m1_pad_h / 2.0,
+          route_x + m1_route_hw, t7_src_cy + m1_pad_h / 2.0)
+    # M1 pad at Q tap for mcon enclosure
     _rect(cell, LAYERS.MET1.as_tuple,
           route_x - m1_pad_w / 2.0, q_tap_y - m1_pad_h / 2.0,
           route_x + m1_pad_w / 2.0, q_tap_y + m1_pad_h / 2.0)
-
     # M1 horizontal from route_x to nmos_cx at T7 source level
     _rect(cell, LAYERS.MET1.as_tuple,
           nmos_cx - m1_pad_w / 2.0, t7_src_cy - m1_route_hw,
           route_x + m1_route_hw, t7_src_cy + m1_route_hw)
-
-    # Mcon + M1 pad at T7 source
+    # T7 source mcon + M1 pad
     _contact(cell, nmos_cx, t7_src_cy, LAYERS.MCON.as_tuple, mcon_sz)
     _rect(cell, LAYERS.MET1.as_tuple,
           nmos_cx - m1_pad_w / 2.0, t7_src_cy - m1_pad_h / 2.0,
@@ -371,7 +367,7 @@ XPG_R BLB WL QB  VSS {NMOS_MODEL} w={pg_w} l={GATE_LENGTH}
 XT7 Q_cap MWL Q VSS {NMOS_MODEL} w={T7_WIDTH} l={GATE_LENGTH}
 
 * MIM coupling capacitor: Q side → MBL
-XCC Q_cap MBL sky130_fd_pr__cap_mim_m3_1 w={mim_w} l={mim_l}
+XCC MBL Q_cap sky130_fd_pr__cap_mim_m3_1 w={mim_w} l={mim_l}
 
 .ends sky130_sram_6t_cim_lr
 """

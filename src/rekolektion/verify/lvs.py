@@ -200,6 +200,19 @@ def run_lvs(
     else:
         extracted = extract_netlist(gds_path, cell_name, pdk_root, output_dir)
 
+    # Magic names the substrate net 'VSUBS' in extracted SPICE; the
+    # standalone-bitcell schematics use VSS as the NMOS body net (no
+    # separate body port).  netgen's `equate nets` in the wrapper setup
+    # doesn't reliably alias these in batch-lvs mode, so substitute
+    # VSUBS->VSS in the extracted file before running netgen.  This is
+    # purely a textual rename of an unconnected substrate net; it
+    # doesn't change the connectivity of any signal node.
+    ext_text = extracted.read_text()
+    if " VSUBS " in ext_text or " VSUBS\n" in ext_text:
+        ext_text = ext_text.replace(" VSUBS ", " VSS ")
+        ext_text = ext_text.replace(" VSUBS\n", " VSS\n")
+        extracted.write_text(ext_text)
+
     # Step 2: Run netgen comparison
     setup_file = netgen_setup(pdk_root)
     log_path = output_dir / "lvs_results.log"
@@ -264,6 +277,11 @@ def run_lvs(
         ("VSUBS", "VGND"),
         ("VDD", "VPWR"),
         ("VSS", "VGND"),
+        # Bitcell-LVS (track 05): standalone bitcell schematics use
+        # VSS/VDD directly as body nets (no separate VPB/VNB ports);
+        # extraction reports the substrate as VSUBS.  Alias VSUBS→VSS
+        # so the comparison sees them as one net.
+        ("VSUBS", "VSS"),
     ]
     for c1, c2 in _equate_pairs:
         lines.append(f"catch {{equate nets -circuit1 {c1} {c2}}}")

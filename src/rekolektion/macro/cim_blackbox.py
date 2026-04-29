@@ -44,20 +44,22 @@ def generate_cim_blackbox(
         f"module {macro_name} (",
     ]
 
-    # Port list
-    ports = []
-    for i in range(rows):
-        ports.append(f"    input  MWL_EN_{i}")
-    for i in range(cols):
-        ports.append(f"    output MBL_OUT_{i}")
-    ports += [
+    # Port list — bus ports declared as Verilog arrays so the
+    # `MWL_EN[i]` / `MBL_OUT[c]` names round-trip with the LEF (which
+    # also uses bracketed notation per its `BUSBITCHARS "[]"` header)
+    # and the Liberty `bus (MWL_EN)` declaration.  Per-bit underscore
+    # ports (MWL_EN_0, ...) read fine on their own but break LEF↔V
+    # connectivity in any P&R / synthesis flow that walks the LEF
+    # MACRO pin list and expects the same names in the Verilog stub.
+    ports = [
+        f"    input  [{rows - 1}:0] MWL_EN",
+        f"    output [{cols - 1}:0] MBL_OUT",
         f"    input  MBL_PRE",
         f"    inout  VREF",
         f"    input  VBIAS",
         f"    inout  {pwr_pin}",
         f"    inout  {gnd_pin}",
     ]
-
     lines.append(",\n".join(ports))
     lines += [
         f");",

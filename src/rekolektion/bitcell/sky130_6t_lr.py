@@ -127,8 +127,14 @@ def _compute_cell_geometry(
     # but different Y levels. No outer pad needed on NMOS left side.
     # Need met1.2 clearance between VGND via pad and BL met1 pad at nmos_cx.
     # VGND via pad right edge ~0.23, BL pad left ~nmos_cx-0.145.
-    # margin_left >= 0.17 ensures spacing >= 0.14.
-    margin_left = 0.17
+    # margin_left must accommodate the gate_a outer-left poly tap (track
+    # 05 cross-couple fix).  Required: nmos_diff_x0 >= 0.41 so that the
+    # outer_tap_cx can sit at >= 0.135 (poly_pad_w_x/2, fits poly pad
+    # within cell) AND have licon-to-ndiff clearance of 0.275 from
+    # nmos_diff_x0.  With vgnd_x1 = rail_w = 0.14, that means
+    # margin_left = 0.41 - 0.14 = 0.27.  Pre-fix this was 0.17 (just
+    # MET1.spacing >= 0.14); +0.10 µm cell-width growth.
+    margin_left = 0.27
 
     margin_right = 0.15  # PMOS side: just PSDM clearance (0.125) + buffer
 
@@ -149,9 +155,18 @@ def _compute_cell_geometry(
 
     g["cell_w"] = g["vpwr_x1"]
 
-    # Gap poly contact center X — shared by BOTH gate_A and gate_B licons
-    # (same X, different Y levels). Clearance: licon.14 from NMOS diff.
+    # Gap poly contact center X — gate_B licon lives here (gate_A's
+    # licon was moved out of the gap to the outer-left to fix the
+    # cross-couple short, see Route 1 / Route 2 below).  Clearance:
+    # licon.14 from NMOS diff.
     g["gap_licon_cx"] = _snap(g["nmos_diff_x1"] + licon_to_ndiff + licon_sz / 2.0)
+
+    # Outer-left poly tap X for gate_A (track 05 cross-couple fix).  The
+    # licon sits on gate_A poly extension, licon_to_ndiff (0.19) from the
+    # left edge of NMOS diff, with poly_pad enclosure of 0.05 each side
+    # giving a 0.27-wide pad.  The pad's left edge sits at cell-boundary
+    # x=0 when margin_left=0.27.
+    g["outer_tap_cx"] = _snap(g["nmos_diff_x0"] - licon_to_ndiff - licon_sz / 2.0)
 
     # Diff center X
     g["nmos_cx"] = _snap((g["nmos_diff_x0"] + g["nmos_diff_x1"]) / 2.0)
@@ -293,6 +308,7 @@ def create_bitcell(
     pad_w_x = g["pad_w_x"]
     pad_h_y = g["pad_h_y"]
     gap_licon_cx = g["gap_licon_cx"]
+    outer_tap_cx = g["outer_tap_cx"]
     li_pad_h = g["li_pad_h"]
 
     # ===================================================================
@@ -341,11 +357,19 @@ def create_bitcell(
     poly_x0 = g["nmos_diff_x0"] - poly_ext
     poly_x1_full = g["pmos_diff_x1"] + poly_ext     # spans both diffs
     poly_x1_nmos = g["nmos_diff_x1"] + poly_ext     # NMOS-only
+    # gate_A poly leftmost X — extends past poly_x0 to the outer-left
+    # poly tap area where the cross-couple licon lives.  Tap pad needs
+    # pad_w_x (0.27) wide poly enclosure of the licon at outer_tap_cx.
+    poly_x0_gate_a = outer_tap_cx - pad_w_x / 2.0
 
-    # Inverter gates: full width (NMOS + PMOS).
-    for y0_key, y1_key in [("gate_a_y0", "gate_a_y1"),
-                            ("gate_b_y0", "gate_b_y1")]:
-        _rect(cell, L.POLY.as_tuple, poly_x0, g[y0_key], poly_x1_full, g[y1_key])
+    # Inverter gate stripes: span both NMOS and PMOS diff so each forms
+    # a PD+PU pair.  gate_A also extends LEFT to outer_tap_cx for the
+    # cross-couple poly tap (no diff there — passes over substrate
+    # only).  gate_B stays at standard poly_x0 (its tap is in the gap).
+    _rect(cell, L.POLY.as_tuple,
+          poly_x0_gate_a, g["gate_a_y0"], poly_x1_full, g["gate_a_y1"])
+    _rect(cell, L.POLY.as_tuple,
+          poly_x0, g["gate_b_y0"], poly_x1_full, g["gate_b_y1"])
 
     # WL access gates: NMOS-only.  Stops at right edge of NMOS diff +
     # the standard poly extension; never enters the PMOS diff.
@@ -353,14 +377,16 @@ def create_bitcell(
                             ("wl_top_y0", "wl_top_y1")]:
         _rect(cell, L.POLY.as_tuple, poly_x0, g[y0_key], poly_x1_nmos, g[y1_key])
 
-    # Gate A poly contact pad in gap (for cross-coupling)
+    # Gate A poly contact pad — moved from gap to OUTER-LEFT so the
+    # cross-couple Route 1 LI1 vertical at gap_licon_cx can pass over
+    # gate_A_cy WITHOUT making contact (no licon in gap means no
+    # spurious Q-to-QB short).  See Route 1 / Route 2 below.
     _rect(cell, L.POLY.as_tuple,
-          gap_licon_cx - pad_w_x / 2.0, g["gate_a_cy"] - pad_h_y / 2.0,
-          gap_licon_cx + pad_w_x / 2.0, g["gate_a_cy"] + pad_h_y / 2.0)
+          outer_tap_cx - pad_w_x / 2.0, g["gate_a_cy"] - pad_h_y / 2.0,
+          outer_tap_cx + pad_w_x / 2.0, g["gate_a_cy"] + pad_h_y / 2.0)
 
-    # Gate B poly contact pad in gap (for cross-coupling, same X, different Y)
-    # Poly spacing between pads: (gate_b - pad_h/2) - (gate_a + pad_h/2)
-    #   = cc_to_cc_zone + gate_l - pad_h_y = 0.54 - 0.33 = 0.21 (= poly.2 min)
+    # Gate B poly contact pad in gap (kept here — cross-couple Route 1
+    # lands on gate_B's gap licon via M1 vertical from int_bot_cy).
     _rect(cell, L.POLY.as_tuple,
           gap_licon_cx - pad_w_x / 2.0, g["gate_b_cy"] - pad_h_y / 2.0,
           gap_licon_cx + pad_w_x / 2.0, g["gate_b_cy"] + pad_h_y / 2.0)
@@ -379,44 +405,79 @@ def create_bitcell(
     # POLY CONTACTS FOR CROSS-COUPLING
     # ===================================================================
 
-    # Gate A contact in gap
-    _contact(cell, gap_licon_cx, g["gate_a_cy"], L.LICON1.as_tuple, licon_sz)
-    _li_pad(cell, gap_licon_cx, g["gate_a_cy"], li_w + 2 * li_encl, li_w)
+    # Gate A contact: OUTER-LEFT of NMOS diff (track 05 cross-couple fix).
+    # Lives on the gate_A poly extension at outer_tap_cx.  LI1 pad uses
+    # the X-narrow / Y-wide orientation since the Route 2 LI1 trace
+    # arrives from above (vertical descent from int_top_cy).
+    _contact(cell, outer_tap_cx, g["gate_a_cy"], L.LICON1.as_tuple, licon_sz)
+    _li_pad(cell, outer_tap_cx, g["gate_a_cy"], li_w, li_w + 2 * li_encl)
 
-    # Gate B contact in gap (same X as gate_A, different Y)
+    # Gate B contact: in gap at gap_licon_cx (unchanged — Route 1 lands
+    # here via LI1 vertical from int_bot_cy crossing pwr_cy).
     _contact(cell, gap_licon_cx, g["gate_b_cy"], L.LICON1.as_tuple, licon_sz)
     _li_pad(cell, gap_licon_cx, g["gate_b_cy"], li_w + 2 * li_encl, li_w)
 
     # ===================================================================
-    # CROSS-COUPLING LI1 ROUTING
+    # CROSS-COUPLING LI1 ROUTING (track 05 fix — was wired backwards)
     # ===================================================================
-    # Both cross-coupling routes go through the N-P gap.
-    # Adjacent zone connections avoid crossing the power zone:
-    # - Route 1: PMOS int_bot (zone 1) → gate_A (adjacent, below pwr)
-    # - Route 2: NMOS int_top (zone 3) → gate_B (adjacent, above pwr)
-    # Li1 spacing between routes: gap_b_bottom - gap_a_top = 0.37 > 0.17 ✓
+    # In a 6T latch, each inverter's OUTPUT drives the OPPOSITE inverter's
+    # GATE.  With gate_A = QB-input and gate_B = Q-input:
+    #   Route 1 (Q net):  inverter A output (PD_A || PU_A drains at
+    #                     int_bot_cy) → gate_B poly tap (in gap at
+    #                     gate_b_cy).
+    #   Route 2 (QB net): inverter B output (PD_B || PU_B drains at
+    #                     int_top_cy) → gate_A poly tap (now outer-left
+    #                     at outer_tap_cx, gate_a_cy).
+    # Each route crosses the central pwr_cy.  Routes are at DIFFERENT X
+    # columns (Route 1 in gap, Route 2 outer-left) so their vertical
+    # segments never overlap and Q stays isolated from QB.
 
     gap_pad_hw = (li_w + 2 * li_encl) / 2.0  # half-width of gap li1 pads
 
-    # Route 1: PMOS int_bot → gate_A via gap (same as before)
-    # Horizontal li1 from PMOS int_bot contact to gap
+    # Route 1 (Q) — inverter A output collation + cross-couple to gate_B:
+    #   Horizontal LI1 at int_bot_cy spans NMOS_int_bot → gap →
+    #   PMOS_int_bot (forms PD_A || PU_A drain net = Q).  Vertical LI1
+    #   in gap from int_bot_cy UP across pwr_cy to gate_b_cy lands on
+    #   gate_B's in-gap LI1 pad.  The vertical passes OVER gate_a_cy
+    #   without contact (gate_A's licon was moved to outer_tap_cx).
     _rect(cell, L.LI1.as_tuple,
-          gap_licon_cx - gap_pad_hw, g["int_bot_cy"] - li_w / 2.0,
+          g["nmos_cx"] - li_w / 2.0, g["int_bot_cy"] - li_w / 2.0,
           g["pmos_cx"] + li_w / 2.0, g["int_bot_cy"] + li_w / 2.0)
-    # Vertical li1 in gap from int_bot up to gate_A
     _rect(cell, L.LI1.as_tuple,
           gap_licon_cx - gap_pad_hw, g["int_bot_cy"] - li_w / 2.0,
-          gap_licon_cx + gap_pad_hw, g["gate_a_cy"] + li_w / 2.0)
+          gap_licon_cx + gap_pad_hw, g["gate_b_cy"] + li_w / 2.0)
 
-    # Route 2: NMOS int_top → gate_B via gap (NEW — was on outer side)
-    # Horizontal li1 from NMOS int_top contact rightward to gap
+    # Route 2 (QB) — inverter B output collation + cross-couple to gate_A:
+    #   PMOS_int_top to NMOS_int_top inverter-output bridge uses M1
+    #   (with mcons at each diff column), NOT LI1, because an LI1
+    #   spanning the gap at int_top_cy would sit only ~0.08 µm above
+    #   gate_B's in-gap LI1 pad at gate_b_cy and violate li.3 (0.17 µm
+    #   minimum spacing between different nets).  M1 over LI1 is a
+    #   different layer, no conflict.  LI1 still carries Route 2 from
+    #   NMOS_int_top leftward to the outer-left gate_A tap; the
+    #   vertical LI1 at outer_tap_cx connects gate_A's tap pad to
+    #   int_top_cy where it meets the M1 jumper via the NMOS_int_top
+    #   mcon.
+    # Use the LARGER of the two M1-enclosure-of-mcon rules (0.06) so the
+    # mcons at each end have ≥0.06 µm enclosure on top+bottom.  The
+    # default 0.03 only satisfies the other-direction rule (met1.4) but
+    # the route is purely horizontal and depends on the wider Y to clear
+    # met1.5 at the trace's ENDS where mcons sit.
+    met1_jumper_h = max(R.MET1_MIN_WIDTH,
+                        mcon_sz + 2 * R.MET1_ENCLOSURE_OF_MCON_OTHER)
+    _rect(cell, L.MET1.as_tuple,
+          g["nmos_cx"] - met1_jumper_h / 2.0, g["int_top_cy"] - met1_jumper_h / 2.0,
+          g["pmos_cx"] + met1_jumper_h / 2.0, g["int_top_cy"] + met1_jumper_h / 2.0)
+    _contact(cell, g["nmos_cx"], g["int_top_cy"], L.MCON.as_tuple, mcon_sz)
+    _contact(cell, g["pmos_cx"], g["int_top_cy"], L.MCON.as_tuple, mcon_sz)
+    # LI1 leg from NMOS_int_top leftward to gate_A's outer-left tap.
     _rect(cell, L.LI1.as_tuple,
-          g["nmos_cx"] - li_w / 2.0, g["int_top_cy"] - li_w / 2.0,
-          gap_licon_cx + gap_pad_hw, g["int_top_cy"] + li_w / 2.0)
-    # Vertical li1 in gap from gate_B down to int_top (continuous with pad)
+          outer_tap_cx - li_w / 2.0, g["int_top_cy"] - li_w / 2.0,
+          g["nmos_cx"] + li_w / 2.0, g["int_top_cy"] + li_w / 2.0)
+    # Vertical LI1 at outer_tap_cx from gate_a_cy up to int_top_cy.
     _rect(cell, L.LI1.as_tuple,
-          gap_licon_cx - gap_pad_hw, g["gate_b_cy"] - li_w / 2.0,
-          gap_licon_cx + gap_pad_hw, g["int_top_cy"] + li_w / 2.0)
+          outer_tap_cx - li_w / 2.0, g["gate_a_cy"] - li_w / 2.0,
+          outer_tap_cx + li_w / 2.0, g["int_top_cy"] + li_w / 2.0)
 
     # ===================================================================
     # POWER ROUTING
@@ -509,6 +570,14 @@ def create_bitcell(
 
     _label(cell, "VSS", L.MET1_LABEL.as_tuple, vgnd_cx, g["pwr_cy"])
     _label(cell, "VDD", L.MET1_LABEL.as_tuple, vpwr_cx, g["pwr_cy"])
+    # Label the n-well as VDD so Magic extracts the PMOS bulk node as
+    # VDD instead of an auto-generated w_<x>_<y># name.  Without this,
+    # the strict-LVS netgen run sees an unaliased well net and reports
+    # a spurious mismatch.  Schematic XPU_L/XPU_R have B=VDD, so the
+    # well IS supposed to be VDD; the label just makes extraction
+    # explicit.
+    _label(cell, "VDD", L.NWELL_LABEL.as_tuple,
+           _snap((g["nwell_x0"] + cw) / 2.0), g["pwr_cy"])
     _label(cell, "BL", L.MET1_LABEL.as_tuple, g["nmos_cx"], g["bl_bot_cy"])
     _label(cell, "BLB", L.MET1_LABEL.as_tuple, g["nmos_cx"], g["bl_top_cy"])
     # WL has TWO poly stripes (top+bottom access gates).  Both need the

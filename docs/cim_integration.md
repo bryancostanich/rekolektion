@@ -127,7 +127,17 @@ export PDK_ROOT="$HOME/.volare"
 python3 scripts/run_lvs_cim.py SRAM-A SRAM-B SRAM-C SRAM-D -j 4
 python3 scripts/run_drc_cim.py            # flat — fab sign-off mode
 python3 scripts/run_drc_cim.py --hier     # hierarchical — integrator mode
+python3 scripts/openroad_smoke_cim.py SRAM-D  # OpenROAD integration smoke
 ```
+
+`openroad_smoke_cim.py` synthesizes a one-cell wrapper that pulls
+every macro pin to a top-level port, then runs the OpenROAD flow
+(read tech LEF + std-cell LEF + macro LEF + Liberty, link netlist,
+floorplan, place macro, place I/O pins, global + detailed route).
+Catches integration issues that the isolated parse-tests miss, e.g.
+LEF OBS gaps that block routing or POWER/GROUND classification
+mismatches.  All four variants pass; the 256-row variants
+(SRAM-A/B) take noticeably longer at detailed-route.
 
 Format compatibility: LEF parses cleanly under OpenROAD with the
 `sky130_fd_sc_hd.tlef` tech file loaded; Liberty parses under

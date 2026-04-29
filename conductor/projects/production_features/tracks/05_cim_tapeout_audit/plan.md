@@ -18,6 +18,24 @@ hier, OpenROAD smoke pass — all four variants).
 
 ---
 
+## Phase 0 (added 2026-04-29): Trust audit — blocks every other phase
+
+Mid-track-05 we discovered that the macro LVS pipeline was hiding a
+connectivity bug (wl_bot[r] / wl_top[r] physically isolated across all
+64 cells per row, but LVS reported clean via label-merge). The original
+"clean" claim was a false positive. The original audit machinery had no
+test that would have caught it.
+
+Phase 0 is the trust audit — a systematic search for every other
+false-positive verification result in the stack. **Sign-off gate:
+nothing in Phases 1–3 is trusted until Phase 0 closes with zero
+unresolved P0/P1 entries.**
+
+See [`trust_audit.md`](./trust_audit.md) for the full plan, anti-
+patterns, and exit criteria.
+
+---
+
 ## Confidence baseline (start of track)
 
 Honest read of where the macros stand at end of track 03:

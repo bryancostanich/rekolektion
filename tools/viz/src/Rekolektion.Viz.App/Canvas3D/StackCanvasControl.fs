@@ -42,16 +42,17 @@ type StackCanvasControl() =
     let mutable indexCount : int = 0
     // Mesh upload caching. Re-extruding 400k polygons (production
     // SRAM macro) every frame would saturate the CPU and drop the
-    // canvas to <1 fps. We extrude + upload only when the input
-    // (FlatPolygons) or per-vertex visibility (Toggle) actually
-    // changes; rotate / zoom / pan re-use the existing GPU buffers.
+    // canvas to <1 fps. We extrude + upload only when FlatPolygons
+    // changes; rotate / zoom / pan / layer-toggle never re-upload.
     let mutable meshDirty : bool = true
-    // The cached extruded mesh (positions + per-vertex layer key).
-    // Kept across frames so toggle changes can rebuild only the
-    // visibility flag without re-running the triangulator.
     let mutable cachedMesh : Extruder.ExtrudedMesh option = None
-    let mutable lastUploadedToggle : Visibility.ToggleState = Visibility.empty
     let mutable hasUploadedAny : bool = false
+    // Layer-key → slot index for the uLayerVis uniform array.
+    // Built once per extrusion. Capped at 32 entries (matches
+    // shader array size); SKY130 has 18 drawing layers so this
+    // has plenty of headroom.
+    let mutable layerSlotMap : System.Collections.Generic.Dictionary<int * int, int> =
+        System.Collections.Generic.Dictionary()
     // Avalonia.OpenGlControlBase 11.3.14 doesn't include a depth
     // attachment on the FBO it provides. Without depth, the cube
     // collapses into a 2D draw-order collage. We allocate our own
@@ -262,19 +263,28 @@ type StackCanvasControl() =
         // can compute a flat per-triangle normal via screen-space
         // derivatives — avoids needing per-vertex normals in the
         // buffer.
+        // aLayerSlot holds a small int (0..31) that indexes into
+        // uLayerVis[]. Visibility moved to a uniform array because
+        // updating per-vertex visibility on toggle required re-
+        // uploading the entire VBO (~80MB for a production macro,
+        // taking >1s). Now toggle just updates 32 floats.
         let vsSrc = "
             #version 330 core
             layout(location=0) in vec3 aPos;
             layout(location=1) in vec3 aColor;
-            layout(location=2) in float aLayerVisible;
+            layout(location=2) in float aLayerSlot;
             uniform mat4 uMVP;
+            uniform float uLayerVis[32];
             out vec3 vColor;
             out float vVis;
             out vec3 vWorldPos;
             void main() {
                 gl_Position = uMVP * vec4(aPos, 1.0);
                 vColor = aColor;
-                vVis = aLayerVisible;
+                int slot = int(aLayerSlot);
+                if (slot < 0) slot = 0;
+                if (slot > 31) slot = 31;
+                vVis = uLayerVis[slot];
                 vWorldPos = aPos;
             }
         "
@@ -342,12 +352,13 @@ type StackCanvasControl() =
             if meshDirty && flat.Length > 0 then
                 cachedMesh <- Some (Extruder.extrude lib.UserUnitsPerDbUnit flat)
                 meshDirty <- false
-            // (Re-)upload buffer only when extrusion changed OR
-            // visibility toggle changed. Rotation / zoom / pan
-            // never trigger a re-upload.
-            let toggleChanged = not (System.Object.ReferenceEquals(toggle, lastUploadedToggle))
+                hasUploadedAny <- false
+                layerSlotMap.Clear()
+            // Upload VBO only on first frame after a re-extrude.
+            // Toggling layer visibility no longer touches the VBO —
+            // see uLayerVis uniform write below.
             match cachedMesh with
-            | Some mesh when (not hasUploadedAny || toggleChanged) ->
+            | Some mesh when not hasUploadedAny ->
                 indexCount <- mesh.Indices.Length
                 let stride = 7
                 let arr = Array.zeroCreate<float32> (mesh.Vertices.Length * stride)
@@ -358,7 +369,16 @@ type StackCanvasControl() =
                         match layerOpt with
                         | Some l -> float32 l.Color.R / 255.0f, float32 l.Color.G / 255.0f, float32 l.Color.B / 255.0f
                         | None -> 0.5f, 0.5f, 0.5f
-                    let vis = if Visibility.isLayerVisible toggle v.LayerKey then 1.0f else 0.0f
+                    // Assign a small slot index per unique layer key.
+                    // Layers beyond slot 31 (shouldn't happen for
+                    // SKY130's 18 layers) get slot 0 — visible.
+                    let slot =
+                        match layerSlotMap.TryGetValue v.LayerKey with
+                        | true, s -> s
+                        | false, _ ->
+                            let next = if layerSlotMap.Count < 32 then layerSlotMap.Count else 0
+                            layerSlotMap.[v.LayerKey] <- next
+                            next
                     let off = i * stride
                     arr.[off]     <- v.X
                     arr.[off + 1] <- v.Y
@@ -366,14 +386,13 @@ type StackCanvasControl() =
                     arr.[off + 3] <- r
                     arr.[off + 4] <- gC
                     arr.[off + 5] <- b
-                    arr.[off + 6] <- vis
+                    arr.[off + 6] <- float32 slot
                 g.BindVertexArray(vao)
                 g.BindBuffer(GLEnum.ArrayBuffer, vbo)
-                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
+                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
                 g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
-                g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.DynamicDraw)
+                g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.StaticDraw)
                 hasUploadedAny <- true
-                lastUploadedToggle <- toggle
             | _ -> ()
             g.BindVertexArray(vao)
 
@@ -441,6 +460,16 @@ type StackCanvasControl() =
                     -MathF.Sin(pitchRad))
             let lightLoc = g.GetUniformLocation(program, "uLightDir")
             g.Uniform3(lightLoc, camForward)
+            // Upload per-layer visibility as a uniform array. Cheap
+            // (32 floats = 128 bytes) and runs every frame; toggle
+            // changes show up next frame without touching the VBO.
+            let visArr = Array.create 32 1.0f
+            for KeyValue (layerKey, slot) in layerSlotMap do
+                if slot >= 0 && slot < 32 then
+                    visArr.[slot] <-
+                        if Visibility.isLayerVisible toggle layerKey then 1.0f else 0.0f
+            let visLoc = g.GetUniformLocation(program, "uLayerVis")
+            g.Uniform1(visLoc, ReadOnlySpan<float32>(visArr))
             // transpose=FALSE is correct for System.Numerics matrices
             // here. .NET stores Matrix4x4 fields in row-major order
             // (M11, M12, M13, M14, M21, ...); GL with transpose=false

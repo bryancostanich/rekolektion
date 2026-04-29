@@ -187,18 +187,36 @@ def _build_testbench(p: CIMMacroParams, work: Path) -> Path:
     lines.append("* expected analog swing (precharge ≈ 1.8 V, settled ≈ 1.0 – 1.5 V).")
     lines.append(".measure tran v_quiescent FIND v(mbl_out_0) AT=4.95n")
     lines.append(".measure tran v_compute   FIND v(mbl_out_0) AT=25n")
-    # Sample MBL_OUT at a sweep of thresholds; the parser picks the
-    # first threshold the trace crosses past v_quiescent toward v_compute.
-    for i, thresh in enumerate((1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9)):
+    lines.append("")
+    lines.append("* Threshold ladder spanning ±20 mV around the quiescent point")
+    lines.append("* observed in the previous SRAM-D smoke run (1.166 V).  ngspice's")
+    lines.append("* `.measure WHEN v=X CROSS=1 TD=5n` returns the first time after")
+    lines.append("* t=5 ns when the trace crosses each threshold; the parser picks")
+    lines.append("* whichever sample is closest to the (v_quiescent + v_compute)/2")
+    lines.append("* midpoint and reports it as t_settle.  No `.control` block — the")
+    lines.append("* `wrdata` trace dump tipped the previous run past 30 min.")
+    for i, mv in enumerate(range(-15, 16, 2)):  # -15 .. +15 mV by 2 mV
+        # Quiescent point seen on SRAM-D was 1.166 V; tune around it.
+        thresh = 1.166 + mv / 1000.0
         lines.append(
-            f".measure tran t_at_{i} WHEN v(mbl_out_0)={thresh:.3f} CROSS=1 TD=5n"
+            f".measure tran t_at_{i} WHEN v(mbl_out_0)={thresh:.4f} "
+            f"CROSS=1 TD=5n"
         )
     lines.append(".end")
     tb.write_text("\n".join(lines))
     return tb
 
 
-def _run_ngspice(tb: Path, work: Path, timeout: int = 1800) -> tuple[bool, str]:
+def _run_ngspice(tb: Path, work: Path, timeout: int = 3600) -> tuple[bool, str]:
+    """Run ngspice on `tb`, return (ok, stdout).
+
+    Default 1 hour timeout — full-macro flat netlists at 28k+
+    transistors regularly take 25–30 min, so a 30-min cap leaves no
+    headroom.  Raw trace dump (`wrdata`) was previously enabled here
+    but slowed ngspice's transient solver enough to push past the
+    timeout; the testbench now relies on a fine-grained ngspice-side
+    `.measure` threshold ladder instead.
+    """
     log = work / "ngspice.log"
     res = subprocess.run(
         ["ngspice", "-b", str(tb.resolve())],
@@ -208,9 +226,16 @@ def _run_ngspice(tb: Path, work: Path, timeout: int = 1800) -> tuple[bool, str]:
     return (res.returncode == 0, res.stdout)
 
 
-def _parse_measurements(stdout: str) -> dict[str, float]:
-    """Pull `.measure` results out of ngspice stdout, then interpolate
-    the analog `t_settle` (time to reach midpoint of the swing)."""
+def _parse_measurements(stdout: str, work: Path) -> dict[str, float]:
+    """Pull `.measure` results from ngspice stdout, then derive
+    `t_settle` from the threshold-ladder samples by picking the
+    threshold closest to the (v_quiescent + v_compute) / 2 midpoint.
+
+    Per `_build_testbench`, the testbench emits 16 `t_at_<i>` measures
+    at 2 mV steps spanning [v_q - 15 mV, v_q + 15 mV].  Each returns
+    the first time the trace crosses that threshold after t = 5 ns,
+    or 0 if it never crosses.  We pick the closest non-zero one.
+    """
     out: dict[str, float] = {}
     pat = re.compile(
         r"^\s*(v_quiescent|v_compute|t_at_\d+)\s*=\s*([0-9.eE+\-]+)",
@@ -219,27 +244,25 @@ def _parse_measurements(stdout: str) -> dict[str, float]:
     for m in pat.finditer(stdout):
         out[m.group(1)] = float(m.group(2))
 
-    # `.measure ... CROSS=1 TD=5n` returns 0 (or a sentinel) when the
-    # trace never crosses that threshold within [TD, end].  Reconstruct
-    # t_settle by picking the closest threshold to (v_q + v_c) / 2.
     vq = out.get("v_quiescent")
     vc = out.get("v_compute")
     if vq is None or vc is None:
         return out
-    vmid = (vq + vc) / 2.0
     out["v_swing"] = vc - vq
-    # Map sweep-index → threshold (must mirror generator order).
-    thresholds = (1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9)
-    best = None
+    vmid = (vq + vc) / 2.0
+
+    # Reconstruct the threshold list (must mirror the generator order).
+    thresholds = [1.166 + mv / 1000.0 for mv in range(-15, 16, 2)]
+    best: tuple[float, float] | None = None    # (|threshold - vmid|, t)
     for i, th in enumerate(thresholds):
         t = out.get(f"t_at_{i}")
         if t is None or t <= 0:
             continue
-        if best is None or abs(th - vmid) < abs(best[0] - vmid):
-            best = (th, t)
+        gap = abs(th - vmid)
+        if best is None or gap < best[0]:
+            best = (gap, t)
     if best is not None:
         out["t_settle"] = best[1]
-        out["v_threshold"] = best[0]
     return out
 
 
@@ -253,7 +276,7 @@ def _char_one(variant: str) -> dict:
     if not ok:
         return {"variant": variant, "ok": False,
                 "log": str(work / "ngspice.log")}
-    meas = _parse_measurements(stdout)
+    meas = _parse_measurements(stdout, work)
     return {"variant": variant, "ok": True, **meas,
             "log": str(work / "ngspice.log")}
 

@@ -151,8 +151,68 @@ class CIMSupercellArray:
         # Per-column MBL M4 strips (cap top plate signal)
         self._add_mbl_strips(top)
 
+        # Per-supercell-row NWELL bridges (issue #9 / T4.4-A — body bias).
+        # Combined with the supercell's annex-NWELL extension (in
+        # sky130_cim_supercell.py), every foundry NWELL fragment merges
+        # into one connected plane spanning the array width.  The plane
+        # then connects to the macro's peripheral cells (mwl_driver,
+        # mbl_precharge, mbl_sense), which carry their own N-taps.
+        self._add_nwell_row_bridges(top)
+
         out_lib.add(top)
         return out_lib
+
+    def _add_nwell_row_bridges(self, top: gdstk.Cell) -> None:
+        """Add thin NWELL strips at every supercell-row boundary.
+
+        Foundry NWELL spans foundry-local y=[0, 1.58] and is extended
+        through the annex via the supercell's `_NWELL_X0..X1` strip
+        at supercell-local y=[1.58, supercell_h], so at every supercell
+        row boundary y=N×supercell_h the foundry-NWELL touches the
+        boundary.  A thin (0.10 µm) parent-level NWELL strip at the
+        boundary spans the full array width and merges with all
+        column-isolated supercell NWELLs in both adjacent rows.
+
+        Y placement avoids the supercell PSDM (P-tap) at foundry-local
+        y=[0.71, 0.87] — well clear of supercell row boundaries.
+        """
+        NWELL = (64, 20)
+        T = 0.10
+        ch = self._cfg.supercell_h
+        # Extend west by enough to overlap the mwl_driver column's NWELL
+        # in the macro top cell — the array is placed east of mwl_driver
+        # in cim_assembler, so the bridge needs to reach back into the
+        # 1.0 µm LEFT_GAP region to merge with the buf_2 stdcell NWELL.
+        x0 = -1.0
+        x1 = self.width + 0.20
+        # Vertical NWELL anchor strip running the full array height at the
+        # west edge.  Larger-supercell variants (SRAM-A/B with supercell_h
+        # 3.94 vs buf_2 native pitch ~2.96) have buf_2 NWELL gaps that
+        # don't align with row-boundary bridges; the vertical strip ties
+        # all row-bridges to the mwl_driver column NWELL regardless of
+        # buf_2 vertical pitch.
+        VERT_X0 = -1.0
+        VERT_X1 = -0.50
+        top.add(gdstk.rectangle(
+            (VERT_X0, -T), (VERT_X1, self.height + T),
+            layer=NWELL[0], datatype=NWELL[1],
+        ))
+        # Inter-row boundaries y = row × ch for row=1..rows-1
+        for row in range(1, self.rows):
+            by = row * ch
+            top.add(gdstk.rectangle(
+                (x0, by - T / 2), (x1, by + T / 2),
+                layer=NWELL[0], datatype=NWELL[1],
+            ))
+        # Top + bottom edges
+        top.add(gdstk.rectangle(
+            (x0, -T), (x1, T / 2),
+            layer=NWELL[0], datatype=NWELL[1],
+        ))
+        top.add(gdstk.rectangle(
+            (x0, self.height - T / 2), (x1, self.height + T),
+            layer=NWELL[0], datatype=NWELL[1],
+        ))
 
     def _add_wl_strips(self, top: gdstk.Cell) -> None:
         """Per-row dual WL POLY strips at wl_top and wl_bot Y.

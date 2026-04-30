@@ -292,6 +292,25 @@ def create_cim_supercell(variant: str) -> tuple[gdstk.Library, SupercellVariant]
     _rect(super_cell, _LAYER_AREAID_SRAM,
           0.0, 0.0, _FOUNDRY_LEF_W, _FOUNDRY_LEF_H)
 
+    # ---- NWELL extension through annex (issue #9 — body-bias) ----
+    # Foundry qtap NWELL spans cell-local x=[0.72, 1.20] y=[0, 1.58] (foundry
+    # cell extent only).  In the supercell array, supercells stack at pitch
+    # supercell_h (2.93 for SRAM-D), so the annex region y=[1.58, supercell_h]
+    # has no NWELL.  At every supercell-row boundary, the foundry NWELL is
+    # 1.35 µm away from the boundary — too far to merge with adjacent rows
+    # NWELLs via parent-level bridge.
+    #
+    # Extending the NWELL up through the annex (at the same X range as the
+    # foundry NWELL) bridges to the supercell-Y boundary, where the parent
+    # array can add row-NWELL strips that merge across columns.  T7 NMOS at
+    # x=[1.665, 2.085] is well clear of x=[0.72, 1.20] — no NSDM/PSDM
+    # conflict.
+    _NWELL_X0 = 0.72   # match foundry NWELL X range
+    _NWELL_X1 = 1.20
+    _rect(super_cell, _LAYER_NWELL,
+          _NWELL_X0, _FOUNDRY_LEF_H,
+          _NWELL_X1, cfg.supercell_h)
+
     # Forward foundry cell's external pin labels (BL, BR, VGND, VPWR, VPB, VNB)
     # — these are already in the foundry cell as labels at specific
     # coordinates; the instance carries them. We don't need to re-add them.

@@ -1,16 +1,37 @@
 """Pitch-matched bitcell array generator for v2 SRAM macros.
 
 Tiles the foundry `sky130_fd_bd_sram__sram_sp_cell_opt1` bitcell in an
-R×C grid with X/Y mirror pattern for power-rail sharing and diffusion
+R×C grid with Y-mirror per row for power-rail sharing and diffusion
 continuity. After tiling, emits per-row WL and per-col BL/BR labels
 for clean extraction (fixes the WL-merge problem observed in v1).
+
+Body-bias path (audit T4.4-A / issue #9): inserts foundry
+`sky130_fd_bd_sram__sram_sp_wlstrap` cells as periodic strap columns
+to provide N-tap (NWELL→VPWR via real metal), AND adds parent-level
+NWELL fill rectangles at every row boundary to bridge the column
+gaps in bitcell NWELL geometry. Combined, every bitcell NWELL is in
+the same physical cluster as a strap-anchored N-tap.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import gdstk
 
 from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
 from rekolektion.macro.routing import draw_label, draw_pin, draw_wire
+
+
+# Foundry wlstrap cell: provides the N+ DIFF + LICON1 + LI1 + MCON +
+# MET1=VPWR stack.  Inserted as a column between every `strap_interval`
+# bitcells.  Same row pitch as bitcell.
+_WLSTRAP_GDS_PATH: Path = (
+    Path(__file__).parent.parent
+    / "array/cells/sky130_fd_bd_sram__sram_sp_wlstrap.gds"
+)
+_WLSTRAP_NAME: str = "sky130_fd_bd_sram__sram_sp_wlstrap"
+_WLSTRAP_W: float = 1.410   # placement pitch from LEF SIZE
+_WLSTRAP_H: float = 1.580   # matches bitcell cell_height
 
 
 # Foundry bitcell's internal WL label position (cell-local, µm). The opt1
@@ -37,22 +58,55 @@ _FOUNDRY_BLBR_LABEL_Y: float = 1.130
 
 
 class BitcellArray:
-    """R×C tiled foundry bitcell array."""
+    """R×C tiled foundry bitcell array with body-bias body-tap fix."""
 
-    def __init__(self, rows: int, cols: int, name: str | None = None):
+    def __init__(
+        self,
+        rows: int,
+        cols: int,
+        name: str | None = None,
+        strap_interval: int = 8,
+    ):
         if rows < 1 or cols < 1:
             raise ValueError(f"rows and cols must be >=1; got {rows}x{cols}")
         self.rows = rows
         self.cols = cols
         self.top_cell_name = name or f"sram_array_{rows}x{cols}"
+        # Number of bitcell cols between strap inserts.  0 disables strap
+        # insertion (legacy floating-NWELL behavior — only for tests).
+        # Default 8 follows industry sky130 SRAM convention.  Each strap
+        # adds an N+ tap to VPWR; combined with parent-level NWELL fill
+        # at row boundaries, every bitcell NWELL physically reaches a tap.
+        self.strap_interval = max(0, int(strap_interval))
 
         self._bitcell_info = load_foundry_sp_bitcell()
         self._cell_w = self._bitcell_info.cell_width
         self._cell_h = self._bitcell_info.cell_height
 
     @property
+    def n_strap_cols(self) -> int:
+        """Number of strap columns inserted between bitcell columns."""
+        if self.strap_interval <= 0:
+            return 0
+        # Strap inserted after every `strap_interval` bitcells; no trailing strap.
+        return (self.cols - 1) // self.strap_interval
+
+    def _bitcell_x(self, col: int) -> float:
+        """Array X for the leftmost edge of bitcell column `col`,
+        accounting for strap columns inserted to its left."""
+        if self.strap_interval <= 0:
+            return col * self._cell_w
+        n_straps_before = col // self.strap_interval
+        return col * self._cell_w + n_straps_before * _WLSTRAP_W
+
+    def _strap_x(self, strap_idx: int) -> float:
+        """Array X for the leftmost edge of strap column `strap_idx`."""
+        bitcells_before = (strap_idx + 1) * self.strap_interval
+        return bitcells_before * self._cell_w + strap_idx * _WLSTRAP_W
+
+    @property
     def width(self) -> float:
-        return self.cols * self._cell_w
+        return self.cols * self._cell_w + self.n_strap_cols * _WLSTRAP_W
 
     @property
     def height(self) -> float:
@@ -64,17 +118,108 @@ class BitcellArray:
         top = gdstk.Cell(self.top_cell_name)
 
         bc_cell = self._import_bitcell_into(lib)
+        strap_cell = (
+            self._import_strap_into(lib) if self.strap_interval > 0 else None
+        )
 
         for row in range(self.rows):
             for col in range(self.cols):
                 ref = self._place_bitcell(bc_cell, row, col)
                 top.add(ref)
 
+        if strap_cell is not None:
+            self._place_strap_columns(top, strap_cell)
+            # Parent-level NWELL fill at row boundaries bridges the
+            # bitcell NWELL fragments across columns.  Without this,
+            # adjacent columns' NWELLs (right-half-only at x=[0.72, 1.20])
+            # gap by 0.83 µm and stay isolated even with strap cells.
+            # Foundry-cell PSDM (p-tap) at cell-local y=[0.71, 0.87] is
+            # well clear of row boundaries (y=N*ch), so a thin NWELL
+            # strip at each row boundary is DRC-safe.
+            self._add_nwell_row_bridges(top)
+
         self._add_wl_labels(top)
         self._add_bl_br_labels(top)
 
         lib.add(top)
         return lib
+
+    def _import_strap_into(self, lib: gdstk.Library) -> gdstk.Cell:
+        """Read the foundry wlstrap GDS and add its cells to `lib`."""
+        src = gdstk.read_gds(str(_WLSTRAP_GDS_PATH))
+        existing = {c.name for c in lib.cells}
+        result = None
+        for c in src.cells:
+            if c.name in existing:
+                if c.name == _WLSTRAP_NAME:
+                    result = next(x for x in lib.cells if x.name == c.name)
+                continue
+            copy = c.copy(c.name)
+            lib.add(copy)
+            if c.name == _WLSTRAP_NAME:
+                result = copy
+        if result is None:
+            raise RuntimeError(f"Failed to import {_WLSTRAP_NAME}")
+        return result
+
+    def _place_strap_columns(
+        self, top: gdstk.Cell, strap_cell: gdstk.Cell
+    ) -> None:
+        """Place wlstrap cell at each strap-column X for every row.
+
+        Same Y-mirror per-odd-row pattern as bitcells so VPWR/VGND M1
+        rails abut and NWELL extends symmetrically.
+        """
+        for strap_idx in range(self.n_strap_cols):
+            x = self._strap_x(strap_idx)
+            for row in range(self.rows):
+                y = row * self._cell_h
+                if row % 2 == 0:
+                    top.add(gdstk.Reference(strap_cell, origin=(x, y)))
+                else:
+                    top.add(gdstk.Reference(
+                        strap_cell,
+                        origin=(x, y + self._cell_h),
+                        x_reflection=True,
+                    ))
+
+    def _add_nwell_row_bridges(self, top: gdstk.Cell) -> None:
+        """Add thin NWELL strips at every row boundary spanning array width.
+
+        Cell-local NWELL spans y=[0, 1.580] in every bitcell, so at any
+        row boundary y=N*ch both rows' NWELLs touch the boundary.  A thin
+        parent-level NWELL strip at the boundary merges with all per-cell
+        NWELLs in both adjacent rows AND with strap-column NWELLs at the
+        same Y, producing a single connected NWELL plane that spans the
+        full array.
+        """
+        # sky130 NWELL drawing layer (sky130_drc.GDS_LAYER doesn't enumerate
+        # well/diff/sdm layers; use the GDS spec directly).
+        nwell_id, nwell_dt = 64, 20
+        # Strip thickness: small enough to avoid fattening NWELL beyond
+        # cell-local extent, large enough to guarantee overlap with
+        # per-cell NWELL after rounding.
+        T = 0.10
+        x0 = -0.10
+        x1 = self.width + 0.10
+        # Inter-row boundaries y = row*ch for row=1..rows-1
+        for row in range(1, self.rows):
+            by = row * self._cell_h
+            top.add(gdstk.rectangle(
+                (x0, by - T / 2), (x1, by + T / 2),
+                layer=nwell_id, datatype=nwell_dt,
+            ))
+        # Top + bottom array edges: extend NWELL slightly beyond cell-local
+        # edge so it merges with all bottom-row / top-row cell NWELLs at
+        # their y=0 / y=ch edges.
+        top.add(gdstk.rectangle(
+            (x0, -T), (x1, T / 2),
+            layer=nwell_id, datatype=nwell_dt,
+        ))
+        top.add(gdstk.rectangle(
+            (x0, self.height - T / 2), (x1, self.height + T),
+            layer=nwell_id, datatype=nwell_dt,
+        ))
 
     def _add_wl_labels(self, top: gdstk.Cell) -> None:
         """Add per-row WL as TWO spanning poly strips in the top cell.
@@ -152,7 +297,7 @@ class BitcellArray:
         """
         BL_STRIP_W = 0.14
         for col in range(self.cols):
-            col_x0 = col * self._cell_w
+            col_x0 = self._bitcell_x(col)
             # All columns placed un-mirrored — no Y-mirror complexity.
             bl_x = col_x0 + _FOUNDRY_BL_X_IN_CELL
             br_x = col_x0 + _FOUNDRY_BR_X_IN_CELL
@@ -200,7 +345,7 @@ class BitcellArray:
         All columns share the same orientation per row.
         """
         cw, ch = self._cell_w, self._cell_h
-        x = col * cw
+        x = self._bitcell_x(col)
         y = row * ch
         if row % 2 == 0:
             return gdstk.Reference(bc_cell, origin=(x, y))

@@ -350,6 +350,30 @@ def _add_macro_routing(
                         rect=(vpwr_abs_x - 0.07, macro_h - 0.14,
                               vpwr_abs_x + 0.07, macro_h))
 
+    # ---- Sense-row VDD → VPWR jumper (issue #11 — body bias) ----
+    # The sense buffer row's VDD supply is on a li1 stripe at y=1.325
+    # spanning the array width.  The macro's VPWR vertical strap
+    # starts at y=pre_y+_PRE_VPWR_LY (above the array) and reaches up
+    # to macro_h.  Without an explicit jumper, the sense-row VDD has
+    # NO MCON to met1 — every sense buffer is floating on silicon
+    # (LVS reports clean only via `equate VDD VPWR` netgen rule).
+    #
+    # Fix: at the same X as the macro VPWR strap, add a via stack
+    # li1→met1 at the VDD li1 position, then a vertical met1 stub
+    # extending up to merge with the VPWR strap.  This electrically
+    # ties every sense buffer's VDD pin to VPWR via real metal.
+    sense_vdd_li1_y = sense_y + _SENSE_VDD_LY  # 0 + 1.325 = 1.325
+    sense_vdd_jumper_x = vpwr_abs_x  # share the VPWR-strap X
+    # li1→met1 via stack at the VDD li1 stripe
+    draw_via_stack(top, from_layer="li1", to_layer="met1",
+                   position=(sense_vdd_jumper_x, sense_vdd_li1_y))
+    # Vertical met1 stub from VDD li1 Y up to where VPWR strap begins.
+    # `draw_vert_strap` produces a continuous met1 from y_lo to y_hi at
+    # the given X, which merges with the VPWR strap that extends from
+    # vpwr_abs_y up to macro_h.
+    draw_vert_strap(top, "met1", sense_vdd_jumper_x,
+                    sense_vdd_li1_y, vpwr_abs_y)
+
     # ---- VGND external pin (BOTTOM-RIGHT corner) ----
     vgnd_abs_y = sense_y + _SENSE_VSS_TAP_LY
     vgnd_abs_x = sense_x + (p.cols - 2) * p.cell_pitch_x

@@ -1,22 +1,26 @@
-"""Reference SPICE generator for CIM macros.
+"""Reference SPICE generator for CIM macros (supercell-based, V2).
 
-Mirrors the v2 SRAM `spice_generator.py` pattern: emits a self-
-contained SPICE deck for the CIM macro composed of:
-  1. Pre-extracted .subckt definitions for each CIM building block
-     (CIM bitcell variant + the three peripheral cells), pulled from
+Mirrors the v2 SRAM `spice_generator.py` pattern: emits a self-contained
+SPICE deck for the CIM macro composed of:
+  1. Pre-extracted .subckt definitions for the peripheral cells
+     (MWL driver, MBL precharge, MBL sense), pulled from
      `peripherals/cells/extracted_subckt/`.
-  2. Top-level `.subckt cim_<variant>_<rows>x<cols>` whose body
-     instantiates the array, MWL drivers, MBL precharges, MBL sense
-     buffers + wires their ports per the CIM placement contract.
+  2. Foundry 6T cell .subckt (with Q port added by our Q-tap modification),
+     emitted from the FT7c-validated foundry extraction (8 transistors).
+  3. Per-variant CIM supercell .subckt — wraps foundry 6T + T7 NMOS + MIM cap.
+  4. Top-level `.subckt cim_<variant>_<rows>x<cols>` whose body
+     instantiates the supercell array, MWL drivers, MBL precharges,
+     MBL sense buffers and wires their ports per the placement contract.
 
-Used as the reference netlist for LVS comparison against the GDS-
-extracted netlist of the assembled CIM macro.
+Used as the reference netlist for LVS comparison against the GDS-extracted
+netlist of the assembled CIM macro.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import TextIO
 
+from rekolektion.bitcell.sky130_cim_supercell import CIM_SUPERCELL_VARIANTS
 from rekolektion.macro.cim_assembler import CIMMacroParams
 
 
@@ -25,14 +29,8 @@ _EXTRACTED_DIR: Path = (
 )
 
 
-def _bitcell_subckt_filename(variant: str) -> str:
-    slug = variant.lower().replace("-", "_")
-    return f"sky130_sram_6t_cim_lr_{slug}.subckt.sp"
-
-
 def _read_extracted(filename: str) -> list[str]:
-    """Read an extracted .subckt.sp file's body lines (already
-    pre-extracted by `scripts/extract_cim_subckts.py`)."""
+    """Read an extracted .subckt.sp file (pre-extracted from layout)."""
     path = _EXTRACTED_DIR / filename
     if not path.exists():
         raise FileNotFoundError(
@@ -43,33 +41,107 @@ def _read_extracted(filename: str) -> list[str]:
 
 
 def _write_extracted(f: TextIO, lines: list[str]) -> None:
-    """Write a pre-extracted subckt body verbatim, with a separator."""
+    """Emit a pre-extracted subckt body verbatim, with a separator."""
     f.write("\n")
     for ln in lines:
         f.write(ln.rstrip() + "\n")
     f.write("\n")
 
 
-_BITCELL_SCHEMATIC_PATH: Path = (
-    Path(__file__).parent.parent.parent.parent / "output/sky130_6t_cim_lr.spice"
-)
+# Foundry 6T cell extracted topology (FT7c-validated).
+# Source: peripherals/cells/extracted_subckt/sky130_fd_bd_sram__sram_sp_cell_opt1.subckt.sp
+# We add a Q port to the .subckt line and substitute the storage-node auto-name
+# `a_38_212#` (foundry's NMOS PD drain) with `Q` in the body so the Q port is
+# actually internally connected — Magic's extraction names this node `a_38_212#`
+# even with a Q label because it doesn't auto-substitute, but topology-wise the
+# Q label merges with that node.  netgen graph-iso compares connectivity, not
+# literal names, so the substitution is safe.
+def _write_foundry_qtap(f: TextIO) -> None:
+    """Emit the foundry-cell-with-Q-tap .subckt definition."""
+    f.write(
+        "\n* Foundry 6T cell with Q tap (FT7c-validated topology).\n"
+        "* Storage node `Q` exposed via LI1+LICON1 on NMOS PD drain diff.\n"
+        ".subckt sky130_fd_bd_sram__sram_sp_cell_opt1_qtap"
+        " BL BR VGND VPWR VPB WL VNB Q\n"
+    )
+    # X0: NMOS access transistor (BL side).  Drain=BL-side bitline node,
+    # gate=WL, source=Q (storage node).  Width 0.14, length 0.15.
+    f.write(
+        "X0 a_38_292# WL Q VNB sky130_fd_pr__nfet_01v8"
+        " w=0.14 l=0.15\n"
+    )
+    # X1: VPWR-side dummy diode-connected pfet (substrate decap).
+    f.write(
+        "X1 a_174_54# a_0_24# a_174_54# VPB sky130_fd_pr__pfet_01v8_hvt"
+        " w=0.14 l=0.025\n"
+    )
+    # X2, X3: cross-coupled inverter PMOS pull-ups.
+    f.write(
+        "X2 a_174_212# a_16_182# a_174_134# VPB sky130_fd_pr__pfet_01v8_hvt"
+        " w=0.14 l=0.15\n"
+    )
+    f.write(
+        "X3 a_174_134# a_16_104# a_174_54# VPB sky130_fd_pr__pfet_01v8_hvt"
+        " w=0.14 l=0.15\n"
+    )
+    # X4: WL-side dummy diode-connected pfet (substrate decap).
+    f.write(
+        "X4 a_174_212# WL a_174_212# VPB sky130_fd_pr__pfet_01v8_hvt"
+        " w=0.14 l=0.025\n"
+    )
+    # X5: NMOS pull-down (Q side).  Q is the drain.
+    f.write(
+        "X5 Q a_16_182# a_0_142# VNB sky130_fd_pr__nfet_01v8"
+        " w=0.21 l=0.15\n"
+    )
+    # X6: NMOS access transistor (BR side).
+    f.write(
+        "X6 a_38_54# a_0_24# a_38_0# VNB sky130_fd_pr__nfet_01v8"
+        " w=0.14 l=0.15\n"
+    )
+    # X7: NMOS pull-down (QB side).
+    f.write(
+        "X7 a_0_142# a_16_104# a_38_54# VNB sky130_fd_pr__nfet_01v8"
+        " w=0.21 l=0.15\n"
+    )
+    f.write(".ends\n\n")
 
 
-def _write_bitcell_schematic(f: TextIO) -> None:
-    """Inline the hand-written bitcell schematic (validated by
-    `scripts/run_lvs_bitcell.py`) as the bitcell .subckt definition.
-    The schematic uses fixed cap dims (1.0 × 1.0); device-class topology
-    is what LVS compares, not parameter values."""
-    if not _BITCELL_SCHEMATIC_PATH.exists():
-        raise FileNotFoundError(
-            f"Missing bitcell schematic {_BITCELL_SCHEMATIC_PATH}. "
-            f"Regenerate with `python3 -c \"from rekolektion.bitcell."
-            f"sky130_6t_lr_cim import generate_cim_bitcell; "
-            f"generate_cim_bitcell('output/sky130_6t_cim_lr.gds')\"`"
-        )
-    f.write("\n")
-    f.write(_BITCELL_SCHEMATIC_PATH.read_text())
-    f.write("\n")
+def _write_supercell(f: TextIO, p: CIMMacroParams) -> None:
+    """Emit the per-variant CIM supercell .subckt definition.
+
+    Topology:
+      Foundry 6T (storage)  ──── Q ──── T7 source
+                                          │
+                                    T7 drain ── cap_bot (MIM bottom plate)
+                                          │
+                                    cap top plate ── MBL
+      T7 gate ── MWL
+    """
+    cfg = CIM_SUPERCELL_VARIANTS[p.variant]
+    super_name = (
+        f"sky130_cim_supercell_{p.variant.lower().replace('-', '_')}"
+    )
+    f.write(
+        f"\n* CIM supercell ({p.variant}): foundry 6T + T7 NMOS + MIM cap.\n"
+        f".subckt {super_name} BL BR WL MWL MBL VPWR VGND VPB VNB\n"
+    )
+    # Foundry 6T core.  Q internal here; foundry exposes it via Q port.
+    f.write(
+        "Xfoundry BL BR VGND VPWR VPB WL VNB Q "
+        "sky130_fd_bd_sram__sram_sp_cell_opt1_qtap\n"
+    )
+    # T7 NMOS access transistor: gate=MWL, source=Q, drain=cap_bot, body=VNB.
+    # Width 0.42 (matches access tx min for diff/tap.2), length 0.15.
+    f.write(
+        "XT7 cap_bot MWL Q VNB sky130_fd_pr__nfet_01v8 w=0.42 l=0.15\n"
+    )
+    # MIM cap: top plate=MBL, bottom plate=cap_bot.  Per-variant dimensions.
+    f.write(
+        f"XCC MBL cap_bot sky130_fd_pr__cap_mim_m3_1"
+        f" w={cfg.cap_w} l={cfg.cap_l}\n"
+    )
+    f.write(f".ends {super_name}\n\n")
 
 
 def generate_cim_reference_spice(
@@ -93,86 +165,75 @@ def generate_cim_reference_spice(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     top_name = top_subckt_name or p.top_cell_name
-    bitcell_subckt = "sky130_sram_6t_cim_lr"
+    super_subckt = (
+        f"sky130_cim_supercell_{p.variant.lower().replace('-', '_')}"
+    )
     mwl_driver_subckt = "sky130_fd_sc_hd__buf_2"
 
     with out.open("w") as f:
         f.write(
             f"* CIM reference SPICE for {p.variant} ({p.rows}x{p.cols})\n"
             f"* Generated by rekolektion.macro.cim_spice_generator.\n"
-            f"* Models VDD/VSS/VSUBS as global supplies.\n"
+            f"* Supercell-based architecture (foundry 6T + T7 + MIM cap).\n"
         )
         f.write(".global VDD VSS VSUBS VPWR VGND\n\n")
 
-        # Per-cell subckt definitions.  MWL driver, MBL precharge, and
-        # MBL sense are pre-extracted from layout (small, simple cells).
-        # The BITCELL specifically is sourced from the hand-written
-        # SCHEMATIC (output/sky130_6t_cim_lr.spice) — track 05 trustworthy
-        # LVS fix.  Pre-fix this read the extracted bitcell, which made
-        # the macro LVS a self-reference (extracted-vs-extracted, can't
-        # catch broken cells).  Now the schematic asserts the bitcell's
-        # intended topology and the macro LVS verifies the layout truly
-        # implements that topology.  The bitcell schematic uses fixed
-        # MIM cap dimensions (1.0 × 1.0); per-variant cap dimensions are
-        # sized at the actual layout but netgen compares cap topology
-        # only (cap_mim_m3_1 is a 2-terminal class) so this is a safe
-        # value-only difference, not a connectivity mismatch.
+        # Peripheral cell .subckt definitions (extracted from layout).
         _write_extracted(f, _read_extracted(f"{mwl_driver_subckt}.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_precharge.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_sense.subckt.sp"))
-        _write_bitcell_schematic(f)
+        # Foundry 6T cell + supercell wrapper.
+        _write_foundry_qtap(f)
+        _write_supercell(f, p)
 
-        # Top-level subckt port list — matches the macro's external
-        # pins as drawn by `cim_assembler.assemble_cim`.  Includes
-        # BL/BLB/WL/MWL nets as macro ports because Magic's flat
-        # extraction promotes them via the per-row/col labels we
-        # add at the cell boundaries (see run_lvs_cim.py).
+        # Top-level subckt port list — matches the macro's external pins
+        # as drawn by `cim_assembler.assemble_cim` and the array's per-row /
+        # per-col labels (`bl_0_<c>`, `br_0_<c>`, `wl_0_<r>`, `mwl_<r>`,
+        # `mbl_<c>`).  Magic's flat extraction promotes any labeled net
+        # touching the top-cell boundary into a port.
         ports = (
             [f"MWL_EN[{r}]" for r in range(p.rows)]
             + ["MBL_PRE", "VREF", "VBIAS"]
             + [f"MBL_OUT[{c}]" for c in range(p.cols)]
-            + [f"BL_{c}" for c in range(p.cols)]
-            + [f"BLB_{c}" for c in range(p.cols)]
-            + [f"WL_{r}" for r in range(p.rows)]
-            + [f"MWL_{r}" for r in range(p.rows)]
-            + [f"MBL_{c}" for c in range(p.cols)]
+            + [f"bl_0_{c}" for c in range(p.cols)]
+            + [f"br_0_{c}" for c in range(p.cols)]
+            + [f"wl_0_{r}" for r in range(p.rows)]
+            + [f"mwl_{r}" for r in range(p.rows)]
+            + [f"mbl_{c}" for c in range(p.cols)]
             + ["VPWR", "VGND"]
         )
-        # SPICE doesn't allow brackets in port names by default; emit
-        # them anyway since the LVS reference convention here matches
-        # what Magic exposes after ext2spice.
         f.write(f".subckt {top_name}")
         for tok in ports:
             f.write(f" {tok}")
         f.write("\n")
 
         # ---- Bitcell array instances (one Xbc per [row][col]) ----
-        # Each bitcell connects:
-        #   BL[c]  — column bit line   (analog read port)
-        #   BLB[c] — column bit line bar
-        #   WL[r]  — standard word line (write path)
-        #   MWL[r] — multiply word line (CIM read path)
-        #   MBL[c] — multiply bit line (analog accumulation)
-        #   VPWR / VGND
-        f.write(f"* {p.rows} x {p.cols} CIM bitcell array\n")
+        # Each supercell connects:
+        #   bl_0_<c>  — column BL          (foundry's BL bitline)
+        #   br_0_<c>  — column BR          (foundry's BR bitline)
+        #   wl_0_<r>  — row WL             (foundry's WL gate)
+        #   mwl_<r>   — row MWL            (T7 gate)
+        #   mbl_<c>   — column MBL         (cap top plate)
+        #   VPWR / VGND / VPB / VNB        — global supplies + body bias
+        f.write(f"* {p.rows} x {p.cols} CIM supercell array\n")
         for r in range(p.rows):
             for c in range(p.cols):
                 f.write(
                     f"Xbc_{r}_{c} "
-                    f"BL_{c} BLB_{c} WL_{r} MWL_{r} MBL_{c} "
-                    f"VPWR VGND "
-                    f"{bitcell_subckt}\n"
+                    f"bl_0_{c} br_0_{c} wl_0_{r} mwl_{r} mbl_{c} "
+                    f"VPWR VGND VPWR VGND "
+                    f"{super_subckt}\n"
                 )
         f.write("\n")
 
         # ---- MWL drivers (one per row) ----
-        # Drives MWL[r] from MWL_EN[r] input.  Foundry buf_2 ports:
+        # Drives mwl_<r> from MWL_EN[r] input.  Foundry buf_2 ports:
         # A (input), VGND, VNB (p-substrate body bias = VGND), VPB
         # (n-well body bias = VPWR), VPWR, X (output).
         f.write(f"* {p.rows} MWL drivers (foundry buf_2)\n")
         for r in range(p.rows):
             f.write(
-                f"Xmwl_{r} MWL_EN[{r}] VGND VGND VPWR VPWR MWL_{r} "
+                f"Xmwl_{r} MWL_EN[{r}] VGND VGND VPWR VPWR mwl_{r} "
                 f"{mwl_driver_subckt}\n"
             )
         f.write("\n")
@@ -181,9 +242,8 @@ def generate_cim_reference_spice(
         f.write(f"* {p.cols} MBL precharges\n")
         for c in range(p.cols):
             # cim_mbl_precharge port order: MBL_PRE VREF MBL VPWR
-            # (VPWR ties the n-well via the cell's internal N-tap)
             f.write(
-                f"Xpre_{c} MBL_PRE VREF MBL_{c} VPWR cim_mbl_precharge\n"
+                f"Xpre_{c} MBL_PRE VREF mbl_{c} VPWR cim_mbl_precharge\n"
             )
         f.write("\n")
 
@@ -192,7 +252,7 @@ def generate_cim_reference_spice(
         for c in range(p.cols):
             # cim_mbl_sense port order: VBIAS MBL VSS MBL_OUT VDD
             f.write(
-                f"Xsense_{c} VBIAS MBL_{c} VGND MBL_OUT[{c}] VPWR "
+                f"Xsense_{c} VBIAS mbl_{c} VGND MBL_OUT[{c}] VPWR "
                 f"cim_mbl_sense\n"
             )
         f.write("\n")

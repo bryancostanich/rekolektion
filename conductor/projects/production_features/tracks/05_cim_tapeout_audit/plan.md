@@ -34,6 +34,51 @@ unresolved P0/P1 entries.**
 See [`trust_audit.md`](./trust_audit.md) for the full plan, anti-
 patterns, and exit criteria.
 
+### Confirmed P0 smoking guns (2026-04-29)
+
+These bugs were surfaced during the audit's inception and must be
+fixed before tape; they're called out here so they're impossible to
+miss in plan reviews:
+
+1. **CIM macros — WL fragmentation (P0 silicon-killer).**
+   The 6T+1T+1C CIM bitcell uses a homegrown LR topology with two
+   physically-isolated WL poly stripes (`wl_bot`, `wl_top`) per cell.
+   Across the 4096-cell array, every cell's stripes are isolated from
+   every other cell's. LVS reports clean only because Magic's flat
+   extraction merges by label name. On silicon, every cell's BR-side
+   access transistor would have a floating gate.
+   - Fix: migrate CIM 6T core to foundry
+     `sky130_fd_bd_sram__sram_sp_cell_opt1` + use foundry's wlstrap
+     support cell + add T7+cap as an annex cell. See [trust audit
+     plan](./trust_audit.md) and the foundry-migration tasks in
+     this track's task list.
+   - Status: in progress — this fix is the critical path for tapeout.
+
+2. **Production SRAM macros — same WL fragmentation (P0 silicon-killer).**
+   `macro/bitcell_array.py` already uses the foundry 6T cell, but
+   draws only ONE per-row poly strip at the LABELED WL Y position
+   (top stripe). The cell's UNLABELED bottom WL stripe (at cell-local
+   y=0.195, the BR-side access gate) is left orphaned across the
+   entire array. Same label-merge LVS false-positive as the CIM bug;
+   same chip-killing failure on silicon.
+   - Affects every macro built via `BitcellArray`:
+     `activation_bank`, `weight_bank_small`.
+   - Fix: insert foundry wlstrap support cell at column intervals via
+     `tile_array(strap_interval > 0)`, OR draw a second per-row poly
+     strip at `cell_h - _FOUNDRY_WL_LABEL_Y` to bridge the bottom
+     stripe across columns AND a vertical poly bridge per cell to
+     tie bottom-to-top WL. The wlstrap path is preferred (it's the
+     foundry-validated solution).
+   - Status: pending — fix scheduled after CIM migration so the
+     wlstrap integration code can be reused between both macro
+     families.
+
+Both bugs share the same root cause (foundry SRAM cells require a
+wlstrap support cell to bridge their two WL poly stripes; we never
+inserted it). The fix is the same machinery in both places. The CIM
+fix lands first because that work is also unblocking the tapeout
+audit; production SRAM rides the same wlstrap integration when done.
+
 ---
 
 ## Confidence baseline (start of track)

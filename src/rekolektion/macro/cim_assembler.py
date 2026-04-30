@@ -34,7 +34,7 @@ from typing import Optional
 import gdstk
 
 from rekolektion.bitcell.sky130_6t_lr_cim import CIM_VARIANTS, load_cim_bitcell
-from rekolektion.macro.cim_bitcell_array import CIMBitcellArray
+from rekolektion.macro.cim_supercell_array import CIMSupercellArray as CIMBitcellArray
 from rekolektion.macro.cim_mwl_driver_row import MWLDriverRow
 from rekolektion.macro.cim_mbl_precharge_row import MBLPrechargeRow
 from rekolektion.macro.cim_mbl_sense_row import MBLSenseRow

@@ -272,19 +272,32 @@ class RowDecoder:
         # the .pin shape and the label.
         from rekolektion.macro.routing import draw_pin_with_label
         _ADDR_PIN_HALF: float = 0.075   # .pin rect 0.15 × 0.15 µm
+        # F12: extend the addr rail SOUTH so its terminus reaches the
+        # row_decoder cell's bbox boundary (y=-0.5).  Magic's hierarchical
+        # port-promotion only treats `.pin` shapes as true sub-cell ports
+        # when they touch the cell bbox; an interior `.pin` at the
+        # predecoder block midpoint creates a port marker but parent
+        # met3 feeders land on `instance/addr[i]` (per-instance qualified
+        # name), not the parent's `addr[i]` net.  Placing the .pin at
+        # y=-0.4 (just inside the cell's southern bbox edge, on the now-
+        # extended rail) gives Magic a boundary port that merges with
+        # the parent's addr[i] feeder.
+        _RAIL_S_END_Y: float = -0.5
+        _ADDR_PIN_S_Y: float = -0.4
         addr_rail_xs: list[float] = []
         for i in range(total_addr):
             rail_x = addr_rail_x0 + i * addr_rail_pitch
             addr_rail_xs.append(rail_x)
             draw_wire(
-                top, start=(rail_x, -0.2), end=(rail_x, pred_block_top_y + 0.2),
+                top, start=(rail_x, _RAIL_S_END_Y),
+                end=(rail_x, pred_block_top_y + 0.2),
                 layer="met3",
             )
-            pin_y = pred_block_top_y / 2
+            # Boundary .pin + label at the south end of the rail.
             draw_pin_with_label(
                 top, text=f"addr[{i}]", layer="met3",
-                rect=(rail_x - _ADDR_PIN_HALF, pin_y - _ADDR_PIN_HALF,
-                      rail_x + _ADDR_PIN_HALF, pin_y + _ADDR_PIN_HALF),
+                rect=(rail_x - _ADDR_PIN_HALF, _ADDR_PIN_S_Y - _ADDR_PIN_HALF,
+                      rail_x + _ADDR_PIN_HALF, _ADDR_PIN_S_Y + _ADDR_PIN_HALF),
             )
 
         # 4. Wire each predecoder NAND's k inputs to its k addr rails.

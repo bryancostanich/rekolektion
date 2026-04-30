@@ -100,43 +100,33 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
     # positions to provide net names.
     _STRIP: dict[str, set[str]] = {
         "sky130_fd_sc_hd__buf_2": {"A", "X", "VPB", "VNB"},
-        # Strip MBL/MBL_OUT from cells — they're per-column nets
-        # but the cell-level labels are generic "MBL"/"MBL_OUT".
-        # Without stripping, Magic merges all 64 columns by name.
-        # Macro-level labels (MBL_<c> on column straps; MBL_OUT[c]
-        # via the macro met1 stubs) provide unique per-column
-        # naming.  Sense row builder's per-cell li1 labels are
-        # also stripped — ext2spice doesn't expose li1-only ports
-        # in the macro .subckt port list, so the port must come
-        # from the macro's met1 stub label.
+        # Defense-in-depth: cim_supercell_array also strips these in
+        # build(), but if the GDS is hand-edited or imported from a
+        # stale source, this catches the chip-killer merge anyway.
+        # Foundry's BL/BR labels would collapse all columns into one
+        # net post-flatten; Q would tie all T7 sources together.
+        "sky130_fd_bd_sram__sram_sp_cell_opt1_qtap": {"BL", "BR", "Q"},
     }
     # Wildcard strip from row-builder cells: drop all MBL_OUT[*]
     # labels because the per-cell li1 labels would otherwise mask
     # the macro's met1 MBL_OUT[*] label (Magic prefers li1 over
     # met1 when both are present on the same merged net).
     _STRIP_WILDCARD: dict[str, list[str]] = {
-        "sky130_sram_6t_cim_lr": ["MBL"],
         "cim_mbl_precharge": ["MBL"],
         "cim_mbl_sense": ["MBL", "VBIAS"],   # VBIAS poly labels prevent ext2spice
                                               # promoting the macro met2 strap label
         "cim_mbl_sense_row_64": ["MBL_OUT[", "VBIAS"],
         "cim_mbl_precharge_row_64": ["MBL["],
         # Strip row builder's MWL[r] labels (bracketed) — they conflict
-        # with the bitcell array's MWL_<r> labels (underscored, after
-        # per-row rename) and cause the buf_2 X output net to take the
-        # row builder's name instead of merging with the bitcell row's
-        # MWL net.  Keep MWL_EN[r] (the buf_2 input label) since
-        # there's no other label naming that net.
+        # with the bitcell array's mwl_<r> labels (underscored).
+        # Keep MWL_EN[r] (the buf_2 input label) since there's no other
+        # label naming that net.
         "cim_mwl_driver_col_64": ["MWL["],
     }
-    # Rename labels: bitcell uses VDD/VSS in its layout, but the macro
-    # reference (and stdcell convention) is VPWR/VGND.  Rename here so
-    # the flat-extracted top has VPWR/VGND directly, no equate needed.
+    # Rename labels: mbl_sense and its row builder use VDD/VSS; rename to
+    # macro convention (VPWR/VGND) so flat extraction has one supply name
+    # per polarity.
     _RENAME: dict[str, dict[str, str]] = {
-        "sky130_sram_6t_cim_lr": {"VDD": "VPWR", "VSS": "VGND"},
-        # mbl_sense and its row builder use VDD/VSS; rename to
-        # macro convention (VPWR/VGND) so flat extraction has one
-        # supply name per polarity.
         "cim_mbl_sense": {"VDD": "VPWR", "VSS": "VGND"},
         "cim_mbl_sense_row_64": {"VDD": "VPWR", "VSS": "VGND"},
     }

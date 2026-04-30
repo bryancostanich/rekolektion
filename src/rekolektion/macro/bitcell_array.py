@@ -77,64 +77,66 @@ class BitcellArray:
         return lib
 
     def _add_wl_labels(self, top: gdstk.Cell) -> None:
-        """Add per-row WL as spanning poly strips in the top cell.
+        """Add per-row WL as TWO spanning poly strips in the top cell.
 
-        For each row, draw a horizontal poly strip at the row's WL y-coord
-        spanning the full array width. The strip overlaps every bitcell's
-        WL poly gate in that row, electrically joining them into one net.
-        Add a poly.pin rect and poly.label at one end so Magic extracts it
-        as a named external port `wl_0_<row>`.
+        The foundry sram_sp_cell_opt1 has TWO physically-isolated WL poly
+        stripes per cell: wl_top (labeled "WL" inside the cell) and
+        wl_bot (unlabeled). Both gate access transistors in the cell.
+        Without bridging, only wl_top gets connected across the row via
+        Magic's label-name merge, while wl_bot is left fragmented (per-cell
+        anonymous gates) — the chip's BR-side access transistors would
+        be floating.
 
-        For X-mirrored rows (row % 2 == 1), the cell flips so the internal
-        WL position moves to (cell_height - _FOUNDRY_WL_LABEL_Y). The
-        poly-strip y-coord follows.
+        Fix: emit TWO per-row strips at BOTH stripe Y positions. Both
+        labeled the same `wl_0_<row>` so they merge by name into one
+        electrical WL net per row. Per FT6/FT8b validation in the foundry
+        tiler tests.
+
+        Pre-condition: the foundry cell's internal "WL" label was stripped
+        in `_import_bitcell_into` so it does not override our per-row
+        labels (Magic resolves duplicate labels by picking ONE; if the
+        foundry "WL" remains, it dominates and merges all rows globally).
+
+        For Y-mirrored rows (row % 2 == 1), wl_top and wl_bot Y positions
+        are swapped relative to the cell origin. The strips need to be at
+        BOTH cell-local Y positions regardless — we just emit at
+        (row_origin + 1.385) AND (row_origin + 0.195) for every row,
+        which catches both stripes whether or not the cell is Y-mirrored.
         """
-        from rekolektion.macro.sky130_drc import MFG_GRID
         WL_STRIP_W = 0.18  # wider than min poly (0.15) to guarantee overlap
+        # Foundry cell's two WL poly stripe Y positions in cell-local µm.
+        # Top stripe (originally labeled "WL"): y = 1.385
+        # Bottom stripe (unlabeled):           y = 0.195
+        WL_STRIPE_YS = (_FOUNDRY_WL_LABEL_Y, self._cell_h - _FOUNDRY_WL_LABEL_Y)
+        _WL_STRIP_WEST_EXT = 1.5
+        pin_extent = 0.14
         for row in range(self.rows):
             row_y0 = row * self._cell_h
-            if row % 2 == 0:
-                wl_y = row_y0 + _FOUNDRY_WL_LABEL_Y
-            else:
-                wl_y = row_y0 + self._cell_h - _FOUNDRY_WL_LABEL_Y
-
-            # Spanning horizontal poly strip — drawn on poly (66/20).
-            # Extend westward of the array bbox by `_WL_STRIP_WEST_EXT`
-            # so the parent's `_route_wl` poly→met1 via stack at
-            # x = array_left − _WL_VIA_ARRAY_GAP lands on this strip
-            # (the pad is centred 0.3 µm west of array_left and is
-            # 0.43 µm wide, so its east edge is 0.085 µm short of the
-            # array's nominal left edge — without extension, the
-            # pad overlaps NOTHING and Magic emits no merge between
-            # wl_driver_X/wl_X and array/wl_0_X).  With the staggered
-            # odd-row via at array_left − 1.0, we need the strip to
-            # extend at least 1.215 µm west of x=0 cell-local.
-            _WL_STRIP_WEST_EXT = 1.5
-            draw_wire(
-                top,
-                start=(-_WL_STRIP_WEST_EXT, wl_y),
-                end=(self.width, wl_y),
-                layer="poly",
-                width=WL_STRIP_W,
-            )
-            # Pin + label at the (extended) left end
-            pin_extent = 0.14
-            draw_pin(
-                top,
-                layer="poly",
-                rect=(
-                    -_WL_STRIP_WEST_EXT,
-                    wl_y - WL_STRIP_W / 2,
-                    -_WL_STRIP_WEST_EXT + pin_extent,
-                    wl_y + WL_STRIP_W / 2,
-                ),
-            )
-            draw_label(
-                top,
-                text=f"wl_0_{row}",
-                layer="poly",
-                position=(-_WL_STRIP_WEST_EXT + pin_extent / 2, wl_y),
-            )
+            for stripe_y_local in WL_STRIPE_YS:
+                wl_y = row_y0 + stripe_y_local
+                draw_wire(
+                    top,
+                    start=(-_WL_STRIP_WEST_EXT, wl_y),
+                    end=(self.width, wl_y),
+                    layer="poly",
+                    width=WL_STRIP_W,
+                )
+                draw_pin(
+                    top,
+                    layer="poly",
+                    rect=(
+                        -_WL_STRIP_WEST_EXT,
+                        wl_y - WL_STRIP_W / 2,
+                        -_WL_STRIP_WEST_EXT + pin_extent,
+                        wl_y + WL_STRIP_W / 2,
+                    ),
+                )
+                draw_label(
+                    top,
+                    text=f"wl_0_{row}",
+                    layer="poly",
+                    position=(-_WL_STRIP_WEST_EXT + pin_extent / 2, wl_y),
+                )
 
     def _add_bl_br_labels(self, top: gdstk.Cell) -> None:
         """Add per-col BL/BR as spanning met1 strips in the top cell.
@@ -211,11 +213,28 @@ class BitcellArray:
 
     def _import_bitcell_into(self, lib: gdstk.Library) -> gdstk.Cell:
         """Read the foundry bitcell GDS and add its cells to `lib`.
-        Returns the top bitcell `gdstk.Cell`."""
+
+        Strips the foundry cell's internal "WL", "BL", and "BR" labels
+        so the parent's per-row `wl_0_<row>` and per-col
+        `bl_0_<col>` / `br_0_<col>` labels (added by `_add_wl_labels`
+        and `_add_bl_br_labels`) win Magic's label name resolution.
+
+        Without stripping, the foundry's global "WL"/"BL"/"BR" labels
+        dominate and merge ALL rows' WL nets and ALL columns' BL/BR
+        nets into single electrical nets — chip-killer false-positive
+        LVS pattern.  WL fix is F11; BL/BR fix is F13 (production-scale
+        LVS surfaced sparse `bl_0_<c>` disconnects = 128 cols × 2 BL/BR
+        = 256 disconnected nodes per side, every column affected).
+
+        Returns the top bitcell `gdstk.Cell`.
+        """
         src = gdstk.read_gds(str(self._bitcell_info.gds_path))
         imported: dict[str, gdstk.Cell] = {}
+        _STRIP = {"WL", "BL", "BR"}
         for c in src.cells:
             copy = c.copy(c.name)
+            for label in [l for l in copy.labels if l.text in _STRIP]:
+                copy.remove(label)
             imported[c.name] = copy
             lib.add(copy)
         name = self._bitcell_info.cell_name

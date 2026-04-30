@@ -107,13 +107,33 @@ def extract_netlist(
 
     # Magic writes .ext files relative to CWD, so we run from output_dir
     # and use absolute paths for GDS and output.
-    port_make_line = "port makeall" if make_ports else ""
+    #
+    # `port makeall` only operates on the currently-selected cell, so a
+    # single invocation only promotes labels in the top cell.  Sub-cell
+    # ports (e.g. `addr[i]` rails inside `row_decoder`) need their own
+    # port-make pass BEFORE `extract all` so the .ext files capture the
+    # promoted ports.  Without it, the parent's hierarchical instance
+    # call can't pass nets into them and Magic reports the parent's
+    # feeders as dangling top-level pins (observed on F11b/F12).
+    if make_ports and cell_name:
+        port_make_block = f"""\
+set _cells [cellname list allcells]
+foreach _c $_cells {{
+    if {{$_c eq "(UNNAMED)"}} {{ continue }}
+    load $_c
+    select top cell
+    catch {{port makeall}}
+}}
+load {cell_name}
+select top cell
+"""
+    else:
+        port_make_block = ""
     tcl_script = f"""\
 gds read {gds_path}
 {"" if not cell_name else f"load {cell_name}"}
 select top cell
-extract all
-{port_make_line}
+{port_make_block}extract all
 ext2spice lvs
 ext2spice -o {extracted_spice.resolve()}
 quit -noprompt

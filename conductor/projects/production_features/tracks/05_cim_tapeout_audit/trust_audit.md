@@ -66,6 +66,24 @@ macros (activation_bank, weight_bank_small).
 Out of scope (separate efforts): RTL trust, sim infra trust. This audit
 is purely about layout verification.
 
+### ReRAM CIM track — pre-emptive guidance
+
+The ReRAM CIM (track 03 of the v1b_cim_module project) currently has
+no GDS — Phase 7 (GDS + LEF generation) is unstarted. So there's no
+layout to audit yet. But the bug pattern that bit us on SRAM CIM
+(label-merge false-positive LVS hiding fragmented internal nets) is
+generic to any cell that has internal multi-stripe routing requiring
+external strap cells. When ReRAM Phase 7 starts:
+
+- Verify the 4T1R_MUX foundry cell's internal-net architecture before
+  tiling — does any per-row or per-col signal require a strap-style
+  bridging cell? If yes, integrate it into `tile_array` from day one.
+- Use the trustworthy LVS pipeline (extracted ↔ hand-written reference
+  schematic, no extracted-vs-extracted self-reference) from the first
+  GDS, not as an after-the-fact retrofit.
+- Run the Tier 2 flood-fill connectivity check on every ReRAM macro
+  port before reporting LVS clean.
+
 ---
 
 ## Tier 1: Verification-pipeline integrity (audit the auditor)

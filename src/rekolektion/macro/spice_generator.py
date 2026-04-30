@@ -523,7 +523,13 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroParams) -> None:
     # and a top-level net-count mismatch after flatten.
     split = _SPLIT_TABLE[p.rows]
     addr_count = sum(split)  # rows-select bits only
-    addr_ports = [f"addr{i}" for i in range(addr_count)]
+    # F12: row_decoder layout labels addr rails as `addr[i]` (with
+    # brackets) and the parent macro passes `addr[i]` to those ports.
+    # Reference SPICE must use the same naming so netgen's port match
+    # by name succeeds — using bare `addr<i>` here meant netgen saw 7
+    # mismatched port names per row_decoder instance and reported all
+    # `addr[i]` as disconnected at the top level.
+    addr_ports = [f"addr[{i}]" for i in range(addr_count)]
     dec_out_ports = [f"dec_out_{r}" for r in range(p.rows)]
     ports = addr_ports + dec_out_ports + ["VPWR", "VGND"]
 
@@ -545,7 +551,7 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroParams) -> None:
             #   NAND3: GND VDD C B A Z
             #   NAND4: GND VDD D C B A Z
             # addr[0] → A, addr[1] → B, addr[2] → C, addr[3] → D (if present).
-            addr_by_letter = [f"addr{i}" for i in range(k)]
+            addr_by_letter = [f"addr[{i}]" for i in range(k)]
             # Inputs in reverse (D,C,B,A) to match native port order.
             reversed_inputs = list(reversed(addr_by_letter))
             args = ["VGND", "VPWR"] + reversed_inputs + [dec_out_ports[r]]
@@ -572,7 +578,7 @@ def _write_row_decoder_subckt(f: TextIO, p: MacroParams) -> None:
         final_inputs: list[str] = []
         for stage, k in enumerate(split):
             stage_nand_name, _ = _NAND_BY_FANIN[k]
-            stage_addrs = [f"addr{addr_offset + i}" for i in range(k)]
+            stage_addrs = [f"addr[{addr_offset + i}]" for i in range(k)]
             reversed_stage_addrs = list(reversed(stage_addrs))
             for j in range(2**k):
                 out_net = f"pred{stage}_out_{j}"

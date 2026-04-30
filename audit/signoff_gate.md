@@ -1,0 +1,91 @@
+# Sign-off gate — tapeout-readiness disposition
+
+**Status: BLOCKED — five P0 silicon defects unresolved.**
+
+Per `trust_audit.md:259-269`, sign-off requires:
+- Every Tier 1–4 item has a recorded result (no "skipped — looked fine") ✓ done
+- `smoking_guns.md` has zero P0 entries unresolved ✗ — **5 open**
+- `smoking_guns.md` has zero P1 entries unresolved OR has a written designer waiver per remaining P1 ✗ — **3 open, no waivers**
+- Equate ledger reviewed, every entry has a justification beyond "it makes LVS pass" — partial: T1.4 reviewed entries; T2.1 / T4.4 confirm 4 entries ARE sanctioning real silicon bugs.
+- Per-cell intent docs reviewed, all diffs against schematic reconciled ✓ — see `audit/intent/`.
+
+---
+
+## Summary of audit findings
+
+The trust audit ran against 4 production-track macros (`sram_weight_bank_small`, `sram_activation_bank`, CIM SRAM-A/B/C/D — 4 variants but treated as one architecture). Across 5 inline tiers + subagent-led 3+4, the audit surfaced:
+
+- **5 P0 silicon defects** — every one a label-merge masking physical disconnection
+- **3 P1 functional issues** — Liberty timing analytical-not-measured (T1.7-A), netgen equates that need flood-fill confirmation (T1.4-A), Liberty characterized against wrong cell (T4.1-DIVERGENT-A / #10)
+- **3 P2 cleanup items**
+
+**None of the 5 P0 silicon defects were caught by LVS.** All five were caught by direct flood-fill or polygon trace. LVS reports each macro as "clean" or with explainable mismatches; the actual silicon-correctness gap was invisible to the netlist comparison.
+
+---
+
+## P0 disposition table
+
+Order = recommended fix order (gate by gate, dependencies considered).
+
+| # | Issue | Severity | Scope (macros affected) | Fix-path complexity | Order rationale |
+|---|-------|----------|--------------------------|---------------------|-----------------|
+| 1 | **T4.4-A (#9)** Universal floating bitcell n-wells | P0 | All 5 (production weight_bank, activation_bank, all 4 CIM variants) | Medium — insert sky130 wlstrap-style N-tap cell every N rows, regenerate every macro, re-DRC, re-LVS without VPB-equate | **Highest leverage** — fixes the root-cause label-merge for n-well bias across the entire codebase. Naturally subsumes #8 (well-rename rewrite becomes unnecessary). |
+| 2 | **T5.2-A (#8)** CIM well-rename rewrite | P0 | CIM only (SRAM-A/B/C/D) | Low — delete the `re.sub` once #9 lands | Resolves automatically when #9 lands. Confirms the fix worked: removing the rewrite, LVS still passes = real connectivity. |
+| 3 | **T4.2-CIM-A (#11)** CIM sense-row VDD floating | P0 | CIM only | Low — add MCON+met1 jumper at every sense-buffer column in `_add_macro_routing` | Local fix, well-understood pattern (matches existing MBL_OUT jumpers). Independent of #9. |
+| 4 | **T2.1-CIM-A (#7)** CIM bitcell BL/BR drains floating | P0 | CIM only | Medium — add explicit MCONs in `sky130_cim_supercell.py` at access-tx LI1 stub | Independent of #9 and #11. Same fix-pattern category as #11 but at sub-cell level. |
+| 5 | **T1.1-A** Production refspice self-extracts | P0 (verification-pipeline) | All production refspice generation | Medium — replace `_extract_cell()` calls in `spice_generator.py` with hand-written `.subckt` bodies for `BitcellArray`/`PrechargeRow`/`ColumnMuxRow` (mirror `cim_spice_generator._write_supercell` pattern) | Pipeline-only; no silicon impact. T2.1 already independently verified production silicon-correctness. Last gate to close because the fix scope is large but the silicon risk is zero. |
+
+---
+
+## P1 disposition table
+
+| # | Issue | Recommended action | Tapeout-block? |
+|---|-------|--------------------|----------------|
+| T1.4-A | 4 netgen equates (`VPB/VPWR`, `VNB/VGND`, `VDD/VPWR`, `VSS/VGND`) make physical-connectivity claims LVS doesn't verify | Validate via T2.1 / T4.4 flood-fill. Already covered: T4.4 found `VPB↔VPWR` is a fake (issue #9 fixes); T4.2 found `VDD↔VPWR` is a fake (#11 fixes); T2.1 confirms `VPWR/VGND/VSS/VGND` survive on production. After P0 fixes ship, the equates can stay (with justification) for genuine global-name aliasing. | No (after P0 fixes) |
+| T1.7-A | Liberty timing analytical, not SPICE-measured | Disclose in tapeout signoff: ".lib values are analytical estimates; not characterised at any PVT corner against the shipping cell." | Yes — needs written waiver |
+| T4.1-DIVERGENT-A (#10) | Liberty characterised against legacy LR-CIM cell, ships supercell | Either re-characterise on supercell, OR ship banner + waiver | Yes — needs written waiver if not re-characterised |
+
+---
+
+## P2 cleanup (not blocking)
+
+| # | Issue | Action |
+|---|-------|--------|
+| T1.2-B | Dead `sky130_sram_6t_cim_lr_*.subckt.sp` snapshots | Delete (4 files) |
+| T4.1-MBL_SENSE-A | bias-NMOS width 0.5 vs 1.0 docstring/extract drift | Reconcile |
+| T4.1-6T_LR_CIM-A | Cached LR-CIM extract has 10 devices vs 9 generator | Delete cache (covered by T1.2-B) |
+
+---
+
+## Recommended fix sequence
+
+```
+1. Issue #9 — strap-cell N-tap insertion
+   ↓
+2. Issue #8 — close (just delete the well-rename rewrite, verify LVS still passes)
+   ↓
+3. Issue #11 — sense-row VDD/VSS jumpers
+   ↓
+4. Issue #7 — bitcell BL/BR MCONs
+   ↓
+5. T1.1-A — replace production self-extract refspice with hand-written .subckt bodies
+   ↓
+6. P1 dispositions — flood-fill verify the remaining equates; waivers for analytical Liberty
+   ↓
+7. Re-run full audit (Tier 1-5 + flood-fill on every per-cell-replicated net) to verify
+   ↓
+8. SIGN OFF
+```
+
+---
+
+## Anti-pattern rule for this codebase (post-audit)
+
+Before any future "LVS clean" claim:
+
+1. Flood-fill every per-cell-replicated net: WL, BL, BR, MWL, MBL, VPWR, VGND, VPB, VNB.
+2. Count transistor-line occurrences vs expected (= cells × terminals-per-cell).
+3. For body-bias / supply nets: cluster by transitive bbox-overlap, then verify each cluster has at least one LICON1 → MET1 → labeled-supply path.
+4. Reject any "LVS clean" claim that depends on netgen equates between physically-isolated nets.
+
+The five P0 patterns this audit caught share one root cause: **a label-only declaration treated as electrical connection**. Every fix above replaces a label-merge with an explicit MCON / strap / metal jumper. After fixes ship, future regressions in the same class will be caught by the flood-fill rule above.

@@ -2284,11 +2284,35 @@ def _route_addr_multi_predecoder(
             width=_CTRL_TRUNK_W,
             tracker=tracker, net=addr_net,
         )
-        draw_via_stack(
-            top, from_layer="met2", to_layer="met3",
-            position=(rail_x_abs, land_y),
-            tracker=tracker, net=addr_net,
-        )
+        # Custom met2+via2+met3 emit at land_y, mirroring Fix #2 v2 in
+        # row_decoder._via2_on_rail.  draw_via_stack would emit a 0.49 ×
+        # 0.49 met3.6-clamped square pad here; with all 8 addr drops at
+        # the same y on 0.7 µm pitch, adjacent pads sit 0.21 µm apart and
+        # trip met3.2 (≥0.30 spacing).  A 0.36 × 0.68 rectangular pad
+        # gives 0.34 µm pad-to-pad clearance and clears met3.4 + via2.5a.
+        from rekolektion.macro.sky130_drc import GDS_LAYER as _GDS_LAYER
+        _met2_l, _met2_d = _GDS_LAYER["met2"]
+        _via2_l, _via2_d = _GDS_LAYER["via2"]
+        _met3_l, _met3_d = _GDS_LAYER["met3"]
+        _MET2_PAD_HALF: float = 0.185
+        _VIA2_HALF: float = 0.10
+        _MET3_PAD_HALF_X: float = 0.18
+        _MET3_PAD_HALF_Y: float = 0.34
+        top.add(gdstk.rectangle(
+            (rail_x_abs - _MET2_PAD_HALF, land_y - _MET2_PAD_HALF),
+            (rail_x_abs + _MET2_PAD_HALF, land_y + _MET2_PAD_HALF),
+            layer=_met2_l, datatype=_met2_d,
+        ))
+        top.add(gdstk.rectangle(
+            (rail_x_abs - _VIA2_HALF, land_y - _VIA2_HALF),
+            (rail_x_abs + _VIA2_HALF, land_y + _VIA2_HALF),
+            layer=_via2_l, datatype=_via2_d,
+        ))
+        top.add(gdstk.rectangle(
+            (rail_x_abs - _MET3_PAD_HALF_X, land_y - _MET3_PAD_HALF_Y),
+            (rail_x_abs + _MET3_PAD_HALF_X, land_y + _MET3_PAD_HALF_Y),
+            layer=_met3_l, datatype=_met3_d,
+        ))
 
 
 def layer_min_width_half(layer: str) -> float:

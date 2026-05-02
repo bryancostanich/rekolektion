@@ -179,6 +179,7 @@ def run_lvs(
     output_dir: str | Path | None = None,
     extracted_netlist: str | Path | None = None,
     netgen_timeout: int = 3600,
+    extra_flatten_cells: list[str] | None = None,
 ) -> LVSResult:
     """Run LVS: extract layout netlist, compare against schematic.
 
@@ -271,6 +272,8 @@ def run_lvs(
         "sky130_fd_sc_hd__clkbuf_4",
         "sky130_fd_sc_hd__buf_2",
     ]
+    if extra_flatten_cells:
+        flatten_cells.extend(extra_flatten_cells)
     lines: list[str] = []
     if pdk_setup is not None:
         lines.append(f"source {pdk_setup}")

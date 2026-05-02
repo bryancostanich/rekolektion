@@ -189,6 +189,126 @@ def _write_supercell(f: TextIO, p: CIMMacroParams) -> None:
     f.write(f".ends {super_name}\n\n")
 
 
+def _write_array_subckt(f: TextIO, p: CIMMacroParams) -> None:
+    """Emit the cim_array intermediate subckt — 4096 supercell instances.
+
+    Mirrors the layout's `cim_array_<variant>_<rows>x<cols>` subckt
+    structure (built by `CIMSupercellArray`).  Without this intermediate
+    subckt the reference is flat and netgen reports ~90 spurious net
+    mismatches when it has to flatten the layout's array to compare
+    against a flat reference.
+    """
+    super_subckt = (
+        f"sky130_cim_supercell_{p.variant.lower().replace('-', '_')}"
+    )
+    array_name = (
+        f"cim_array_{p.variant.lower().replace('-', '_')}"
+        f"_{p.rows}x{p.cols}"
+    )
+    # Mirror the layout's array port list: VPWR / VSS (substrate net,
+    # auto-named by Magic from the global VSUBS).  The supercell's VNB
+    # port connects to VSS (extracted substrate name) inside the array.
+    ports = (
+        [f"bl_0_{c}" for c in range(p.cols)]
+        + [f"br_0_{c}" for c in range(p.cols)]
+        + [f"wl_0_{r}" for r in range(p.rows)]
+        + [f"mwl_{r}" for r in range(p.rows)]
+        + [f"mbl_{c}" for c in range(p.cols)]
+        + ["VPWR", "VSS"]
+    )
+    f.write(f"\n* {p.rows} x {p.cols} CIM supercell array.\n")
+    f.write(f".subckt {array_name}")
+    for tok in ports:
+        f.write(f" {tok}")
+    f.write("\n")
+    for r in range(p.rows):
+        for c in range(p.cols):
+            # Supercell port order: BL BR WL MWL MBL VPWR VGND VPB VNB.
+            # VGND port → VSS net (Magic-extracted substrate name); VPB
+            # port → VPWR net (NWELL body bias = supply); VNB port →
+            # VSS net (PSUB body bias = ground).
+            f.write(
+                f"Xbc_{r}_{c} "
+                f"bl_0_{c} br_0_{c} wl_0_{r} mwl_{r} mbl_{c} "
+                f"VPWR VSS VPWR VSS "
+                f"{super_subckt}\n"
+            )
+    f.write(f".ends {array_name}\n")
+
+
+def _write_mwl_driver_col_subckt(f: TextIO, p: CIMMacroParams) -> None:
+    """Emit cim_mwl_driver_col_<rows> intermediate subckt."""
+    name = f"cim_mwl_driver_col_{p.rows}"
+    ports = (
+        [t for r in range(p.rows) for t in (f"MWL_EN[{r}]", f"mwl_{r}")]
+        + ["VPWR", "VGND"]
+    )
+    f.write(f"\n* {p.rows} MWL drivers (one per row, foundry buf_2).\n")
+    f.write(f".subckt {name}")
+    for tok in ports:
+        f.write(f" {tok}")
+    f.write("\n")
+    for r in range(p.rows):
+        # buf_2 ports: A VGND VNB VPB VPWR X
+        f.write(
+            f"Xmwl_{r} MWL_EN[{r}] VGND VGND VPWR VPWR mwl_{r} "
+            f"sky130_fd_sc_hd__buf_2\n"
+        )
+    f.write(f".ends {name}\n")
+
+
+def _write_mbl_precharge_row_subckt(f: TextIO, p: CIMMacroParams) -> None:
+    """Emit cim_mbl_precharge_row_<cols> intermediate subckt.
+
+    The layout's precharge row exposes per-column MBL connections as
+    `MBL[c]` (uppercase, brackets) — these are the pins that connect
+    out to the array's `mbl_<c>` nets at the macro top level.  Mirror
+    that naming here so netgen's pin-name alignment succeeds.
+    """
+    name = f"cim_mbl_precharge_row_{p.cols}"
+    ports = (
+        ["MBL_PRE", "VREF", "VPWR"]
+        + [f"MBL[{c}]" for c in range(p.cols)]
+    )
+    f.write(f"\n* {p.cols} MBL precharges (one per column).\n")
+    f.write(f".subckt {name}")
+    for tok in ports:
+        f.write(f" {tok}")
+    f.write("\n")
+    for c in range(p.cols):
+        # cim_mbl_precharge port order: MBL_PRE VREF MBL VPWR
+        f.write(
+            f"Xpre_{c} MBL_PRE VREF MBL[{c}] VPWR cim_mbl_precharge\n"
+        )
+    f.write(f".ends {name}\n")
+
+
+def _write_mbl_sense_row_subckt(f: TextIO, p: CIMMacroParams) -> None:
+    """Emit cim_mbl_sense_row_<cols> intermediate subckt.
+
+    Per-column ports `MBL[c]` and `MBL_OUT[c]` mirror the layout
+    extraction's naming convention.
+    """
+    name = f"cim_mbl_sense_row_{p.cols}"
+    ports = (
+        ["VBIAS", "VPWR", "VGND"]
+        + [t for c in range(p.cols)
+             for t in (f"MBL[{c}]", f"MBL_OUT[{c}]")]
+    )
+    f.write(f"\n* {p.cols} MBL sense buffers (one per column).\n")
+    f.write(f".subckt {name}")
+    for tok in ports:
+        f.write(f" {tok}")
+    f.write("\n")
+    for c in range(p.cols):
+        # cim_mbl_sense port order: VBIAS MBL VSS MBL_OUT VDD
+        f.write(
+            f"Xsense_{c} VBIAS MBL[{c}] VGND MBL_OUT[{c}] VPWR "
+            f"cim_mbl_sense\n"
+        )
+    f.write(f".ends {name}\n")
+
+
 def generate_cim_reference_spice(
     p: CIMMacroParams,
     output_path: str | Path,
@@ -210,10 +330,13 @@ def generate_cim_reference_spice(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     top_name = top_subckt_name or p.top_cell_name
-    super_subckt = (
-        f"sky130_cim_supercell_{p.variant.lower().replace('-', '_')}"
+    array_subckt = (
+        f"cim_array_{p.variant.lower().replace('-', '_')}"
+        f"_{p.rows}x{p.cols}"
     )
-    mwl_driver_subckt = "sky130_fd_sc_hd__buf_2"
+    mwl_subckt = f"cim_mwl_driver_col_{p.rows}"
+    pre_subckt = f"cim_mbl_precharge_row_{p.cols}"
+    sense_subckt = f"cim_mbl_sense_row_{p.cols}"
 
     with out.open("w") as f:
         f.write(
@@ -224,18 +347,19 @@ def generate_cim_reference_spice(
         f.write(".global VDD VSS VSUBS VPWR VGND\n\n")
 
         # Peripheral cell .subckt definitions (extracted from layout).
-        _write_extracted(f, _read_extracted(f"{mwl_driver_subckt}.subckt.sp"))
+        _write_extracted(f, _read_extracted("sky130_fd_sc_hd__buf_2.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_precharge.subckt.sp"))
         _write_extracted(f, _read_extracted("cim_mbl_sense.subckt.sp"))
         # Foundry 6T cell + supercell wrapper.
         _write_foundry_qtap(f)
         _write_supercell(f, p)
+        # Intermediate hierarchical subckts (mirror layout structure).
+        _write_array_subckt(f, p)
+        _write_mwl_driver_col_subckt(f, p)
+        _write_mbl_precharge_row_subckt(f, p)
+        _write_mbl_sense_row_subckt(f, p)
 
-        # Top-level subckt port list — matches the macro's external pins
-        # as drawn by `cim_assembler.assemble_cim` and the array's per-row /
-        # per-col labels (`bl_0_<c>`, `br_0_<c>`, `wl_0_<r>`, `mwl_<r>`,
-        # `mbl_<c>`).  Magic's flat extraction promotes any labeled net
-        # touching the top-cell boundary into a port.
+        # Top-level subckt port list — matches the macro's external pins.
         ports = (
             [f"MWL_EN[{r}]" for r in range(p.rows)]
             + ["MBL_PRE", "VREF", "VBIAS"]
@@ -247,60 +371,47 @@ def generate_cim_reference_spice(
             + [f"mbl_{c}" for c in range(p.cols)]
             + ["VPWR", "VGND"]
         )
-        f.write(f".subckt {top_name}")
+        f.write(f"\n.subckt {top_name}")
         for tok in ports:
             f.write(f" {tok}")
         f.write("\n")
 
-        # ---- Bitcell array instances (one Xbc per [row][col]) ----
-        # Each supercell connects:
-        #   bl_0_<c>  — column BL          (foundry's BL bitline)
-        #   br_0_<c>  — column BR          (foundry's BR bitline)
-        #   wl_0_<r>  — row WL             (foundry's WL gate)
-        #   mwl_<r>   — row MWL            (T7 gate)
-        #   mbl_<c>   — column MBL         (cap top plate)
-        #   VPWR / VGND / VPB / VNB        — global supplies + body bias
+        # ---- Bitcell array instance ----
         f.write(f"* {p.rows} x {p.cols} CIM supercell array\n")
-        for r in range(p.rows):
-            for c in range(p.cols):
-                f.write(
-                    f"Xbc_{r}_{c} "
-                    f"bl_0_{c} br_0_{c} wl_0_{r} mwl_{r} mbl_{c} "
-                    f"VPWR VGND VPWR VGND "
-                    f"{super_subckt}\n"
-                )
-        f.write("\n")
+        array_args = (
+            [f"bl_0_{c}" for c in range(p.cols)]
+            + [f"br_0_{c}" for c in range(p.cols)]
+            + [f"wl_0_{r}" for r in range(p.rows)]
+            + [f"mwl_{r}" for r in range(p.rows)]
+            + [f"mbl_{c}" for c in range(p.cols)]
+            + ["VPWR", "VGND"]
+        )
+        f.write(f"Xarr {' '.join(array_args)} {array_subckt}\n")
 
-        # ---- MWL drivers (one per row) ----
-        # Drives mwl_<r> from MWL_EN[r] input.  Foundry buf_2 ports:
-        # A (input), VGND, VNB (p-substrate body bias = VGND), VPB
-        # (n-well body bias = VPWR), VPWR, X (output).
-        f.write(f"* {p.rows} MWL drivers (foundry buf_2)\n")
-        for r in range(p.rows):
-            f.write(
-                f"Xmwl_{r} MWL_EN[{r}] VGND VGND VPWR VPWR mwl_{r} "
-                f"{mwl_driver_subckt}\n"
-            )
-        f.write("\n")
+        # ---- MWL driver column instance ----
+        f.write(f"* {p.rows} MWL drivers (one per row)\n")
+        mwl_args = (
+            [t for r in range(p.rows) for t in (f"MWL_EN[{r}]", f"mwl_{r}")]
+            + ["VPWR", "VGND"]
+        )
+        f.write(f"Xmwl_drivers {' '.join(mwl_args)} {mwl_subckt}\n")
 
-        # ---- MBL precharges (one per column) ----
-        f.write(f"* {p.cols} MBL precharges\n")
-        for c in range(p.cols):
-            # cim_mbl_precharge port order: MBL_PRE VREF MBL VPWR
-            f.write(
-                f"Xpre_{c} MBL_PRE VREF mbl_{c} VPWR cim_mbl_precharge\n"
-            )
-        f.write("\n")
+        # ---- MBL precharge row instance ----
+        f.write(f"* {p.cols} MBL precharges (one per column)\n")
+        pre_args = (
+            ["MBL_PRE", "VREF", "VPWR"]
+            + [f"mbl_{c}" for c in range(p.cols)]
+        )
+        f.write(f"Xprecharge {' '.join(pre_args)} {pre_subckt}\n")
 
-        # ---- MBL sense buffers (one per column) ----
-        f.write(f"* {p.cols} MBL sense buffers\n")
-        for c in range(p.cols):
-            # cim_mbl_sense port order: VBIAS MBL VSS MBL_OUT VDD
-            f.write(
-                f"Xsense_{c} VBIAS mbl_{c} VGND MBL_OUT[{c}] VPWR "
-                f"cim_mbl_sense\n"
-            )
-        f.write("\n")
+        # ---- MBL sense row instance ----
+        f.write(f"* {p.cols} MBL sense buffers (one per column)\n")
+        sense_args = (
+            ["VBIAS", "VPWR", "VGND"]
+            + [t for c in range(p.cols)
+                 for t in (f"mbl_{c}", f"MBL_OUT[{c}]")]
+        )
+        f.write(f"Xsense {' '.join(sense_args)} {sense_subckt}\n")
 
         f.write(f".ends {top_name}\n")
     return out

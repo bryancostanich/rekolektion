@@ -942,7 +942,11 @@ _SA_DOUT_X_LOCAL: float = 0.635
 _SA_DOUT_Y_LOCAL: float = 0.0   # bottom edge
 
 # Pitch between trunk y's for per-bit horizontal jogs on met3.
-_BIT_TRUNK_PITCH: float = 0.70  # 0.30 met3 width + 0.40 clearance.
+_BIT_TRUNK_PITCH: float = 0.85  # 0.49 met3.6-clamped via-stack pad +
+# 0.36 clearance.  Old value 0.70 was sized for the 0.30 met3 wires
+# but each trunk endpoint draws a draw_via_stack with a met3 pad
+# clamped up to sqrt(MET3_MIN_AREA) = 0.49, and at 0.70 pitch
+# adjacent endpoints' pads sat 0.21 µm apart, tripping met3.2.
 # Was 0.60 (= width + min spacing exactly).  At pitch 0.60 the
 # adjacent trunks' edges sit AT the met3 min-spacing boundary, and
 # Magic's extract treats them as electrically merged — every adjacent

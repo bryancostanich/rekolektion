@@ -409,6 +409,19 @@ class RowDecoder:
             _MET2_PAD_HALF: float = 0.185
             # via2 cut: 0.20 × 0.20.
             _VIA2_HALF: float = 0.10
+            # met3 pad: 0.36 × 0.68 rectangular.  Rail-only enclosure
+            # (0.30 wide rail, 0.05 µm x-side) is in-rule for met3.4 base
+            # surround (≥ 0.025) but Magic flagged 14 net met3.4 per macro
+            # at via2 corners where rail coverage past the cut dipped
+            # below 25 nm — likely at rail termini and .pin shape
+            # neighborhoods.  Pad provides 0.08 µm enclosure across the
+            # rail and 0.24 µm along it (clears via2.4a 0.060 + via2.5a
+            # 0.085).  Adjacent rail pads at 0.7 µm pitch sit 0.34 µm
+            # apart — clears met3.2 (0.30) by 0.04 µm.  Pad area
+            # 0.36 × 0.68 = 0.245 µm² clears met3.6 min-area (0.240) by
+            # 5 nm — the tightest margin in the budget.
+            _MET3_PAD_HALF_X: float = 0.18
+            _MET3_PAD_HALF_Y: float = 0.34
             def _via2_on_rail(rail_x: float, target_y: float) -> None:
                 top.add(gdstk.rectangle(
                     (rail_x - _MET2_PAD_HALF, target_y - _MET2_PAD_HALF),
@@ -420,9 +433,11 @@ class RowDecoder:
                     (rail_x + _VIA2_HALF, target_y + _VIA2_HALF),
                     layer=_via2_l, datatype=_via2_d,
                 ))
-                # No standalone met3 pad — the addr rail is met3 0.30 µm
-                # wide and runs the full predecoder block height.  At
-                # target_y the rail provides the met3 enclosure.
+                top.add(gdstk.rectangle(
+                    (rail_x - _MET3_PAD_HALF_X, target_y - _MET3_PAD_HALF_Y),
+                    (rail_x + _MET3_PAD_HALF_X, target_y + _MET3_PAD_HALF_Y),
+                    layer=_met3_l, datatype=_met3_d,
+                ))
             if detour_ys is not None:
                 for pin_name, rail_x in zip(pin_names, stage_addr_xs):
                     _via2_on_rail(rail_x, detour_ys[pin_name])

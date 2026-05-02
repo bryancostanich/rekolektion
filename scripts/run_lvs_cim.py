@@ -99,9 +99,13 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     # the issue #7 access-tx drain-floating defect.
     print(f"[{variant}] running Magic hierarchical extraction "
           f"(port makeall recursive) ...", flush=True)
+    # 256-row variants (SRAM-A/B) take 30+ min in Magic's port-makeall
+    # recursive pass — bump the extract timeout accordingly.
+    extract_timeout = 4 * 3600 if p.rows >= 128 else 1800
     extracted = extract_netlist(
         gds, p.top_cell_name, output_dir=out_dir,
         make_ports=True,
+        timeout=extract_timeout,
     )
 
     # T5.2-A resolution (Path 3, 2026-05-01): the legacy

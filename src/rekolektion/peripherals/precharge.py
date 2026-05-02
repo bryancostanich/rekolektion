@@ -394,11 +394,20 @@ def generate_precharge(
     pair_pitch: float = _MIN_PAIR_PITCH,
     cell_name: str | None = None,
     output_path: str | Path | None = None,
+    strap_interval: int = 0,
+    strap_width: float = 0.0,
 ) -> Tuple[gdstk.Cell, gdstk.Library]:
     """Emit an extraction-clean precharge cell using N=2 shared-diff blocks.
 
     num_pairs must be even (≥ 2). Blocks are 2 pairs wide; the cell
     contains num_pairs / 2 blocks.
+
+    If ``strap_interval > 0``, an empty ``strap_width`` µm gap is inserted
+    after every ``strap_interval`` pairs to keep the precharge column
+    lattice aligned with a bitcell array that has wlstrap cells inserted
+    at the same pitch.  Block layout is preserved (blocks straddle pair
+    pairs only); strap_interval must be a multiple of 2 so straps never
+    fall mid-block.
     """
     if pair_pitch < _MIN_PAIR_PITCH - 1e-9:
         raise ValueError(f"pair_pitch {pair_pitch} < min {_MIN_PAIR_PITCH}")
@@ -407,13 +416,34 @@ def generate_precharge(
             f"num_pairs must be even and >= 2 for N=2 block layout; "
             f"got {num_pairs}"
         )
+    if strap_interval > 0 and strap_interval % 2 != 0:
+        raise ValueError(
+            f"strap_interval must be a multiple of 2 (block size) when > 0; "
+            f"got {strap_interval}"
+        )
 
     name = cell_name or (
         f"precharge_{num_pairs}pairs_p{int(pair_pitch * 1000)}nm_n2"
     )
     block_width = _snap(2 * pair_pitch)
     num_blocks = num_pairs // 2
-    cell_w = _snap(num_blocks * block_width)
+
+    def _pair_x(pair_idx: int) -> float:
+        """X position of pair ``pair_idx`` (strap-aware)."""
+        if strap_interval <= 0:
+            return pair_idx * pair_pitch
+        n_straps_before = pair_idx // strap_interval
+        return pair_idx * pair_pitch + n_straps_before * strap_width
+
+    def _block_x(block_idx: int) -> float:
+        """X position of block ``block_idx`` (strap-aware; first pair of block)."""
+        return _pair_x(2 * block_idx)
+
+    if strap_interval > 0 and num_pairs > 1:
+        n_straps = (num_pairs - 1) // strap_interval
+        cell_w = _snap(num_pairs * pair_pitch + n_straps * strap_width)
+    else:
+        cell_w = _snap(num_blocks * block_width)
 
     lib = gdstk.Library(name=f"{name}_lib")
     cell = gdstk.Cell(name)
@@ -448,8 +478,9 @@ def generate_precharge(
 
     # --- BL / BR stubs (per pair) -----------------------------------------
     for i in range(num_pairs):
-        x_bl = i * pair_pitch + _BL_X
-        x_br = i * pair_pitch + _BR_X
+        pair_x = _pair_x(i)
+        x_bl = pair_x + _BL_X
+        x_br = pair_x + _BR_X
         _rect(cell, _MET1, x_bl - met1_half, 0.0,
               x_bl + met1_half, _CELL_H)
         cell.add(gdstk.Label(
@@ -467,8 +498,8 @@ def generate_precharge(
         # The precharge sits ABOVE the array; its bottom edge abuts the
         # assembler's BL/BR bridge strip (at x=0.420/0.780) in the gap
         # between precharge and array.
-        x_bl_real = i * pair_pitch + 0.420
-        x_br_real = i * pair_pitch + 0.780
+        x_bl_real = pair_x + 0.420
+        x_br_real = pair_x + 0.780
         _rect(cell, _MET1,
               x_bl - met1_half, 0.0,
               x_bl_real + met1_half, 0.14)
@@ -478,7 +509,7 @@ def generate_precharge(
 
     # --- Per-block: Rows A, B, C transistors ------------------------------
     for b in range(num_blocks):
-        x_block = b * block_width
+        x_block = _block_x(b)
 
         # Row A: shared-source MP1 pair. Drain x positions (within block):
         # BL[0]=0.0425 and BL[1]=1.3525 (pair-local; pair[1] in block is

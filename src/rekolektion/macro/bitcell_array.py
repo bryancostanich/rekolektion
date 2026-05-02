@@ -19,42 +19,92 @@ from pathlib import Path
 import gdstk
 
 from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
+from rekolektion.bitcell.sky130_cim_drain_bridge import BRIDGE_H
+from rekolektion.bitcell.sky130_sp_bridged import (
+    create_sp_bridged_cell,
+    WRAPPER_NAME as _BRIDGED_CELL_NAME,
+    WRAPPER_W as _BRIDGED_CELL_W,
+    WRAPPER_H as _BRIDGED_CELL_H,
+)
+from rekolektion.bitcell.sky130_sp_wlstrap_bridged import (
+    create_sp_wlstrap_bridged_cell,
+    WRAPPER_NAME as _BRIDGED_STRAP_NAME,
+    WRAPPER_W as _BRIDGED_STRAP_W,
+    WRAPPER_H as _BRIDGED_STRAP_H,
+)
 from rekolektion.macro.routing import draw_label, draw_pin, draw_wire
 
 
-# Foundry wlstrap cell: provides the N+ DIFF + LICON1 + LI1 + MCON +
-# MET1=VPWR stack.  Inserted as a column between every `strap_interval`
-# bitcells.  Same row pitch as bitcell.
-_WLSTRAP_GDS_PATH: Path = (
-    Path(__file__).parent.parent
-    / "array/cells/sky130_fd_bd_sram__sram_sp_wlstrap.gds"
-)
-_WLSTRAP_NAME: str = "sky130_fd_bd_sram__sram_sp_wlstrap"
-_WLSTRAP_W: float = 1.410   # placement pitch from LEF SIZE
-_WLSTRAP_H: float = 1.580   # matches bitcell cell_height
+# Bridged wlstrap wrapper (sky130_sp_wlstrap_bridged.py) — same width
+# as foundry wlstrap, but Y-pitch matches the bridged bitcell wrapper.
+# Foundry wlstrap is shifted up by BRIDGE_H inside the wrapper, with
+# NWELL filler at top and bottom.  This restores strap-row alignment
+# after the bitcell pitch grew from 1.58 → 2.22 µm with the drain-
+# bridge fix.
+_WLSTRAP_NAME: str = _BRIDGED_STRAP_NAME
+_WLSTRAP_W: float = _BRIDGED_STRAP_W   # 1.410
+_WLSTRAP_H: float = _BRIDGED_STRAP_H   # 2.220
 
 
-# Foundry bitcell's internal WL label position (cell-local, µm). The opt1
-# cell's WL is the poly gate of the access transistors, not a metal wire.
-# The bitcell's own "WL" text label is on poly.label (66/5) at (0.605, 1.385).
-# We place our per-row override label at the same coordinate so Magic's
-# extractor uses our `wl_0_<row>` name instead of the inherited "WL".
+# Public — single source of truth for strap-aware column X position.
+# Periphery row generators (precharge, column_mux, sense_amp,
+# write_driver) and assembler routing functions both use this so a
+# bitcell column at index `col` in the array sits at the same physical
+# X as a periphery slot at the same `col`.
+def strap_aware_col_x(
+    col: int,
+    cell_pitch: float = _BRIDGED_CELL_W,
+    strap_interval: int = 0,
+    strap_width: float = _WLSTRAP_W,
+) -> float:
+    """X-coordinate of bitcell column ``col`` accounting for strap insertions.
+
+    With ``strap_interval=0`` (no straps) this is just ``col * cell_pitch``.
+    With ``strap_interval=N>0``, a strap of width ``strap_width`` is inserted
+    after every ``N`` bitcell columns; the X for column ``col`` shifts east
+    by ``(col // N) * strap_width``.
+    """
+    if strap_interval <= 0:
+        return col * cell_pitch
+    n_straps_before = col // strap_interval
+    return col * cell_pitch + n_straps_before * strap_width
+
+
+def strap_aware_total_width(
+    n_cols: int,
+    cell_pitch: float = _BRIDGED_CELL_W,
+    strap_interval: int = 0,
+    strap_width: float = _WLSTRAP_W,
+) -> float:
+    """Total width of an n-column row accounting for inserted straps.
+
+    Strap is inserted after every `strap_interval` columns up to but not
+    including the last column (no trailing strap), matching
+    `BitcellArray.n_strap_cols`'s `(cols - 1) // strap_interval` formula.
+    """
+    if strap_interval <= 0 or n_cols <= 1:
+        return n_cols * cell_pitch
+    n_straps = (n_cols - 1) // strap_interval
+    return n_cols * cell_pitch + n_straps * strap_width
+
+
+# Foundry bitcell's internal WL label position, expressed in
+# bridged-wrapper-local coords (foundry cell is shifted up by BRIDGE_H
+# inside the wrapper, so all foundry-internal Y positions add BRIDGE_H).
+# The foundry's WL text label is on poly.label (66/5) at foundry-local
+# (0.605, 1.385) → wrapper-local (0.605, BRIDGE_H + 1.385).
 _FOUNDRY_WL_LABEL_X: float = 0.605
-_FOUNDRY_WL_LABEL_Y: float = 1.385
+_FOUNDRY_WL_LABEL_Y: float = BRIDGE_H + 1.385
 
-# Foundry bitcell's BL/BR x-coordinates (cell-local, µm). Per the full
-# foundry LEF `sky130_fd_bd_sram__sram_sp_cell_opt1.magic.lef`:
-#   BL  met1 rail  RECT 0.350 0.000 0.490 1.435  -> x-centre 0.420
-#   BR  met1 rail  RECT 0.710 0.145 0.850 1.580  -> x-centre 0.780
-# (Earlier versions of this file misread the LEF and put these at
-# 0.0425 / 1.1575 — those are VGND's pin rect x-centre, not BL's. The
-# bug caused our BL strip to physically overlap VGND inside every
-# bitcell, shorting BL to VGND across the array.)
+# Foundry bitcell's BL/BR x-coordinates (unchanged by Y shift).
+#   BL  met1 rail  foundry-local x-centre 0.420
+#   BR  met1 rail  foundry-local x-centre 0.780
 _FOUNDRY_BL_X_IN_CELL: float = 0.420
 _FOUNDRY_BR_X_IN_CELL: float = 0.780
 _FOUNDRY_BL_LABEL_X: float = 0.420
 _FOUNDRY_BR_LABEL_X: float = 0.780
-_FOUNDRY_BLBR_LABEL_Y: float = 1.130
+# BL/BR label Y in wrapper-local coords (foundry-local 1.130 + BRIDGE_H).
+_FOUNDRY_BLBR_LABEL_Y: float = BRIDGE_H + 1.130
 
 
 class BitcellArray:
@@ -79,9 +129,15 @@ class BitcellArray:
         # at row boundaries, every bitcell NWELL physically reaches a tap.
         self.strap_interval = max(0, int(strap_interval))
 
+        # Use the bridged wrapper (foundry + drain bridge cells) instead
+        # of the unmodified foundry cell.  The wrapper closes the
+        # T1.1-A drain-floating defect by adding LICON1+LI1+MCON+M1
+        # contact stacks for both BL and BR drain rails.  Pitch grows
+        # from 1.58 → 2.22 µm (+40%) but the bitcell becomes silicon-
+        # functional.  See `sky130_sp_bridged.py` for the architecture.
         self._bitcell_info = load_foundry_sp_bitcell()
-        self._cell_w = self._bitcell_info.cell_width
-        self._cell_h = self._bitcell_info.cell_height
+        self._cell_w = _BRIDGED_CELL_W
+        self._cell_h = _BRIDGED_CELL_H
 
     @property
     def n_strap_cols(self) -> int:
@@ -145,11 +201,17 @@ class BitcellArray:
         return lib
 
     def _import_strap_into(self, lib: gdstk.Library) -> gdstk.Cell:
-        """Read the foundry wlstrap GDS and add its cells to `lib`."""
-        src = gdstk.read_gds(str(_WLSTRAP_GDS_PATH))
+        """Build the bridged wlstrap wrapper and add its cells to `lib`.
+
+        The wrapper is `sky130_fd_bd_sram__sram_sp_wlstrap_bridged`, which
+        contains the unmodified foundry wlstrap as a sub-cell shifted up
+        by BRIDGE_H, with NWELL filler at the BL-bridge and BR-Phase2
+        zones to maintain NWELL continuity through the wrapper.
+        """
+        bridged_lib, bridged_top = create_sp_wlstrap_bridged_cell()
         existing = {c.name for c in lib.cells}
         result = None
-        for c in src.cells:
+        for c in bridged_lib.cells:
             if c.name in existing:
                 if c.name == _WLSTRAP_NAME:
                     result = next(x for x in lib.cells if x.name == c.name)
@@ -184,42 +246,74 @@ class BitcellArray:
                     ))
 
     def _add_nwell_row_bridges(self, top: gdstk.Cell) -> None:
-        """Add thin NWELL strips at every row boundary spanning array width.
+        """Add NWELL strips at row boundaries to bridge column NWELLs.
 
-        Cell-local NWELL spans y=[0, 1.580] in every bitcell, so at any
-        row boundary y=N*ch both rows' NWELLs touch the boundary.  A thin
-        parent-level NWELL strip at the boundary merges with all per-cell
-        NWELLs in both adjacent rows AND with strap-column NWELLs at the
-        same Y, producing a single connected NWELL plane that spans the
-        full array.
+        Important: bridge cells (`sky130_cim_drain_bridge_v1`) sit at
+        the bottom of every wrapper, with NMOS NSDM-marked DIFF at
+        wrapper-local x=[0.065, 0.455] y=[0, BRIDGE_H].  A full-width
+        horizontal NWELL strip at certain row boundaries would
+        partially cover this bridge DIFF — making it look like an
+        N-tap with insufficient NWELL enclosure (diff/tap.10) AND
+        creating a real silicon short between the bridge BL net and
+        the NWELL VPB rail.
+
+        Same architecture as `cim_supercell_array._add_nwell_row_bridges`:
+          - Strips at EVEN K (row boundaries between mirrored-row top
+            and unmirrored-row bottom, both with bridge cells abutting)
+            are SEGMENTED with gaps at every column's bridge NSDM x-range.
+          - Strips at ODD K (row boundaries between unmirrored-row top
+            and mirrored-row bottom — where bridges are at OPPOSITE
+            ends of their rows) can be FULL WIDTH, providing the
+            cross-column NWELL bridging that segmented strips cannot.
         """
-        # sky130 NWELL drawing layer (sky130_drc.GDS_LAYER doesn't enumerate
-        # well/diff/sdm layers; use the GDS spec directly).
         nwell_id, nwell_dt = 64, 20
-        # Strip thickness: small enough to avoid fattening NWELL beyond
-        # cell-local extent, large enough to guarantee overlap with
-        # per-cell NWELL after rounding.
         T = 0.10
+        ch = self._cell_h
+        cw = self._cell_w
         x0 = -0.10
         x1 = self.width + 0.10
-        # Inter-row boundaries y = row*ch for row=1..rows-1
-        for row in range(1, self.rows):
-            by = row * self._cell_h
+        BRIDGE_NSDM_W = 0.065
+        BRIDGE_NSDM_E = 0.455
+
+        def _emit_full(y_lo: float, y_hi: float) -> None:
             top.add(gdstk.rectangle(
-                (x0, by - T / 2), (x1, by + T / 2),
+                (x0, y_lo), (x1, y_hi),
                 layer=nwell_id, datatype=nwell_dt,
             ))
-        # Top + bottom array edges: extend NWELL slightly beyond cell-local
-        # edge so it merges with all bottom-row / top-row cell NWELLs at
-        # their y=0 / y=ch edges.
-        top.add(gdstk.rectangle(
-            (x0, -T), (x1, T / 2),
-            layer=nwell_id, datatype=nwell_dt,
-        ))
-        top.add(gdstk.rectangle(
-            (x0, self.height - T / 2), (x1, self.height + T),
-            layer=nwell_id, datatype=nwell_dt,
-        ))
+
+        def _emit_segmented(y_lo: float, y_hi: float) -> None:
+            seg_x_lo = x0
+            for col in range(self.cols + self.n_strap_cols):
+                # Bridge NSDM exists in BITCELL columns; strap columns
+                # don't have bridges, so we skip the gap there.
+                # We approximate by computing per-column bridge NSDM
+                # x-position from the bitcell pitch.
+                gap_lo = col * cw + BRIDGE_NSDM_W
+                gap_hi = col * cw + BRIDGE_NSDM_E
+                if gap_lo > seg_x_lo:
+                    top.add(gdstk.rectangle(
+                        (seg_x_lo, y_lo), (gap_lo, y_hi),
+                        layer=nwell_id, datatype=nwell_dt,
+                    ))
+                seg_x_lo = gap_hi
+            if x1 > seg_x_lo:
+                top.add(gdstk.rectangle(
+                    (seg_x_lo, y_lo), (x1, y_hi),
+                    layer=nwell_id, datatype=nwell_dt,
+                ))
+
+        # Inter-row strip K: even K overlaps bridges, odd K is clear.
+        for row in range(1, self.rows):
+            by = row * ch
+            if row % 2 == 0:
+                _emit_segmented(by - T / 2, by + T / 2)
+            else:
+                _emit_full(by - T / 2, by + T / 2)
+        # Bottom edge overlaps row 0's bridge (at the bottom of row 0);
+        # top edge overlaps row (rows-1)'s mirrored bridge (at the top
+        # of the last row).  Both must be segmented.
+        _emit_segmented(-T, T / 2)
+        _emit_segmented(self.height - T / 2, self.height + T)
 
     def _add_wl_labels(self, top: gdstk.Cell) -> None:
         """Add per-row WL as TWO spanning poly strips in the top cell.
@@ -357,30 +451,31 @@ class BitcellArray:
             )
 
     def _import_bitcell_into(self, lib: gdstk.Library) -> gdstk.Cell:
-        """Read the foundry bitcell GDS and add its cells to `lib`.
+        """Build the bridged bitcell wrapper and add its cells to `lib`.
 
-        Strips the foundry cell's internal "WL", "BL", and "BR" labels
-        so the parent's per-row `wl_0_<row>` and per-col
-        `bl_0_<col>` / `br_0_<col>` labels (added by `_add_wl_labels`
-        and `_add_bl_br_labels`) win Magic's label name resolution.
+        The wrapper is `sky130_fd_bd_sram__sram_sp_cell_bridged`, which
+        contains the unmodified foundry sram_sp_cell_opt1 sub-cell, a
+        sky130_cim_drain_bridge_v1 sub-cell at the bottom, and Phase 2
+        BR contact-stack polygons in the annex above the foundry top.
+        Pitch is `_BRIDGED_CELL_W × _BRIDGED_CELL_H` (1.31 × 2.22 µm).
 
-        Without stripping, the foundry's global "WL"/"BL"/"BR" labels
-        dominate and merge ALL rows' WL nets and ALL columns' BL/BR
-        nets into single electrical nets — chip-killer false-positive
-        LVS pattern.  WL fix is F11; BL/BR fix is F13 (production-scale
-        LVS surfaced sparse `bl_0_<c>` disconnects = 128 cols × 2 BL/BR
-        = 256 disconnected nodes per side, every column affected).
+        Strips foundry-internal "WL"/"BL"/"BR" labels from the foundry
+        sub-cell so the parent's per-row/col labels win Magic's name
+        resolution (F11/F13 mechanism — without this, all 128 rows'
+        WL nets and all 128 cols' BL/BR nets collapse globally).
 
-        Returns the top bitcell `gdstk.Cell`.
+        Returns the wrapper top cell (sky130_fd_bd_sram__sram_sp_cell_bridged).
         """
-        src = gdstk.read_gds(str(self._bitcell_info.gds_path))
-        imported: dict[str, gdstk.Cell] = {}
+        bridged_lib, bridged_top = create_sp_bridged_cell()
         _STRIP = {"WL", "BL", "BR"}
-        for c in src.cells:
+        # Copy every cell in the bridged-lib into the array's library,
+        # stripping foundry-internal merge labels from the foundry copy.
+        copied: dict[str, gdstk.Cell] = {}
+        for c in bridged_lib.cells:
             copy = c.copy(c.name)
-            for label in [l for l in copy.labels if l.text in _STRIP]:
-                copy.remove(label)
-            imported[c.name] = copy
+            if c.name == self._bitcell_info.cell_name:
+                for label in [l for l in copy.labels if l.text in _STRIP]:
+                    copy.remove(label)
+            copied[c.name] = copy
             lib.add(copy)
-        name = self._bitcell_info.cell_name
-        return imported.get(name, next(iter(imported.values())))
+        return copied[_BRIDGED_CELL_NAME]

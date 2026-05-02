@@ -22,10 +22,25 @@ _BITCELL_WIDTH: float = 1.31
 _PRECHARGE_HEIGHT: float = 3.98
 
 
-class PrechargeRow:
-    """One-big-cell precharge row covering every BL/BR pair in the array."""
+_STRAP_WIDTH: float = 1.41   # foundry sky130_fd_bd_sram__sram_sp_wlstrap LEF SIZE
 
-    def __init__(self, bits: int, mux_ratio: int, name: str | None = None):
+
+class PrechargeRow:
+    """One-big-cell precharge row covering every BL/BR pair in the array.
+
+    With ``strap_interval > 0`` the cell width grows to include strap
+    pass-through gaps so each pair lands at the same X as the
+    corresponding bitcell-array column (matching the array's strap-
+    aware column lattice).
+    """
+
+    def __init__(
+        self,
+        bits: int,
+        mux_ratio: int,
+        name: str | None = None,
+        strap_interval: int = 0,
+    ):
         if bits < 1:
             raise ValueError(f"bits must be >=1; got {bits}")
         if mux_ratio not in (2, 4, 8):
@@ -33,6 +48,7 @@ class PrechargeRow:
         self.bits = bits
         self.mux_ratio = mux_ratio
         self.num_pairs = bits * mux_ratio
+        self.strap_interval = max(0, int(strap_interval))
         self.top_cell_name = (
             name or f"precharge_row_{bits}_mux{mux_ratio}"
         )
@@ -43,6 +59,9 @@ class PrechargeRow:
 
     @property
     def width(self) -> float:
+        if self.strap_interval > 0:
+            n_straps = (self.num_pairs - 1) // self.strap_interval
+            return self.num_pairs * _BITCELL_WIDTH + n_straps * _STRAP_WIDTH
         return self.num_pairs * _BITCELL_WIDTH
 
     @property
@@ -59,5 +78,7 @@ class PrechargeRow:
             num_pairs=self.num_pairs,
             pair_pitch=_BITCELL_WIDTH,
             cell_name=self.top_cell_name,
+            strap_interval=self.strap_interval,
+            strap_width=_STRAP_WIDTH if self.strap_interval > 0 else 0.0,
         )
         return lib

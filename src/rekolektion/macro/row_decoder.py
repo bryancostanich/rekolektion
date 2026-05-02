@@ -71,7 +71,16 @@ _INTER_PREDECODER_GAP: float = 2.0
 # due to shared-boundary overhang into adjacent cells' power rails).
 # Tiling at this pitch — not the raw GDS bbox height — makes the NAND
 # column's rows align 1:1 with bitcell-array rows.
-_NAND_DEC_PITCH: float = 1.58
+# Pitch must match the bitcell array's row pitch (2.22 µm with the
+# bridged-bitcell wrapper).  Each foundry NAND_dec cell (1.58 µm tall)
+# sits at the bottom of its 2.22 µm slot with a 0.64 µm gap above.
+# Full-height met1/NWELL fillers are emitted in `build()` to keep
+# VDD/GND rails and PMOS body continuous across the gap.  Without this
+# match, decoder-Z → wl_driver-A and wl_driver-Z → array-WL routing
+# wires accrue 0.64 µm of Y drift per row.
+_NAND_DEC_PITCH: float = 2.22
+_NAND_DEC_CELL_H: float = 1.58
+_NAND_DEC_GAP_H: float = _NAND_DEC_PITCH - _NAND_DEC_CELL_H
 
 
 class RowDecoder:
@@ -210,6 +219,11 @@ class RowDecoder:
         # and pitch=0.5, adjacent pads end up 0.13 µm apart in x with
         # 0.01 µm y overlap — Magic merges them into one net.  Pitch
         # 0.7 gives 0.33 µm x clearance between stacked pads.
+        #
+        # NOTE: bumping to 0.80 (T2.1-PROD-G fix attempt) regressed LVS
+        # by -127 nets (some row-net merging artifact) for only -32 DRC
+        # tiles improvement — net regression.  Reverted to 0.7; the
+        # met3.2/3.1/via2.1a violations stay until a different fix.
         addr_rail_pitch = 0.7
         addr_rail_x0 = 0.3
         pred_area_x0 = addr_rail_x0 + total_addr * addr_rail_pitch + 0.5
@@ -374,20 +388,49 @@ class RowDecoder:
             # nets at the row_decoder level.  Drawing once here gives
             # one clean cut per pin, and the per-cell met2 spur drawn
             # below merges through it onto the rail for every cell.
+            #
+            # CUSTOM EMIT (no draw_via_stack): we want the met3 enclosure
+            # of via2 to come from the addr rail itself (0.30 µm wide,
+            # 14 µm tall), not from a 0.49×0.49 min-area-clamped square
+            # pad.  draw_via_stack always clamps met3 pads up to
+            # √MET3_MIN_AREA = 0.49 µm; with rail pitch 0.7 µm, adjacent
+            # rails' clamped pads sit 0.21 µm apart and trip met3.2
+            # (0.30 µm minimum spacing).  Skipping the standalone met3
+            # pad and relying on the rail's met3 (which extends well past
+            # the via2 cut in y) gives ≥ 0.06 µm enclosure on the 2
+            # opposite y sides (via2.4a directional rule satisfied) and
+            # ≥ 0.04 on the x sides (via2.4 base satisfied).
+            from rekolektion.macro.sky130_drc import GDS_LAYER as _GDS_LAYER
+            _via2_l, _via2_d = _GDS_LAYER["via2"]
+            _met2_l, _met2_d = _GDS_LAYER["met2"]
+            _met3_l, _met3_d = _GDS_LAYER["met3"]
+            # met2 pad: 0.37 × 0.37 satisfies via2.4a (0.085 enclosure)
+            # AND met2.6 (min-area 0.0676 µm²).
+            _MET2_PAD_HALF: float = 0.185
+            # via2 cut: 0.20 × 0.20.
+            _VIA2_HALF: float = 0.10
+            def _via2_on_rail(rail_x: float, target_y: float) -> None:
+                top.add(gdstk.rectangle(
+                    (rail_x - _MET2_PAD_HALF, target_y - _MET2_PAD_HALF),
+                    (rail_x + _MET2_PAD_HALF, target_y + _MET2_PAD_HALF),
+                    layer=_met2_l, datatype=_met2_d,
+                ))
+                top.add(gdstk.rectangle(
+                    (rail_x - _VIA2_HALF, target_y - _VIA2_HALF),
+                    (rail_x + _VIA2_HALF, target_y + _VIA2_HALF),
+                    layer=_via2_l, datatype=_via2_d,
+                ))
+                # No standalone met3 pad — the addr rail is met3 0.30 µm
+                # wide and runs the full predecoder block height.  At
+                # target_y the rail provides the met3 enclosure.
             if detour_ys is not None:
                 for pin_name, rail_x in zip(pin_names, stage_addr_xs):
-                    draw_via_stack(
-                        top, from_layer="met2", to_layer="met3",
-                        position=(rail_x, detour_ys[pin_name]),
-                    )
+                    _via2_on_rail(rail_x, detour_ys[pin_name])
             else:
                 ref_oy = g["nand_origins"][0][1]
                 for pin_name, rail_x in zip(pin_names, stage_addr_xs):
                     pin_y_ref = ref_oy + pin_pos[pin_name][1]
-                    draw_via_stack(
-                        top, from_layer="met2", to_layer="met3",
-                        position=(rail_x, pin_y_ref),
-                    )
+                    _via2_on_rail(rail_x, pin_y_ref)
 
             for (nand_ox, nand_oy) in g["nand_origins"]:
                 for pin_name, rail_x in zip(pin_names, stage_addr_xs):
@@ -854,3 +897,27 @@ class RowDecoder:
                 rect=(x + 1.61, z_ay - 0.085,
                       x + 7.51, z_ay + 0.085),
             )
+
+        # 2.22 µm pitch leaves a 0.64 µm gap between NAND_dec cells.
+        # Bridge the foundry rails (VDD x=4.38 / x=6.54 for NAND3,
+        # x=3.365 for NAND2; GND x=1.905 / x=1.24) and NWELL with
+        # full-height strips at the column's X.  Same pattern as
+        # wl_driver_row.py.  Width matches foundry rail width.
+        col_h = self.num_rows * _NAND_DEC_PITCH
+        from rekolektion.macro.sky130_drc import GDS_LAYER as _GDS_LAYER
+        _met1_layer = _GDS_LAYER["met1"]
+        if k_fanin == 3:
+            _RAIL_XS = ((1.790, 2.020), (4.260, 4.500), (6.420, 6.660))
+            _NWELL_X = (2.970, 7.510)
+        else:  # k_fanin == 2
+            _RAIL_XS = ((1.130, 1.350), (3.255, 3.475))
+            _NWELL_X = (2.235, 4.770)
+        for x_lo, x_hi in _RAIL_XS:
+            top.add(gdstk.rectangle(
+                (x + x_lo, 0.0), (x + x_hi, col_h),
+                layer=_met1_layer[0], datatype=_met1_layer[1],
+            ))
+        top.add(gdstk.rectangle(
+            (x + _NWELL_X[0], 0.0), (x + _NWELL_X[1], col_h),
+            layer=64, datatype=20,
+        ))

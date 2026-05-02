@@ -28,7 +28,16 @@ _NAND3_GDS: Path = (
     Path(__file__).parent.parent
     / f"peripherals/cells/{_NAND3_CELL_NAME}.gds"
 )
-_NAND_PITCH: float = 1.58
+# Pitch must match the bitcell array's row pitch (2.22 µm with the
+# bridged-bitcell wrapper).  The foundry NAND3 cell is 1.58 µm tall;
+# at 2.22 µm pitch each cell sits at the bottom of its slot with a
+# 0.64 µm gap above (filled by full-height met1/NWELL/SDM strips
+# below to keep rails continuous and DRC-clean across the gap).
+# Without this match, the WL routing jogs from wl_driver Z to array
+# WL grow 0.64 µm per row and adjacent jogs overlap from row ~6.
+_NAND_PITCH: float = 2.22
+_NAND_CELL_H: float = 1.58       # foundry NAND3 cell native height
+_NAND_GAP_H: float = _NAND_PITCH - _NAND_CELL_H  # 0.64 µm fill region
 
 # NAND3 pin positions (cell-local, from LEF + GDS inspection):
 #   A pin at (x=1.265, y=0.410) on li1
@@ -110,6 +119,33 @@ class WlDriverRow:
             lib.add(c.copy(c.name))
             seen.add(c.name)
         nand_cell = next(c for c in lib.cells if c.name == _NAND3_CELL_NAME)
+
+        # 2.22 µm row pitch leaves a 0.64 µm gap between cells.  Foundry
+        # NAND3_dec rails extend slightly past cell bbox (VDD x=4.38
+        # y=[-0.035, 1.735]; VDD x=6.54 y=[-0.035, 1.510]; GND x=1.905
+        # y=[-0.315, 1.745]).  At 1.58 µm pitch they abut continuously;
+        # at 2.22 they leave 0.45–0.97 µm gaps per row pair.  Bridge
+        # the gaps with full-height met1 strips at each rail X.  NWELL
+        # at x=[2.97, 7.51] also needs a full-height fill (foundry
+        # extends -0.395..2.185 = 0.07 µm gap at 2.22 pitch, sub-min
+        # nwell.1 width).
+        col_h = self.num_rows * _NAND_PITCH
+        # Full-height met1 fill at each foundry rail X.  Same width as
+        # the foundry rail so the strip overlaps cleanly without
+        # introducing new metal beyond the rail footprint.
+        for x_lo, x_hi in (
+            (1.790, 2.020),  # GND
+            (4.260, 4.500),  # VDD #1
+            (6.420, 6.660),  # VDD #2
+        ):
+            _rect(top, "met1", x_lo, 0.0, x_hi, col_h)
+        # Full-height NWELL fill spanning the foundry NWELL X range.
+        # NWELL layer (64,20) is not in GDS_LAYER (which only has
+        # signal/metal layers), so emit raw gdstk rectangle.  Slightly
+        # extends beyond foundry NWELL Y (which goes -0.395 to 2.185)
+        # so neighbouring row mirrors merge.
+        top.add(gdstk.rectangle((2.970, 0.0), (7.510, col_h),
+                                layer=64, datatype=20))
 
         # Tile NAND3 cells vertically, X-mirror on odd rows (matches
         # row_decoder and bitcell_array convention so power rails abut).

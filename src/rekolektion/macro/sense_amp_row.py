@@ -12,6 +12,7 @@ import gdstk
 
 
 _BITCELL_WIDTH: float = 1.31
+_STRAP_WIDTH: float = 1.41
 _SA_WIDTH: float = 2.5
 _SA_HEIGHT: float = 11.28
 _SA_CELL_NAME: str = "sky130_fd_bd_sram__openram_sense_amp"
@@ -24,7 +25,13 @@ _SA_GDS: Path = (
 class SenseAmpRow:
     """Row of sense amps pitched to the bitcell array's mux groups."""
 
-    def __init__(self, bits: int, mux_ratio: int, name: str | None = None):
+    def __init__(
+        self,
+        bits: int,
+        mux_ratio: int,
+        name: str | None = None,
+        strap_interval: int = 0,
+    ):
         if bits < 1:
             raise ValueError(f"bits must be >=1; got {bits}")
         if mux_ratio not in (2, 4, 8):
@@ -38,10 +45,23 @@ class SenseAmpRow:
         self.bits = bits
         self.mux_ratio = mux_ratio
         self.pitch = pitch
+        self.strap_interval = max(0, int(strap_interval))
         self.top_cell_name = name or f"sense_amp_row_{bits}_mux{mux_ratio}"
+
+    def _bit_x(self, bit: int) -> float:
+        """X for SA at bit index ``bit``, strap-aware (matches array col bit*mux)."""
+        col = bit * self.mux_ratio
+        if self.strap_interval <= 0:
+            return col * _BITCELL_WIDTH
+        n_straps_before = col // self.strap_interval
+        return col * _BITCELL_WIDTH + n_straps_before * _STRAP_WIDTH
 
     @property
     def width(self) -> float:
+        if self.strap_interval > 0:
+            n_pairs = self.bits * self.mux_ratio
+            n_straps = (n_pairs - 1) // self.strap_interval
+            return n_pairs * _BITCELL_WIDTH + n_straps * _STRAP_WIDTH
         return self.bits * self.pitch
 
     @property
@@ -54,7 +74,7 @@ class SenseAmpRow:
 
         sa_cell = self._import_cell(lib)
         for i in range(self.bits):
-            origin = (i * self.pitch, 0.0)
+            origin = (self._bit_x(i), 0.0)
             top.add(gdstk.Reference(sa_cell, origin=origin))
 
         # Consolidate the per-cell EN pins (met1 at local y=[10.820,
@@ -91,7 +111,7 @@ class SenseAmpRow:
         _BR_X, _BR_Y = 1.430, 11.230
         _DOUT_X, _DOUT_Y = 0.615, 0.140
         for i in range(self.bits):
-            cx = i * self.pitch
+            cx = self._bit_x(i)
             draw_pin_with_label(
                 top, text="VPWR", layer="met1",
                 rect=(cx + _VDD_X - _half, _VDD_Y - _half,
@@ -143,7 +163,7 @@ class SenseAmpRow:
         rail_y_lo = 10.820
         rail_y_hi = 11.120
         rail_x_lo = -0.20                                 # a hair west of cell 0
-        rail_x_hi = (self.bits - 1) * self.pitch + 2.700  # a hair east of cell N-1
+        rail_x_hi = self._bit_x(self.bits - 1) + 2.700  # a hair east of cell N-1
         top.add(gdstk.rectangle(
             (rail_x_lo, rail_y_lo),
             (rail_x_hi, rail_y_hi),
@@ -152,7 +172,7 @@ class SenseAmpRow:
         for i in range(self.bits):
             draw_via_stack(
                 top, from_layer="met1", to_layer="met2",
-                position=(i * self.pitch + en_cx_local, en_cy),
+                position=(self._bit_x(i) + en_cx_local, en_cy),
             )
         draw_label(
             top, text="s_en", layer="met2",

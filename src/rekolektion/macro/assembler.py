@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 
 import gdstk
 
-from rekolektion.bitcell.foundry_sp import load_foundry_sp_bitcell
 from rekolektion.macro.bitcell_array import (
     BitcellArray,
     _FOUNDRY_WL_LABEL_Y,
@@ -200,9 +199,13 @@ def build_floorplan(p: MacroParams) -> Floorplan:
     Returns absolute coordinates; caller is expected to translate to
     wherever the top-cell origin sits.
     """
-    bc = load_foundry_sp_bitcell()
-    array_w = p.cols * bc.cell_width
-    array_h = p.rows * bc.cell_height
+    # Use BitcellArray's actual pitch (bridged wrapper, 1.31 × 2.22 µm)
+    # and include strap-column width.  Computing from foundry pitch
+    # (1.31 × 1.58) underestimated array_h by ~40% and caused periphery
+    # to be placed inside the upper rows of the bitcell array.
+    _array_for_size = BitcellArray(rows=p.rows, cols=p.cols)
+    array_w = _array_for_size.width
+    array_h = _array_for_size.height
 
     positions: dict[str, tuple[float, float]] = {}
     sizes: dict[str, tuple[float, float]] = {}
@@ -286,23 +289,35 @@ def _build_block_libraries(
     )
     blocks["array"] = (array, array.build())
 
+    # Pass the array's strap_interval to every periphery generator so
+    # each periphery cell's column lattice matches the array (each
+    # array column lands at the same physical X as the corresponding
+    # periphery slot).  Without this match the BL/BR routing strips
+    # connect array col c to periphery col c+(c//strap_interval) — a
+    # silicon-killer column-misalignment bug.  See T2.1-PROD-F audit.
+    _strap_interval = array.strap_interval
+
     precharge = PrechargeRow(
         bits=p.bits, mux_ratio=p.mux_ratio, name=f"pre_{name_tag}",
+        strap_interval=_strap_interval,
     )
     blocks["precharge"] = (precharge, precharge.build())
 
     col_mux = ColumnMuxRow(
         bits=p.bits, mux_ratio=p.mux_ratio, name=f"mux_{name_tag}",
+        strap_interval=_strap_interval,
     )
     blocks["col_mux"] = (col_mux, col_mux.build())
 
     sense_amp = SenseAmpRow(
         bits=p.bits, mux_ratio=p.mux_ratio, name=f"sa_{name_tag}",
+        strap_interval=_strap_interval,
     )
     blocks["sense_amp"] = (sense_amp, sense_amp.build())
 
     write_driver = WriteDriverRow(
         bits=p.bits, mux_ratio=p.mux_ratio, name=f"wd_{name_tag}",
+        strap_interval=_strap_interval,
     )
     blocks["write_driver"] = (write_driver, write_driver.build())
 
@@ -510,7 +525,12 @@ def _array_wl_y_absolute(array_origin_y: float, row: int) -> float:
       even row (unmirrored):  row*cell_h + _FOUNDRY_WL_LABEL_Y
       odd row (X-mirrored):   row*cell_h + (cell_h - _FOUNDRY_WL_LABEL_Y)
     """
-    cell_h = 1.58
+    # Bridged wrapper pitch (1.31 × 2.22). Foundry pitch (1.58) was the
+    # pre-Option-B value; using it here placed WL routing wires at the
+    # wrong Y for every row > 0 (drift of 0.64 µm per row), so wires
+    # missed the actual WL poly strip in rows ≥ 1.
+    from rekolektion.macro.bitcell_array import _BRIDGED_CELL_H
+    cell_h = _BRIDGED_CELL_H
     row_y0 = array_origin_y + row * cell_h
     if row % 2 == 0:
         return row_y0 + _FOUNDRY_WL_LABEL_Y
@@ -674,6 +694,21 @@ def _route_wl(
 # 0.0425/1.1575 to external 0.420/0.780 — see `precharge._draw_bl_br_jogs`
 # and `column_mux._draw_bl_br_jogs`.
 _BITCELL_BL_X_OFFSET: float = 0.420
+# Centralised strap-aware bit-X helper used by every routing function
+# below.  Reads BitcellArray.__init__'s default `strap_interval` (single
+# source of truth — same value the macro was instantiated with in
+# `_build_block_libraries`).  When strap_interval > 0, a periphery slot
+# at `bit_idx` (= bitcell column `bit_idx * mux_ratio`) shifts east by
+# `(col // strap_interval) * strap_width` per inserted strap.
+def _periphery_bit_x(bit_idx: int, mux_ratio: int) -> float:
+    """X-offset for a periphery slot at `bit_idx`, strap-aware."""
+    from rekolektion.macro.bitcell_array import (
+        strap_aware_col_x as _col_x_fn, BitcellArray as _BCA,
+    )
+    _strap_interval = _BCA.__init__.__defaults__[1] if _BCA.__init__.__defaults__ else 8
+    return _col_x_fn(
+        bit_idx * mux_ratio, _BITCELL_WIDTH, _strap_interval, 1.41,
+    )
 _BITCELL_BR_X_OFFSET: float = 0.780
 _BITCELL_WIDTH: float = 1.31
 _BL_STRIP_W: float = 0.14
@@ -701,8 +736,21 @@ def _route_bl(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
     col_mux_top = col_mux_y + col_mux_h
 
     # For each column, bridge BL/BR across both array-peripheral gaps.
+    # Use the array's strap-aware column X so the BL/BR strips land at
+    # the actual bitcell positions (with strap_interval > 0 the array's
+    # col `c` sits at c*pitch + (c // strap_interval) * strap_width,
+    # NOT at uniform c*pitch).  Periphery cells are also generated
+    # strap-aware so col `c` of every block sits at the same X.
+    from rekolektion.macro.bitcell_array import (
+        strap_aware_col_x as _col_x_fn, BitcellArray as _BCA,
+    )
+    # Strap_interval defaults to BitcellArray's class default; matches
+    # the value the array+periphery were instantiated with in
+    # `_build_block_libraries`.  Single source of truth.
+    _strap_interval = _BCA.__init__.__defaults__[1] if _BCA.__init__.__defaults__ else 8
+    _strap_w = 1.41
     for col in range(p.cols):
-        col_x0 = array_x + col * _BITCELL_WIDTH
+        col_x0 = array_x + _col_x_fn(col, _BITCELL_WIDTH, _strap_interval, _strap_w)
         for x_offset, side in (
             (_BITCELL_BL_X_OFFSET, "BL"),
             (_BITCELL_BR_X_OFFSET, "BR"),
@@ -787,6 +835,20 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
 
     mux_pitch = p.mux_ratio * _BITCELL_WIDTH
 
+    # Strap-aware bit-X helper: with strap_interval > 0, every periphery
+    # cell (col_mux/SA/WD) places its per-bit slot at the same column-
+    # lattice X as the array's strap-shifted columns.  Use the same
+    # helper as `_route_bl` so all routing aligns.
+    from rekolektion.macro.bitcell_array import (
+        strap_aware_col_x as _col_x_fn, BitcellArray as _BCA,
+    )
+    _strap_interval = _BCA.__init__.__defaults__[1] if _BCA.__init__.__defaults__ else 8
+    _strap_w = 1.41
+
+    def _bit_x(bit: int) -> float:
+        """X-offset for periphery bit `bit` (relative to block origin)."""
+        return _col_x_fn(bit * p.mux_ratio, _BITCELL_WIDTH, _strap_interval, _strap_w)
+
     def _L_jog(x_from: float, y_from: float, x_to: float, y_to: float,
                y_mid: float, net: str | None = None) -> None:
         """Draw an L-shape met1 jog from (x_from, y_from) to (x_to, y_to)
@@ -814,7 +876,7 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
     mid_top = (mux_bottom_y + sa_top_y) / 2 + 0.20  # closer to mux
     mid_bot = (mux_bottom_y + sa_top_y) / 2 - 0.20  # closer to SA
     for bit in range(p.bits):
-        bx = bit * mux_pitch
+        bx = _bit_x(bit)
         # BR uses UPPER mid-y (closer to mux bottom)
         _L_jog(
             x_from=mux_x + bx + _MUX_MBR_X_LOCAL, y_from=mux_bottom_y,
@@ -837,7 +899,7 @@ def _route_muxed_bl_br(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
     mid_top = (sa_bottom_y + wd_top_y) / 2 + 0.20
     mid_bot = (sa_bottom_y + wd_top_y) / 2 - 0.20
     for bit in range(p.bits):
-        bx = bit * mux_pitch
+        bx = _bit_x(bit)
         _L_jog(
             x_from=sa_x + bx + _SA_BR_X_LOCAL, y_from=sa_bottom_y,
             x_to=wd_x + bx + _WD_BR_X_LOCAL, y_to=wd_top_y,
@@ -955,8 +1017,8 @@ def _route_din(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
     # Collect clearance targets.
     din_pin_xs = [positions[f"din[{b}]"][0] for b in range(p.bits)]
     dout_pin_xs = [positions[f"dout[{b}]"][0] for b in range(p.bits)]
-    wd_din_xs = [wd_x + b * mux_pitch + _WD_DIN_X_LOCAL for b in range(p.bits)]
-    sa_dout_xs = [wd_x + b * mux_pitch + _SA_DOUT_X_LOCAL for b in range(p.bits)]
+    wd_din_xs = [wd_x + _periphery_bit_x(b, p.mux_ratio) + _WD_DIN_X_LOCAL for b in range(p.bits)]
+    sa_dout_xs = [wd_x + _periphery_bit_x(b, p.mux_ratio) + _SA_DOUT_X_LOCAL for b in range(p.bits)]
 
     # Upper trunk band (met3 horizontal): 0.30 above precharge top.
     din_trunk_base_y = prec_top + 0.30
@@ -1116,7 +1178,7 @@ def _route_dout(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
     dout_trunk_base_y = wd_y - 0.30
     for bit in range(p.bits):
         dout_pin_x = positions[f"dout[{bit}]"][0]
-        sa_dout_x_abs = sa_x + bit * mux_pitch + _SA_DOUT_X_LOCAL
+        sa_dout_x_abs = sa_x + _periphery_bit_x(bit, p.mux_ratio) + _SA_DOUT_X_LOCAL
         trunk_y = dout_trunk_base_y - bit * _BIT_TRUNK_PITCH
 
         dout_net = f"dout[{bit}]"
@@ -1443,13 +1505,13 @@ def _route_control(
                    position=(dff_q_x, trunk_y_s_en),
                    tracker=tracker, net="s_en")
     # Trunk extends from DFF column east to last bit's SA EN x + margin.
-    rail_x_end_s = sa_x + (p.bits - 1) * mux_pitch + _SA_EN_X_LOCAL + 1.0
+    rail_x_end_s = sa_x + _periphery_bit_x(p.bits - 1, p.mux_ratio) + _SA_EN_X_LOCAL + 1.0
     draw_wire(top, start=(dff_q_x, trunk_y_s_en),
               end=(rail_x_end_s, trunk_y_s_en), layer="met3",
               tracker=tracker, net="s_en")
     # Per-bit drop: trunk -> met2 vertical -> met1 SA EN pin
     for bit in range(p.bits):
-        pin_x = sa_x + bit * mux_pitch + _SA_EN_X_LOCAL
+        pin_x = sa_x + _periphery_bit_x(bit, p.mux_ratio) + _SA_EN_X_LOCAL
         pin_y = sa_y + _SA_EN_Y_LOCAL
         draw_via_stack(top, from_layer="met2", to_layer="met3",
                        position=(pin_x, trunk_y_s_en),
@@ -1469,12 +1531,12 @@ def _route_control(
     draw_via_stack(top, from_layer="met2", to_layer="met3",
                    position=(dff_q_x, trunk_y_w_en),
                    tracker=tracker, net="w_en")
-    rail_x_end_w = wd_x + (p.bits - 1) * mux_pitch + _WD_EN_X_LOCAL + 1.0
+    rail_x_end_w = wd_x + _periphery_bit_x(p.bits - 1, p.mux_ratio) + _WD_EN_X_LOCAL + 1.0
     draw_wire(top, start=(dff_q_x, trunk_y_w_en),
               end=(rail_x_end_w, trunk_y_w_en), layer="met3",
               tracker=tracker, net="w_en")
     for bit in range(p.bits):
-        pin_x = wd_x + bit * mux_pitch + _WD_EN_X_LOCAL
+        pin_x = wd_x + _periphery_bit_x(bit, p.mux_ratio) + _WD_EN_X_LOCAL
         pin_y = wd_y + _WD_EN_Y_LOCAL
         draw_via_stack(top, from_layer="met2", to_layer="met3",
                        position=(pin_x, trunk_y_w_en),
@@ -1602,26 +1664,6 @@ def _route_ctrl_external_pins(
     we_land_y = ctrl_y + _WE_RAIL_Y_LOCAL
     cs_land_y = ctrl_y + _CS_RAIL_Y_LOCAL
 
-    # Layer-transition y: above this y the drop is on met2, below it
-    # on met4.  Met4 isolates the drop from the ctrl_logic clk/we/cs
-    # met2 rails it must traverse en route to its own target rail —
-    # without this isolation a met2 vertical drop crosses every met2
-    # rail in its y-traversal range and merges them (recreating the
-    # cs/we/clk/p_en_bar/VPWR super-net).
-    #
-    # Position chosen to clear:
-    #   1. `_route_control` p_en_bar met3 trunk at y = ctrl_y + ctrl_h
-    #      + 0.3 (~ -1.7) — via stack's met3 pad at the transition
-    #      must not abut this trunk.
-    #   2. The shallowest ctrl_logic rail (we at y_local 11.30, abs
-    #      ~ -2.93) — via stack's met2 pad at the transition must not
-    #      cross the rail.
-    # y = ctrl_y + ctrl_h - 0.4 sits between these (ctrl_y_top=-2.0,
-    # so y=-2.4) with > 0.6 µm clearance to p_en_bar trunk and
-    # > 0.4 µm clearance to we rail — well above met2/met3 min
-    # spacing of 0.14 µm.
-    _LAYER_TRANSITION_Y: float = ctrl_y + ctrl_h - 0.4  # ~ -2.4
-
     def _drop_met3_to_rail(
         pin_x: float, pin_y_top: float,
         land_x: float, land_y: float,
@@ -1648,35 +1690,26 @@ def _route_ctrl_external_pins(
             layer="met3", width=_CTRL_TRUNK_W,
             tracker=tracker, net=net, cls=cls,
         )
-        # Vertical drop from trunk to land:
-        #   Trunk_y → _LAYER_TRANSITION_Y on met2  (above ctrl_logic top)
-        #   _LAYER_TRANSITION_Y → land_y on met4   (crosses other rails
-        #     on a different layer, so no merge)
-        # Layer-transition via stacks at top and bottom of the met4
-        # segment.  The met4 strap interactions: macro PDN met4
-        # horizontals at y=210 (VPWR) and y=-32 (VGND) are far outside
-        # this segment's y range (-1.5 to land_y > -11), and PDN met4
-        # verticals are at macro center / edges, not at the drop x.
+        # Vertical drop from trunk to land — single met4 segment.
+        # Earlier version used met2 long + met4 short with a met2→met4
+        # via stack at _LAYER_TRANSITION_Y; the intermediate met3 pad
+        # in that stack (clamped to met3 min-area = 0.49×0.49) collided
+        # with neighbouring signals' pads at the same y (clk/cs/we land
+        # x's are 0.56 µm apart in this gap) — driving ~120 met3.2
+        # tiles.  Going straight from trunk_y to land_y on met4
+        # eliminates the intermediate transition entirely; the only
+        # met3 pads now sit at (a) trunk_y (each signal at a unique
+        # trunk_y, 0.80 µm apart) and (b) land_y (each signal at a
+        # unique land_y per ctrl rail, 1+ µm apart) — both clear of
+        # the 0.30 µm met3.2 minimum.
         draw_via_stack(
-            top, from_layer="met2", to_layer="met3",
+            top, from_layer="met3", to_layer="met4",
             position=(land_x, trunk_y),
             tracker=tracker, net=net, cls=cls,
         )
         draw_wire(
             top,
             start=(land_x, trunk_y),
-            end=(land_x, _LAYER_TRANSITION_Y),
-            layer="met2", width=_CTRL_TRUNK_W,
-            tracker=tracker, net=net, cls=cls,
-        )
-        draw_via_stack(
-            top, from_layer="met2", to_layer="met4",
-            position=(land_x, _LAYER_TRANSITION_Y),
-            tracker=tracker, net=net, cls=cls,
-        )
-        draw_wire(
-            top,
-            start=(land_x, _LAYER_TRANSITION_Y),
             end=(land_x, land_y),
             layer="met4", width=_CTRL_TRUNK_W,
             tracker=tracker, net=net, cls=cls,
@@ -2826,6 +2859,27 @@ def _draw_power_network(
         "control_logic",
         vpwr_local=(2.0, 12.535),
         vgnd_local=(2.0, -0.5),
+    )
+
+    # Precharge: VPWR-only (no VGND — all-PMOS pull-up row).  The cell's
+    # VPWR rail is on met3 (not met1 like the other blocks), so
+    # _tap_block_power's met1 tap won't physically merge.  Drop a parent
+    # met3 .pin label at the precharge VPWR rail centre so Magic merges
+    # the precharge VPWR net with macro VPWR by name AND geometry.
+    # Without this tap, precharge's 256 PMOS sources end up on a
+    # floating `pre_<tag>_0/VPWR` auto-net at the parent extraction.
+    from rekolektion.peripherals.precharge import _VDD_RAIL_Y as _PRE_VDD_Y
+    _pre_x, _pre_y = fp.positions["precharge"]
+    _pre_w = fp.sizes["precharge"][0]
+    _pre_vpwr_x = _pre_x + _pre_w / 2.0
+    _pre_vpwr_y_abs = _pre_y + _PRE_VDD_Y
+    draw_pin_with_label(
+        top, text="VPWR", layer="met3",
+        rect=(
+            _pre_vpwr_x - _TAP_HALF, _pre_vpwr_y_abs - _TAP_HALF,
+            _pre_vpwr_x + _TAP_HALF, _pre_vpwr_y_abs + _TAP_HALF,
+        ),
+        tracker=tracker, net="VPWR", cls="power",
     )
 
 

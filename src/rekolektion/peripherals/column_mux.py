@@ -200,11 +200,19 @@ def generate_column_mux(
     pair_pitch: float = _MIN_PAIR_PITCH,
     cell_name: str | None = None,
     output_path: str | Path | None = None,
+    strap_interval: int = 0,
+    strap_width: float = 0.0,
 ) -> Tuple[gdstk.Cell, gdstk.Library]:
     """Emit an M:1 column mux cell.
 
     num_pairs must be a multiple of mux_ratio (mux groups line up
     cleanly with bit boundaries).
+
+    If ``strap_interval > 0``, an empty ``strap_width`` µm gap is
+    inserted after every ``strap_interval`` pairs so each pair lands at
+    the same X as the corresponding bitcell-array column.  Mux groups
+    never straddle straps because we require ``strap_interval`` to be a
+    multiple of ``mux_ratio`` (the mux group width).
     """
     if mux_ratio not in (2, 4, 8):
         raise ValueError(f"mux_ratio must be 2/4/8; got {mux_ratio}")
@@ -215,13 +223,29 @@ def generate_column_mux(
             f"num_pairs ({num_pairs}) must be a positive multiple of "
             f"mux_ratio ({mux_ratio})"
         )
+    if strap_interval > 0 and strap_interval % mux_ratio != 0:
+        raise ValueError(
+            f"strap_interval must be a multiple of mux_ratio when > 0; "
+            f"got strap_interval={strap_interval}, mux_ratio={mux_ratio}"
+        )
 
     name = cell_name or (
         f"column_mux_{num_pairs}pairs_mux{mux_ratio}_p{int(pair_pitch*1000)}nm"
     )
-    cell_w = _snap(num_pairs * pair_pitch)
     num_bits = num_pairs // mux_ratio
     group_width = _snap(mux_ratio * pair_pitch)
+
+    def _pair_x(pair_idx: int) -> float:
+        if strap_interval <= 0:
+            return pair_idx * pair_pitch
+        n_straps_before = pair_idx // strap_interval
+        return pair_idx * pair_pitch + n_straps_before * strap_width
+
+    if strap_interval > 0 and num_pairs > 1:
+        n_straps = (num_pairs - 1) // strap_interval
+        cell_w = _snap(num_pairs * pair_pitch + n_straps * strap_width)
+    else:
+        cell_w = _snap(num_pairs * pair_pitch)
 
     lib = gdstk.Library(name=f"{name}_lib")
     cell = gdstk.Cell(name)
@@ -270,7 +294,7 @@ def generate_column_mux(
 
     # --- Per pair features (BL/BR stubs, 2 pg each) ---------------------
     for i in range(num_pairs):
-        x_offset = i * pair_pitch
+        x_offset = _pair_x(i)
         x_bl = x_offset + _BL_X
         x_br = x_offset + _BR_X
         x_mp1 = x_offset + _MP1_X
@@ -361,7 +385,7 @@ def generate_column_mux(
 
     # --- Per mux group (bit): muxed_BL / muxed_BR tie bands + exits ------
     for bit in range(num_bits):
-        bit_x0 = bit * group_width
+        bit_x0 = _pair_x(bit * mux_ratio)
         first_x_mp1 = bit_x0 + _MP1_X
         last_x_mp1 = bit_x0 + (mux_ratio - 1) * pair_pitch + _MP1_X
         first_x_mp2 = bit_x0 + _MP2_X

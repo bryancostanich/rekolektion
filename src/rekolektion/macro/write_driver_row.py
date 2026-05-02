@@ -12,6 +12,7 @@ import gdstk
 
 
 _BITCELL_WIDTH: float = 1.31
+_STRAP_WIDTH: float = 1.41
 _WD_WIDTH: float = 2.5
 _WD_HEIGHT: float = 10.055
 _WD_CELL_NAME: str = "sky130_fd_bd_sram__openram_write_driver"
@@ -24,7 +25,13 @@ _WD_GDS: Path = (
 class WriteDriverRow:
     """Row of write drivers pitched to the bitcell array's mux groups."""
 
-    def __init__(self, bits: int, mux_ratio: int, name: str | None = None):
+    def __init__(
+        self,
+        bits: int,
+        mux_ratio: int,
+        name: str | None = None,
+        strap_interval: int = 0,
+    ):
         if bits < 1:
             raise ValueError(f"bits must be >=1; got {bits}")
         if mux_ratio not in (2, 4, 8):
@@ -38,10 +45,22 @@ class WriteDriverRow:
         self.bits = bits
         self.mux_ratio = mux_ratio
         self.pitch = pitch
+        self.strap_interval = max(0, int(strap_interval))
         self.top_cell_name = name or f"write_driver_row_{bits}_mux{mux_ratio}"
+
+    def _bit_x(self, bit: int) -> float:
+        col = bit * self.mux_ratio
+        if self.strap_interval <= 0:
+            return col * _BITCELL_WIDTH
+        n_straps_before = col // self.strap_interval
+        return col * _BITCELL_WIDTH + n_straps_before * _STRAP_WIDTH
 
     @property
     def width(self) -> float:
+        if self.strap_interval > 0:
+            n_pairs = self.bits * self.mux_ratio
+            n_straps = (n_pairs - 1) // self.strap_interval
+            return n_pairs * _BITCELL_WIDTH + n_straps * _STRAP_WIDTH
         return self.bits * self.pitch
 
     @property
@@ -54,7 +73,7 @@ class WriteDriverRow:
 
         wd_cell = self._import_cell(lib)
         for i in range(self.bits):
-            origin = (i * self.pitch, 0.0)
+            origin = (self._bit_x(i), 0.0)
             top.add(gdstk.Reference(wd_cell, origin=origin))
 
         # Consolidate the per-cell EN pins (met1 strip at local y=[0.470,
@@ -93,7 +112,7 @@ class WriteDriverRow:
         _BR_X, _BR_Y = 1.700, 9.865
         _DIN_X, _DIN_Y = 1.425, 0.060
         for i in range(self.bits):
-            cx = i * self.pitch
+            cx = self._bit_x(i)
             draw_pin_with_label(
                 top, text="VPWR", layer="met1",
                 rect=(cx + _VDD_X - _half, _VDD_Y - _half,
@@ -140,7 +159,7 @@ class WriteDriverRow:
         # Extend from the first WD's EN start to the last WD's EN end
         # so the rail overlays every EN strip and merges them.
         rail_x_lo = 0.495
-        rail_x_hi = (self.bits - 1) * self.pitch + 2.500
+        rail_x_hi = self._bit_x(self.bits - 1) + 2.500
         top.add(gdstk.rectangle(
             (rail_x_lo, en_y_lo),
             (rail_x_hi, en_y_hi),

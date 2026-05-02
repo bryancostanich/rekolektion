@@ -50,6 +50,15 @@ _SENSE_AMP_NAME = "sky130_fd_bd_sram__openram_sense_amp"
 _SENSE_AMP_PORTS = ("BL", "BR", "DOUT", "EN")
 _WRITE_DRIVER_NAME = "sky130_fd_bd_sram__openram_write_driver"
 _WRITE_DRIVER_PORTS = ("BL", "BR", "DIN", "EN")
+_PFET_NAME = "sky130_fd_pr__pfet_01v8"
+_NFET_NAME = "sky130_fd_pr__nfet_01v8"
+# Precharge / column-mux transistor sizes (per peripherals/precharge.py
+# and peripherals/column_mux.py; keep in sync if those constants
+# change).
+_PRE_PFET_W = 0.42
+_PRE_PFET_L = 0.15
+_MUX_NFET_W = 0.42
+_MUX_NFET_L = 0.15
 
 
 # ---------------------------------------------------------------------------
@@ -77,16 +86,9 @@ def generate_reference_spice(
     # are parameter-dependent.  Doing this at build time keeps the
     # reference's structure (port order, internal nets) bit-identical
     # to what Magic sees at the top level, which is how LVS closes.
-    pre_body = _extract_cell(
-        PrechargeRow(bits=p.bits, mux_ratio=p.mux_ratio,
-                     name=f"pre_{_tag(p)}"),
-        cell_name=f"pre_{_tag(p)}",
-    )
-    mux_body = _extract_cell(
-        ColumnMuxRow(bits=p.bits, mux_ratio=p.mux_ratio,
-                     name=f"mux_{_tag(p)}"),
-        cell_name=f"mux_{_tag(p)}",
-    )
+    # Precharge + column-mux: hand-written (T1.1-A) — no Magic extraction.
+    pre_body = None
+    mux_body = None
     array_body = _extract_cell(
         BitcellArray(rows=p.rows, cols=p.cols,
                      name=f"sram_array_{_tag(p)}"),
@@ -108,17 +110,22 @@ def generate_reference_spice(
         _write_sense_amp_row_subckt(f, p)
         _write_write_driver_row_subckt(f, p)
         _write_control_logic_subckt(f, p)
-        _write_extracted_subckt(f, pre_body)
-        _write_extracted_subckt(f, mux_body)
-        # Emit the bitcell subckt from the array extraction, then the
-        # array body itself.  Order matters — body references the
-        # bitcell subckt.
+        _write_precharge_row_subckt(f, p)   # T1.1-A — hand-written
+        _write_column_mux_row_subckt(f, p)  # T1.1-A — hand-written
+        # Emit dep_subckts (bridged_cell, foundry sram_sp_cell_opt1,
+        # drain_bridge) from the Magic-extracted array.  The bitcell-
+        # level subckts are still derived from the live layout — that's
+        # acceptable per T1.1-A scope (concern is array-level structure,
+        # not foundry+bridge cell topology which is fixed by foundry GDS).
         for dep_name, dep_lines in array_body.dep_subckts:
             f.write(f"* ---- {dep_name} (from array extraction) ----\n")
             for line in dep_lines:
                 f.write(line + "\n")
             f.write("\n")
-        _write_extracted_subckt(f, array_body)
+        # Array body: hand-written (T1.1-A) — describes how cells are
+        # wired together, derived from intent (rows × cols loop) not
+        # from re-extracting the same Python builder code.
+        _write_bitcell_array_subckt(f, p)
     return path
 
 
@@ -442,47 +449,41 @@ def _write_top_subckt(
         f"wl_driver_{_tag(p)}\n"
     )
 
-    f.write("\n* Bitcell array (Magic-extracted port order)\n")
-    # Map each extracted array port (e.g. "wl_0_3" / "bl_0_17" /
-    # "br_0_9") to the top-level net with the same index (wl_3, bl_17,
-    # br_9).  The "_0_" segment is the bitcell-array's group index;
-    # we only generate one group at this level so it's always 0.
-    def _map_array_port(portname: str) -> str:
+    f.write("\n* Bitcell array (T1.1-A hand-written port order)\n")
+    # Map canonical array ports (wl_0_<r>/bl_0_<c>/br_0_<c>) to the
+    # top-level nets (wl_<r>/bl_<c>/br_<c>).  VSUBS ties to VGND at
+    # the parent level (chip convention; foundry substrate always
+    # joins the chip ground).
+    def _map_canonical_array_port(portname: str) -> str:
         if portname.startswith("wl_0_"):
             return f"wl_{portname.split('_')[2]}"
         if portname.startswith("bl_0_"):
             return f"bl_{portname.split('_')[2]}"
         if portname.startswith("br_0_"):
             return f"br_{portname.split('_')[2]}"
-        # Tie VSUBS to VGND at the parent level.  Magic's GDS extraction
-        # always ties the foundry substrate to VGND (chip convention),
-        # so the extracted top has no separate VSUBS net.  Wiring the
-        # reference VSUBS port directly to VGND here makes both sides
-        # match without a netgen `equate nets` (which fails silently
-        # because VSUBS isn't a top-level node in the extracted side).
         if portname == "VSUBS":
             return "VGND"
         return portname
-    mapped_array_args = [_map_array_port(pt) for pt in array_body.ports]
+    array_ports = _bitcell_array_canonical_ports(p)
+    mapped_array_args = [_map_canonical_array_port(pt) for pt in array_ports]
     f.write(
-        f"Xarray {' '.join(mapped_array_args)} {array_body.name}\n"
+        f"Xarray {' '.join(mapped_array_args)} sram_array_{_tag(p)}\n"
     )
 
-    # Precharge / column_mux instantiations use the port ORDER from the
-    # Magic-extracted subckt (which is whatever order Magic emits when
-    # walking the GDS labels — not alphabetical, not structural).  We
-    # map each extracted port name to the top-level net with the same
-    # name.
-    f.write("\n* Precharge row (Magic-extracted port order)\n")
+    # Precharge: hand-written subckt (T1.1-A) — canonical port order.
+    f.write("\n* Precharge row (T1.1-A hand-written port order)\n")
+    pre_ports = _precharge_canonical_ports(p)
     f.write(
-        f"Xprecharge {' '.join(pre_body.ports)} {pre_body.name}\n"
+        f"Xprecharge {' '.join(pre_ports)} pre_{_tag(p)}\n"
     )
 
-    f.write("\n* Column mux row (Magic-extracted port order)\n")
-    # Same VSUBS→VGND remap as Xarray above (see comment there).
-    mapped_mux_args = ["VGND" if pt == "VSUBS" else pt for pt in mux_body.ports]
+    f.write("\n* Column mux row (T1.1-A hand-written port order)\n")
+    # Map VNB → VGND at the parent level (same convention as bitcell
+    # array's VSUBS handling).
+    mux_ports = _column_mux_canonical_ports(p)
+    mapped_mux_args = ["VGND" if pt == "VNB" else pt for pt in mux_ports]
     f.write(
-        f"Xcolmux {' '.join(mapped_mux_args)} {mux_body.name}\n"
+        f"Xcolmux {' '.join(mapped_mux_args)} mux_{_tag(p)}\n"
     )
 
     f.write("\n* Sense amp row (one per bit on muxed output)\n")
@@ -514,6 +515,188 @@ def _tag(p: MacroParams) -> str:
 # ---------------------------------------------------------------------------
 # Row decoder — composition of NAND_dec cells per the _SPLIT_TABLE
 # ---------------------------------------------------------------------------
+
+def _write_precharge_row_subckt(f: TextIO, p: MacroParams) -> None:
+    """Hand-written precharge row .subckt (T1.1-A).
+
+    Replaces the Magic-extracted body so the LVS reference describes
+    DESIGN INTENT rather than re-extracting from the same Python
+    builder code that emitted the GDS being checked.
+
+    Each BL/BR pair has 3 PMOS transistors (all w=0.42 l=0.15, per
+    peripherals/precharge.py):
+      MP1: BL precharge — drain=BL[i], source=VPWR, gate=p_en_bar
+      MP2: BR precharge — drain=BR[i], source=VPWR, gate=p_en_bar
+      MP3: BL/BR equaliser — drain=BL[i], source=BR[i], gate=p_en_bar
+    All three share the per-pair p_en_bar gate; all three have body
+    on VPB.
+
+    Canonical port order:
+      VPWR p_en_bar bl_0 br_0 bl_1 br_1 ... bl_{N-1} br_{N-1} VPB
+    """
+    name = f"pre_{_tag(p)}"
+    n = p.bits * p.mux_ratio
+    bl = [f"bl_{i}" for i in range(n)]
+    br = [f"br_{i}" for i in range(n)]
+
+    ports: list[str] = ["VPWR", "p_en_bar"]
+    for i in range(n):
+        ports.extend([bl[i], br[i]])
+    ports.append("VPB")
+
+    f.write(f"* ---- {name} (hand-written, T1.1-A) ----\n")
+    f.write(f".subckt {name}\n")
+    _wrap_ports(f, ports)
+    for i in range(n):
+        f.write(
+            f"X_mp1_{i} {bl[i]} p_en_bar VPWR VPB {_PFET_NAME} "
+            f"w={_PRE_PFET_W} l={_PRE_PFET_L}\n"
+        )
+        f.write(
+            f"X_mp2_{i} {br[i]} p_en_bar VPWR VPB {_PFET_NAME} "
+            f"w={_PRE_PFET_W} l={_PRE_PFET_L}\n"
+        )
+        f.write(
+            f"X_mp3_{i} {bl[i]} p_en_bar {br[i]} VPB {_PFET_NAME} "
+            f"w={_PRE_PFET_W} l={_PRE_PFET_L}\n"
+        )
+    f.write(f".ends {name}\n\n")
+
+
+def _precharge_canonical_ports(p: MacroParams) -> list[str]:
+    """Port order matching `_write_precharge_row_subckt` — used by the
+    top-level Xprecharge X-line."""
+    n = p.bits * p.mux_ratio
+    ports = ["VPWR", "p_en_bar"]
+    for i in range(n):
+        ports.extend([f"bl_{i}", f"br_{i}"])
+    ports.append("VPB")
+    return ports
+
+
+def _write_column_mux_row_subckt(f: TextIO, p: MacroParams) -> None:
+    """Hand-written column-mux row .subckt (T1.1-A).
+
+    Replaces the Magic-extracted body so the LVS reference describes
+    DESIGN INTENT.  Each BL/BR pair has 2 NMOS pass gates (w=0.42
+    l=0.15, per peripherals/column_mux.py):
+      MN_BL: drain=BL[i], source=muxed_BL[bit], gate=col_sel[k]
+      MN_BR: drain=BR[i], source=muxed_BR[bit], gate=col_sel[k]
+    where bit = i // mux_ratio (which output of the M:1 mux this pair
+    feeds) and k = i % mux_ratio (which select line gates this pair).
+
+    Canonical port order:
+      col_sel_0 col_sel_1 ... col_sel_{M-1}
+      bl_0 br_0 bl_1 br_1 ... bl_{N-1} br_{N-1}
+      muxed_bl_0 muxed_br_0 ... muxed_bl_{bits-1} muxed_br_{bits-1}
+      VNB
+    """
+    name = f"mux_{_tag(p)}"
+    n = p.bits * p.mux_ratio
+    bits = p.bits
+    mux = p.mux_ratio
+
+    bl = [f"bl_{i}" for i in range(n)]
+    br = [f"br_{i}" for i in range(n)]
+    mbl = [f"muxed_bl_{i}" for i in range(bits)]
+    mbr = [f"muxed_br_{i}" for i in range(bits)]
+    sel = [f"col_sel_{k}" for k in range(mux)]
+
+    ports: list[str] = list(sel)
+    for i in range(n):
+        ports.extend([bl[i], br[i]])
+    for i in range(bits):
+        ports.extend([mbl[i], mbr[i]])
+    ports.append("VNB")
+
+    f.write(f"* ---- {name} (hand-written, T1.1-A) ----\n")
+    f.write(f".subckt {name}\n")
+    _wrap_ports(f, ports)
+    for i in range(n):
+        bit = i // mux
+        k = i % mux
+        f.write(
+            f"X_mux_bl_{i} {bl[i]} {sel[k]} {mbl[bit]} VNB {_NFET_NAME} "
+            f"w={_MUX_NFET_W} l={_MUX_NFET_L}\n"
+        )
+        f.write(
+            f"X_mux_br_{i} {br[i]} {sel[k]} {mbr[bit]} VNB {_NFET_NAME} "
+            f"w={_MUX_NFET_W} l={_MUX_NFET_L}\n"
+        )
+    f.write(f".ends {name}\n\n")
+
+
+def _column_mux_canonical_ports(p: MacroParams) -> list[str]:
+    """Port order matching `_write_column_mux_row_subckt`."""
+    n = p.bits * p.mux_ratio
+    ports = [f"col_sel_{k}" for k in range(p.mux_ratio)]
+    for i in range(n):
+        ports.extend([f"bl_{i}", f"br_{i}"])
+    for i in range(p.bits):
+        ports.extend([f"muxed_bl_{i}", f"muxed_br_{i}"])
+    ports.append("VNB")
+    return ports
+
+
+_BRIDGED_CELL_NAME = "sky130_fd_bd_sram__sram_sp_cell_bridged"
+
+
+def _write_bitcell_array_subckt(f: TextIO, p: MacroParams) -> None:
+    """Hand-written bitcell array .subckt (T1.1-A).
+
+    Replaces the Magic-extracted body with intent-derived structure:
+    rows × cols instances of the bridged-bitcell wrapper, each binding
+    its 5 ports to (WL, WL, BR, VSUBS, BL) for that (row, col).
+
+    The bridged_cell itself remains Magic-extracted — it's a fixed
+    foundry-cell + drain-bridge wrapper with topology that doesn't
+    drift, and re-deriving its 6T+bridge topology by hand is high
+    effort for low audit value.  T1.1-A's concern is the array-level
+    structure (how cells are wired together), which IS what we
+    intent-write here.
+
+    Canonical port order (matches the names from BitcellArray's labels):
+      wl_0_0 wl_0_1 ... wl_0_{rows-1}
+      bl_0_0 br_0_0 bl_0_1 br_0_1 ... bl_0_{cols-1} br_0_{cols-1}
+      VPWR VGND VPB VNB VSUBS
+    """
+    name = f"sram_array_{_tag(p)}"
+    rows, cols = p.rows, p.cols
+
+    ports: list[str] = [f"wl_0_{r}" for r in range(rows)]
+    for c in range(cols):
+        ports.extend([f"bl_0_{c}", f"br_0_{c}"])
+    ports.extend(["VPWR", "VGND", "VPB", "VNB", "VSUBS"])
+
+    f.write(f"* ---- {name} (hand-written, T1.1-A) ----\n")
+    f.write(f".subckt {name}\n")
+    _wrap_ports(f, ports)
+    inst_idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            # bridged_cell port order (matches Magic extraction):
+            #   port1: WL (foundry-internal a_0_24#)
+            #   port2: WL (foundry-internal a_0_262#)
+            #   port3: BR (a_23_367# = Phase 2 BR-bridged drain stub)
+            #   port4: VSUBS
+            #   port5: BL (drain_bridge_v1/a_23_0#)
+            f.write(
+                f"X_cell_{inst_idx} wl_0_{r} wl_0_{r} br_0_{c} VSUBS "
+                f"bl_0_{c} {_BRIDGED_CELL_NAME}\n"
+            )
+            inst_idx += 1
+    f.write(f".ends {name}\n\n")
+
+
+def _bitcell_array_canonical_ports(p: MacroParams) -> list[str]:
+    """Port order matching `_write_bitcell_array_subckt`."""
+    rows, cols = p.rows, p.cols
+    ports = [f"wl_0_{r}" for r in range(rows)]
+    for c in range(cols):
+        ports.extend([f"bl_0_{c}", f"br_0_{c}"])
+    ports.extend(["VPWR", "VGND", "VPB", "VNB", "VSUBS"])
+    return ports
+
 
 def _write_row_decoder_subckt(f: TextIO, p: MacroParams) -> None:
     name = f"row_decoder_{_tag(p)}"

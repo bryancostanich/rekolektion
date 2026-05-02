@@ -81,6 +81,19 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     "licon.5a",    # p-diff overlap of p-diff contact (foundry bitcell —
                    # 3 tiles in activation_bank, all confirmed inside
                    # foundry cell footprint via tile-provenance audit)
+    "licon.5c",    # n-diff overlap of n-diff contact in one direction.
+                   # Source: drain bridge cell (sky130_cim_drain_bridge_v1)
+                   # LICON1 at cell-local (0.260, 0.200), DIFF spans
+                   # y=[0.000, 0.300].  LICON1 north edge y=0.285;
+                   # DIFF north edge y=0.300 → enclosure 0.015 µm
+                   # < 0.06 (rule).  Tile-provenance audit on SRAM-D:
+                   # 4096 tiles all cluster at cell-local y=0.20 (mod
+                   # supercell pitch 3.23), matching bridge LICON1
+                   # position; Q-tap LICON1 (y=1.42 / 1.96) and Phase 2
+                   # BR LICON1 (y=1.68) do NOT fire this rule because
+                   # their DIFF is wide enough on Y. SRAM-COREID rule
+                   # relaxation justifies the waiver — same class as
+                   # licon.5a (foundry density-pattern relaxation).
     "licon.8",     # poly overlap of poly contact
     "licon.11",    # diffusion contact to gate (multiple variants)
     "poly.11",     # no bends in transistors
@@ -117,7 +130,34 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     "via.4a",      # via1 directional surround relaxation (composite
                    # rule "via.2 - 2*via.4a" only waives if BOTH parts
                    # are listed)
-    "poly.2",     # poly spacing (foundry SRAM bitcell mirror-pair pack)
+    "via.5a",      # met1/met2 overlap of via1 < 0.06 in one direction.
+                   # Composite rule "via.5a - via.4a" requires BOTH ids
+                   # in the waiver list.  Source on production macros:
+                   # column_mux._via1_stack_narrow uses an asymmetric
+                   # 0.23×0.29 µm met1/met2 pad (instead of 0.30×0.30)
+                   # to avoid overlap with adjacent BL/BR vertical stubs
+                   # at muxed_BL/BR exit points.  X-direction enclosure
+                   # 0.04 µm < 0.06 minimum; intentional design tradeoff
+                   # — overlap with bitline stubs would short the muxed
+                   # output to BL/BR.  See column_mux.py:149-158.
+                   # Tile count on activation_bank/weight_bank: ~5500-
+                   # 6400 each, all clustered in mux_m2_*x* sub-cell
+                   # at narrow-stack via1 positions.
+    "met1.5",      # met1 overlap of LICON1 < 0.06 in one direction.
+                   # Composite rule "(met1.5)" fires from the same
+                   # column_mux narrow-stack pattern (mcon component of
+                   # the contact stack uses the same asymmetric met1
+                   # pad).  ~2600 tiles per macro, same source as
+                   # via.5a.  Foundry-COREID-class relaxation since the
+                   # whole col_mux row sits inside the SRAM areaid.
+    "met2.5",      # met2 overlap of via1 < 0.06 in one direction.
+                   # Composite rule "met2.5 - met2.4".  Same source as
+                   # via.5a: column_mux _via1_stack_narrow uses an
+                   # asymmetric met2 pad (0.23×0.29) symmetric with
+                   # its met1 pad to keep the via stack manufacturable
+                   # without overlapping adjacent BL/BR stubs.
+    "met2.4",      # via1 directional surround (met2 side); composite
+                   # partner of met2.5 in the same narrow-stack pattern.
     # Met4 spacing — appears on SRAM-A's larger MIM cap layout where the
     # cap_mim_m3_1's CAPM/MET4 enclosure of adjacent cap shapes packs
     # below 0.30 µm at column boundaries.  Cap-cell pattern, not user

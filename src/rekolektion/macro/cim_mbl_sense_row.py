@@ -53,6 +53,8 @@ class MBLSenseRow:
         cols: int,
         col_pitch: float,
         name: Optional[str] = None,
+        strap_interval: int = 0,
+        strap_width: float = 0.0,
     ):
         if cols < 1:
             raise ValueError(f"cols must be >= 1; got {cols}")
@@ -60,6 +62,15 @@ class MBLSenseRow:
             raise ValueError(f"col_pitch must be positive; got {col_pitch}")
         self.cols = cols
         self.col_pitch = col_pitch
+        # Strap insertion (CIM tap supercell columns inserted in the
+        # array every `strap_interval` bitcell columns).  When > 0,
+        # sense cell placement and pin X positions skip the strap-column
+        # slots so they stay aligned with bitcell columns; horizontal
+        # bus stripes extend across the strap-column gap unbroken.
+        self.strap_interval = max(0, int(strap_interval))
+        self.strap_width = (
+            strap_width if strap_width > 0.0 else col_pitch
+        ) if self.strap_interval > 0 else 0.0
         self.top_cell_name = name or f"cim_mbl_sense_row_{cols}"
 
     @property
@@ -71,8 +82,21 @@ class MBLSenseRow:
         return _SENSE_CELL_H
 
     @property
+    def n_strap_cols(self) -> int:
+        if self.strap_interval <= 0 or self.cols <= 1:
+            return 0
+        return (self.cols - 1) // self.strap_interval
+
+    def _col_x(self, col: int) -> float:
+        """X-coordinate of bitcell column `col`, strap-aware."""
+        if self.strap_interval <= 0:
+            return col * self.col_pitch
+        n_straps_before = col // self.strap_interval
+        return col * self.col_pitch + n_straps_before * self.strap_width
+
+    @property
     def width(self) -> float:
-        return self.cols * self.col_pitch
+        return self.cols * self.col_pitch + self.n_strap_cols * self.strap_width
 
     @property
     def height(self) -> float:
@@ -103,13 +127,13 @@ class MBLSenseRow:
 
         x_offset = (self.col_pitch - self.cell_w) / 2.0
         for col in range(self.cols):
-            origin = (col * self.col_pitch + x_offset, 0.0)
+            origin = (self._col_x(col) + x_offset, 0.0)
             top.add(gdstk.Reference(local_sense, origin=origin))
 
         # Horizontal shared-bus stripes spanning the full row width.
         # MBL is per-column so it does NOT get a horizontal stripe;
         # everything else (VBIAS, VSS, VDD, VSS-tap) is shared.
-        row_w = self.cols * self.col_pitch
+        row_w = self.width
         poly_id, poly_dt = GDS_LAYER["poly"]
         li1_id, li1_dt = GDS_LAYER["li1"]
         m1_id, m1_dt = GDS_LAYER["met1"]
@@ -148,7 +172,7 @@ class MBLSenseRow:
         #   VSS (tap) : met1
         _PIN_HALF = 0.07
         for col in range(self.cols):
-            x_origin = col * self.col_pitch + x_offset
+            x_origin = self._col_x(col) + x_offset
 
             # VBIAS — shared bias bus across all sense cells (poly gate)
             cx = x_origin + _VBIAS_LX

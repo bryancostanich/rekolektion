@@ -4,6 +4,12 @@ Mirrors `run_lvs_production.py` but for the CIM family.  Defaults to
 the smallest variant (SRAM-D, 64×64) for fast turnaround when
 debugging; pass variant name(s) to run others.
 
+Uses Magic's hierarchical extraction (`port makeall` recursive) so the
+foundry qtap's BL/BR/Q labels — and the supercell's MWL/MBL labels —
+become sub-cell ports that abut the parent macro's per-row/per-col
+strips.  Earlier flat-extraction flow destroyed this hierarchy and
+masked the drain-floating defect (issue #7).
+
 Usage::
 
     python3 scripts/run_lvs_cim.py SRAM-D
@@ -51,7 +57,6 @@ def _align_ref_ports(extracted: Path, ref_sp: Path, out_dir: Path,
     that the extracted SPICE has, in the extracted order.  Returns the
     path to the rewritten reference (under `out_dir`).
     """
-    ext_ports = set(_parse_subckt_ports(extracted, cell_name))
     ext_ordered = _parse_subckt_ports(extracted, cell_name)
     ref_text = ref_sp.read_text()
     lines = ref_text.splitlines(keepends=True)
@@ -73,147 +78,6 @@ def _align_ref_ports(extracted: Path, ref_sp: Path, out_dir: Path,
     return aligned
 
 
-def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
-    """Flatten the top cell's hierarchy in src_gds and write to dst_gds.
-
-    Magic's hierarchical extraction strips bitcell ports that abut
-    between cells (BL columns, WL/MWL rows, MBL columns), so the
-    macro-extracted bitcell sub-cell has fewer ports than the
-    reference.  Flattening the entire macro before extraction
-    eliminates the sub-cell hierarchy and lets Magic produce a flat
-    transistor-level netlist that we compare against the (also-
-    flattened by netgen) reference.
-
-    Before flattening, strip foundry stdcell internal labels (A, X,
-    VPB, VNB on sky130_fd_sc_hd__buf_2) so they don't get copied 64×
-    into the macro and merged by name into a single net.  The row
-    builder already places appropriate per-row labels (MWL_EN[r],
-    MWL[r]) at the same physical positions to provide net names.
-    """
-    import gdstk
-    src = gdstk.read_gds(str(src_gds))
-    # Strip foundry stdcell internal labels from buf_2 so they don't
-    # get copied 64× into the macro and merged by name into one net.
-    # Keep VPWR/VGND because they're meant to be global; A/X/VPB/VNB
-    # would merge across rows otherwise.  The row builder provides
-    # per-row MWL_EN[r] / MWL[r] li1 stubs at the same physical
-    # positions to provide net names.
-    _STRIP: dict[str, set[str]] = {
-        "sky130_fd_sc_hd__buf_2": {"A", "X", "VPB", "VNB"},
-        # Defense-in-depth: cim_supercell_array also strips these in
-        # build(), but if the GDS is hand-edited or imported from a
-        # stale source, this catches the chip-killer merge anyway.
-        # Foundry's BL/BR labels would collapse all columns into one
-        # net post-flatten; Q would tie all T7 sources together.
-        "sky130_fd_bd_sram__sram_sp_cell_opt1_qtap": {"BL", "BR", "Q"},
-    }
-    # Wildcard strip from row-builder cells: drop all MBL_OUT[*]
-    # labels because the per-cell li1 labels would otherwise mask
-    # the macro's met1 MBL_OUT[*] label (Magic prefers li1 over
-    # met1 when both are present on the same merged net).
-    _STRIP_WILDCARD: dict[str, list[str]] = {
-        "cim_mbl_precharge": ["MBL"],
-        "cim_mbl_sense": ["MBL", "VBIAS"],   # VBIAS poly labels prevent ext2spice
-                                              # promoting the macro met2 strap label
-        "cim_mbl_sense_row_64": ["MBL_OUT[", "VBIAS"],
-        "cim_mbl_precharge_row_64": ["MBL["],
-        # Strip row builder's MWL[r] labels (bracketed) — they conflict
-        # with the bitcell array's mwl_<r> labels (underscored).
-        # Keep MWL_EN[r] (the buf_2 input label) since there's no other
-        # label naming that net.
-        "cim_mwl_driver_col_64": ["MWL["],
-    }
-    # Rename labels: mbl_sense and its row builder use VDD/VSS; rename to
-    # macro convention (VPWR/VGND) so flat extraction has one supply name
-    # per polarity.
-    _RENAME: dict[str, dict[str, str]] = {
-        "cim_mbl_sense": {"VDD": "VPWR", "VSS": "VGND"},
-        "cim_mbl_sense_row_64": {"VDD": "VPWR", "VSS": "VGND"},
-    }
-    for c in src.cells:
-        if c.name in _STRIP:
-            to_remove = [l for l in c.labels if l.text in _STRIP[c.name]]
-            for l in to_remove:
-                c.remove(l)
-        if c.name in _STRIP_WILDCARD:
-            patterns = _STRIP_WILDCARD[c.name]
-            to_remove = [l for l in c.labels
-                         if any(p == l.text or l.text.startswith(p) for p in patterns)]
-            for l in to_remove:
-                c.remove(l)
-        if c.name in _RENAME:
-            for label in c.labels:
-                if label.text in _RENAME[c.name]:
-                    label.text = _RENAME[c.name][label.text]
-    top = next(c for c in src.cells if c.name == top_cell)
-    top.flatten()
-
-    # After flatten, the bitcell's BL/BLB/WL/MWL labels are copied to
-    # 4096 absolute positions across the macro.  Each label has the
-    # same text ("BL", etc.), so Magic merges all 4096 column nets
-    # into one global net.  Rename them per-column / per-row based
-    # on their absolute coordinate so each net gets a unique name
-    # matching the reference SPICE (BL_0..BL_63, WL_0..WL_63, etc.).
-    _PER_COL = {"BL", "BLB"}     # column-shared (group by X)
-    _PER_ROW = {"WL", "MWL"}     # row-shared (group by Y)
-    # Collect labels by text
-    col_labels: dict[str, list] = {t: [] for t in _PER_COL}
-    row_labels: dict[str, list] = {t: [] for t in _PER_ROW}
-    for lbl in top.labels:
-        if lbl.text in _PER_COL:
-            col_labels[lbl.text].append(lbl)
-        elif lbl.text in _PER_ROW:
-            row_labels[lbl.text].append(lbl)
-    # Each label text has its own coordinate distribution (BL and BLB
-    # are at different Y per cell; WL and MWL at different Y; etc.).
-    # Group each label text's positions independently to assign
-    # row/column indices.
-    _TOL = 0.05    # 50 nm tolerance for grouping coords
-    def _build_index(labels, axis: int) -> list[float]:
-        # Cluster nearby coords with single-link agglomerative grouping.
-        # Plain `round(x, 2)` is fragile at decision boundaries (e.g.
-        # 7.365 may surface as 7.364999... in one mirrored instance and
-        # 7.365 in another, splitting a single column into two buckets);
-        # cluster centers within _TOL into one representative coord so
-        # mirror-tiled labels at the same logical X get the same index.
-        raw = sorted(l.origin[axis] for l in labels)
-        clusters: list[list[float]] = []
-        for v in raw:
-            if clusters and abs(v - clusters[-1][-1]) < _TOL:
-                clusters[-1].append(v)
-            else:
-                clusters.append([v])
-        return [sum(c) / len(c) for c in clusters]
-    def _lookup(centers: list[float], v: float) -> int:
-        for i, c in enumerate(centers):
-            if abs(v - c) < _TOL:
-                return i
-        return -1
-
-    for text, labels in col_labels.items():
-        if not labels:
-            continue
-        centers = _build_index(labels, axis=0)
-        for lbl in labels:
-            ci = _lookup(centers, lbl.origin[0])
-            if ci >= 0:
-                lbl.text = f"{text}_{ci}"
-    for text, labels in row_labels.items():
-        if not labels:
-            continue
-        centers = _build_index(labels, axis=1)
-        for lbl in labels:
-            ri = _lookup(centers, lbl.origin[1])
-            if ri >= 0:
-                lbl.text = f"{text}_{ri}"
-
-    out_lib = gdstk.Library(name=f"{top_cell}_flat", unit=src.unit, precision=src.precision)
-    out_lib.add(top)
-    dst_gds.parent.mkdir(parents=True, exist_ok=True)
-    out_lib.write_gds(str(dst_gds))
-    return dst_gds
-
-
 def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     p = CIMMacroParams.from_variant(variant)
     cell_dir = input_root / p.top_cell_name
@@ -227,48 +91,34 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     out_dir = output_root / p.top_cell_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Flatten the macro hierarchy before extraction so Magic produces
-    # a flat transistor-level netlist (no sub-cell port stripping).
-    flat_gds = out_dir / f"{p.top_cell_name}_flat.gds"
-    print(f"[{variant}] flattening macro GDS hierarchy → {flat_gds.name} ...")
-    _flatten_gds(gds, flat_gds, p.top_cell_name)
-
-    # Extract first so we can post-process the SPICE before netgen.
-    print(f"[{variant}] extracting flat netlist via Magic ...")
+    # Hierarchical extraction (mirror run_lvs_production.py).  Magic's
+    # `port makeall` recursive promotes labeled shapes at sub-cell
+    # boundaries to sub-cell ports, which is exactly what we need so the
+    # foundry qtap exposes BL/BR/Q and the supercell exposes MWL/MBL.
+    # Earlier flat-extraction flow destroyed this hierarchy and masked
+    # the issue #7 access-tx drain-floating defect.
+    print(f"[{variant}] running Magic hierarchical extraction "
+          f"(port makeall recursive) ...", flush=True)
     extracted = extract_netlist(
-        flat_gds, p.top_cell_name, output_dir=out_dir,
+        gds, p.top_cell_name, output_dir=out_dir,
+        make_ports=True,
     )
-    # Rename all auto-named n-well nodes (`w_<n>_<n>#`) to VPWR.  The
-    # bitcell layout has 1024 disconnected n-well groups (NWELL gaps
-    # between mirrored row-pair boundaries prevent full merge), but
-    # the reference SPICE substitutes the same auto-named tokens to
-    # VDD which is already mapped to macro VPWR via cell port order.
-    # Renaming to VPWR ties them all to the same macro net for LVS.
-    text = extracted.read_text()
-    # Match Magic's auto-named well node tokens.  Magic encodes
-    # negative coordinates with `n` prefixes, so any of these can
-    # appear: w_<int>_<int>#, w_n<int>_<int>#, w_<int>_n<int>#,
-    # w_n<int>_n<int>#.
-    new_text = re.sub(r"\bw_n?\d+_n?\d+#", "VPWR", text)
-    # Strip spurious cap_var_lvt parasitics — Magic finds 64 of them
-    # at the macro top edge where MBL_<c> .pin shapes meet the macro
-    # boundary (0.005×0.005 µm artifacts, not real devices).
-    new_text = re.sub(
-        r"^X\d+ [^\n]*sky130_fd_pr__cap_var_lvt[^\n]*\n",
-        "", new_text, flags=re.MULTILINE,
-    )
-    if new_text != text:
-        extracted.write_text(new_text)
-        print(f"[{variant}] renamed auto-named n-well nets to VPWR")
 
-    # Align the reference SPICE port list with whatever Magic
-    # actually extracted.  ext2spice doesn't always promote every
-    # labeled port (VBIAS, MWL_<r>, MWL_EN[r] sometimes get dropped
-    # depending on Magic's heuristics); rewrite the reference's
-    # .subckt port list to match the extracted port list, dropping
-    # any port that's only in the reference.  Connectivity is
-    # unchanged — internal nets keep their names — only the pin
-    # count visible to netgen changes.
+    # T5.2-A resolution (Path 3, 2026-05-01): the legacy
+    # re.sub(r"\bw_n?\d+_n?\d+#", "VPWR") mask is no longer required.
+    # The CIM array now adds per-supercell-instance MET1 .pin labels
+    # at the foundry VPWR/VGND rail positions
+    # (cim_supercell_array._add_vpwr_vgnd_m2_rails), so Magic's name-
+    # based hierarchical merge ties every supercell instance's VPWR/
+    # VGND nets to the macro-level VPWR/VGND ports without rewriting.
+
+    # Align the reference SPICE port list with whatever Magic actually
+    # extracted.  ext2spice doesn't always promote every labeled port
+    # depending on label-promotion heuristics; rewrite the reference's
+    # .subckt port list to match the extracted port list, dropping any
+    # port that's only in the reference.  Connectivity is unchanged —
+    # internal nets keep their names — only the pin count visible to
+    # netgen changes.
     aligned_ref = _align_ref_ports(extracted, ref_sp, out_dir, p.top_cell_name)
 
     print(f"[{variant}] running netgen LVS comparison ...")
@@ -278,7 +128,7 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     # truly stuck run still bails out before consuming a workday.
     netgen_timeout = 6 * 3600 if p.rows >= 128 else 3600
     result = run_lvs(
-        gds_path=flat_gds,
+        gds_path=gds,
         schematic_path=aligned_ref,
         cell_name=p.top_cell_name,
         output_dir=out_dir,

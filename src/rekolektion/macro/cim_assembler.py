@@ -69,6 +69,27 @@ class CIMMacroParams:
     cell_pitch_y: float = 0.0
     macro_width: float = 0.0
     macro_height: float = 0.0
+    # Strap insertion period (one CIM tap supercell per `strap_interval`
+    # bitcell columns).  Default 8 mirrors production sky130 SRAM
+    # convention.  Each tap supercell carries the foundry sram_sp_wlstrap
+    # which provides N+/P+ body-bias contacts.
+    strap_interval: int = 8
+
+    @property
+    def n_strap_cols(self) -> int:
+        if self.strap_interval <= 0 or self.cols <= 1:
+            return 0
+        return (self.cols - 1) // self.strap_interval
+
+    def col_x(self, col: int) -> float:
+        """X-offset (within the array's local frame) for bitcell column
+        `col`, accounting for tap (strap) supercells inserted to its
+        left.  Tap pitch equals bitcell pitch, so each preceding strap
+        shifts the column east by one bitcell pitch."""
+        if self.strap_interval <= 0:
+            return col * self.cell_pitch_x
+        n_straps_before = col // self.strap_interval
+        return col * self.cell_pitch_x + n_straps_before * self.cell_pitch_x
 
     @classmethod
     def from_variant(cls, variant: str) -> "CIMMacroParams":
@@ -112,7 +133,9 @@ class CIMFloorplan:
 def build_cim_floorplan(p: CIMMacroParams) -> CIMFloorplan:
     """Compute placement coordinates for every block in the CIM macro."""
     # Materialise the bitcell to read its pitches.
-    bca = CIMBitcellArray(p.variant, p.rows, p.cols)
+    bca = CIMBitcellArray(
+        p.variant, p.rows, p.cols, strap_interval=p.strap_interval,
+    )
     cell_w = bca.cell_pitch_x
     cell_h = bca.cell_pitch_y
 
@@ -120,12 +143,18 @@ def build_cim_floorplan(p: CIMMacroParams) -> CIMFloorplan:
     p.cell_pitch_x = cell_w
     p.cell_pitch_y = cell_h
 
-    array_w = p.cols * cell_w
+    # Array width includes inserted strap (tap) supercells; tap pitch
+    # equals bitcell pitch so width = (cols + n_strap_cols) * cell_w.
+    array_w = bca.width
     array_h = p.rows * cell_h
 
     mwl_row = MWLDriverRow(rows=p.rows, row_pitch=cell_h)
-    pre_row = MBLPrechargeRow(cols=p.cols, col_pitch=cell_w)
-    sense_row = MBLSenseRow(cols=p.cols, col_pitch=cell_w)
+    pre_row = MBLPrechargeRow(
+        cols=p.cols, col_pitch=cell_w, strap_interval=p.strap_interval,
+    )
+    sense_row = MBLSenseRow(
+        cols=p.cols, col_pitch=cell_w, strap_interval=p.strap_interval,
+    )
 
     fp = CIMFloorplan()
 
@@ -170,7 +199,9 @@ def assemble_cim(p: CIMMacroParams) -> tuple[gdstk.Library, CIMMacroParams]:
     fp = build_cim_floorplan(p)
 
     # Build each block library independently.
-    bca = CIMBitcellArray(p.variant, p.rows, p.cols)
+    bca = CIMBitcellArray(
+        p.variant, p.rows, p.cols, strap_interval=p.strap_interval,
+    )
     array_lib = bca.build()
     array_cell_in_src = bca.array_cell(array_lib)
 
@@ -180,13 +211,19 @@ def assemble_cim(p: CIMMacroParams) -> tuple[gdstk.Library, CIMMacroParams]:
         c for c in mwl_lib.cells if c.name == mwl_row.top_cell_name
     )
 
-    pre_row = MBLPrechargeRow(cols=p.cols, col_pitch=p.cell_pitch_x)
+    pre_row = MBLPrechargeRow(
+        cols=p.cols, col_pitch=p.cell_pitch_x,
+        strap_interval=p.strap_interval,
+    )
     pre_lib = pre_row.build()
     pre_cell_in_src = next(
         c for c in pre_lib.cells if c.name == pre_row.top_cell_name
     )
 
-    sense_row = MBLSenseRow(cols=p.cols, col_pitch=p.cell_pitch_x)
+    sense_row = MBLSenseRow(
+        cols=p.cols, col_pitch=p.cell_pitch_x,
+        strap_interval=p.strap_interval,
+    )
     sense_lib = sense_row.build()
     sense_cell_in_src = next(
         c for c in sense_lib.cells if c.name == sense_row.top_cell_name
@@ -246,6 +283,7 @@ _SENSE_VBIAS_LY: float = 0.405   # poly Y
 _SENSE_MBL_LX:   float = 0.170   # poly X for MBL gate input
 _SENSE_MBL_LY:   float = 1.075   # poly Y
 _SENSE_VSS_LY:   float = 0.155   # li1 Y for source-bottom + body tap
+_SENSE_VDD_LX:   float = 0.800   # li1 X for VDD pin (matches sense cell)
 _SENSE_VDD_LY:   float = 1.325   # li1 Y for driver-drain
 _SENSE_MBL_OUT_LY: float = 0.740  # li1 Y for source-follower output
 _SENSE_MBL_OUT_LX: float = 0.800  # li1 X
@@ -283,7 +321,7 @@ def _add_macro_routing(
     # poly stripe to Y=pre_top - 0.10 (above both VPWR and VREF rails),
     # then do the poly→li1→met1 via stack there.
     mbl_pre_abs_y_in = pre_y + _PRE_MBL_PRE_LY
-    mbl_pre_abs_x = pre_x + p.cell_pitch_x  # col 1
+    mbl_pre_abs_x = pre_x + p.col_x(1)  # col 1
     pre_top = pre_y + pre_row.height
     mbl_pre_via_y = pre_top + 0.20    # outside the precharge cell vertically
     # Vertical poly stripe from MBL_PRE bus Y up past the cell top
@@ -303,7 +341,7 @@ def _add_macro_routing(
 
     # ---- VREF external pin (TOP edge) ----
     vref_abs_y = pre_y + _PRE_VREF_LY
-    vref_abs_x = pre_x + 3 * p.cell_pitch_x  # different col to avoid collision
+    vref_abs_x = pre_x + p.col_x(3)  # different col to avoid collision
     # li1→met1 mcon
     draw_via_stack(top, from_layer="li1", to_layer="met1",
                    position=(vref_abs_x, vref_abs_y))
@@ -344,39 +382,72 @@ def _add_macro_routing(
 
     # ---- VPWR external pin (TOP-RIGHT corner) ----
     vpwr_abs_y = pre_y + _PRE_VPWR_LY
-    vpwr_abs_x = pre_x + (p.cols - 2) * p.cell_pitch_x
+    vpwr_abs_x = pre_x + p.col_x(p.cols - 2)
     draw_vert_strap(top, "met1", vpwr_abs_x, vpwr_abs_y, macro_h)
     draw_pin_with_label(top, text="VPWR", layer="met1",
                         rect=(vpwr_abs_x - 0.07, macro_h - 0.14,
                               vpwr_abs_x + 0.07, macro_h))
 
-    # ---- Sense-row VDD → VPWR jumper (issue #11 — body bias) ----
-    # The sense buffer row's VDD supply is on a li1 stripe at y=1.325
-    # spanning the array width.  The macro's VPWR vertical strap
-    # starts at y=pre_y+_PRE_VPWR_LY (above the array) and reaches up
-    # to macro_h.  Without an explicit jumper, the sense-row VDD has
-    # NO MCON to met1 — every sense buffer is floating on silicon
-    # (LVS reports clean only via `equate VDD VPWR` netgen rule).
+    # ---- Sense-row VDD → VPWR per-column MCONs + horizontal rail ----
+    # T4.2-CIM-A (issue #11).  The sense buffer row's VDD supply is a
+    # full-row-width li1 stripe at sense-cell-local y=1.325 carrying every
+    # sense buffer's PMOS-source.  A single MCON at one corner ties the
+    # whole stripe to VPWR for LVS purposes but leaves ~441 Ω of li1
+    # series resistance from the far end of the row to the strap (sheet
+    # ~0.5 Ω/sq × 882 squares for a 150 µm × 0.17 µm li1 strip), causing
+    # significant IR drop and supply asymmetry across the bit columns.
     #
-    # Fix: at the same X as the macro VPWR strap, add a via stack
-    # li1→met1 at the VDD li1 position, then a vertical met1 stub
-    # extending up to merge with the VPWR strap.  This electrically
-    # ties every sense buffer's VDD pin to VPWR via real metal.
+    # Fix: per-column li1→met1 MCONs at every sense cell's VDD pin
+    # x-position, plus a horizontal met1 rail in the sense-to-array gap
+    # tying every MCON together AND intersecting the existing VPWR
+    # vertical strap.  Result: every sense buffer has its own short
+    # path to VPWR through one MCON + ≤0.5 µm of met1.
     sense_vdd_li1_y = sense_y + _SENSE_VDD_LY  # 0 + 1.325 = 1.325
-    sense_vdd_jumper_x = vpwr_abs_x  # share the VPWR-strap X
-    # li1→met1 via stack at the VDD li1 stripe
-    draw_via_stack(top, from_layer="li1", to_layer="met1",
-                   position=(sense_vdd_jumper_x, sense_vdd_li1_y))
-    # Vertical met1 stub from VDD li1 Y up to where VPWR strap begins.
-    # `draw_vert_strap` produces a continuous met1 from y_lo to y_hi at
-    # the given X, which merges with the VPWR strap that extends from
-    # vpwr_abs_y up to macro_h.
-    draw_vert_strap(top, "met1", sense_vdd_jumper_x,
-                    sense_vdd_li1_y, vpwr_abs_y)
+    sense_x_offset_vdd = (p.cell_pitch_x - sense_row.cell_w) / 2.0
+    # Horizontal met1 rail Y: sit in the sense-to-array gap (0.5 µm
+    # wide between sense top and array bottom), centred at y = sense
+    # top + 0.25.  Avoids array bitcell met1 above and sense-row
+    # internal met1 below.
+    sense_top_y = sense_y + sense_row.height
+    vdd_rail_y = sense_top_y + 0.25
+    vdd_rail_w = 0.30  # met1 strap width (matches PDN strap convention)
+
+    # Per-column MCONs at sense VDD li1 pin and short met1 stubs up to
+    # the horizontal rail.
+    vdd_xs: list[float] = []
+    for col in range(p.cols):
+        cx = (sense_x + p.col_x(col)
+              + sense_x_offset_vdd + _SENSE_VDD_LX)
+        vdd_xs.append(cx)
+        draw_via_stack(top, from_layer="li1", to_layer="met1",
+                       position=(cx, sense_vdd_li1_y))
+        # Short met1 stub from sense VDD li1 Y up to the rail.
+        top.add(gdstk.rectangle(
+            (cx - 0.075, sense_vdd_li1_y - 0.075),
+            (cx + 0.075, vdd_rail_y + vdd_rail_w / 2),
+            layer=m1_id, datatype=m1_dt,
+        ))
+
+    # Horizontal met1 rail spanning all MCONs and intersecting the
+    # VPWR vertical strap (same met1 layer = direct merge).
+    rail_x_lo = min(vdd_xs) - 0.10
+    rail_x_hi = max(max(vdd_xs), vpwr_abs_x) + 0.10
+    top.add(gdstk.rectangle(
+        (rail_x_lo, vdd_rail_y - vdd_rail_w / 2),
+        (rail_x_hi, vdd_rail_y + vdd_rail_w / 2),
+        layer=m1_id, datatype=m1_dt,
+    ))
+
+    # Vertical met1 stub at the existing VPWR strap X, from rail Y up
+    # to where the VPWR strap formally begins (vpwr_abs_y).  Provides
+    # the connection from the sense-row rail up to the macro VPWR
+    # strap region.
+    draw_vert_strap(top, "met1", vpwr_abs_x,
+                    vdd_rail_y, vpwr_abs_y)
 
     # ---- VGND external pin (BOTTOM-RIGHT corner) ----
     vgnd_abs_y = sense_y + _SENSE_VSS_TAP_LY
-    vgnd_abs_x = sense_x + (p.cols - 2) * p.cell_pitch_x
+    vgnd_abs_x = sense_x + p.col_x(p.cols - 2)
     draw_vert_strap(top, "met1", vgnd_abs_x, 0.0, vgnd_abs_y)
     draw_pin_with_label(top, text="VGND", layer="met1",
                         rect=(vgnd_abs_x - 0.07, 0.0,
@@ -391,7 +462,7 @@ def _add_macro_routing(
     # cell_mbl_out_y=0.740 (above both VSS buses), no conflict.
     sense_x_offset = (p.cell_pitch_x - sense_row.cell_w) / 2.0
     for col in range(p.cols):
-        cx = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_OUT_LX
+        cx = sense_x + p.col_x(col) + sense_x_offset + _SENSE_MBL_OUT_LX
         cell_mbl_out_y = sense_y + _SENSE_MBL_OUT_LY
         # li1 → met2 via stack at the cell's MBL_OUT pad
         draw_via_stack(top, from_layer="li1", to_layer="met2",
@@ -543,7 +614,7 @@ def _add_macro_routing(
     pre_x_offset = (p.cell_pitch_x - pre_row.cell_w) / 2.0
 
     for col in range(p.cols):
-        strap_x = array_x_pos + bitcell_mbl_lx + col * p.cell_pitch_x
+        strap_x = array_x_pos + bitcell_mbl_lx + p.col_x(col)
 
         # Vertical MET4 strap
         top.add(gdstk.rectangle(
@@ -561,7 +632,7 @@ def _add_macro_routing(
         )
 
         # Precharge MBL li1 pad → met4 strap (li1→m1→m2→m3→m4 via stack)
-        pre_mbl_abs_x = pre_x + col * p.cell_pitch_x + pre_x_offset + _PRE_MBL_LX
+        pre_mbl_abs_x = pre_x + p.col_x(col) + pre_x_offset + _PRE_MBL_LX
         # Drop a via stack at the precharge MBL pin position
         draw_via_stack(top, from_layer="li1", to_layer="met4",
                        position=(pre_mbl_abs_x, pre_mbl_abs_y))
@@ -575,7 +646,7 @@ def _add_macro_routing(
         ))
 
         # Sense MBL poly gate → met4 strap (poly licon→li1→m1→m2→m3→m4)
-        sense_mbl_abs_x = sense_x + col * p.cell_pitch_x + sense_x_offset + _SENSE_MBL_LX
+        sense_mbl_abs_x = sense_x + p.col_x(col) + sense_x_offset + _SENSE_MBL_LX
         # Poly licon stack already wires the gate poly to li1 (need to add it)
         draw_poly_to_li1_contact(top, sense_mbl_abs_x, sense_mbl_abs_y)
         draw_via_stack(top, from_layer="li1", to_layer="met4",

@@ -57,20 +57,49 @@ def _write_extracted(f: TextIO, lines: list[str]) -> None:
 # Q label merges with that node.  netgen graph-iso compares connectivity, not
 # literal names, so the substitution is safe.
 def _write_foundry_qtap(f: TextIO) -> None:
-    """Emit the foundry-cell-with-Q-tap .subckt definition."""
+    """Emit the foundry-cell-with-Q-tap .subckt definition.
+
+    Post-Phase-2 silicon view (matches Magic's qtap-standalone extraction):
+      - Top access tx drain (was foundry-floating `a_38_292#`) is wired
+        to BR inside qtap via the Phase 2 BR contact stack (LICON1+LI1
+        +MCON+M1 wrapper added in the supercell builder, inside qtap).
+      - Bottom access tx drain (`a_38_0#`) stays floating at qtap level;
+        the external `sky130_cim_drain_bridge_v1` cell connects it to
+        BL at supercell level via DIFF abutment at the cell boundary.
+        Exposed as a qtap port so the supercell can bind it.
+    """
     f.write(
         "\n* Foundry 6T cell with Q tap (FT7c-validated topology).\n"
         "* Storage node `Q` exposed via LI1+LICON1 on NMOS PD drain diff.\n"
+        "*\n"
+        "* Port list mirrors Magic's qtap-standalone extraction.  The\n"
+        "* foundry cell's WL label is stripped during qtap construction\n"
+        "* (so per-row wl_0_<r> labels at the array level can win Magic's\n"
+        "* name resolution) — at the qtap level, the two WL POLY stripes\n"
+        "* (top: a_0_262#, bot: a_0_24#) extract as separate auto-named\n"
+        "* ports.  The supercell wraps qtap and ties both stripes to a\n"
+        "* single WL port via supercell-level WL labels at both stripe Y\n"
+        "* positions (cim_supercell.py:483-484).\n"
+        "*\n"
+        "* Phase 2 BR drain bridge port: li_14_0# is the LI1 stub on the\n"
+        "* top access tx drain that connects to BL via the wrapper-level\n"
+        "* M1 strap (in supercell), making the supercell-level binding of\n"
+        "* this stub to BL the silicon-correct topology.\n"
         ".subckt sky130_fd_bd_sram__sram_sp_cell_opt1_qtap"
-        " BL BR VGND VPWR VPB WL VNB Q\n"
+        " BL BR VGND VPWR VPB VNB Q li_14_0#"
+        " a_38_0# a_0_262# a_0_24#\n"
     )
-    # X0: NMOS access transistor (BL side).  Drain=BL-side bitline node,
-    # gate=WL, source=Q (storage node).  Width 0.14, length 0.15.
+    # X0: NMOS access transistor (top, BR side).  Drain=BR (via Phase 2
+    # in-qtap LICON1+LI1+MCON+M1 stack tying drain DIFF to BR met1 rail),
+    # gate=top WL stripe (auto-named a_0_262#), source=Q (storage node).
     f.write(
-        "X0 a_38_292# WL Q VNB sky130_fd_pr__nfet_01v8"
+        "X0 BR a_0_262# Q VNB sky130_fd_pr__nfet_01v8"
         " w=0.14 l=0.15\n"
     )
-    # X1: VPWR-side dummy diode-connected pfet (substrate decap).
+    # X1: VPWR-side parasitic pfet whose gate is the foundry's bottom
+    # POLY stripe (auto-named a_0_24#).  Both stripes are tied to one
+    # WL net at the supercell level via parent-level POLY straps and
+    # supercell-level WL labels at both stripe Y positions.
     f.write(
         "X1 a_174_54# a_0_24# a_174_54# VPB sky130_fd_pr__pfet_01v8_hvt"
         " w=0.14 l=0.025\n"
@@ -84,9 +113,10 @@ def _write_foundry_qtap(f: TextIO) -> None:
         "X3 a_174_134# a_16_104# a_174_54# VPB sky130_fd_pr__pfet_01v8_hvt"
         " w=0.14 l=0.15\n"
     )
-    # X4: WL-side dummy diode-connected pfet (substrate decap).
+    # X4: WL-side dummy diode-connected pfet (substrate decap).  Gate
+    # on top WL stripe (a_0_262#).
     f.write(
-        "X4 a_174_212# WL a_174_212# VPB sky130_fd_pr__pfet_01v8_hvt"
+        "X4 a_174_212# a_0_262# a_174_212# VPB sky130_fd_pr__pfet_01v8_hvt"
         " w=0.14 l=0.025\n"
     )
     # X5: NMOS pull-down (Q side).  Q is the drain.
@@ -94,7 +124,11 @@ def _write_foundry_qtap(f: TextIO) -> None:
         "X5 Q a_16_182# a_0_142# VNB sky130_fd_pr__nfet_01v8"
         " w=0.21 l=0.15\n"
     )
-    # X6: NMOS access transistor (BR side).
+    # X6: NMOS access transistor (bottom, BL side).  Drain=QB
+    # (a_38_54#), gate=bottom WL stripe (a_0_24#), source=a_38_0#
+    # (stays auto-named at qtap level — Phase 2 BL connection is
+    # provided externally by the sky130_cim_drain_bridge_v1 strap cell
+    # at supercell level via DIFF abutment).
     f.write(
         "X6 a_38_54# a_0_24# a_38_0# VNB sky130_fd_pr__nfet_01v8"
         " w=0.14 l=0.15\n"
@@ -126,9 +160,20 @@ def _write_supercell(f: TextIO, p: CIMMacroParams) -> None:
         f"\n* CIM supercell ({p.variant}): foundry 6T + T7 NMOS + MIM cap.\n"
         f".subckt {super_name} BL BR WL MWL MBL VPWR VGND VPB VNB\n"
     )
-    # Foundry 6T core.  Q internal here; foundry exposes it via Q port.
+    # Foundry 6T core.  Port mapping reflects post-Phase-2 silicon:
+    #   - qtap's bottom-access-tx-drain port (a_38_0#) is tied to BL via
+    #     the external sky130_cim_drain_bridge_v1 strap cell (Magic's
+    #     hierarchical extraction inherits supercell BL via DIFF abutment
+    #     at the cell boundary).
+    #   - qtap's li_14_0# Phase 2 BR drain bridge stub also ties to BL
+    #     via the wrapper-level M1 strap.
+    #   - qtap's two WL POLY stripes (auto-named a_0_262# top, a_0_24#
+    #     bot) both connect to the supercell's WL port — supercell-level
+    #     WL labels at both stripe Y positions merge them.
+    # Port order matches the qtap subckt: BL BR VGND VPWR VPB VNB Q
+    # li_14_0# a_38_0# a_0_262# a_0_24#.
     f.write(
-        "Xfoundry BL BR VGND VPWR VPB WL VNB Q "
+        "Xfoundry BL BR VGND VPWR VPB VNB Q BL BL WL WL "
         "sky130_fd_bd_sram__sram_sp_cell_opt1_qtap\n"
     )
     # T7 NMOS access transistor: gate=MWL, source=Q, drain=cap_bot, body=VNB.

@@ -49,6 +49,8 @@ class MBLPrechargeRow:
         cols: int,
         col_pitch: float,
         name: Optional[str] = None,
+        strap_interval: int = 0,
+        strap_width: float = 0.0,
     ):
         if cols < 1:
             raise ValueError(f"cols must be >= 1; got {cols}")
@@ -56,6 +58,17 @@ class MBLPrechargeRow:
             raise ValueError(f"col_pitch must be positive; got {col_pitch}")
         self.cols = cols
         self.col_pitch = col_pitch
+        # Strap insertion (CIM tap supercell columns inserted in the
+        # array every `strap_interval` bitcell columns).  When > 0,
+        # periphery cell placement and pin X positions skip the strap
+        # column slots so they stay aligned with bitcell columns;
+        # horizontal bus stripes extend across the strap-column gap.
+        # `strap_width` defaults to `col_pitch` (matching the array's
+        # tap supercell width = bitcell pitch).
+        self.strap_interval = max(0, int(strap_interval))
+        self.strap_width = (
+            strap_width if strap_width > 0.0 else col_pitch
+        ) if self.strap_interval > 0 else 0.0
         self.top_cell_name = name or f"cim_mbl_precharge_row_{cols}"
 
     @property
@@ -67,8 +80,21 @@ class MBLPrechargeRow:
         return _PRE_CELL_H
 
     @property
+    def n_strap_cols(self) -> int:
+        if self.strap_interval <= 0 or self.cols <= 1:
+            return 0
+        return (self.cols - 1) // self.strap_interval
+
+    def _col_x(self, col: int) -> float:
+        """X-coordinate of bitcell column `col`, strap-aware."""
+        if self.strap_interval <= 0:
+            return col * self.col_pitch
+        n_straps_before = col // self.strap_interval
+        return col * self.col_pitch + n_straps_before * self.strap_width
+
+    @property
     def width(self) -> float:
-        return self.cols * self.col_pitch
+        return self.cols * self.col_pitch + self.n_strap_cols * self.strap_width
 
     @property
     def height(self) -> float:
@@ -86,12 +112,14 @@ class MBLPrechargeRow:
                 seen.add(c.name)
         local_pre = next(c for c in lib.cells if c.name == _PRE_CELL_NAME)
 
-        # Place one precharge per column at col_pitch.  Centre each cell
-        # in the column's pitch (so the cell's MBL output sits roughly
-        # at the column's bitcell MBL x position).
+        # Place one precharge per BITCELL column at strap-aware X.
+        # Centre each cell in the column's pitch (so the cell's MBL
+        # output sits roughly at the column's bitcell MBL x position).
+        # Strap columns get NO precharge cell; the horizontal bus
+        # stripes carry across the strap-column gap unbroken.
         x_offset = (self.col_pitch - self.cell_w) / 2.0
         for col in range(self.cols):
-            origin = (col * self.col_pitch + x_offset, 0.0)
+            origin = (self._col_x(col) + x_offset, 0.0)
             top.add(gdstk.Reference(local_pre, origin=origin))
 
         # Horizontal shared-bus stripes spanning the full row width.
@@ -99,7 +127,7 @@ class MBLPrechargeRow:
         # into a single named net.  Layer must match the cell's pin
         # layer at that Y so the stripes physically merge with the
         # underlying cell poly/li1/met1.
-        row_w = self.cols * self.col_pitch
+        row_w = self.width
         poly_id, poly_dt = GDS_LAYER["poly"]
         li1_id, li1_dt = GDS_LAYER["li1"]
         m1_id, m1_dt = GDS_LAYER["met1"]
@@ -136,7 +164,7 @@ class MBLPrechargeRow:
         #   VPWR:    met1  — N-tap pad
         _PIN_HALF = 0.07
         for col in range(self.cols):
-            x_origin = col * self.col_pitch + x_offset
+            x_origin = self._col_x(col) + x_offset
 
             # MBL_PRE — shared row-wide bus, .pin on poly at cell's
             # MBL_PRE position

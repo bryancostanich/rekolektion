@@ -23,6 +23,11 @@ from pathlib import Path
 
 import gdstk
 
+from rekolektion.bitcell.sky130_cim_drain_bridge import (
+    BRIDGE_H,
+    create_drain_bridge_cell,
+)
+
 # Foundry cell GDS path
 _FOUNDRY_CELL_GDS = (
     Path(__file__).parent / "cells"
@@ -99,11 +104,10 @@ class SupercellVariant:
 
     @property
     def supercell_h(self) -> float:
-        # Y pitch — max of (foundry + T7 annex) vs (cap + cap-spacing).
-        # The cap can sit on M3 over both foundry cell and annex; only
-        # silicon-plane (T7) requires its own annex Y region.
-        h_silicon = _FOUNDRY_LEF_H + _T7_ENVELOPE_H
-        h_cap = self.cap_l + _CAP_TO_CAP_SPACING
+        # Y pitch — max of (foundry + T7 annex) vs (cap + cap-spacing),
+        # plus the bottom drain-bridge strap region (BRIDGE_H).
+        h_silicon = BRIDGE_H + _FOUNDRY_LEF_H + _T7_ENVELOPE_H
+        h_cap = BRIDGE_H + self.cap_l + _CAP_TO_CAP_SPACING
         return max(h_silicon, h_cap)
 
 
@@ -247,6 +251,87 @@ def _load_foundry_cell_with_q_tap() -> gdstk.Cell:
           q_label_x - PIN_HALF, li_y_center - PIN_HALF,
           q_label_x + PIN_HALF, li_y_center + PIN_HALF)
 
+    # ---- Phase 2 fix: drain → BL/BR contact stack (issue #7) ----
+    # The foundry cell ships with 0 LICON1 and 0 MCON internally — the
+    # access-tx drain DIFFs are electrically isolated from the BL/BR
+    # met1 rails.  Foundry intent was for adjacent strap/edge cells
+    # (wlstrap, colend) to provide LICON1+LI1+MCON contacts; we
+    # provide them inline in the supercell wrapper instead.
+    #
+    # Top access tx: drain DIFF (0.190, 1.460)-(0.330, 1.580).
+    #   Foundry has wide LI1 stripe (0.070, 1.505)-(1.130, 1.580)
+    #   over the drain.  BR met1 rail (0.710, 0.145)-(0.850, 1.580)
+    #   overlaps the LI1 stripe at y=1.505-1.580.
+    #   → LICON1 (drain→LI1) + MCON (LI1→BR met1) bridges drain→BR.
+    #
+    # Bottom access tx: drain DIFF (0.190, 0.000)-(0.330, 0.120).
+    #   Foundry has wide LI1 stripe (0.070, 0.000)-(1.130, 0.075)
+    #   over the drain.  BL met1 rail (0.350, 0.000)-(0.490, 1.435)
+    #   overlaps the LI1 stripe at y=0.000-0.075.
+    #   → LICON1 (drain→LI1) + MCON (LI1→BL met1) bridges drain→BL.
+    #
+    # LICON1 is 0.17×0.17 with DIFF enclosure ≥ 0.04 (sram-relaxed).
+    # Drain DIFF is 0.14×0.12 — too small.  Wrapper extends the
+    # drain DIFF + NSDM upward (top tx) / downward (bottom tx) into
+    # the annex/below-cell region to fit LICON1.  Wrapper LI1 also
+    # extends past the foundry stripe boundaries to satisfy LICON1
+    # enclosure (li.5).  Wrapper met1 extends past BR/BL rail
+    # boundaries to satisfy MCON enclosure (m1.4).
+
+    # ----- TOP access tx → BR -----
+    # DIFF extension only ABOVE foundry POLY (y_min ≥ 1.460 + 0.075 = 1.535)
+    # to clear poly.4 spacing.  Extends UP into annex, abuts foundry drain
+    # DIFF (0.190, 1.460)-(0.330, 1.580) at y=1.535-1.580 in X overlap.
+    _DRN_T_X0, _DRN_T_X1 = 0.115, 0.405          # 0.29 wide for licon enclosure
+    _DRN_T_Y0, _DRN_T_Y1 = 1.535, 1.860          # y_min ≥ poly+0.075
+    _rect(cell, _LAYER_DIFF, _DRN_T_X0, _DRN_T_Y0, _DRN_T_X1, _DRN_T_Y1)
+    # NSDM extension (foundry NSDM ends at y=1.705).
+    _rect(cell, _LAYER_NSDM, _DRN_T_X0 - 0.05, _DRN_T_Y0 - 0.05,
+          _DRN_T_X1 + 0.05, _DRN_T_Y1 + 0.05)
+    # LICON1 placement constraints:
+    #   - DIFF enclosure ≥ 0.06 in all four directions (licon.5c standard,
+    #     not the sram-relaxed 0.04 — the former covers a wider DRC deck).
+    #     DIFF Y range [1.535, 1.860]; LICON Y span 0.17 → centre between
+    #     y=1.535+0.06+0.085=1.680 (south-floor) and 1.860-0.06-0.085=1.715
+    #     (north-ceiling).  Pick 1.680 to stay maximally far from POLY.
+    #   - LICON-to-POLY ≥ 0.075 (licon.5b): LICON y_min=1.595 vs POLY top
+    #     y=1.460 → 0.135 margin ✓.
+    _LIC_T_CX, _LIC_T_CY = 0.260, 1.680
+    _rect(cell, _LAYER_LICON1,
+          _LIC_T_CX - LICON_HALF, _LIC_T_CY - LICON_HALF,
+          _LIC_T_CX + LICON_HALF, _LIC_T_CY + LICON_HALF)
+    # LI1 wrapper around LICON1 (li.5 enclosure ≥ 0.08; this also overlaps
+    # foundry's wide LI1 stripe at y=1.495-1.580 and merges with it).
+    _rect(cell, _LAYER_LI1,
+          0.095, 1.495, 0.550, 1.825)
+    # LI1 extension east to BR MCON area.  Stay OUTSIDE NWELL X range
+    # (NWELL at x≥0.72) to prevent inadvertent VPB net merging.
+    # We rely on foundry's existing wide LI1 stripe (0.070, 1.495)-(1.130, 1.580)
+    # to carry the connection from our LICON1 LI1 wrapper to the BR MCON area.
+    # No additional LI1 polygon needed — foundry stripe spans the X range.
+    # BUT we need wrapper LI1 covering MCON for li.5 enclosure.
+    _rect(cell, _LAYER_LI1,
+          0.660, 1.495, 0.990, 1.705)
+    # MCON at BR rail.  BR rail x=[0.71, 0.85] is too narrow for MCON+M1
+    # enclosure without conflicting with foundry M1 at (0.300-0.540, 1.435-1.580)
+    # (need 0.14 gap → MCON center x ≥ 0.825).
+    _MCON_T_BR_CX, _MCON_T_BR_CY = 0.825, 1.540
+    _rect(cell, _LAYER_MCON,
+          _MCON_T_BR_CX - LICON_HALF, _MCON_T_BR_CY - LICON_HALF,
+          _MCON_T_BR_CX + LICON_HALF, _MCON_T_BR_CY + LICON_HALF)
+    # M1 wrapper extends BR rail east; gap 0.14 from foundry M1 at x=0.540
+    # (west edge ≥ 0.680) and from VPWR strap at x=1.130 (east edge ≤ 0.990).
+    _rect(cell, _LAYER_MET1, 0.680, 1.395, 0.970, 1.685)
+
+    # ----- BOTTOM access tx → BL -----
+    # MOVED to external strap cell `sky130_cim_drain_bridge_v1`.
+    # The bridge cell is instanced inside the supercell at cell-local
+    # y=[0, BRIDGE_H], with the foundry cell shifted to cell-local
+    # y=[BRIDGE_H, BRIDGE_H+1.58].  Its DIFF abuts foundry's bottom
+    # drain DIFF at the cell boundary (DIFF abutment merges nets), so
+    # the BL connection is electrically equivalent to the in-qtap
+    # Phase 2 design without the Y-mirror conflict that previously
+    # placed the LICON1 over the next row's WL_BOT POLY strip.
     return cell
 
 
@@ -278,42 +363,85 @@ def create_cim_supercell(variant: str) -> tuple[gdstk.Library, SupercellVariant]
     foundry = _load_foundry_cell_with_q_tap()
     lib.add(foundry)
 
+    # Drain-bridge cell (BL strap, external) — sub-cell
+    bridge = create_drain_bridge_cell()
+    lib.add(bridge)
+
     # Top supercell
     super_cell = gdstk.Cell(cell_name)
     lib.add(super_cell)
 
-    # Place foundry cell instance at origin
-    super_cell.add(gdstk.Reference(foundry, origin=(0.0, 0.0)))
+    # Bridge cell sits at supercell origin; foundry shifted up by BRIDGE_H.
+    # Bridge DIFF abuts foundry's bottom drain DIFF at cell-local y=BRIDGE_H
+    # (DIFF abutment merges access-tx drain into bridge net).  Bridge M1
+    # wrapper abuts foundry BL met1 rail at the same boundary.
+    super_cell.add(gdstk.Reference(bridge, origin=(0.0, 0.0)))
+    super_cell.add(gdstk.Reference(foundry, origin=(0.0, BRIDGE_H)))
 
-    # SRAM areaid covering ONLY the foundry cell footprint — enables Magic's
-    # relaxed DRC rules for the foundry cell's compact features.  Restricting
-    # to foundry footprint avoids T7 / cap routing being subjected to relaxed
-    # rules they aren't designed for.
+    # SRAM areaid spanning bridge + foundry + a small top margin for the
+    # in-qtap BR drain bridge extension.  Phase 2 BR bridge polys still
+    # live in the qtap and extend up to y_local=1.86; in supercell coords
+    # they sit at y=BRIDGE_H+1.535..BRIDGE_H+1.86, well below the annex
+    # top (handled separately).
     _rect(super_cell, _LAYER_AREAID_SRAM,
-          0.0, 0.0, _FOUNDRY_LEF_W, _FOUNDRY_LEF_H)
+          0.0, 0.0,
+          _FOUNDRY_LEF_W, BRIDGE_H + _FOUNDRY_LEF_H + 0.30)
 
     # ---- NWELL extension through annex (issue #9 — body-bias) ----
-    # Foundry qtap NWELL spans cell-local x=[0.72, 1.20] y=[0, 1.58] (foundry
-    # cell extent only).  In the supercell array, supercells stack at pitch
-    # supercell_h (2.93 for SRAM-D), so the annex region y=[1.58, supercell_h]
-    # has no NWELL.  At every supercell-row boundary, the foundry NWELL is
-    # 1.35 µm away from the boundary — too far to merge with adjacent rows
-    # NWELLs via parent-level bridge.
-    #
-    # Extending the NWELL up through the annex (at the same X range as the
-    # foundry NWELL) bridges to the supercell-Y boundary, where the parent
-    # array can add row-NWELL strips that merge across columns.  T7 NMOS at
-    # x=[1.665, 2.085] is well clear of x=[0.72, 1.20] — no NSDM/PSDM
-    # conflict.
-    _NWELL_X0 = 0.72   # match foundry NWELL X range
-    _NWELL_X1 = 1.20
+    # Wrapper extends NWELL up through the annex region so the parent-
+    # level NWELL row strips (cim_supercell_array._add_nwell_row_bridges)
+    # can bridge across columns.  Body bias to VPWR is provided by
+    # periodic tap supercells (sky130_cim_tap_supercell) inserted in
+    # the array — see conductor cim_tap_supercell_plan.md.  No per-cell
+    # N-tap is emitted here; the tap supercell carries the foundry
+    # sram_sp_wlstrap which provides the actual N+/P+ taps.
+    _NWELL_X0 = 0.50
+    _NWELL_X1 = 1.30
     _rect(super_cell, _LAYER_NWELL,
-          _NWELL_X0, _FOUNDRY_LEF_H,
+          _NWELL_X0, BRIDGE_H + _FOUNDRY_LEF_H,
           _NWELL_X1, cfg.supercell_h)
 
-    # Forward foundry cell's external pin labels (BL, BR, VGND, VPWR, VPB, VNB)
-    # — these are already in the foundry cell as labels at specific
-    # coordinates; the instance carries them. We don't need to re-add them.
+    # Re-emit the foundry/qtap external port labels at the supercell level
+    # so Magic's hierarchical extraction promotes them as supercell ports
+    # with their canonical names (`BL`, `BR`, `VPWR`, `VGND`, ...) instead
+    # of the auto-prefixed `sky130_fd_bd_sram__sram_sp_cell_opt1_qtap_0/BL`
+    # form.  Without these, the extracted supercell .subckt has port names
+    # that don't match the reference .sp.
+    #
+    # The 4096 instance-prefixed VPWR/VGND/VPB/VNB ports that leak at the
+    # array level are merged by the per-row MET2 power rails added in
+    # `cim_supercell_array._add_vpwr_vgnd_m2_rails` — see conductor
+    # cim_lvs_port_pattern_plan.md (Step 6).
+    #
+    # Coordinates in supercell-local frame: foundry-local (x, y) → (x, BRIDGE_H+y).
+    # Layers match the foundry qtap labels (M1 text on (68,5), POLY on
+    # (66,5), NWELL on (64,5), pwell on (64,59) for VNB).
+    _foundry_port_labels = (
+        ("BL",   0.420, 1.130, (68, 5)),
+        ("BR",   0.780, 1.130, (68, 5)),
+        ("VGND", 0.035, 0.037, (68, 5)),
+        ("VPWR", 1.165, 0.037, (68, 5)),
+        ("VPB",  1.165, 0.180, (64, 5)),
+        ("VNB",  0.035, 0.200, (64, 59)),
+    )
+    for (text, fx, fy, layer) in _foundry_port_labels:
+        _label(super_cell, text, layer, fx, BRIDGE_H + fy)
+    # WL label — foundry has TWO POLY stripes per cell (wl_top at
+    # foundry-local y=1.385, wl_bot at y=0.195), one for each access
+    # transistor's gate.  Both carry the same WL signal but are
+    # physically separate inside the foundry cell.  Without a label
+    # at the supercell level, Magic's hierarchical extraction emits
+    # them as TWO auto-named ports (`a_0_24#`, `a_0_262#`), which
+    # forces netgen to flatten 4096 supercell instances into the top
+    # and lose pin-matching uniqueness.  Labeling both POLY stripes
+    # `WL` at the supercell level merges them by name into ONE port
+    # — matching the reference `.subckt sky130_cim_supercell_sram_d
+    # BL BR WL MWL MBL ...` port list.  The array-level `wl_0_<r>`
+    # POLY strip still abuts at the parent level and carries the
+    # net name parent-side; the supercell port `WL` binds to it via
+    # boundary abutment (same mechanism as F11, applied one level lower).
+    _label(super_cell, "WL", (66, 5), 0.0, BRIDGE_H + 1.385)
+    _label(super_cell, "WL", (66, 5), 0.0, BRIDGE_H + 0.195)
 
     # ---- T7 NMOS placement ----
     # T7 source must connect to Q (foundry cell exposes Q at east edge
@@ -342,15 +470,13 @@ def create_cim_supercell(variant: str) -> tuple[gdstk.Library, SupercellVariant]
 
     # T7 source at the bottom of diff (y close to Q exit y=1.20).
     # Diff Y range: [t7_diff_y0, t7_diff_y0 + diff_h]
-    # diff_h = 2 * overhang + gate_l = 0.87
-    # Source center at (t7_diff_y0 + overhang/2)
-    # We want source near y=1.20 (Q exit Y), so t7_diff_y0 ≈ 1.20 - overhang/2
-    # = 1.20 - 0.18 = 1.02.  But diff at y=1.02 to 1.89 — overlaps foundry
-    # cell's Y range (0-1.58).  Move T7 up so its diff is in the annex.
-    # Set t7_diff_y0 = _FOUNDRY_LEF_H + 0.10 = 1.68.  Source at y=1.86.
-    t7_y_base = _FOUNDRY_LEF_H + 0.10  # just above foundry cell
+    # diff_h = 2 * overhang + gate_l = 0.87.  T7 sits in the annex above
+    # the foundry cell.  Foundry is now offset by BRIDGE_H (drain-bridge
+    # strap occupies cell-local y=[0, BRIDGE_H]), so the annex starts at
+    # cell-local y=BRIDGE_H+_FOUNDRY_LEF_H.
+    t7_y_base = BRIDGE_H + _FOUNDRY_LEF_H + 0.10
     t7_diff_y0 = t7_y_base
-    t7_diff_y1 = t7_diff_y0 + 2 * T7_DIFF_OVERHANG + T7_GATE_L  # 1.68 + 0.87 = 2.55
+    t7_diff_y1 = t7_diff_y0 + 2 * T7_DIFF_OVERHANG + T7_GATE_L
 
     # T7 diff
     _rect(super_cell, _LAYER_DIFF,
@@ -394,7 +520,7 @@ def create_cim_supercell(variant: str) -> tuple[gdstk.Library, SupercellVariant]
     # vertical LI1 from y=1.20 up to T7 source Y in annex.
     LI_W = 0.17
     qx_exit = _FOUNDRY_LEF_W   # 1.31, Q exits foundry at this X
-    qy_exit = 1.20             # at this Y inside Q's wide LI1 stripe
+    qy_exit = BRIDGE_H + 1.20  # foundry-internal y=1.20 → supercell-local
     # Horizontal LI1 from foundry east edge to T7 source X
     _rect(super_cell, _LAYER_LI1,
           qx_exit, qy_exit - LI_W / 2,
@@ -447,41 +573,113 @@ def create_cim_supercell(variant: str) -> tuple[gdstk.Library, SupercellVariant]
     _rect(super_cell, _LAYER_VIA2,
           t7_drn_cx - VIA2_HALF, t7_drn_cy - VIA2_HALF,
           t7_drn_cx + VIA2_HALF, t7_drn_cy + VIA2_HALF)
-    _rect(super_cell, _LAYER_MET3,
-          t7_drn_cx - M3_PAD_HALF, t7_drn_cy - M3_PAD_HALF,
-          t7_drn_cx + M3_PAD_HALF, t7_drn_cy + M3_PAD_HALF)
 
     # ---- MIM cap ----
-    # Cap centred in supercell, with 0.42 µm margin top and bottom of supercell
-    # (so that Y-mirrored adjacent supercells produce 0.84 cap-to-cap spacing).
+    # Cap centred in supercell Y, with 0.42 µm margin top and bottom of
+    # supercell (so that Y-mirrored adjacent supercells produce 0.84
+    # cap-to-cap spacing).
+    #
+    # X placement: shifted WEST so the cap east edge clears the T7
+    # drain via2 by ≥ 0.30 µm capm.8 minimum (T2.1-CIM-B fix).  T7
+    # drain via2 sits at t7_drn_cx (= T7_DIFF_X + T7_DIFF_W/2 = 1.875)
+    # with via2 half-width 0.10, so via2 west edge = 1.775.  Cap east
+    # must be ≤ 1.775 - 0.30 = 1.475.  We pin cap_x1 = 1.475 (max
+    # allowed) — this gives the largest possible cap area without a
+    # capm.8 violation.  Previously cap was centred (cap_x0 =
+    # (super_w - cap_w)/2), which put cap_x1 at 1.755 µm for SRAM-A
+    # — 180 K capm.8 tiles fired.
     super_h = cfg.supercell_h
     cap_margin_y = (super_h - cfg.cap_l) / 2
     cap_y0 = cap_margin_y
     cap_y1 = cap_margin_y + cfg.cap_l
-    # Cap centred in X within supercell
     super_w = cfg.supercell_w
-    cap_x0 = (super_w - cfg.cap_w) / 2
-    cap_x1 = cap_x0 + cfg.cap_w
-
-    # M3 bottom plate (with enclosure of 0.14 around capm)
+    _CAPM_TO_VIA2_SPACING = 0.30
+    _T7_VIA2_WEST_EDGE = 1.775   # = t7_drn_cx (1.875) - via2_half (0.10)
+    cap_x1 = _T7_VIA2_WEST_EDGE - _CAPM_TO_VIA2_SPACING   # 1.475
+    cap_x0 = cap_x1 - cfg.cap_w
+    if cap_x0 < 0:
+        raise ValueError(
+            f"cap_w {cfg.cap_w} too wide for variant {cfg.name} given "
+            f"the T7 drain via2 west edge constraint cap_x1 ≤ 1.475."
+        )
     M3_ENC_CAPM = 0.14
+
+    # M3 bottom plate (with M3_ENC_CAPM=0.14 enclosure around capm,
+    # defined above for the cap_x1 alignment computation).
     _rect(super_cell, _LAYER_MET3,
           cap_x0 - M3_ENC_CAPM, cap_y0 - M3_ENC_CAPM,
           cap_x1 + M3_ENC_CAPM, cap_y1 + M3_ENC_CAPM)
+
+    # T7 drain M3 pad — encloses via2 and extends down to abut cap_bot M3
+    # whenever T7 sits above the cap.  The pad's east edge must be at
+    # least MET3_MIN_W past cap_bot M3's east edge so that the L-shape
+    # union of the two polygons doesn't have a sub-min-width step on the
+    # east side (met3.1).  The west edge must overlap cap_bot M3 in X to
+    # ensure electrical continuity.  Via2 enclosure (≥ 0.085 µm in any
+    # direction) is preserved on every side because the via2 sits at
+    # t7_drn_cx and the pad always extends ≥ M3_PAD_HALF in every
+    # direction from that center.
+    MET3_MIN_W = 0.30
+    VIA2_ENC = 0.085
+    cap_bot_north = cap_y1 + M3_ENC_CAPM
+    cap_bot_east = cap_x1 + M3_ENC_CAPM
+    drain_m3_west = t7_drn_cx - M3_PAD_HALF
+    drain_m3_east = t7_drn_cx + M3_PAD_HALF
+    drain_m3_north = t7_drn_cy + M3_PAD_HALF
+    drain_m3_south = t7_drn_cy - M3_PAD_HALF
+    if t7_drn_cy >= cap_bot_north:
+        # Extend T7 drain pad WEST so it overlaps cap_bot M3 by ≥
+        # MET3_MIN_W in the X direction.  This guarantees the L-shape
+        # union has a clean shared edge of width ≥ MET3_MIN_W at the
+        # y=cap_bot_north boundary (no narrow finger).
+        drain_m3_west = min(drain_m3_west, cap_bot_east - MET3_MIN_W)
+        # Extend east edge ≥ MET3_MIN_W past cap_bot east so the east
+        # step in the L-shape is also met3.1-clean.
+        drain_m3_east = max(drain_m3_east, cap_bot_east + MET3_MIN_W)
+        # Stretch south edge down to cap_bot M3 north edge.
+        drain_m3_south = min(drain_m3_south, cap_bot_north)
+    elif t7_drn_cy < cap_y0:
+        drain_m3_north = max(drain_m3_north, cap_y0)
+    else:
+        # T7 drain Y is INSIDE cap Y range — happens for SRAM-A/B
+        # (large caps span most of the supercell Y).  Extend T7 drain
+        # M3 pad WEST to overlap cap_bot M3 east edge so the two
+        # polygons merge into one continuous M3 region (cap_bot M3 is
+        # already on the cap_bot net; T7 drain is already on the cap_bot
+        # net; merging them resolves the met3.2 spacing rule that fired
+        # at gap=0.075 µm after the T2.1-CIM-B cap-shift fix).
+        drain_m3_west = min(drain_m3_west, cap_bot_east - MET3_MIN_W)
+    # Sanity-check via2 enclosure on all sides.
+    for side, edge in (
+        ("east",  drain_m3_east  - t7_drn_cx),
+        ("west",  t7_drn_cx      - drain_m3_west),
+        ("north", drain_m3_north - t7_drn_cy),
+        ("south", t7_drn_cy      - drain_m3_south),
+    ):
+        if edge < VIA2_ENC:
+            raise ValueError(
+                f"T7 drain M3 pad violates via2 enclosure on {side} side "
+                f"for variant {variant}: enclosure {edge:.3f} µm < "
+                f"{VIA2_ENC:.3f} µm."
+            )
+    _rect(super_cell, _LAYER_MET3,
+          drain_m3_west, drain_m3_south,
+          drain_m3_east, drain_m3_north)
     # capm top plate (89, 44)
     _rect(super_cell, _LAYER_MIMCAP,
           cap_x0, cap_y0, cap_x1, cap_y1)
 
-    # M3 strap from T7 drain to cap bottom plate (horizontal at t7_drn_cy)
-    if t7_drn_cy < cap_y0:
-        # Need to extend M3 from t7_drn_cy to cap_y0
-        _rect(super_cell, _LAYER_MET3,
-              cap_x0 - M3_ENC_CAPM, t7_drn_cy - M3_PAD_HALF,
-              t7_drn_cx + M3_PAD_HALF, cap_y0)
+    # T7-drain → cap_bot abutment is handled by the T7 drain M3 pad
+    # extension above (single polygon; avoids the sub-min-spacing
+    # sliver that a separate strap rect introduced).
 
     # MBL pin: cap top plate connects up to M4. Add via3 + M4 pad over cap.
     VIA3_HALF = 0.10
-    M4_PAD_HALF = 0.18
+    # M4 pad half-size 0.25 → pad 0.50 × 0.50 = 0.25 µm² > 0.24 µm²
+    # (met4.4a min area).  In the assembled macro, the parent's per-col
+    # MBL M4 strip overlaps and merges this pad — but standalone DRC
+    # doesn't see the strip, so size the pad to be self-sufficient.
+    M4_PAD_HALF = 0.25
     mbl_cx = (cap_x0 + cap_x1) / 2
     mbl_cy = (cap_y0 + cap_y1) / 2
     _rect(super_cell, _LAYER_VIA3,

@@ -237,11 +237,17 @@ def _write_array_subckt(f: TextIO, p: CIMMacroParams) -> None:
 
 
 def _write_mwl_driver_col_subckt(f: TextIO, p: CIMMacroParams) -> None:
-    """Emit cim_mwl_driver_col_<rows> intermediate subckt."""
+    """Emit cim_mwl_driver_col_<rows> intermediate subckt.
+
+    Per-row "VPB" / "VNB" labels in the layout's
+    cim_mwl_driver_row.py merge all 64 buf_2 instances' body-bias
+    nets into single column-level VPB and VNB nets, which then
+    propagate as ports of this subckt.
+    """
     name = f"cim_mwl_driver_col_{p.rows}"
     ports = (
         [t for r in range(p.rows) for t in (f"MWL_EN[{r}]", f"mwl_{r}")]
-        + ["VPWR", "VGND"]
+        + ["VPWR", "VGND", "VPB", "VNB"]
     )
     f.write(f"\n* {p.rows} MWL drivers (one per row, foundry buf_2).\n")
     f.write(f".subckt {name}")
@@ -251,7 +257,7 @@ def _write_mwl_driver_col_subckt(f: TextIO, p: CIMMacroParams) -> None:
     for r in range(p.rows):
         # buf_2 ports: A VGND VNB VPB VPWR X
         f.write(
-            f"Xmwl_{r} MWL_EN[{r}] VGND VGND VPWR VPWR mwl_{r} "
+            f"Xmwl_{r} MWL_EN[{r}] VGND VNB VPB VPWR mwl_{r} "
             f"sky130_fd_sc_hd__buf_2\n"
         )
     f.write(f".ends {name}\n")
@@ -359,17 +365,18 @@ def generate_cim_reference_spice(
         _write_mbl_precharge_row_subckt(f, p)
         _write_mbl_sense_row_subckt(f, p)
 
-        # Top-level subckt port list — matches the macro's external pins.
+        # Top-level subckt port list — matches the macro's external pins
+        # as Magic extracts them from the assembled layout.  CIM's macro
+        # boundary exposes only the SoC-facing signals: control + supplies
+        # + per-column MBL_OUT (sense outputs) + per-column MBL strap.
+        # The internal array nets (bl_0_<c>, br_0_<c>, wl_0_<r>, mwl_<r>,
+        # mbl_<c>) are wires inside the macro top — they get exposed as
+        # ports of the cim_array / cim_mbl_*_row subckts but stay
+        # internal at the macro top.
         ports = (
-            [f"MWL_EN[{r}]" for r in range(p.rows)]
-            + ["MBL_PRE", "VREF", "VBIAS"]
+            ["MBL_PRE", "VREF", "VBIAS", "VPWR", "VGND"]
             + [f"MBL_OUT[{c}]" for c in range(p.cols)]
-            + [f"bl_0_{c}" for c in range(p.cols)]
-            + [f"br_0_{c}" for c in range(p.cols)]
-            + [f"wl_0_{r}" for r in range(p.rows)]
-            + [f"mwl_{r}" for r in range(p.rows)]
-            + [f"mbl_{c}" for c in range(p.cols)]
-            + ["VPWR", "VGND"]
+            + [f"MBL_{c}" for c in range(p.cols)]
         )
         f.write(f"\n.subckt {top_name}")
         for tok in ports:
@@ -392,7 +399,12 @@ def generate_cim_reference_spice(
         f.write(f"* {p.rows} MWL drivers (one per row)\n")
         mwl_args = (
             [t for r in range(p.rows) for t in (f"MWL_EN[{r}]", f"mwl_{r}")]
-            + ["VPWR", "VGND"]
+            # VPB → VPWR and VNB → VGND at the macro top: the column
+            # subckt exposes VPB/VNB as ports because its internal
+            # buf_2 NWELLs / PSUBs are merged via parent labels into
+            # column-level VPB / VNB nets.  At the macro level we tie
+            # both back to the global VPWR / VGND rails.
+            + ["VPWR", "VGND", "VPWR", "VGND"]
         )
         f.write(f"Xmwl_drivers {' '.join(mwl_args)} {mwl_subckt}\n")
 

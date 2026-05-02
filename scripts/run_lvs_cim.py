@@ -131,6 +131,18 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
     # minutes.  Bump the timeout per-variant rather than globally so a
     # truly stuck run still bails out before consuming a workday.
     netgen_timeout = 6 * 3600 if p.rows >= 128 else 3600
+    # Flatten CIM's intermediate hierarchical subckts on both sides so
+    # netgen's instance-prefix naming aligns.  Without this, the layout's
+    # `cim_array_<v>_<rxc>_0/bl_0_<c>` doesn't match the reference's
+    # `bl_0_<c>` (or vice versa) when one side flattens and the other
+    # doesn't.  Both circuits have these subckts in the hierarchy, so
+    # explicit pre-comparison flatten produces matching prefixes.
+    cim_extra_flatten = [
+        f"cim_array_{p.variant.lower().replace('-', '_')}_{p.rows}x{p.cols}",
+        f"cim_mbl_precharge_row_{p.cols}",
+        f"cim_mbl_sense_row_{p.cols}",
+        f"cim_mwl_driver_col_{p.rows}",
+    ]
     result = run_lvs(
         gds_path=gds,
         schematic_path=aligned_ref,
@@ -138,6 +150,7 @@ def _lvs_one(variant: str, input_root: Path, output_root: Path) -> dict:
         output_dir=out_dir,
         extracted_netlist=extracted,
         netgen_timeout=netgen_timeout,
+        extra_flatten_cells=cim_extra_flatten,
     )
     return {
         "variant": variant,

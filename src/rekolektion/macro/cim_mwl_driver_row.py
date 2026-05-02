@@ -223,5 +223,35 @@ class MWLDriverRow:
                   vgnd_strap_x + _SUPPLY_HALF, col_mid_y + _SUPPLY_HALF),
         )
 
+        # Per-row VPB / VNB labels — buf_2's NWELL (PMOS body) and PSUB
+        # tap pin live inside the foundry cell, but the foundry cell's
+        # NWELLs are isolated per instance (row_pitch > _CELL_H means no
+        # NWELL abutment between rows).  Without parent-level labels,
+        # Magic auto-names each instance's VPB as a separate net,
+        # leaking 64 instance-prefixed `buf_2_<r>/VPB` ports at the
+        # column subckt level.  Drop a NWELL label "VPB" at each
+        # buf_2's NWELL position so Magic merges them by name.
+        # NWELL label is on layer (64, 5); PSUB label on (64, 59).
+        # Position chosen mid-cell (within foundry NWELL X range,
+        # below the VPWR rail at y=2.72).
+        _NWELL_LBL_LAYER = 64
+        _NWELL_LBL_DT = 5
+        _PSUB_LBL_LAYER = 64
+        _PSUB_LBL_DT = 59
+        _VPB_LOCAL_X = _CELL_W / 2          # mid-cell X
+        _VPB_LOCAL_Y = _CELL_H - 0.34       # inside NWELL, below VPWR rail
+        _VNB_LOCAL_X = _CELL_W / 2
+        _VNB_LOCAL_Y = 0.34                 # inside PSUB, above VGND rail
+        for row in range(self.rows):
+            y_off = self._row_y_offset(row)
+            top.add(gdstk.Label(
+                "VPB", (_VPB_LOCAL_X, y_off + _VPB_LOCAL_Y),
+                layer=_NWELL_LBL_LAYER, texttype=_NWELL_LBL_DT,
+            ))
+            top.add(gdstk.Label(
+                "VNB", (_VNB_LOCAL_X, y_off + _VNB_LOCAL_Y),
+                layer=_PSUB_LBL_LAYER, texttype=_PSUB_LBL_DT,
+            ))
+
         lib.add(top)
         return lib

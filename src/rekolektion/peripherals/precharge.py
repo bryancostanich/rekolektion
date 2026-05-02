@@ -152,12 +152,19 @@ def _rect(cell: gdstk.Cell, layer: tuple[int, int],
 
 def _sq(cell: gdstk.Cell, layer: tuple[int, int],
         cx: float, cy: float, size: float) -> None:
+    # Snap centre first so corners derive from a single gridded centre.
+    # If we let `_rect` snap each corner independently, FP error in
+    # `cx - h` and `cx + h` can round in opposite directions (banker's
+    # rounding plus float-divide noise), shrinking the cut by 5 nm and
+    # tripping via2.1a / similar width rules.
+    cx = _snap(cx); cy = _snap(cy)
     h = size / 2
     _rect(cell, layer, cx - h, cy - h, cx + h, cy + h)
 
 
 def _rect_hw(cell: gdstk.Cell, layer: tuple[int, int],
              cx: float, cy: float, w: float, h: float) -> None:
+    cx = _snap(cx); cy = _snap(cy)
     _rect(cell, layer, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
 
 

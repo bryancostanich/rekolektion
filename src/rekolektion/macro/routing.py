@@ -244,10 +244,14 @@ def _emit_square(
     cls: "NetClass" = "signal",
 ) -> None:
     """Emit a centered square of `size` um on `layer` at (cx, cy)."""
+    # Snap centre first so both corners derive from a single gridded
+    # centre — independent corner snaps can drift by 5 nm under FP +
+    # banker's rounding, shrinking via cuts below their min-width rule.
+    cx = snap(cx); cy = snap(cy)
     half = size / 2
     rect = gdstk.rectangle(
-        (snap(cx - half), snap(cy - half)),
-        (snap(cx + half), snap(cy + half)),
+        (cx - half, cy - half),
+        (cx + half, cy + half),
         layer=GDS_LAYER[layer][0],
         datatype=GDS_LAYER[layer][1],
     )
@@ -354,9 +358,10 @@ def _emit_rect(
     cls: "NetClass" = "signal",
 ) -> None:
     """Emit a centered W×H rectangle on `layer` at (cx, cy)."""
+    cx = snap(cx); cy = snap(cy)
     rect = gdstk.rectangle(
-        (snap(cx - w / 2), snap(cy - h / 2)),
-        (snap(cx + w / 2), snap(cy + h / 2)),
+        (cx - w / 2, cy - h / 2),
+        (cx + w / 2, cy + h / 2),
         layer=GDS_LAYER[layer][0],
         datatype=GDS_LAYER[layer][1],
     )

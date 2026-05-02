@@ -77,13 +77,27 @@ class SupercellVariant:
 
     @property
     def supercell_w(self) -> float:
-        # X pitch.  Three constraints:
+        # X pitch.  Four constraints:
         #   1. cap-to-cap spacing (capm.5b = 0.84): pitch ≥ cap_w + 0.84
         #   2. T7 NMOS in east annex: needs 0.34 clearance from foundry NWELL
         #      (which extends to x=1.325 with overhang).  T7 diff_x ≥ 1.665.
         #      T7 diff_x1 = T7_DIFF_X + 0.42 = 2.085.  Plus 0.125 NSDM enclosure
         #      and 0.10 supercell margin → 2.31 total width.
         #   3. ≥ foundry LEF width (trivially satisfied by 1+2)
+        #   4. M3 spacing between THIS supercell's T7 drain pad east edge
+        #      and the NEXT supercell's cap_bot M3 west edge: ≥ 0.30 µm
+        #      (met3.2).  Only large-cap variants hit this.
+        #        drain_pad_east  = (T7_DIFF_X + T7_DIFF_W/2) + M3_PAD_HALF
+        #                        = (1.665 + 0.21)            + 0.185
+        #                        = 2.060
+        #        cap_bot_w_off   = cap_x1 - cap_w - M3_ENC_CAPM
+        #                        = 1.475 - cap_w - 0.14
+        #                        = 1.335 - cap_w   (in next supercell coords)
+        #        require pitch + cap_bot_w_off ≥ drain_pad_east + 0.30
+        #        ⟹ pitch ≥ 2.360 - (1.335 - cap_w) = 1.025 + cap_w
+        #      For SRAM-A (cap_w=1.30) this is 2.325; +5 nm safety margin
+        #      past the met3.2 boundary gives 2.330.  B/C/D (cap_w ≤ 1.10)
+        #      stay at the t7_w_pitch limit (2.31) — gap ≥ 0.485 µm.
         T7_X_MIN_FROM_NWELL_OVERHANG = 0.34  # diff/tap.9
         FOUNDRY_NWELL_RIGHT_EDGE = 1.325  # NWELL extends past LEF
         T7_DIFF_W = 0.42
@@ -96,10 +110,12 @@ class SupercellVariant:
             + T7_NSDM_ENC
             + SUPER_MARGIN_RIGHT
         )
+        m3_spacing_pitch = 1.025 + self.cap_w + 0.005   # 5 nm safety
         return max(
             _FOUNDRY_LEF_W,
             self.cap_w + _CAP_TO_CAP_SPACING,
             t7_w_pitch,
+            m3_spacing_pitch,
         )
 
     @property

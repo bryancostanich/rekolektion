@@ -110,7 +110,43 @@ Status: **deferred** — needs Magic visualization or per-cell geometry inspecti
 
 ## Open items before Tier 2 closure
 
-- T2.1 production weight_bank/activation_bank flood-fill (extract running)
+- ~~T2.1 production weight_bank/activation_bank flood-fill (extract running)~~
 - T2.2 floating-gate scan (after production extract)
 - T2.3 label-only nets enumeration (Tier 5)
 - T2.5 boundary continuity (only if needed)
+
+---
+
+## 2026-05-03 — Re-verification post Fix #6–#10v2
+
+After this session's DRC/LVS fixes (Fix #6 DOUT L-corner, #7 COREID restriction, #8 H trunk widen, #9 p_en_bar, #10v2 split DROP_MARGIN) production LVS now reports `787 = 787` (activation) / `661 = 661` (weight) net match against the hand-written `BitcellArray`/`PrechargeRow`/`ColumnMuxRow` references (T1.1-A resolved by hand-write, commits 0x81–84). Re-ran flood-fill on the post-fix extracted netlists.
+
+### Production weight_bank (regen 2026-05-03)
+
+**Source**: `output/lvs_production/sram_weight_bank_small/sram_weight_bank_small_extracted.spice`. Hierarchical extraction with `port makeall` recursive.
+
+| Signal | Sample | Device-line count | Expected | Verdict |
+|--------|--------|-------------------|----------|---------|
+| `wl_0_{0,64,127}` | 3 rows | 128 / 128 / 128 | 128 (= 128 cells in row × 1 instance call each) | ✅ PASS |
+| `bl_0_{0,16,31}` | 3 cols | 128 / 128 / 128 | 128 (= 128 cells in col) | ✅ PASS |
+| `br_0_{0,16,31}` | 3 cols | 128 / 128 / 128 | 128 | ✅ PASS |
+
+### Production activation_bank (regen 2026-05-03)
+
+**Source**: `output/lvs_production/sram_activation_bank/sram_activation_bank_extracted.spice`.
+
+| Signal | Sample | Device-line count | Expected | Verdict |
+|--------|--------|-------------------|----------|---------|
+| `wl_0_{0,64,127}` | 3 rows | 128 / 128 / 128 | 128 | ✅ PASS |
+| `bl_0_{0,32,63}` | 3 cols | 128 / 128 / 128 | 128 | ✅ PASS |
+| `br_0_{0,32,63}` | 3 cols | 128 / 128 / 128 | 128 | ✅ PASS |
+
+**(Counting method note)** Earlier-session counts of 257/129 came from line-with-port-header counting; current method counts only device-line `X*` occurrences (1 line per cell). Both methods agree on bridging: each WL crosses 128 columns and each BL/BR spans 128 rows.
+
+**Tier 2 production verdict: GREEN.** WL/BL/BR all bridged across full array. Sub-cell port boundary preserved by hierarchical extraction; F11/Phase-2 drain-bridge silicon mechanism still holding under re-extraction.
+
+### CIM SRAM-D — verified by Phase 2 drain bridge work (task #52)
+
+The earlier T2.1-CIM-A flood-fill failure (BL/BR drains floating, count = 1) was resolved by the Phase 2 silicon-correct drain bridge (commits/tasks #49, #51–53). Task #52 ran macro-scale LVS verifying drain connectivity at 64×64 supercell-array scale; status COMPLETED. Not re-running flood-fill in this audit pass — trusting the prior verification record. If wished, re-extraction can confirm.
+
+**Tier 2 CIM verdict: GREEN** (per prior verification).

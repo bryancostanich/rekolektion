@@ -96,3 +96,31 @@ Other issues (#4, #5, #6) are functional/architectural improvements, not LVS/DRC
 - "LVS clean" claims for CIM macros (SRAM-A/B/C/D) on 2026-04-28 are **not silicon-correctness claims** — they're net-name match claims after rewrite. Need re-verification post-fix.
 
 Tier 5 closes once T5.2-A has a written disposition (issue or waiver).
+
+---
+
+## 2026-05-01 update — T5.2-A resolved via tap supercell migration
+
+T5.2-A's `re.sub("w_n?\\d+_n?\\d+#", "VPWR", ...)` mask in `scripts/run_lvs_cim.py:251` was deleted on 2026-05-01 after the tap-supercell architecture (commits in tasks #92–96) replaced subsurface-conduction biasing with explicit per-supercell N-tap. CIM LVS now matches sub-circuits without rewrite. **T5.2-A status: RESOLVED.** See smoking_guns.md 2026-05-01 update.
+
+---
+
+## 2026-05-03 — Audit of session's Fix #6–#10v2 commits
+
+Reviewed every commit added in this session (`origin/main..HEAD`) for failure-mode-#3 risk (reference rewrites masking layout flaws) or other shortcuts.
+
+| Commit | Subject | Type | Hack risk |
+|--------|---------|------|-----------|
+| `c3020db` | Fix #6 — DOUT L-corner met3.1 + DRC parser negative-coord bug | (1) Geometry: V wire extended 0.15 µm past trunk_y so L-corner has no 0.15-tall strip. (2) Parser regex `\d+` → `(-?\d+)` to match negative-coord at-tile lines. | **None.** Both are root-cause fixes; parser fix actually exposes ~640 violations the prior parser was silently dropping. |
+| `b974761` | Fix #7 — restrict COREID marker to array footprint | Reduced COREID rectangle to snug-fit array bbox + 0.30 µm border, removing the previous over-extension that covered WD/SA/col_mux/precharge rows. | **None.** Foundry peripheral cells are DRC-clean against stock rules (verified via `sa_only` DRC test = 0 real). The over-extension was the original error; the fix restores COREID's intended scope (bitcell array only). |
+| `216bcb7` | Fix #8 — widen DOUT H trunk to 0.49 µm | H wire width 0.30 → 0.49 to match via2 stack pad height, eliminating the 0.095 µm pad protrusion that created met3.2 spacing slivers against V's left edge. | **None.** Wire width derived directly from rule (pad must equal H height to avoid step-induced spacing slivers). Adjacent bits' trunks at 0.85 pitch still clear met3.2 (0.36 gap). |
+| `1bd7086` | Fix #9 — p_en_bar L-corner + riser_x clearance | (1) `riser_x` moved -0.5 → -0.7 to clear 0.30 µm to col_mux internal sel rails. (2) p_en_bar V wire extended 0.15 µm above trunk_y (same L-corner pattern as Fix #6). | **None.** riser_x position derived from foundry col_mux's internal rail x-position; pad-to-rail clearance is geometrically required. V extension is the same architectural fix as Fix #6. |
+| `f92b448` | Fix #10 — _DROP_MARGIN 0.70→0.80 | Bumped global _DROP_MARGIN. **Reverted in 6c43250** because it forced some bits' drop_x onto positions that conflated DIN nets at extraction (787→784 nets, 3 dins shorted). Acknowledgement of error preserved in commit history. | **Was a shortcut — reverted.** Did NOT escape the audit because LVS caught it. Replaced by `0adb561` (Fix #10 v2). |
+| `6c43250` | Revert Fix #10 | Pure revert. | **None.** |
+| `0adb561` | Fix #10 v2 — split DROP_MARGIN: 0.79 own-pad / 0.70 connectivity | Replaced the global bump with a same-bit-only constraint (`_DROP_MARGIN_OWN_PAD = 0.79` against own bit's `din_pin_x[i]`) leaving cross-bit connectivity constraints unchanged at 0.70. Surgical, derived from the actual geometric constraint (0.49 + 0.30 = 0.79). | **None.** Each constraint matches the exact mechanism it guards (met3.2 pad spacing vs met4 vertical clearance). |
+
+**Conclusion: 6 of 7 commits this session are clean root-cause fixes. The one shortcut (Fix #10 first attempt, `f92b448`) was caught by LVS and reverted within the same session. The replacement (`0adb561`) is surgical and architecturally correct.**
+
+The DRC parser regex bug fix (`c3020db`) is itself a Tier 1 finding (verification-pipeline integrity) — it was actively suppressing real violations the prior session had no way to see. With the fix, all subsequent DRC counts in this session are accurate.
+
+**Tier 5 verdict: GREEN.** No active failure-mode-#3 patterns in the current session's history.

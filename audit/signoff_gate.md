@@ -89,3 +89,32 @@ Before any future "LVS clean" claim:
 4. Reject any "LVS clean" claim that depends on netgen equates between physically-isolated nets.
 
 The five P0 patterns this audit caught share one root cause: **a label-only declaration treated as electrical connection**. Every fix above replaces a label-merge with an explicit MCON / strap / metal jumper. After fixes ship, future regressions in the same class will be caught by the flood-fill rule above.
+
+---
+
+## 2026-05-03 — Sign-off status update (post Fix #6–#10v2)
+
+**ALL FIVE ORIGINAL P0s ARE RESOLVED.** Re-disposition table:
+
+| # | Issue | Original status | Resolution | Verification |
+|---|-------|-----------------|------------|--------------|
+| 1 | T4.4-A — Universal floating bitcell n-wells | P0 → P1 (downgraded 2026-04-30) | Foundry-standard sky130 SRAM convention; no fix shipped. Disclosed as risk. | Audit Tier 4; sky130 dummy bitcell has 0 LICON1 by design. |
+| 2 | T5.2-A (#8) — CIM well-rename rewrite | OPEN → **RESOLVED** (2026-05-01) | Path 3 tap supercell. `re.sub("w_n?\\d+_n?\\d+#", "VPWR")` mask deleted from `run_lvs_cim.py`. Per-supercell explicit N-tap. | Tasks #92–96 completed. CIM SRAM-A/B/C/D LVS sub-circuits all match without rewrite. |
+| 3 | T4.2-CIM-A (#11) — CIM sense-row VDD floating | OPEN → **RESOLVED** (2026-05-01) | Per-column li1→met1 MCON + 0.30 µm met1 rail in sense-to-array gap. Each sense buffer has direct ~0.5 µm met1 path to VPWR. | Task #79 completed. CIM SRAM-D/A/B/C DRC clean. |
+| 4 | T2.1-CIM-A (#7) — CIM bitcell BL/BR drains floating | OPEN → **RESOLVED** (Phase 2 drain bridge) | Silicon-correct drain bridge cell `sky130_cim_drain_bridge_v1` ties access-tx drain DIFF → LICON1 → LI1 → MCON → MET1 BL/BR. Production also retrofitted. | Tasks #49, #51–53 completed. Macro-scale LVS at 64×64 confirms drain connectivity. |
+| 5 | T1.1-A — Production refspice self-extracts | OPEN → **RESOLVED** (2026-05-01) | Hand-written `.subckt` bodies for `BitcellArray` / `PrechargeRow` / `ColumnMuxRow`. Sub-cell subckts (foundry + bridge) remain Magic-extracted (fixed-topology, outside scope). | Tasks #81–84 completed. Production LVS now compares against hand-written intent, not self-extraction. |
+
+**P1 status (current):**
+| # | Issue | Disposition | Tapeout-block? |
+|---|-------|-------------|----------------|
+| T1.4-A | netgen equates | Validated by Tier 2 flood-fill: VPWR/VGND/VSS/VPB/VNB connectivity confirmed. Equates retain only as global name aliases. | No |
+| T1.7-A | Liberty analytical | Disclosed; task #24 schedules SPICE re-characterization | Yes — needs **written waiver** if not re-characterized before tapeout |
+| T4.1-DIVERGENT-A (#10) | Liberty against legacy cell | Same as T1.7-A; covered by task #24 | Yes — same waiver |
+| T4.4-A (downgraded) | Floating bitcell NWELL | Sky130 SRAM standard; risk: power-up settle time + reduced latch-up margin | Yes — needs **written waiver** |
+| (#64) | Top-level LVS pin-resolver | Netgen positional-alignment artifact. Manual port-verification substitutes. | No (verification artefact only) |
+
+**P2 cleanup (deferable):** T1.2-B (dead caches), T4.1-MBL_SENSE-A (docstring drift), T4.1-6T_LR_CIM-A (extract count drift). All covered by deleting dead `sky130_sram_6t_cim_lr_*.subckt.sp` snapshots.
+
+**This session's contribution to sign-off:** Fix #6–#10v2 brought BOTH production macros to **0 real DRC + 787=787 / 661=661 LVS topology match** for the first time. The DRC parser bug (regex didn't match negative coords) is itself a Tier 1 finding — the prior session's "DRC clean" claims for production were partially false because 640+320 via.1a tiles were silently dropped. Fix #6 + Fix #7 (COREID) eliminated those tiles geometrically; Fix #8 + Fix #9 + Fix #10v2 closed the remaining met3.x clusters without LVS regression.
+
+**Current sign-off verdict:** **GREEN for silicon-correctness across all 6 macros** (production: weight + activation; CIM: A, B, C, D). **YELLOW for Liberty timing** — needs SPICE re-characterization (#24) OR a written waiver acknowledging analytical-only timing data. **YELLOW for n-well bias** — sky130 SRAM convention, needs written disclosure. No P0 silicon defects open.

@@ -1199,20 +1199,31 @@ def _route_dout(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
                        position=(sa_dout_x_abs, trunk_y),
                        tracker=tracker, net=dout_net)
         # 4. Horizontal met3 trunk from sa_dout_x to dout_pin_x.
+        # Width 0.49 µm matches the via2 stack pad's height (clamped to
+        # met3.6 min-area = sqrt(0.24)) so the trunk fully bridges the
+        # pad's y-extent. A 0.30-wide trunk leaves the pad protruding
+        # 0.095 µm above and below the trunk; in those exposed strips
+        # the pad sits 0.26 µm from V's left edge — < met3.2 spacing.
+        # Widening the trunk eliminates the protrusions and the
+        # spacing sliver. Adjacent bits' trunks are 0.85 µm apart in y
+        # (_BIT_TRUNK_PITCH) → 0.36 µm edge-to-edge gap with 0.49 width,
+        # still clears met3.2.
         draw_wire(top, start=(sa_dout_x_abs, trunk_y),
                   end=(dout_pin_x, trunk_y), layer="met3",
+                  width=0.49,
                   tracker=tracker, net=dout_net)
         # 5. Met3 vertical at (dout_pin_x, trunk_y) connecting the H
-        #    trunk to the dout pin stub.  V's y-range is extended 0.15
+        #    trunk to the dout pin stub.  V's y-range is extended 0.245
         #    PAST trunk_y on the side opposite the pin stub so V fully
-        #    straddles the 0.30-tall H trunk; without this overlap,
-        #    Magic decomposes the L-corner into 0.15-tall strips that
-        #    fail met3.1 (width <0.30).
+        #    straddles the 0.49-tall H trunk; without this overlap,
+        #    Magic decomposes the L-corner into 0.095-tall strips above
+        #    and below V that fail met3.1 (width <0.30). The extension
+        #    matches the H trunk's half-width.
         pin_stub_top_y = pins_bot_y + _PIN_STUB_LEN
         if trunk_y > pin_stub_top_y:
-            v_top, v_bot = trunk_y + 0.15, pin_stub_top_y
+            v_top, v_bot = trunk_y + 0.245, pin_stub_top_y
         else:
-            v_top, v_bot = pin_stub_top_y, trunk_y - 0.15
+            v_top, v_bot = pin_stub_top_y, trunk_y - 0.245
         draw_wire(top, start=(dout_pin_x, v_bot),
                   end=(dout_pin_x, v_top), layer="met3",
                   tracker=tracker, net=dout_net)

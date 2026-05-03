@@ -1073,11 +1073,23 @@ def _route_din(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
         wd_din_x_i = wd_din_xs[bit_i]
         # Only bits j<=bit_i contribute met4 at trunk_y[bit_i].
         relevant_din_pin_xs = din_pin_xs[: bit_i + 1]
+        # Same-bit met3-pad spacing: at trunk_y[i], both this bit's
+        # via3 stacks (at din_pin_x[i] and drop_x[i]) deposit 0.49-µm
+        # met3 pads. They must clear 0.30 µm met3.2 spacing → centre
+        # pitch ≥ 0.79 µm. Other bits' din_pin_x's contribute met4
+        # verticals at trunk_y[i], not met3 pads, so the 0.70 met4-
+        # vertical-clearance margin still applies for them.
+        own_din_pin_x = din_pin_xs[bit_i]
+        _DROP_MARGIN_OWN_PAD: float = 0.79
 
         def _ok(x: float) -> bool:
             if _strap_conflict(x):
                 return False
-            if any(abs(x - px) < _DROP_MARGIN for px in relevant_din_pin_xs):
+            if abs(x - own_din_pin_x) < _DROP_MARGIN_OWN_PAD:
+                return False
+            if any(abs(x - px) < _DROP_MARGIN
+                   for j, px in enumerate(relevant_din_pin_xs)
+                   if j != bit_i):
                 return False
             if any(abs(x - px) < _DROP_MARGIN for px in dout_pin_xs):
                 return False

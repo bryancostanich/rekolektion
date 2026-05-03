@@ -2607,20 +2607,34 @@ def _draw_sram_core_marker(
     fp: Floorplan,
 ) -> None:
     """Draw the sky130 SRAM core marker (GDS layer 81/2) over the
-    bitcell array and its immediately abutting peripheral rows
-    (precharge above, col_mux/SA/WD below). Inside the marker, sky130
-    relaxes li1/met1/met2/poly/diff width and spacing rules that are
-    otherwise violated by the foundry bitcell's tight 1.31 µm pitch
-    (e.g., W=0.14 access transistor, 0.055 µm BL/BR met1 spacing).
+    bitcell array only. Inside the marker, sky130 relaxes
+    li1/met1/met2/poly/diff width and spacing rules that are otherwise
+    violated by the foundry bitcell's tight 1.31 µm pitch (e.g.,
+    W=0.14 access transistor, 0.055 µm BL/BR met1 spacing).
+
+    The COREID is intentionally limited to the array footprint and
+    does NOT extend over the peripheral rows (write_driver / sense_amp
+    / col_mux / precharge). The foundry peripheral cells are already
+    DRC-clean against stock rules (verified standalone), and extending
+    COREID over them activates the v1/m1 width≥0.26 rule on our top-
+    level via1 stacks at SA-exit and WD/DIN drop points — those stacks
+    have 0.085 µm m1 enclosure of a 0.15 µm via1 (= 0.32 µm pad), but
+    Magic's COREID-mode v1/m1 derivation flags 0.01 µm slivers along
+    the pad's edges. Restricting COREID to the array preserves the
+    relaxations the bitcell needs without subjecting our routing to
+    foundry-tile-only rules.
     """
     from rekolektion.tech.sky130 import LAYERS
     coreid_l, coreid_d = LAYERS.COREID.as_tuple
-    # Extent: from write_driver bottom up to precharge top, and across
-    # the full array width (plus a small margin).
-    x0 = fp.positions["array"][0] - 0.30
-    x1 = (fp.positions["array"][0] + fp.sizes["array"][0]) + 0.30
-    y0 = fp.positions["write_driver"][1] - 0.30
-    y1 = (fp.positions["precharge"][1] + fp.sizes["precharge"][1]) + 0.30
+    array_x = fp.positions["array"][0]
+    array_y = fp.positions["array"][1]
+    array_w, array_h = fp.sizes["array"]
+    # Snug fit to array bbox plus 0.30 µm border to absorb tile
+    # boundary tolerance.
+    x0 = array_x - 0.30
+    x1 = array_x + array_w + 0.30
+    y0 = array_y - 0.30
+    y1 = array_y + array_h + 0.30
     top.add(gdstk.rectangle((x0, y0), (x1, y1),
                             layer=coreid_l, datatype=coreid_d))
 

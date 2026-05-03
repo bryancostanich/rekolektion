@@ -1016,12 +1016,7 @@ def _route_din(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
     # din[10]'s drop at x=130.89 overlapped VPWR's strap at x=129.18-
     # 130.78 by 0.04 µm (same met4 layer = short).
     _STRAP_KEEPOUT: float = _PDN_STRAP_W / 2 + 0.15 + 0.30
-    # 0.80 µm guarantees adjacent via3 stack met3 pads (each 0.49×0.49,
-    # clamped to met3.6 min-area) clear met3.2 spacing (≥0.30):
-    # pad-to-pad gap = 0.80 - 0.49 = 0.31 µm. Earlier value 0.70 left
-    # only 0.21 µm gap, tripping met3.2 wherever drop_x landed within
-    # 0.79 µm of a din_pin_x or dout_pin_x.
-    _DROP_MARGIN: float = 0.80
+    _DROP_MARGIN: float = 0.70
 
     # Collect clearance targets.
     din_pin_xs = [positions[f"din[{b}]"][0] for b in range(p.bits)]

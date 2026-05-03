@@ -1452,7 +1452,14 @@ def _route_control(
     dff_q_x, dff_q_y = _dff_q_absolute(ctrl_origin, 1)
     p_rail_y = prec_y + _PRECHARGE_EN_Y_LOCAL
     # Riser column: between wl_driver east edge (x=-2.0) and array x=0.
-    riser_x = -0.5
+    # x=-0.7 puts the via2 pad's right edge at -0.455, leaving 0.455 µm
+    # to col_mux's left edge at x=0 — clears met3.2 spacing (≥0.30) to
+    # the col_sel rails inside col_mux (full-width met3 horizontal at
+    # cell-local y=2.455/3.255 = absolute y=trunk_y_p_en_bar±0.41 in
+    # the activation_bank floorplan, putting their y-extent within
+    # 0.04 µm of our trunk_y_p_en_bar). At riser_x=-0.5 the pad right
+    # edge sat at -0.255 = 0.255 µm from col_mux x=0 → met3.2 violation.
+    riser_x = -0.7
     # Landing x: just inside the rail's x-range.
     landing_x = 0.3
     # 1. Transition to met3 IMMEDIATELY at DFF.Q so the long vertical
@@ -1466,8 +1473,11 @@ def _route_control(
     draw_via_stack(top, from_layer="met2", to_layer="met3",
                    position=(dff_q_x, dff_q_y),
                    tracker=tracker, net="p_en_bar")
+    # Vertical extends 0.15 µm PAST trunk_y_p_en_bar so it fully
+    # straddles the 0.30-tall H trunk; without overlap, Magic
+    # decomposes the L-corner into 0.15-tall strips that fail met3.1.
     draw_wire(top, start=(dff_q_x, dff_q_y),
-              end=(dff_q_x, trunk_y_p_en_bar), layer="met3",
+              end=(dff_q_x, trunk_y_p_en_bar + 0.15), layer="met3",
               tracker=tracker, net="p_en_bar")
     # 2. Met3 trunk from DFF column EAST to riser_x (outside col_mux)
     draw_wire(top, start=(dff_q_x, trunk_y_p_en_bar),

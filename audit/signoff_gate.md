@@ -118,3 +118,18 @@ The five P0 patterns this audit caught share one root cause: **a label-only decl
 **This session's contribution to sign-off:** Fix #6–#10v2 brought BOTH production macros to **0 real DRC + 787=787 / 661=661 LVS topology match** for the first time. The DRC parser bug (regex didn't match negative coords) is itself a Tier 1 finding — the prior session's "DRC clean" claims for production were partially false because 640+320 via.1a tiles were silently dropped. Fix #6 + Fix #7 (COREID) eliminated those tiles geometrically; Fix #8 + Fix #9 + Fix #10v2 closed the remaining met3.x clusters without LVS regression.
 
 **Current sign-off verdict:** **GREEN for silicon-correctness across all 6 macros** (production: weight + activation; CIM: A, B, C, D). **YELLOW for Liberty timing** — needs SPICE re-characterization (#24) OR a written waiver acknowledging analytical-only timing data. **YELLOW for n-well bias** — sky130 SRAM convention, needs written disclosure. No P0 silicon defects open.
+
+---
+
+## 2026-05-03 — Waiver drafts ready for designer sign-off
+
+Both YELLOW items now have draft disclosure documents in [`docs/waivers/`](../docs/waivers/):
+
+| Waiver | Covers | Status |
+|--------|--------|--------|
+| [`docs/waivers/nwell_bias_disclosure.md`](../docs/waivers/nwell_bias_disclosure.md) | T4.4-A — bitcell N-well biased via subsurface conduction (no metal path; sky130 SRAM convention) | Drafted, awaiting designer signatures |
+| [`docs/waivers/liberty_timing_analytical.md`](../docs/waivers/liberty_timing_analytical.md) | T1.7-A + T4.1-DIVERGENT-A — Liberty timing arcs are analytical, not SPICE-measured (covers production + CIM) | Drafted, awaiting designer signatures (or supersede via task #24 SPICE re-characterization) |
+
+Each waiver names the specific macros covered, lists the technical risks accepted, lists the in-design and SoC-side mitigations, and specifies the conditions under which the waiver retires (typically: completion of the corresponding fix task, e.g. task #24 for Liberty).
+
+Once both waivers are signed and committed, the sign-off gate transitions from **YELLOW → GREEN** for the CI2605 shuttle (or any tapeout from the current codebase before task #24 lands). No further verification work is required for tapeout-readiness of the SRAM macros.

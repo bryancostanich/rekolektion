@@ -1202,11 +1202,19 @@ def _route_dout(top: gdstk.Cell, p: MacroParams, fp: Floorplan,
         draw_wire(top, start=(sa_dout_x_abs, trunk_y),
                   end=(dout_pin_x, trunk_y), layer="met3",
                   tracker=tracker, net=dout_net)
-        # 5. Met3 vertical from (dout_pin_x, trunk_y) DOWN to the top
-        #    of the dout pin stub (which is drawn by _place_top_pins).
-        draw_wire(top, start=(dout_pin_x, trunk_y),
-                  end=(dout_pin_x, pins_bot_y + _PIN_STUB_LEN),
-                  layer="met3",
+        # 5. Met3 vertical at (dout_pin_x, trunk_y) connecting the H
+        #    trunk to the dout pin stub.  V's y-range is extended 0.15
+        #    PAST trunk_y on the side opposite the pin stub so V fully
+        #    straddles the 0.30-tall H trunk; without this overlap,
+        #    Magic decomposes the L-corner into 0.15-tall strips that
+        #    fail met3.1 (width <0.30).
+        pin_stub_top_y = pins_bot_y + _PIN_STUB_LEN
+        if trunk_y > pin_stub_top_y:
+            v_top, v_bot = trunk_y + 0.15, pin_stub_top_y
+        else:
+            v_top, v_bot = pin_stub_top_y, trunk_y - 0.15
+        draw_wire(top, start=(dout_pin_x, v_bot),
+                  end=(dout_pin_x, v_top), layer="met3",
                   tracker=tracker, net=dout_net)
 
 

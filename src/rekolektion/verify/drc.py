@@ -403,7 +403,7 @@ quit -noprompt
     real_tiles = 0
     suspect_outside = 0    # waiver rule, tile outside any footprint
     line_re = re.compile(r"^Violation \((\d+) tiles\): (.*)$")
-    tile_re = re.compile(r"^\s*at:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
+    tile_re = re.compile(r"^\s*at:\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s*$")
     _DBU = 200.0
     if log_path.exists():
         log_lines = log_path.read_text().splitlines()

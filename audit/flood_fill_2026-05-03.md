@@ -81,11 +81,20 @@ Same scan run on every available extract:
 | Macro | VPWR | VGND | VSS | VDD | VPB | VNB | auto-wells (unique/refs) | single-ref nets | extract date |
 |---|---|---|---|---|---|---|---|---|---|
 | `cim_sram_d_64x64` | 4231 | 4164 | 4163 | 65 | 72 | 73 | 0 / 0 | 198 | 2026-05-03 16:19 |
-| `cim_sram_c_64x64` | (no extract — needs LVS run) |
-| `cim_sram_a_256x64` | (no extract — needs LVS run) |
-| `cim_sram_b_256x64` | (no extract — needs LVS run) |
+| `cim_sram_a_256x64` | 16711 | 9070 | 16451 | (~) | 264 | 265 | **0 / 0** | (~) | 2026-05-03 20:07 |
+| `cim_sram_c_64x64` | (extracting) |
+| `cim_sram_b_256x64` | (extracting) |
 | `sram_weight_bank_small` | 734 | 266 | 16640 | 40 | 4 | 4 | **1 / 384** | 135 | 2026-05-03 13:48 |
 | `sram_activation_bank` | 734 | 266 | 16640 | 40 | 4 | 4 | **1 / 384** | 136 | 2026-05-03 13:48 |
+
+**SRAM-A specifics** (256 rows × 64 cols = 16,384 supercells):
+- Per-row WL/MWL: 256 unique each, avg **64 refs/row** (= 64 cells per row + ~0 periphery; matches expected 256-row × 64-col fanout pattern).
+- Per-col MBL/BL/BR: 64 unique each, avg **256 refs/col** (= 256 cells per col).
+- Per-row MWL_EN[r] / per-col MBL_OUT[c]: 1 ref each (Magic-hierarchy artifact, identical pattern to SRAM-D, addressed by `_align_ref_ports` allow-list).
+- VPWR (16711 refs) covers the full 16,384-cell array + periphery.
+- **Zero auto-NWELL fragments** — Path 3 tap supercell migration holding for the 256-row variant too.
+
+The CIM silicon-correctness pattern from SRAM-D extends to SRAM-A: per-row/col electrical nets fan out across the full array, supplies merge correctly, no floating well clusters.
 
 The **production auto-well finding** is new and worth investigating. Both production macros show one auto-named well `w_n36_140#` with **384 device-body references**. Sample context:
 

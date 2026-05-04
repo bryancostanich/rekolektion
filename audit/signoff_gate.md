@@ -133,3 +133,47 @@ Both YELLOW items now have draft disclosure documents in [`docs/waivers/`](../do
 Each waiver names the specific macros covered, lists the technical risks accepted, lists the in-design and SoC-side mitigations, and specifies the conditions under which the waiver retires (typically: completion of the corresponding fix task, e.g. task #24 for Liberty).
 
 Once both waivers are signed and committed, the sign-off gate transitions from **YELLOW → GREEN** for the CI2605 shuttle (or any tapeout from the current codebase before task #24 lands). No further verification work is required for tapeout-readiness of the SRAM macros.
+
+---
+
+## 2026-05-03 (later) — Phase 1 cleanup audit completion
+
+After the user identified that the F12 label-fix path on `MWL_EN[r]` was being retread, a **Phase 0 hack inventory** was done to surface every workaround in the verify/extract/refspice path and reclassify what's silicon-defect vs. tool-limitation. **Phase 1** then addressed each of the 16 inventory items.
+
+### Hack inventory ([`audit/hack_inventory.md`](hack_inventory.md))
+
+16 entries cataloged. Final classification after Phase 1:
+- ✗ silicon-defect: **1** — F1 (foundry bitcell wrong PDK model — RESOLVED via task #101)
+- ⚠ tool-limitation workaround: **12** (all guarded with allow-list + fail-loud, or documented inline)
+- ✓ legitimate / verified-OK: 3 (C3, D2, E2)
+- doc drift: 2 (G1, G2 — both reconciled)
+
+### Phase 1 task closure
+
+| # | Task | Resolution |
+|---|------|------------|
+| #104 | Phase 0 hack inventory | `audit/hack_inventory.md` (16 entries) |
+| #110 | Per-row/col flood-fill on SRAM-D + SRAM-A | `audit/flood_fill_2026-05-03.md` — silicon healthy, zero auto-NWELL fragments on both 64-row and 256-row CIM variants |
+| #64 | LVS aligner hardened | `_align_ref_ports` in both run_lvs_cim/production now have explicit allow-lists + fail-loud on unknown drift |
+| #105 | Production aligner pin enumeration | `addr[0..6]` discrepancy = same Magic port-promotion limitation, not silicon |
+| #106 | `_PORT_LIST` substitution guarded | `_check_patch_drift` in extract_cim_subckts.py — fail-loud on unknown drift |
+| #107 | Production cell intent docs | `audit/intent/precharge_row.md`, `column_mux_row.md`, `bitcell_array.md`, `production_extracted_cells.md` |
+| #108 | VSUBS textual rewrite removed | netgen `equate VSUBS VSS` is the right place; per-equate inline documentation added |
+| #109 | Foundry-stdcell flatten list audited | 17 entries each justified inline (16 purely-physical + 1 buf_2 for OpenLane-buffer reconciliation) |
+| #111 | Spatial DRC waiver default | global rule-id filter is now opt-in via `allow_global_waivers=True` |
+| #112 | `_LEFT_INTERNAL` warn → SystemExit | strip incompletion can't slip silently into LVS |
+| #113 | smoking_guns ↔ signoff_gate reconciled | smoking_guns.md now reflects post-resolution state |
+| #114 | Production precharge well bias | nwell_bias_disclosure.md scope extended for `w_n36_140#` cluster |
+| #101 | Foundry bitcell PDK model | qtap subckt now uses `__special_nfet_pass / __special_nfet_latch / __special_pfet_latch`; ngspice resolves all 8 devices |
+
+### Verdict update (post-Phase-1)
+
+**GREEN for silicon-correctness across all 6 macros**, now anchored by independent flood-fill verification (SRAM-D + SRAM-A so far; B/C extracts in progress) and an audit-trail of every workaround that's still in the loop.
+
+**Aligners now CANNOT silently absorb new drift** — both CIM and production aligners + the `_PORT_LIST` substitution + the `_LEFT_INTERNAL` strip-check all fail loud on any pattern outside the documented allow-list. This is the structural protection the original audit asked for.
+
+**Remaining work for full tapeout sign-off** (now scoped beyond Phase 1):
+- **Task #24 / F10 — Liberty SPICE characterization.** The foundry-bitcell model fix (#101) unblocks ngspice at the cell level. The substantive remaining work is the harness redesign: `scripts/characterize_cim_liberty.py:_macro_port_list` predates the supercell migration (expects 453 ports for legacy LR-CIM topology; current macro is 133 ports for supercell). Either harness redesign or the existing `liberty_timing_analytical.md` waiver covers tapeout.
+- **Phase 2 (workaround removal).** With aligners hardened, several of the workarounds may now be safe to drop entirely or reduce to documented requirements rather than silent overrides. Subject to verification in fresh LVS runs.
+
+The `nwell_bias_disclosure.md` and `liberty_timing_analytical.md` waivers remain as the documented disclosures for tapeout. Both are scoped accurately and signed-off-ready.

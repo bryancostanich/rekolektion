@@ -36,7 +36,11 @@ let private layerRow
                 CheckBox.minHeight 0.0
                 CheckBox.verticalAlignment VerticalAlignment.Center
                 CheckBox.verticalContentAlignment VerticalAlignment.Center
-                CheckBox.renderTransform (ScaleTransform(0.8, 0.8))
+                // Force a tight row height; the fluent template's
+                // default ~24px is what was leaving a big gap even
+                // with MinHeight 0.
+                CheckBox.height 16.0
+                CheckBox.renderTransform (ScaleTransform(0.85, 0.85))
                 CheckBox.renderTransformOrigin (Avalonia.RelativePoint(0.0, 0.5, Avalonia.RelativeUnit.Relative))
                 CheckBox.onIsCheckedChanged (fun e ->
                     match e.Source with
@@ -113,10 +117,19 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             ]
         ] :> IView
 
+    // Pack layer rows in a tight inner panel so per-row gaps
+    // stay 0 even though the outer panel uses 4.0 spacing for
+    // section separation.
+    let layersBlock : IView =
+        StackPanel.create [
+            StackPanel.spacing 0.0
+            StackPanel.children layerRows
+        ] :> IView
+
     let children : IView list =
         [
             yield layersHeader
-            yield! layerRows
+            yield layersBlock
             yield Separator.create [] :> IView
             yield TextBlock.create [
                 TextBlock.text "Nets"

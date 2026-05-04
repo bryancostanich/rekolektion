@@ -74,7 +74,11 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                 ] :> IView)
 
     let layerRows : IView list =
+        // Top-of-stack (met5) at the top of the list; allDrawing is
+        // ordered bottom-up, so reverse for a top-down view that
+        // matches how you'd read the cross-section.
         Layout.Layer.allDrawing
+        |> List.sortByDescending (fun l -> l.StackZ)
         |> List.map (layerRow model.Toggle dispatch)
 
     let layersHeader : IView =

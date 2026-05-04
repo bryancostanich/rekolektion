@@ -24,7 +24,10 @@ let private layerRow
         Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
         Border.onPointerPressed (fun e ->
             e.Handled <- true
-            dispatch (Msg.ToggleLayer (key, not visible)))
+            // Dispatch a flip — the update fn reads current state.
+            // Capturing `not visible` from this closure was reading
+            // stale truth across renders and breaking re-enable.
+            dispatch (Msg.FlipLayer key))
         Border.child (
             StackPanel.create [
                 StackPanel.orientation Orientation.Horizontal

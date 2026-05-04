@@ -27,6 +27,11 @@ type Msg =
     // in the meantime, the stale message is dropped.
     | NetsLoaded       of path: string * nets: Map<string, NetEntry>
     | ToggleLayer      of LayerKey * visible: bool
+    /// Flip the current visible flag for `key` in the update fn.
+    /// View clicks dispatch this so the toggle does not depend on
+    /// the value captured at row-build time — that closure went
+    /// stale across renders and broke re-enable.
+    | FlipLayer        of LayerKey
     | SetAllLayers     of visible: bool
     | ToggleNet        of name: string * visible: bool
     | ToggleBlock      of name: string * visible: bool

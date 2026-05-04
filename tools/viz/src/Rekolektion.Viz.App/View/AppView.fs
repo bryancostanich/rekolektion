@@ -108,20 +108,40 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                 Grid.row 0
                 Grid.children [ TopBar.view model dispatch ]
             ]
+            // Two GridSplitters between three resizable panels.
+            // ColumnDefinitions:
+            //   0  Left panel  (160 px default, draggable)
+            //   1  splitter
+            //   2  Canvas      (* — fills remainder)
+            //   3  splitter
+            //   4  Inspector   (240 px default, draggable)
+            // 160px default for the left panel is enough to fit the
+            // layer rows without horizontal slack; the user can
+            // drag wider for blocks/nets with long names.
             Grid.create [
                 Grid.row 1
-                Grid.columnDefinitions "240,*,260"
+                Grid.columnDefinitions "160,4,*,4,240"
                 Grid.children [
                     Border.create [
                         Grid.column 0
                         Border.child (LeftPanel.view model dispatch)
                     ]
-                    Border.create [
+                    GridSplitter.create [
                         Grid.column 1
-                        Border.child (canvas model dispatch)
+                        GridSplitter.background "#3a3a3a"
+                        GridSplitter.resizeDirection GridResizeDirection.Columns
                     ]
                     Border.create [
                         Grid.column 2
+                        Border.child (canvas model dispatch)
+                    ]
+                    GridSplitter.create [
+                        Grid.column 3
+                        GridSplitter.background "#3a3a3a"
+                        GridSplitter.resizeDirection GridResizeDirection.Columns
+                    ]
+                    Border.create [
+                        Grid.column 4
                         Border.child (Inspector.view model dispatch)
                     ]
                 ]

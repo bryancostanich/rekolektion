@@ -3,6 +3,7 @@ module Rekolektion.Viz.App.View.Inspector
 open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
 open Avalonia.Controls
+open Avalonia.Media
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model
 
@@ -20,8 +21,12 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
             |> Array.tryFind (fun p -> p.SourceStructure = struc && p.SourceIndex = idx)
         match hit with
         | None ->
-            [ TextBlock.create [ TextBlock.text (sprintf "structure: %s" struc) ] :> IView
-              TextBlock.create [ TextBlock.text (sprintf "index: %d" idx) ] :> IView ]
+            [ TextBlock.create [
+                TextBlock.text (sprintf "structure: %s" struc)
+                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
+              TextBlock.create [
+                TextBlock.text (sprintf "index: %d" idx)
+                TextBlock.textWrapping TextWrapping.Wrap ] :> IView ]
         | Some poly ->
             let layerName =
                 Layout.Layer.bySky130Number poly.Layer poly.DataType
@@ -41,12 +46,20 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                 if y > yMax then yMax <- y
             [ TextBlock.create [
                 TextBlock.text (sprintf "layer: %s (%d/%d)" layerName poly.Layer poly.DataType)
-                TextBlock.fontWeight Avalonia.Media.FontWeight.SemiBold ] :> IView
-              TextBlock.create [ TextBlock.text (sprintf "structure: %s" struc) ] :> IView
-              TextBlock.create [ TextBlock.text (sprintf "polygon #%d (%d pts)" idx poly.Points.Length) ] :> IView
-              TextBlock.create [ TextBlock.text (sprintf "bbox: %.3f × %.3f µm" (xMax - xMin) (yMax - yMin)) ] :> IView
+                TextBlock.fontWeight FontWeight.SemiBold
+                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
+              TextBlock.create [
+                TextBlock.text (sprintf "structure: %s" struc)
+                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
+              TextBlock.create [
+                TextBlock.text (sprintf "polygon #%d (%d pts)" idx poly.Points.Length)
+                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
+              TextBlock.create [
+                TextBlock.text (sprintf "bbox: %.3f × %.3f µm" (xMax - xMin) (yMax - yMin))
+                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
               TextBlock.create [
                 TextBlock.text (sprintf "@ (%.3f, %.3f) µm" xMin yMin)
+                TextBlock.textWrapping TextWrapping.Wrap
                 TextBlock.foreground "#888" ] :> IView ]
 
 let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =

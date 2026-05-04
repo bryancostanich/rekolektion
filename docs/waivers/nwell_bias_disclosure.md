@@ -1,4 +1,4 @@
-# Tapeout disclosure waiver — bitcell N-well biasing
+# Tapeout disclosure waiver — bitcell + periphery N-well biasing
 
 **Macros affected:** `sram_activation_bank`, `sram_weight_bank_small`, `cim_sram_a/b/c/d` (all 6).
 **Severity classification:** P1 (downgraded from P0 on 2026-04-30 after architectural reassessment).
@@ -15,6 +15,12 @@ X-mirror tiling makes adjacent rows' NWELLs abut, so the array's 16,384 (product
 **Result:** the bitcell n-well is not directly connected to VPWR via metal. Body bias propagates to each cell only through silicon-substrate conduction from peripheral N-tap structures (sense-row taps, precharge taps, wlstrap N-tap structures inserted every N rows).
 
 LVS sees all bitcell NWELLs as `VPB`, then equates `VPB ↔ VPWR` (`scripts/run_lvs_*.py` netgen setup), which is why the macros show net-name match. **The equate does not represent a metal path.**
+
+### Periphery NWELLs (production precharge row) — same mechanism, separate cluster
+
+Audit re-verification (`audit/flood_fill_2026-05-03.md`, task #110) found that the **production precharge row's PMOS bodies form a separate auto-named NWELL cluster** in the extracted netlist. Magic identifies it as `w_n36_140#` with 384 PFET-body terminal references — that's all 384 precharge PFETs (128 columns × 3 PFETs/column for BL precharge + BR precharge + equalize) sharing one NWELL polygon that has no `VPWR` label and no metal contact to VPWR. Same biasing mechanism as the bitcell NWELLs (subsurface conduction from neighboring strap/tap structures), separate physical cluster.
+
+The CIM macros do not exhibit this on the precharge row (`cim_mbl_precharge` has only 64 PFETs and reaches the per-row M2 VPWR/VGND rails introduced for the Path 3 tap-supercell migration; flood-fill shows zero auto-NWELL fragments on CIM SRAM-D). Production precharge is older topology that predates the per-row VPWR rail mechanism.
 
 ## Why this is the SKY130 SRAM convention
 
@@ -38,6 +44,7 @@ The shipped layouts use the foundry's intended pattern: strap-cell-anchored NWEL
 ## Scope of this waiver
 
 - Applies to all 6 macros listed above on the **CI2605 shuttle** (or any shuttle taping out from this codebase before strap-cell N-tap is replaced with per-cell N-tap, which is not currently planned).
+- Covers both the bitcell N-well clusters (described above) and the production precharge-row NWELL cluster (extracted as `w_n36_140#` in production weight_bank and activation_bank). Both are biased via subsurface conduction from neighboring strap/tap structures; neither has a direct metal path to VPWR.
 - Does NOT waive any other category of LVS, DRC, or simulation finding. The 5 P0 silicon defects identified in the trust audit (T1.1-A, T2.1-CIM-A, T4.2-CIM-A, T5.2-A, original T4.4-A) have all been independently resolved and are not covered by this waiver.
 
 ## Sign-off
@@ -49,6 +56,7 @@ The shipped layouts use the foundry's intended pattern: strap-cell-anchored NWEL
 
 By signing, the designer acknowledges:
 1. The bitcell N-well biasing relies on subsurface conduction from strap-cell-anchored NWELLs.
-2. This is the SKY130 SRAM convention (matches foundry dummy bitcell behavior).
-3. The risks listed above are accepted for this tapeout.
-4. Future iterations may switch to a per-cell N-tap architecture (Phase 3 / per-cell tap research) if a future shuttle requires it.
+2. The production precharge-row N-well (extracted as `w_n36_140#`) is biased by the same mechanism.
+3. This is the SKY130 SRAM convention (matches foundry dummy bitcell behavior).
+4. The risks listed above are accepted for this tapeout.
+5. Future iterations may switch to a per-cell N-tap architecture (Phase 3 / per-cell tap research) if a future shuttle requires it.

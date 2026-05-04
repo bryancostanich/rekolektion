@@ -15,9 +15,28 @@ let private layerRow
         : IView =
     let key = layer.Number, layer.DataType
     let visible = Visibility.isLayerVisible toggle key
+    // Custom row: small color swatch + small click-to-toggle
+    // square + full-size text label. Avoids the fluent CheckBox
+    // template's fixed-pixel indicator (~20px) entirely so text
+    // can stay readable while the indicator stays compact.
+    let toggleSquare =
+        Border.create [
+            Border.width 11.0
+            Border.height 11.0
+            Border.background (
+                if visible then "#4090ff" else "#202020"
+            )
+            Border.borderThickness 1.0
+            Border.borderBrush "#888"
+            Border.cornerRadius 1.0
+            Border.verticalAlignment VerticalAlignment.Center
+            Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
+            Border.onPointerPressed (fun _ ->
+                dispatch (Msg.ToggleLayer (key, not visible)))
+        ] :> IView
     StackPanel.create [
         StackPanel.orientation Orientation.Horizontal
-        StackPanel.spacing 4.0
+        StackPanel.spacing 6.0
         StackPanel.verticalAlignment VerticalAlignment.Center
         StackPanel.children [
             Border.create [
@@ -28,30 +47,14 @@ let private layerRow
                 Border.borderBrush "#555"
                 Border.verticalAlignment VerticalAlignment.Center
             ]
-            // Wrap the CheckBox in a Viewbox so Avalonia uniformly
-            // scales the fluent template (indicator + label + padding)
-            // to a tight ~14px row. Setting CheckBox.Height alone
-            // just clipped the fixed-pixel indicator.
-            Viewbox.create [
-                Viewbox.height 14.0
-                Viewbox.stretch Stretch.Uniform
-                Viewbox.verticalAlignment VerticalAlignment.Center
-                Viewbox.child (
-                    CheckBox.create [
-                        CheckBox.isChecked visible
-                        CheckBox.content layer.Name
-                        CheckBox.padding (Avalonia.Thickness(2.0, 0.0, 0.0, 0.0))
-                        CheckBox.minHeight 0.0
-                        CheckBox.verticalAlignment VerticalAlignment.Center
-                        CheckBox.verticalContentAlignment VerticalAlignment.Center
-                        CheckBox.onIsCheckedChanged (fun e ->
-                            match e.Source with
-                            | :? CheckBox as cb ->
-                                let isChecked = cb.IsChecked.HasValue && cb.IsChecked.Value
-                                dispatch (Msg.ToggleLayer (key, isChecked))
-                            | _ -> ())
-                    ]
-                )
+            toggleSquare
+            TextBlock.create [
+                TextBlock.text layer.Name
+                TextBlock.fontSize 12.0
+                TextBlock.verticalAlignment VerticalAlignment.Center
+                TextBlock.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
+                TextBlock.onPointerPressed (fun _ ->
+                    dispatch (Msg.ToggleLayer (key, not visible)))
             ]
         ]
     ] :> IView

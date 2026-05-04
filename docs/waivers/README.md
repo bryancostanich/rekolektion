@@ -8,8 +8,9 @@ The trust audit (`audit/`) classifies each item P0/P1/P2. This directory holds t
 
 | Waiver | Item | Severity | Status |
 |--------|------|----------|--------|
-| [`nwell_bias_disclosure.md`](nwell_bias_disclosure.md) | T4.4-A — bitcell N-well biased via subsurface conduction (no metal path) | P1 | Awaiting sign-off |
+| [`nwell_bias_disclosure.md`](nwell_bias_disclosure.md) | T4.4-A — bitcell + periphery N-well biased via subsurface conduction (no metal path) | P1 | Awaiting sign-off |
 | [`liberty_timing_analytical.md`](liberty_timing_analytical.md) | T1.7-A + T4.1-DIVERGENT-A — Liberty timing arcs are analytical, not SPICE-measured | P1 | Awaiting sign-off (or supersede with task #24) |
+| [`lvs_pin_resolver_disclosure.md`](lvs_pin_resolver_disclosure.md) | LVS top-level pin-matching artifact — Magic ext2spice port-promotion through hierarchy. Silicon is independently verified; aligners reconcile the netlist comparison. | P2 | Awaiting sign-off |
 
 ## Process
 

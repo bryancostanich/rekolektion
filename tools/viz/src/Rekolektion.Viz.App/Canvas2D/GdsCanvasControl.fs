@@ -182,10 +182,15 @@ type GdsCanvasControl() =
 
     override this.Render(context) =
         base.Render context
+        let bounds = Rect(0.0, 0.0, this.Bounds.Width, this.Bounds.Height)
         match this.Library with
         | Some lib ->
             if not hasFitted then this.AutoFit ()
-            let bounds = Rect(0.0, 0.0, this.Bounds.Width, this.Bounds.Height)
             let vb = this.MakeViewBox ()
             context.Custom(new SkiaDraw(bounds, lib, this.FlatPolygons, vb, this.Toggle))
-        | None -> ()
+        | None ->
+            // Closing the active tab leaves None for Library; without
+            // an explicit fill the prior frame's polygons stay
+            // painted on the shared SkSurface ('canvas closed but
+            // view still shows the cell' bug).
+            context.FillRectangle(Avalonia.Media.Brushes.Black, bounds)

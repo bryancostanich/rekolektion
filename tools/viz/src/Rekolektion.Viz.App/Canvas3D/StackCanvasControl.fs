@@ -470,6 +470,26 @@ type StackCanvasControl() =
 
     override this.OnOpenGlRender(_gli, fb) =
         match gl, this.Library with
+        | Some g, None ->
+            // No active macro — close happened or nothing loaded.
+            // Bind the FBO and clear so the prior frame's geometry
+            // doesn't linger ('closed tab still showing in 3D' bug).
+            let scale =
+                match this.VisualRoot with
+                | null -> 1.0
+                | vr -> vr.RenderScaling
+            let fbW = max 1 (int (this.Bounds.Width * scale))
+            let fbH = max 1 (int (this.Bounds.Height * scale))
+            g.BindFramebuffer(GLEnum.Framebuffer, uint32 fb)
+            g.Viewport(0, 0, uint32 fbW, uint32 fbH)
+            g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f)
+            g.Clear(uint32 (GLEnum.ColorBufferBit ||| GLEnum.DepthBufferBit))
+            // Forget the cached mesh so reopening a file extrudes
+            // afresh against the next library.
+            cachedMesh <- None
+            meshDirty <- true
+            hasUploadedAny <- false
+            layerSlotMap.Clear()
         | Some g, Some lib ->
             let flat = this.FlatPolygons
             let toggle = this.Toggle

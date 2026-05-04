@@ -72,3 +72,18 @@ Phase 2 closes when:
 
 - The hardened aligners are guarded with allow-lists. If a future macro variant adds a new port pattern (e.g. a new debug strap), the aligner will fail loud — that's correct, but it'll require updating the allow-list. Document the update procedure in the aligner's docstring + audit/hack_inventory.md so future-you doesn't add a new pattern unknowingly.
 - Dropping the LR-CIM dead path is mechanical but verify by `git grep` that no live code references the cell name.
+
+## Discovered during Phase 2 — out-of-scope but worth recording
+
+While investigating #58 (functional SPICE sim of post-Option-B supercell), discovered that the **Magic-extracted foundry SRAM bitcell SPICE has a topology defect**: cross-coupled inverter halves don't merge at the SPICE level because of phantom-parasitic transistors (X1, X4 with L=0.025nm, extracted from poly-overlap geometry) splitting the LI1-shared diff regions into separate auto-named nets. Q never latches in ngspice. Affects BOTH production and CIM (the foundry cell is the storage substrate for everything in this codebase).
+
+Implications:
+- **#101's model-name fix is correct but wasn't the only blocker.** ngspice now resolves all 8 devices, but the cross-coupled latch can't function with the disconnected drain nets.
+- **NO SPICE characterization of either production OR CIM has actually been done.** The waivered "Liberty timing analytical, not SPICE-measured" was understated — at the SPICE level, the bitcell core was never simulated end-to-end.
+- The `liberty_timing_analytical.md` waiver claims "read/write logical behavior is independently validated by Verilator-level RTL simulation" — that's RTL behavioral, not transistor-level. **Functional silicon correctness of the post-Phase-2 modifications has not been SPICE-verified** (only DRC + LVS + flood-fill).
+
+Filed as follow-up tasks:
+- **#117** — write a hand-written SPICE-correct foundry bitcell stub.  Drops phantom parasitics, wires X2/X3 + X5/X7 with proper Q/QB connectivity, uses `__special_*` models.  Apply to both production and CIM refspice paths.
+- **#118** — draft a disclosure waiver for CIM functional behavior not being SPICE-verified.  Parallel to the analytical-Liberty waiver but covers the orthogonal "function" concern, not just "timing."
+
+Out of Phase 2 scope (Phase 2 = remove cleanup-audit workarounds).  These two follow-ups are new SPICE-modeling work for the Liberty-re-char track (#24).

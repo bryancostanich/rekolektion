@@ -104,13 +104,13 @@
 - **Why it's still ⚠:** the post-2026-05-03 sign-off claims T2.1 flood-fill verified these (T1.4-A "Validated by Tier 2 flood-fill" per `signoff_gate.md:110`). But the flood-fill was done WITH the equates active — circular. A clean check would be: drop the equates, confirm LVS still passes, then re-add only the ones netgen genuinely needs as global aliases.
 - **Real issue:** schematic and layout should agree on supply names from the start. `VDD↔VPWR` aliasing means the schematic uses one convention and the layout another.
 
-### C3. Foundry stdcell flatten list ⚠
+### C3. Foundry stdcell flatten list ✓ (revised 2026-05-03, task #109)
 
 - **Location:** `src/rekolektion/verify/lvs.py:256-274` (`flatten_cells`).
 - **What it does:** before LVS, flattens `sky130_fd_sc_hd__fill_*`, `decap_*`, `tapvpwrvgnd_1`, `diode_2`, `clkbuf_4`, `buf_2` on both circuit sides.
 - **Why it exists:** OpenLane P&R inserts purely-physical cells (fill, decap, tap, etc.) that the Python-generated reference doesn't instantiate. Without flatten, extracted side has hundreds of extra instances.
-- **Why it's ⚠:** flattening `buf_2` (a real logic cell, not a fill) is suspicious. If the Python generator doesn't instantiate buf_2 anywhere but the layout does, that's intent vs. layout drift, not "purely physical." Need to confirm buf_2 only appears in the layout via OpenLane buffering or similar physical insertion.
-- **Real issue:** audit each entry on the flatten list — is it truly purely-physical or is it a logic cell whose presence indicates intent drift?
+- **Audit (2026-05-03):** ran `grep` across `src/rekolektion` for each cell name in the list. 16/17 entries appear ONLY in `verify/lvs.py:flatten_cells` itself — confirmed purely-physical (no Python `gdstk.Reference` instantiates them). The 17th, `sky130_fd_sc_hd__buf_2`, has 9 references — used in CIM's MWL driver (`cim_mwl_driver_row.py`) and production's WL driver chain. Flattening it on both sides is justified: both extract and reference instantiate buf_2; OpenLane may insert additional buf_2s during buffering; flattening reconciles those without claiming a silicon match — it lowers LVS comparison to the device level (3 PFETs + 3 NFETs of foundry-defined internals).
+- **Reclassified ⚠→✓:** the list is justified as written; commented inline with the audit rationale so a future reader doesn't have to retrace.
 
 ---
 
@@ -195,10 +195,10 @@
 
 ## Summary
 
-**Total entries:** 16 (post-revision) — F1 (✗); A1, A2, A3, A4, B1, B2, B3, C1, C2, C3, D1, D3, E1 (⚠); D2, E2 (✓); G1, G2 (doc).
+**Total entries:** 16 (post-revision, ongoing reclassification) — F1 (✗); A1, A2, A3, A4, B1, B2, B3, C1, C2, D1, D3, E1 (⚠); C3, D2, E2 (✓); G1, G2 (doc).
 - ✗ confirmed silicon-defect: **1** (F1 — foundry bitcell wrong PDK model).
-- ⚠ tool-limitation workaround / structural concern needing verification: **13**
-- ✓ legitimate / verified-OK: 2 (D2, E2)
+- ⚠ tool-limitation workaround / structural concern: **12** (C3 was here, now ✓)
+- ✓ legitimate / verified-OK: 3 (C3, D2, E2)
 - doc drift: 2 (G1, G2)
 
 **Revision note (2026-05-03):** A1, A2, D3 were initially classified ✗ as silicon-defect coverers. Verification revealed they are all the same Magic ext2spice port-promotion-through-hierarchy limitation — the labels exist correctly in the GDS but Magic doesn't propagate child-cell ports up to the macro top. This was already established in commit `b09c441` (F12) and reverted attempt `a97f56f`. The aligners are Magic-tooling workarounds, not silicon-defect covers. They become silicon-relevant only if their scope drifts to cover real disconnects; needs hard guards. Silicon correctness must be confirmed independently via flood-fill (task #110), not via end-to-end LVS port match.

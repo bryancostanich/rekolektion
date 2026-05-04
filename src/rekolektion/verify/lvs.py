@@ -253,6 +253,16 @@ def run_lvs(
     # hundreds of extra instances that create spurious LVS mismatches.
     wrapper_setup = Path(output_dir) / "_lvs_wrapper_setup.tcl"
     pdk_setup = setup_file.resolve() if setup_file.exists() else None
+    # Flatten list — audited 2026-05-03 (task #109).  Each entry was
+    # confirmed by `grep` against `src/rekolektion` to verify it is
+    # either purely-physical (P&R-inserted, no Python instantiation)
+    # or a logic cell whose flattening is justified for LVS-flow
+    # consistency between OpenLane-inserted and Python-generated
+    # instances.
+    #
+    # Purely-physical (OpenLane fill/decap/tap/diode/clkbuf — none of
+    # these have any Python `gdstk.Reference` to them anywhere in
+    # src/rekolektion):
     flatten_cells = [
         "sky130_fd_sc_hd__fill_1",
         "sky130_fd_sc_hd__fill_2",
@@ -270,6 +280,15 @@ def run_lvs(
         "sky130_fd_sc_hd__tapvpwrvgnd_1",
         "sky130_fd_sc_hd__diode_2",
         "sky130_fd_sc_hd__clkbuf_4",
+        # buf_2 IS a real logic cell — used in CIM's MWL driver
+        # (cim_mwl_driver_row.py) and production's WL driver chain.
+        # Flattening here is for LVS-flow simplification: both extract
+        # and reference contain buf_2, and OpenLane may insert
+        # additional buf_2 instances during P&R for buffering.
+        # Flattening on both sides reconciles those without claiming
+        # a silicon match — it just lowers the comparison granularity
+        # to the device level.  Internal buf_2 topology is foundry-
+        # defined; if the device counts match, the cell is correct.
         "sky130_fd_sc_hd__buf_2",
     ]
     if extra_flatten_cells:

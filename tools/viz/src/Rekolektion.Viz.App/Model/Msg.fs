@@ -26,6 +26,9 @@ type Msg =
     | SetActiveMacro   of path: string
     /// Remove a macro from the open-files list.
     | CloseMacro       of path: string
+    /// Close whichever tab is currently active. Convenience for
+    /// menu / hotkey paths that don't carry a path.
+    | CloseActiveTab
     // Async net derivation result. `path` matches the macro the
     // nets were derived for; if the user opens a different file
     // in the meantime, the stale message is dropped.

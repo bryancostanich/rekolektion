@@ -3,7 +3,9 @@ namespace Rekolektion.Viz.App
 open System
 open System.IO
 open Avalonia
+open Avalonia.Controls
 open Avalonia.Controls.ApplicationLifetimes
+open Avalonia.Input
 open Avalonia.Styling
 open Avalonia.Themes.Fluent
 open Avalonia.FuncUI.Hosts
@@ -109,11 +111,67 @@ type App() =
         // OS appearance setting.
         this.RequestedThemeVariant <- ThemeVariant.Dark
 
+    /// Build the native menu bar. On macOS this becomes the system
+    /// menu (the app's menu in the screen's top bar); on Linux /
+    /// Windows the same NativeMenu is rendered by NativeMenuBar
+    /// inside the window. Items dispatch via AppDispatch.send so
+    /// the handlers don't need to live inside the FuncUI tree.
+    member private _.BuildNativeMenu (window: Window) : NativeMenu =
+        let menu = NativeMenu()
+
+        let fileItem = NativeMenuItem("File")
+        let fileSub = NativeMenu()
+
+        let openItem = NativeMenuItem("Open...")
+        openItem.Gesture <- KeyGesture(Key.O, KeyModifiers.Meta)
+        openItem.Click.Add(fun _ ->
+            FilePickers.dispatchOpen (window :> obj) AppDispatch.send)
+        fileSub.Items.Add(openItem)
+
+        let runItem = NativeMenuItem("Run macro...")
+        runItem.Click.Add(fun _ ->
+            FilePickers.dispatchRunMacro (window :> obj) AppDispatch.send)
+        fileSub.Items.Add(runItem)
+
+        fileSub.Items.Add(NativeMenuItemSeparator())
+
+        let closeItem = NativeMenuItem("Close tab")
+        closeItem.Gesture <- KeyGesture(Key.W, KeyModifiers.Meta)
+        closeItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.CloseActiveTab)
+        fileSub.Items.Add(closeItem)
+
+        fileItem.Menu <- fileSub
+        menu.Items.Add(fileItem)
+
+        let viewItem = NativeMenuItem("View")
+        let viewSub = NativeMenu()
+
+        let logItem = NativeMenuItem("Toggle log pane")
+        logItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.ToggleLogPane)
+        viewSub.Items.Add(logItem)
+
+        viewItem.Menu <- viewSub
+        menu.Items.Add(viewItem)
+
+        menu
+
     override this.OnFrameworkInitializationCompleted() =
         match this.ApplicationLifetime with
         | :? IClassicDesktopStyleApplicationLifetime as desktop ->
             let mainWindow = MainWindow()
             desktop.MainWindow <- mainWindow
+
+            // Attach the native menu so macOS shows it in the system
+            // menu bar; on other platforms NativeMenuBar in the
+            // window's top row will read this same menu.
+            let nativeMenu = this.BuildNativeMenu mainWindow
+            // Setting the NativeMenu on the main Window is enough for
+            // Avalonia's macOS backend to export it as the system
+            // menu bar — no separate "export" call is needed in
+            // Avalonia 11.x.
+            NativeMenu.SetMenu(mainWindow, nativeMenu)
 
             // Skipped in headless mode: `rekolektion viz-render` boots
             // the exact same App to render one PNG and exit, but must

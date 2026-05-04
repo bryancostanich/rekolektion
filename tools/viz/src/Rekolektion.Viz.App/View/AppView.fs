@@ -195,30 +195,14 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
         )
     ] :> IView
 
-/// `ICommand` shim so we can attach a function to a `KeyBinding`.
-/// Avalonia's KeyBinding requires an `ICommand`; we don't need
-/// CanExecute / parameter so this is the minimum implementation.
-type private DelegateCommand(action: unit -> unit) =
-    let evt = Event<System.EventHandler, System.EventArgs>()
-    interface System.Windows.Input.ICommand with
-        [<CLIEvent>]
-        member _.CanExecuteChanged = evt.Publish
-        member _.CanExecute _ = true
-        member _.Execute _ = action()
-
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
-    // Cmd+O on macOS, Ctrl+O on Windows/Linux. Avalonia's KeyGesture
-    // parser maps "Cmd" to KeyModifiers.Meta which is Cmd on mac and
-    // the Win key elsewhere — for Linux/Windows users we want
-    // Ctrl+O too, so we register both gestures.
-    let openCmd = DelegateCommand(fun () ->
-        FilePickers.dispatchOpen null dispatch)
-    let kbCmdO = KeyBinding(Gesture = KeyGesture(Key.O, KeyModifiers.Meta), Command = openCmd)
-    let kbCtrlO = KeyBinding(Gesture = KeyGesture(Key.O, KeyModifiers.Control), Command = openCmd)
-
+    // Cmd+O / Ctrl+O hotkeys live on the NativeMenuItem ("Open...")
+    // attached to the window in App.fs — Avalonia auto-routes the
+    // gesture through the native menu so we don't need an explicit
+    // KeyBinding here. Adding one would cause double-dispatch on
+    // macOS where the system menu also fires the Click event.
     Grid.create [
         Grid.rowDefinitions "Auto,*,Auto"
-        Grid.keyBindings [ kbCmdO; kbCtrlO ]
         Grid.children [
             Grid.create [
                 Grid.row 0

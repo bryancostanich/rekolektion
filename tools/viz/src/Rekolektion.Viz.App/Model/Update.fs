@@ -22,6 +22,7 @@ let private appendLog (line: string) (model: Model.Model) : Model.Model =
 let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model.Model * Cmd<Msg.Msg> =
     match msg with
     | Msg.OpenFile path ->
+        eprintfn "[viz] OpenFile %s" path
         let cmd =
             Cmd.OfAsync.either backend.OpenGds path
                 (function
@@ -75,6 +76,10 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         if exists then
             { model with ActiveMacroPath = Some path; Selection = None }, Cmd.none
         else model, Cmd.none
+    | Msg.CloseActiveTab ->
+        match model.ActiveMacroPath with
+        | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)
+        | None -> model, Cmd.none
     | Msg.CloseMacro path ->
         let remaining = model.OpenMacros |> List.filter (fun m -> m.Path <> path)
         // If the closed tab was active, fall back to the last

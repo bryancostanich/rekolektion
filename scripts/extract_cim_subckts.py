@@ -78,9 +78,88 @@ _PORT_LIST: dict[str, list[str]] = {
 }
 
 
+# Audit-2026-05-03 / task #106: hardened the substitution with an
+# explicit allow-list of port names this patch may ADD vs. what Magic
+# already extracted.  Same pattern as the LVS aligner (`_align_ref_ports`
+# in `scripts/run_lvs_*.py`): a Magic-tooling workaround should not
+# silently absorb new drift — anything outside the documented allow-list
+# means the cell's geometry or the Magic extract changed in a way the
+# patch wasn't designed to handle.
+#
+# Each entry below documents WHY a given port is allowed to be patched
+# in.  Raise a SystemExit (via _check_patch_drift) if Magic-extracted
+# ports differ from `_PORT_LIST[cell]` in any way other than the
+# allowed-add patterns named here.
+_ALLOWED_PATCH_ADDS: dict[str, list[str]] = {
+    "sky130_fd_sc_hd__buf_2": [],   # standard stdcell — Magic gets all ports
+    # cim_mbl_precharge / cim_mbl_sense / sky130_sram_6t_cim_lr: poly
+    # and li1 ports that Magic ext2spice unreliably promotes despite a
+    # `.pin` purpose-16 shape at the boundary (same Magic limitation
+    # documented for the macro-top aligner — see audit/hack_inventory.md
+    # entries A1, A2, B1 + CLAUDE.md "Known traps").
+    "cim_mbl_precharge":      ["MBL_PRE", "VREF", "MBL"],   # all 3 are poly/li1; VPWR is met1 (Magic gets it)
+    "cim_mbl_sense":          ["VBIAS", "MBL", "MBL_OUT", "VSS", "VDD"],  # all 5 are poly/li1
+    "sky130_sram_6t_cim_lr":  ["BL", "BLB", "WL", "MWL", "MBL"],   # legacy LR-CIM cell (T1.2-B P2 cleanup)
+}
+
+
+def _check_patch_drift(extracted_ports: list[str], cell_name: str) -> None:
+    """Compare Magic-extracted port list vs `_PORT_LIST[cell_name]`;
+    fail loud if drift outside the documented allow-list.
+    """
+    desired = _PORT_LIST.get(cell_name)
+    if desired is None:
+        return
+    extracted_set = set(extracted_ports)
+    desired_set = set(desired)
+    adds = desired_set - extracted_set
+    drops = extracted_set - desired_set
+    bad_adds = sorted(adds - set(_ALLOWED_PATCH_ADDS.get(cell_name, [])))
+    if bad_adds or drops:
+        msg = [
+            f"[{cell_name}] _PORT_LIST drift outside documented allow-lists.",
+            f"  Magic-extracted ports: {sorted(extracted_set)}",
+            f"  _PORT_LIST          : {desired}",
+        ]
+        if bad_adds:
+            msg.append(f"  UNEXPECTED ADDS (in _PORT_LIST, missing from extract): {bad_adds}")
+            msg.append(
+                f"  Allowed-add pattern for {cell_name}: "
+                f"{_ALLOWED_PATCH_ADDS.get(cell_name, [])}"
+            )
+        if drops:
+            msg.append(f"  UNEXPECTED DROPS (in extract, missing from _PORT_LIST): {sorted(drops)}")
+        msg.append(
+            "Investigate before extending allow-list.  See audit/hack_inventory.md "
+            "B1 + task #106 + CLAUDE.md."
+        )
+        raise SystemExit("\n".join(msg))
+
+
+def _parse_extracted_ports(text: str, cell_name: str) -> list[str]:
+    """Parse the .subckt port list Magic actually emitted (pre-patch)."""
+    in_subckt = False
+    ports: list[str] = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith(f".subckt {cell_name}") or s == f".subckt {cell_name}":
+            in_subckt = True
+            ports.extend(s.split()[2:])
+        elif in_subckt and s.startswith("+"):
+            ports.extend(s.split()[1:])
+        elif in_subckt:
+            break
+    return ports
+
+
 def _patch_subckt_ports(text: str, cell_name: str) -> str:
     """Rewrite the `.subckt <name> ...` line to include the canonical
     port list (Magic loses some poly/li1 ports during extraction).
+
+    Audit-2026-05-03 / task #106: now guarded by `_check_patch_drift`,
+    which fails loud on any unexpected port-list drift between Magic's
+    extract and `_PORT_LIST`.  This matches the aligner-pattern from
+    task #64; silent absorption of new mismatches is no longer possible.
 
     Also substitute auto-named well/substrate body-bias nets in the
     body with the conventional supply names (VDD / VSS).  Without
@@ -92,6 +171,8 @@ def _patch_subckt_ports(text: str, cell_name: str) -> str:
     ports = _PORT_LIST.get(cell_name)
     if not ports:
         return text
+    extracted_ports = _parse_extracted_ports(text, cell_name)
+    _check_patch_drift(extracted_ports, cell_name)
     lines = text.splitlines(keepends=True)
     out: list[str] = []
     for ln in lines:
@@ -107,6 +188,10 @@ def _patch_subckt_ports(text: str, cell_name: str) -> str:
             # supply when the array is flattened).  Use VPWR/VGND
             # names so the bitcell's body terminals match the macro's
             # supply naming directly (no equate needed in netgen).
+            #
+            # NOTE: the LR-CIM cell is the legacy bitcell path (T1.2-B
+            # P2 cleanup) — production CIM macros use the foundry-based
+            # supercell.  Body rewrites only fire for this dead path.
             import re as _re
             ln = _re.sub(r"\bw_\d+_n?\d+#", "VPWR", ln)
             ln = ln.replace("VSUBS", "VGND")

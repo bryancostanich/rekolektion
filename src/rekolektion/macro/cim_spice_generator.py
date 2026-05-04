@@ -67,6 +67,23 @@ def _write_foundry_qtap(f: TextIO) -> None:
         the external `sky130_cim_drain_bridge_v1` cell connects it to
         BL at supercell level via DIFF abutment at the cell boundary.
         Exposed as a qtap port so the supercell can bind it.
+
+    Model-name fix (task #101, 2026-05-03):
+    The hand-written body originally used `sky130_fd_pr__nfet_01v8` and
+    `__pfet_01v8_hvt` (the generic 1.8V transistor models).  Those have
+    `wmin = 5 µm` in every bin — the SRAM bitcell devices (W = 140 nm
+    or 210 nm) do not match any bin and ngspice fails with "could not
+    find a valid modelname" when running SPICE against the macro.
+    Replaced with the proper SKY130 SRAM-bitcell models:
+      - access NMOS (W=0.14, L=0.15)        → `__special_nfet_pass`
+      - pull-down NMOS (W=0.21, L=0.15)     → `__special_nfet_latch`
+      - pull-up PMOS (W=0.14, L=0.15)       → `__special_pfet_latch` bin 0
+      - parasitic PMOS (W=0.14, L=0.025)    → `__special_pfet_latch` bin 1
+        (the parasitic L=25nm devices represent extracted poly-overlap
+         capacitance, not real transistors — they sit in special_pfet_latch
+         bin 1 which covers L=24.5..80.5nm by design.)
+    All 4 model-name swaps validated by inspection of the .pm3 model
+    bin ranges; W=0.14/0.21 + L=0.025/0.15 each fit a corresponding bin.
     """
     f.write(
         "\n* Foundry 6T cell with Q tap (FT7c-validated topology).\n"
@@ -93,35 +110,38 @@ def _write_foundry_qtap(f: TextIO) -> None:
     # in-qtap LICON1+LI1+MCON+M1 stack tying drain DIFF to BR met1 rail),
     # gate=top WL stripe (auto-named a_0_262#), source=Q (storage node).
     f.write(
-        "X0 BR a_0_262# Q VNB sky130_fd_pr__nfet_01v8"
+        "X0 BR a_0_262# Q VNB sky130_fd_pr__special_nfet_pass"
         " w=0.14 l=0.15\n"
     )
     # X1: VPWR-side parasitic pfet whose gate is the foundry's bottom
     # POLY stripe (auto-named a_0_24#).  Both stripes are tied to one
     # WL net at the supercell level via parent-level POLY straps and
     # supercell-level WL labels at both stripe Y positions.
+    # L=0.025 represents extracted poly-overlap capacitance (not a real
+    # transistor); fits special_pfet_latch bin 1 (L=24.5..80.5nm).
     f.write(
-        "X1 a_174_54# a_0_24# a_174_54# VPB sky130_fd_pr__pfet_01v8_hvt"
+        "X1 a_174_54# a_0_24# a_174_54# VPB sky130_fd_pr__special_pfet_latch"
         " w=0.14 l=0.025\n"
     )
     # X2, X3: cross-coupled inverter PMOS pull-ups.
     f.write(
-        "X2 a_174_212# a_16_182# a_174_134# VPB sky130_fd_pr__pfet_01v8_hvt"
+        "X2 a_174_212# a_16_182# a_174_134# VPB sky130_fd_pr__special_pfet_latch"
         " w=0.14 l=0.15\n"
     )
     f.write(
-        "X3 a_174_134# a_16_104# a_174_54# VPB sky130_fd_pr__pfet_01v8_hvt"
+        "X3 a_174_134# a_16_104# a_174_54# VPB sky130_fd_pr__special_pfet_latch"
         " w=0.14 l=0.15\n"
     )
     # X4: WL-side dummy diode-connected pfet (substrate decap).  Gate
-    # on top WL stripe (a_0_262#).
+    # on top WL stripe (a_0_262#).  Same parasitic-extraction caveat
+    # as X1 (L=0.025 fits special_pfet_latch bin 1).
     f.write(
-        "X4 a_174_212# a_0_262# a_174_212# VPB sky130_fd_pr__pfet_01v8_hvt"
+        "X4 a_174_212# a_0_262# a_174_212# VPB sky130_fd_pr__special_pfet_latch"
         " w=0.14 l=0.025\n"
     )
     # X5: NMOS pull-down (Q side).  Q is the drain.
     f.write(
-        "X5 Q a_16_182# a_0_142# VNB sky130_fd_pr__nfet_01v8"
+        "X5 Q a_16_182# a_0_142# VNB sky130_fd_pr__special_nfet_latch"
         " w=0.21 l=0.15\n"
     )
     # X6: NMOS access transistor (bottom, BL side).  Drain=QB
@@ -130,12 +150,12 @@ def _write_foundry_qtap(f: TextIO) -> None:
     # provided externally by the sky130_cim_drain_bridge_v1 strap cell
     # at supercell level via DIFF abutment).
     f.write(
-        "X6 a_38_54# a_0_24# a_38_0# VNB sky130_fd_pr__nfet_01v8"
+        "X6 a_38_54# a_0_24# a_38_0# VNB sky130_fd_pr__special_nfet_pass"
         " w=0.14 l=0.15\n"
     )
     # X7: NMOS pull-down (QB side).
     f.write(
-        "X7 a_0_142# a_16_104# a_38_54# VNB sky130_fd_pr__nfet_01v8"
+        "X7 a_0_142# a_16_104# a_38_54# VNB sky130_fd_pr__special_nfet_latch"
         " w=0.21 l=0.15\n"
     )
     f.write(".ends\n\n")

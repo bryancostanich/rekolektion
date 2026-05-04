@@ -15,48 +15,49 @@ let private layerRow
         : IView =
     let key = layer.Number, layer.DataType
     let visible = Visibility.isLayerVisible toggle key
-    // Custom row: small color swatch + small click-to-toggle
-    // square + full-size text label. Avoids the fluent CheckBox
-    // template's fixed-pixel indicator (~20px) entirely so text
-    // can stay readable while the indicator stays compact.
-    let toggleSquare =
-        Border.create [
-            Border.width 11.0
-            Border.height 11.0
-            Border.background (
-                if visible then "#4090ff" else "#202020"
-            )
-            Border.borderThickness 1.0
-            Border.borderBrush "#888"
-            Border.cornerRadius 1.0
-            Border.verticalAlignment VerticalAlignment.Center
-            Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
-            Border.onPointerPressed (fun _ ->
-                dispatch (Msg.ToggleLayer (key, not visible)))
-        ] :> IView
-    StackPanel.create [
-        StackPanel.orientation Orientation.Horizontal
-        StackPanel.spacing 6.0
-        StackPanel.verticalAlignment VerticalAlignment.Center
-        StackPanel.children [
-            Border.create [
-                Border.width 10.0
-                Border.height 10.0
-                Border.background (sprintf "#%02x%02x%02x" layer.Color.R layer.Color.G layer.Color.B)
-                Border.borderThickness 1.0
-                Border.borderBrush "#555"
-                Border.verticalAlignment VerticalAlignment.Center
+    // The whole row is the click target. A Border wraps a
+    // horizontal panel so empty space between the indicator and
+    // text label is hit-testable too. Background = Transparent
+    // is required for hit-testing on otherwise-empty Borders.
+    Border.create [
+        Border.background "Transparent"
+        Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
+        Border.onPointerPressed (fun e ->
+            e.Handled <- true
+            dispatch (Msg.ToggleLayer (key, not visible)))
+        Border.child (
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 6.0
+                StackPanel.verticalAlignment VerticalAlignment.Center
+                StackPanel.children [
+                    // Color swatch
+                    Border.create [
+                        Border.width 10.0
+                        Border.height 10.0
+                        Border.background (sprintf "#%02x%02x%02x" layer.Color.R layer.Color.G layer.Color.B)
+                        Border.borderThickness 1.0
+                        Border.borderBrush "#555"
+                        Border.verticalAlignment VerticalAlignment.Center
+                    ]
+                    // Visibility indicator (purely visual; click is handled by the row)
+                    Border.create [
+                        Border.width 11.0
+                        Border.height 11.0
+                        Border.background (if visible then "#4090ff" else "#202020")
+                        Border.borderThickness 1.0
+                        Border.borderBrush "#888"
+                        Border.cornerRadius 1.0
+                        Border.verticalAlignment VerticalAlignment.Center
+                    ]
+                    TextBlock.create [
+                        TextBlock.text layer.Name
+                        TextBlock.fontSize 12.0
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                ]
             ]
-            toggleSquare
-            TextBlock.create [
-                TextBlock.text layer.Name
-                TextBlock.fontSize 12.0
-                TextBlock.verticalAlignment VerticalAlignment.Center
-                TextBlock.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
-                TextBlock.onPointerPressed (fun _ ->
-                    dispatch (Msg.ToggleLayer (key, not visible)))
-            ]
-        ]
+        )
     ] :> IView
 
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
@@ -129,7 +130,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     // section separation.
     let layersBlock : IView =
         StackPanel.create [
-            StackPanel.spacing 0.0
+            StackPanel.spacing 3.0
             StackPanel.children layerRows
         ] :> IView
 

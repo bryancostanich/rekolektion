@@ -70,12 +70,17 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.LoadFailed (path, reason) ->
         appendLog (sprintf "load failed: %s — %s" path reason) model, Cmd.none
     | Msg.SetActiveMacro path ->
-        // Only switch if the path is actually open; ignore stale
-        // requests (e.g. socket-driven from outside).
-        let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
-        if exists then
-            { model with ActiveMacroPath = Some path; Selection = None }, Cmd.none
-        else model, Cmd.none
+        // No-op if the requested path is already active — clicking
+        // the active tab shouldn't wipe the user's current selection
+        // (that was masquerading as a "× clears the inspector" bug).
+        if model.ActiveMacroPath = Some path then model, Cmd.none
+        else
+            // Only switch if the path is actually open; ignore stale
+            // requests (e.g. socket-driven from outside).
+            let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
+            if exists then
+                { model with ActiveMacroPath = Some path; Selection = None }, Cmd.none
+            else model, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
         | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)

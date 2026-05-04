@@ -110,9 +110,11 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         ]
     ] :> IView
 
-/// One file-tab in the strip above the 2D/3D tabs. Click the body
-/// to switch active macro; click the `×` to close. Active tab is
-/// styled brighter.
+/// One file-tab in the strip above the 2D/3D tabs. The label and
+/// the `×` are independent Buttons so each owns its own click —
+/// previously the close × was a Border whose PointerPressed was
+/// bubbling up to the surrounding tab Border, which dispatched
+/// SetActiveMacro instead of CloseMacro and made × appear broken.
 let private fileTab
         (active: bool)
         (path: string)
@@ -125,42 +127,40 @@ let private fileTab
     let fg = if active then "#ffffff" else "#aaaaaa"
     Border.create [
         Border.background bg
-        Border.cornerRadius 0.0
         Border.borderThickness (Thickness(0.0, 0.0, 1.0, 0.0))
         Border.borderBrush "#2a2a2a"
-        Border.cursor (new Cursor(StandardCursorType.Hand))
-        Border.padding (Thickness(8.0, 4.0))
-        Border.onPointerPressed (fun e ->
-            // Don't switch tabs if the user clicked the × button —
-            // the inner Border handles that and marks Handled.
-            if not e.Handled then
-                e.Handled <- true
-                dispatch (Msg.SetActiveMacro path))
         Border.child (
             StackPanel.create [
                 StackPanel.orientation Orientation.Horizontal
-                StackPanel.spacing 6.0
+                StackPanel.spacing 0.0
                 StackPanel.children [
-                    TextBlock.create [
-                        TextBlock.text label
-                        TextBlock.foreground fg
-                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    Button.create [
+                        Button.content label
+                        Button.background "Transparent"
+                        Button.borderThickness (Thickness(0.0))
+                        Button.foreground fg
+                        Button.padding (Thickness(8.0, 4.0))
+                        Button.minWidth 0.0
+                        Button.minHeight 0.0
+                        Button.cursor (new Cursor(StandardCursorType.Hand))
+                        Button.onClick (fun e ->
+                            e.Handled <- true
+                            dispatch (Msg.SetActiveMacro path))
                     ]
-                    Border.create [
-                        Border.background "Transparent"
-                        Border.cursor (new Cursor(StandardCursorType.Hand))
-                        Border.padding (Thickness(2.0, 0.0))
-                        Border.onPointerPressed (fun e ->
+                    Button.create [
+                        Button.content "×"
+                        Button.fontSize 14.0
+                        Button.foreground "#aaa"
+                        Button.background "Transparent"
+                        Button.borderThickness (Thickness(0.0))
+                        Button.padding (Thickness(6.0, 0.0))
+                        Button.minWidth 0.0
+                        Button.minHeight 0.0
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.cursor (new Cursor(StandardCursorType.Hand))
+                        Button.onClick (fun e ->
                             e.Handled <- true
                             dispatch (Msg.CloseMacro path))
-                        Border.child (
-                            TextBlock.create [
-                                TextBlock.text "×"
-                                TextBlock.foreground "#888"
-                                TextBlock.fontSize 14.0
-                                TextBlock.verticalAlignment VerticalAlignment.Center
-                            ]
-                        )
                     ]
                 ]
             ]

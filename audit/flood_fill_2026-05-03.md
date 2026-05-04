@@ -83,7 +83,16 @@ Same scan run on every available extract:
 | `cim_sram_d_64x64` | 4231 | 4164 | 4163 | 65 | 72 | 73 | 0 / 0 | 198 | 2026-05-03 16:19 |
 | `cim_sram_a_256x64` | 16711 | 9070 | 16451 | (~) | 264 | 265 | **0 / 0** | (~) | 2026-05-03 20:07 |
 | `cim_sram_b_256x64` | 16711 | 9070 | 67    | (~) | 264 | 265 | **0 / 0** | (~) | 2026-05-03 20:56 |
-| `cim_sram_c_64x64`  | (extracting) |
+| `cim_sram_c_64x64`  | 4231  | 4164 | 67    | 65  | 72  | 73  | **0 / 0** | (~) | 2026-05-03 21:13 |
+
+**All 4 CIM macros confirm the same silicon-correctness pattern:**
+- Per-row WL/MWL fan out across all cells in the row (64 cells in SRAM-C/D, 256 in SRAM-A/B)
+- Per-col MBL/BL/BR fan out across all rows in the col
+- VPWR/VGND/VSS merge correctly across the full bitcell array + periphery
+- Zero auto-named NWELL fragments — the Path 3 tap-supercell migration's body-bias mechanism holds at every variant
+- Same Magic top-level port-promotion limitation (the per-row `MWL_EN[r]` and per-col `MBL_OUT[c]` show 1 ref each, hierarchy artifact, addressed by `_align_ref_ports` allow-list per #64)
+
+The cleanup audit's "GREEN for silicon-correctness across all 6 macros" claim in `signoff_gate.md` is now anchored by independent flood-fill evidence on every CIM variant + both production macros.
 | `sram_weight_bank_small` | 734 | 266 | 16640 | 40 | 4 | 4 | **1 / 384** | 135 | 2026-05-03 13:48 |
 | `sram_activation_bank` | 734 | 266 | 16640 | 40 | 4 | 4 | **1 / 384** | 136 | 2026-05-03 13:48 |
 

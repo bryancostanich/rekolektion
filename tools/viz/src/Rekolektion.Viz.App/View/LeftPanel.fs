@@ -28,26 +28,30 @@ let private layerRow
                 Border.borderBrush "#555"
                 Border.verticalAlignment VerticalAlignment.Center
             ]
-            CheckBox.create [
-                CheckBox.isChecked visible
-                CheckBox.content layer.Name
-                CheckBox.fontSize 11.0
-                CheckBox.padding (Avalonia.Thickness(2.0, 0.0, 0.0, 0.0))
-                CheckBox.minHeight 0.0
-                CheckBox.verticalAlignment VerticalAlignment.Center
-                CheckBox.verticalContentAlignment VerticalAlignment.Center
-                // Force a tight row height; the fluent template's
-                // default ~24px is what was leaving a big gap even
-                // with MinHeight 0.
-                CheckBox.height 16.0
-                CheckBox.renderTransform (ScaleTransform(0.85, 0.85))
-                CheckBox.renderTransformOrigin (Avalonia.RelativePoint(0.0, 0.5, Avalonia.RelativeUnit.Relative))
-                CheckBox.onIsCheckedChanged (fun e ->
-                    match e.Source with
-                    | :? CheckBox as cb ->
-                        let isChecked = cb.IsChecked.HasValue && cb.IsChecked.Value
-                        dispatch (Msg.ToggleLayer (key, isChecked))
-                    | _ -> ())
+            // Wrap the CheckBox in a Viewbox so Avalonia uniformly
+            // scales the fluent template (indicator + label + padding)
+            // to a tight ~14px row. Setting CheckBox.Height alone
+            // just clipped the fixed-pixel indicator.
+            Viewbox.create [
+                Viewbox.height 14.0
+                Viewbox.stretch Stretch.Uniform
+                Viewbox.verticalAlignment VerticalAlignment.Center
+                Viewbox.child (
+                    CheckBox.create [
+                        CheckBox.isChecked visible
+                        CheckBox.content layer.Name
+                        CheckBox.padding (Avalonia.Thickness(2.0, 0.0, 0.0, 0.0))
+                        CheckBox.minHeight 0.0
+                        CheckBox.verticalAlignment VerticalAlignment.Center
+                        CheckBox.verticalContentAlignment VerticalAlignment.Center
+                        CheckBox.onIsCheckedChanged (fun e ->
+                            match e.Source with
+                            | :? CheckBox as cb ->
+                                let isChecked = cb.IsChecked.HasValue && cb.IsChecked.Value
+                                dispatch (Msg.ToggleLayer (key, isChecked))
+                            | _ -> ())
+                    ]
+                )
             ]
         ]
     ] :> IView

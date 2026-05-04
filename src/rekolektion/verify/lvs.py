@@ -221,18 +221,17 @@ def run_lvs(
     else:
         extracted = extract_netlist(gds_path, cell_name, pdk_root, output_dir)
 
-    # Magic names the substrate net 'VSUBS' in extracted SPICE; the
-    # standalone-bitcell schematics use VSS as the NMOS body net (no
-    # separate body port).  netgen's `equate nets` in the wrapper setup
-    # doesn't reliably alias these in batch-lvs mode, so substitute
-    # VSUBS->VSS in the extracted file before running netgen.  This is
-    # purely a textual rename of an unconnected substrate net; it
-    # doesn't change the connectivity of any signal node.
-    ext_text = extracted.read_text()
-    if " VSUBS " in ext_text or " VSUBS\n" in ext_text:
-        ext_text = ext_text.replace(" VSUBS ", " VSS ")
-        ext_text = ext_text.replace(" VSUBS\n", " VSS\n")
-        extracted.write_text(ext_text)
+    # Audit 2026-05-03 / task #108: VSUBS→VSS textual rewrite REMOVED.
+    # The same alias is now expressed as a netgen `equate nets VSUBS VSS`
+    # directive in the wrapper-setup.tcl below (already in
+    # `_equate_pairs`).  The historical comment claimed netgen's equate
+    # was "unreliable in batch-lvs mode" but the equate is in fact
+    # present and CIM SRAM-D LVS topology match (verified by
+    # audit/flood_fill_2026-05-03.md) shows it works.  If a future
+    # macro fails LVS purely due to VSUBS alias issues, prefer fixing
+    # the netgen-side equate over reintroducing the textual rewrite —
+    # textually editing tool output between extract and netgen is the
+    # exact pattern the audit anti-pattern rule prohibits.
 
     # Step 2: Run netgen comparison
     setup_file = netgen_setup(pdk_root)
@@ -296,33 +295,46 @@ def run_lvs(
     lines: list[str] = []
     if pdk_setup is not None:
         lines.append(f"source {pdk_setup}")
-    # Tie body-bias pins to power pins.  sky130 std-cell netlists
-    # declare VPB (PFET body) and VNB (NFET body) as separate ports;
-    # at chip level they're globally connected to VPWR and VGND.
-    # Our reference SPICE doesn't split them, so without these
-    # equates the extracted side sees VPB/VNB as distinct nets.
-    #
-    # VSUBS is the substrate node for the foundry mux/sram_array
-    # subckts.  Magic's GDS extraction ties the substrate to VGND
-    # (chip-level convention), so the extracted top-level VGND net
-    # absorbs every VSUBS connection from those subckts.  The
-    # reference SPICE keeps VSUBS as a separate global net (matching
-    # the foundry SPICE).  Equate them so netgen treats VSUBS as
-    # VGND in both circuits.
-    # Supply name aliases.  CIM bitcell labels its rails VDD/VSS while
-    # the macro-level reference uses VPWR/VGND (foundry stdcell
-    # convention); after flat extraction the macro has both names.
-    # Same for VPB/VNB body-bias on hd cells.
+    # netgen `equate nets` ledger.  Audit 2026-05-03 / task #108: each
+    # entry annotated with its specific purpose.  The audit trail in
+    # `audit/hack_inventory.md` (entry C2) covers the broader concern
+    # that some equates bridge naming conventions (legitimate) while
+    # others mask physical-isolation (silicon-correctness concern).
+    # The equates that bridge naming convention should stay; equates
+    # that mask isolation are covered by `docs/waivers/nwell_bias_disclosure.md`.
     _equate_pairs = [
+        # VPB↔VPWR: PMOS body (NWELL) at chip level is connected to
+        # VPWR.  In the bitcell + production precharge row, no DIRECT
+        # metal contact ties NWELL to VPWR; bias is via subsurface
+        # conduction from foundry sram_sp_wlstrap N-tap structures.
+        # This equate is part of what `nwell_bias_disclosure.md`
+        # waivers; netgen sees VPB and VPWR as separate nets in the
+        # extract, the equate aliases them.
         ("VPB", "VPWR"),
+        # VNB↔VGND: NMOS body (PSUB) at chip level is connected to
+        # VGND.  PSUB is the chip substrate; bias is via the always-
+        # present VGND-tap chain.  Naming-convention bridge.
         ("VNB", "VGND"),
+        # VSUBS↔VGND: foundry mux/sram_array subckts use VSUBS as the
+        # substrate node.  At chip level VSUBS == VGND.  Naming-
+        # convention bridge.
         ("VSUBS", "VGND"),
+        # VDD↔VPWR: CIM bitcell schematic uses VDD; macro-level
+        # reference uses VPWR (foundry stdcell convention).  After
+        # extract the macro has both names on the same physical metal.
+        # Naming-convention bridge — verified by `audit/flood_fill_
+        # 2026-05-03.md` (no separate VDD cluster, just legacy naming
+        # in cim_mbl_sense.subckt internal).
         ("VDD", "VPWR"),
+        # VSS↔VGND: same as VDD/VPWR but for ground.  Bitcell uses
+        # VSS internally; macro uses VGND externally.  Naming-
+        # convention bridge.
         ("VSS", "VGND"),
-        # Bitcell-LVS (track 05): standalone bitcell schematics use
-        # VSS/VDD directly as body nets (no separate VPB/VNB ports);
-        # extraction reports the substrate as VSUBS.  Alias VSUBS→VSS
-        # so the comparison sees them as one net.
+        # VSUBS↔VSS: bitcell-LVS (track 05) — standalone bitcell
+        # schematics use VSS as NMOS body (no VPB/VNB).  Magic
+        # extraction reports the substrate as VSUBS.  Used only by
+        # the bitcell-standalone LVS flow.  Naming-convention bridge
+        # for that specific flow.
         ("VSUBS", "VSS"),
     ]
     for c1, c2 in _equate_pairs:

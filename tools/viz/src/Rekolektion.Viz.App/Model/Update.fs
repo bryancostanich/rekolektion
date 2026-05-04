@@ -33,6 +33,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let recents =
             macro.Path :: (model.RecentFiles |> List.filter (fun p -> p <> macro.Path))
             |> List.truncate 10
+        // Insert (or replace) by path so reopening a file just
+        // refreshes its tab in place rather than duplicating it.
+        let openMacros =
+            let withoutExisting =
+                model.OpenMacros |> List.filter (fun m -> m.Path <> macro.Path)
+            withoutExisting @ [macro]
         // If nets came from a sidecar, we're done. Otherwise schedule
         // a background LabelFlood — it can take 10+ s for production
         // macros, so we render the layers immediately and fill in
@@ -45,15 +51,45 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     backend.DeriveNets macro.Library
                     (fun nets -> Msg.NetsLoaded (macro.Path, nets))
                     (fun ex -> Msg.LogLine (sprintf "net derivation failed: %s" ex.Message))
-        { model with Macro = Some macro; RecentFiles = recents; Selection = None }, cmd
+        let model' =
+            { model with
+                OpenMacros = openMacros
+                ActiveMacroPath = Some macro.Path
+                RecentFiles = recents
+                Selection = None }
+        model', cmd
     | Msg.NetsLoaded (path, nets) ->
-        // Drop the result if the user has loaded a different file
-        // since we kicked off the derivation.
-        match model.Macro with
-        | Some m when m.Path = path -> { model with Macro = Some { m with Nets = nets } }, Cmd.none
-        | _ -> model, Cmd.none
+        // Update the macro in OpenMacros by path. Drops silently if
+        // the user closed the tab while net derivation was in flight.
+        let openMacros =
+            model.OpenMacros
+            |> List.map (fun m ->
+                if m.Path = path then { m with Nets = nets } else m)
+        { model with OpenMacros = openMacros }, Cmd.none
     | Msg.LoadFailed (path, reason) ->
         appendLog (sprintf "load failed: %s — %s" path reason) model, Cmd.none
+    | Msg.SetActiveMacro path ->
+        // Only switch if the path is actually open; ignore stale
+        // requests (e.g. socket-driven from outside).
+        let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
+        if exists then
+            { model with ActiveMacroPath = Some path; Selection = None }, Cmd.none
+        else model, Cmd.none
+    | Msg.CloseMacro path ->
+        let remaining = model.OpenMacros |> List.filter (fun m -> m.Path <> path)
+        // If the closed tab was active, fall back to the last
+        // remaining tab (right-most); empty list → no active tab.
+        let nextActive =
+            match model.ActiveMacroPath with
+            | Some p when p = path ->
+                remaining |> List.tryLast |> Option.map (fun m -> m.Path)
+            | other -> other
+        let model' =
+            { model with
+                OpenMacros = remaining
+                ActiveMacroPath = nextActive
+                Selection = None }
+        model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
         { model with Toggle = Visibility.toggleLayer key vis model.Toggle }, Cmd.none
     | Msg.FlipLayer key ->

@@ -26,23 +26,37 @@ type RunState =
     | Idle
     | Running of pid: int * args: string list
 
+/// Multiple GDS files can be open at once. `OpenMacros` is ordered
+/// in tab-display order (left-to-right). `ActiveMacroPath` tracks
+/// which one drives the canvas / left panel / inspector. Only the
+/// active macro renders in the canvas; the others are kept warm in
+/// memory so flipping back is instant. Toggle / Selection are
+/// global — they reset when the active macro changes.
 type Model = {
-    Macro       : LoadedMacro option
-    Toggle      : Visibility.ToggleState
-    Selection   : (string * int) option   // (structure, element index)
-    ActiveTab   : Tab
-    View2D      : View2DState
-    View3D      : View3DState
-    Run         : RunState
-    RecentFiles : string list
-    LogVisible  : bool
-    Log         : string list             // newest last
+    OpenMacros      : LoadedMacro list
+    ActiveMacroPath : string option
+    Toggle          : Visibility.ToggleState
+    Selection       : (string * int) option   // (structure, element index)
+    ActiveTab       : Tab
+    View2D          : View2DState
+    View3D          : View3DState
+    Run             : RunState
+    RecentFiles     : string list
+    LogVisible      : bool
+    Log             : string list             // newest last
 }
 and View2DState = { ZoomFactor: float; OffsetX: float; OffsetY: float }
 and View3DState = { OrbitYaw: float; OrbitPitch: float; ZoomFactor: float; Ortho: bool }
 
+/// Resolve the currently focused tab to its macro, if any.
+let activeMacro (m: Model) : LoadedMacro option =
+    match m.ActiveMacroPath with
+    | None -> None
+    | Some p -> m.OpenMacros |> List.tryFind (fun mc -> mc.Path = p)
+
 let empty : Model = {
-    Macro = None
+    OpenMacros = []
+    ActiveMacroPath = None
     Toggle = Visibility.empty
     Selection = None
     ActiveTab = View2D

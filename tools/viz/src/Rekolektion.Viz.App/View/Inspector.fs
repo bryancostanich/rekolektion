@@ -8,7 +8,7 @@ open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model
 
 let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView list =
-    match model.Macro with
+    match Model.activeMacro model with
     | None -> []
     | Some m ->
         // Selection identifies a polygon in the flat array via its

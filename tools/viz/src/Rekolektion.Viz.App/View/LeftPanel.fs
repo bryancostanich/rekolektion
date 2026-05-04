@@ -65,7 +65,7 @@ let private layerRow
 
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     let netButtons : IView list =
-        match model.Macro with
+        match Model.activeMacro model with
         | None -> []
         | Some m ->
             m.Nets
@@ -78,7 +78,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                 ] :> IView)
 
     let blockButtons : IView list =
-        match model.Macro with
+        match Model.activeMacro model with
         | None -> []
         | Some m ->
             m.Blocks

@@ -22,6 +22,10 @@ type Msg =
     | OpenFile         of path: string
     | LoadComplete     of Model.LoadedMacro
     | LoadFailed       of path: string * reason: string
+    /// Switch which open macro is the active tab.
+    | SetActiveMacro   of path: string
+    /// Remove a macro from the open-files list.
+    | CloseMacro       of path: string
     // Async net derivation result. `path` matches the macro the
     // nets were derived for; if the user opens a different file
     // in the meantime, the stale message is dropped.

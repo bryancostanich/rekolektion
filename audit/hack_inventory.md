@@ -22,13 +22,16 @@
 - **Reclassified ✗→⚠:** the aligner is a Magic-tooling workaround, not a silicon-defect cover. Silicon is electrically correct (verify via task #110 flood-fill, not via end-to-end LVS port match). The risk is that any tool-limitation workaround can drift into hiding real silicon defects if scope expands silently — needs hard guards (whitelist exactly which ports may be dropped, fail on anything else) and a written waiver framing the limitation correctly.
 - **Tracked as:** #64 (the long-standing pin-resolver task), now superseding #103.
 
-### A2. Production ref-port aligner ✗
+### A2. Production ref-port aligner ⚠ (revised 2026-05-03)
 
 - **Location:** `scripts/run_lvs_production.py:129-159` (`_align_ref_ports`), called at `:235`
 - **What it does:** same pattern as A1, applied to production macros.
-- **Phase 0 verification (2026-05-03):** the GDS *does* contain top-level labels (`addr[0..8]`, `din[*]`, `dout[*]`, `clk`, `cs`, `we`, etc.) — confirmed by `strings`. So unlike CIM, production isn't suffering from missing-label syndrome. The aligner is masking a different problem: Magic's `.ext` reports 222 boundary ports while netgen's final summary reports `661 = 661 nets` with **"9 disconnected pins" in extracted vs "2 disconnected pins" in reference** and "Top level cell failed pin matching." So the aligner is hiding ~12 ports that Magic finds at the boundary as named-but-not-electrically-connected to internal logic — these are the "11 disconnects" referred to in the source comment. They could be real floating boundary pins (silicon defect: physical metal exists but no internal route reaches it) OR Magic ext quirks for sub-cell promoted addr rails.
-- **Real issue:** the "manual port verification at SoC integration substitutes for failed top-level match" deferment in `signoff_gate.md:114` is a deferred check, not a verification. Need to enumerate the specific 9-vs-2 disconnected pins and confirm whether each is a real metal-route gap or a Magic extraction artifact. Most likely a mix.
-- **Tracked as:** new task to be filed (Phase 1).
+- **Phase 0 verification (2026-05-03):** the GDS *does* contain top-level labels (`addr[0..8]`, `din[*]`, `dout[*]`, `clk`, `cs`, `we`, etc.) — confirmed by `strings`. So unlike CIM, production isn't suffering from missing-label syndrome. The aligner adds 128 `dec_out_<N>` (Magic over-promotes them from labeled li1 boundary in `row_decoder`); reference port list is a subset of extracted.
+- **Phase 1 verification (task #105, 2026-05-03):** identified the specific pins that netgen reports as "disconnected" at the macro top.  Reading `comp.out` for both production macros:
+  - `sram_weight_bank_small`: extracted has `addr[0..8]` (9) disconnected; reference has `addr[7..8]` (2) disconnected. Difference: 7 pins = `addr[0..6]`.
+  - `sram_activation_bank`: extracted has `addr[0..7]` (8) disconnected; reference has `addr[7]` (1) disconnected. Difference: 7 pins = `addr[0..6]`.
+- **Conclusion:** the 7-pin discrepancy on each production macro is the address bus, exactly the same Magic port-promotion-through-hierarchy limitation that affects CIM's `MWL_EN[r]`. The labels exist at the macro top, the addr rails physically reach the row_decoder, but Magic's hierarchical extract refuses to merge child-cell interior addr[i] rails with the parent feeders (same finding as commit `b09c441`, F12). Reclassified ✗→⚠: this is a Magic-tooling artifact, not a silicon disconnect. Reference's `addr[7..8]` (weight_bank) / `addr[7]` (activation_bank) genuinely-disconnected entries reflect the actual port list — those bits are above the macro's effective addressing.
+- **Tracked as:** #64 (the consolidated pin-resolver task), now superseding the standalone #105.
 
 ### A3. Foundry stdcell label strip in production GDS flatten ⚠
 

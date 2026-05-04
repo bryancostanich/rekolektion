@@ -43,7 +43,14 @@ def main() -> int:
         return 2
 
     print(f"=== DRC — {args.macro_name} ===", flush=True)
-    drc = run_drc(gds, cell_name=args.macro_name, output_dir=work)
+    # task #111: opt-in to legacy global waiver filter for this generic
+    # verifier.  This script verifies arbitrary user macros without
+    # knowing their foundry-cell footprints, so spatial filtering isn't
+    # available; the legacy filter preserves prior behavior.  Migrate
+    # callers that DO know their footprints to pass them via
+    # `waiver_footprints=...` instead — see scripts/run_drc_cim.py.
+    drc = run_drc(gds, cell_name=args.macro_name, output_dir=work,
+                  allow_global_waivers=True)
     print(drc.summary())
     if not drc.clean:
         seen = set()

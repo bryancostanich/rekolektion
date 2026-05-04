@@ -260,8 +260,18 @@ def run_drc(
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
     waiver_footprints: list[tuple[str, float, float, float, float]] | None = None,
+    allow_global_waivers: bool = False,
 ) -> DRCResult:
     """Run Magic DRC on a GDS file.
+
+    Audit-2026-05-03 / task #111: spatial waiver filtering is now the
+    default.  The legacy "global rule-id filter" (silently waive every
+    tile of a known-waiver rule no matter where it sits in the layout)
+    is dangerous — a met1.2 tile outside the foundry COREID would be
+    silently absorbed.  The default now is **no waivers** unless either
+    `waiver_footprints` is provided (spatial check) or
+    `allow_global_waivers=True` is explicitly passed (legacy mode,
+    preserved for backward compat).
 
     Args:
         gds_path: Path to the GDS file to check.
@@ -274,9 +284,16 @@ def run_drc(
             is counted as a waiver ONLY if its centre falls inside
             one of these footprints; tiles outside (e.g. user-routing
             channels between foundry cells) escalate to real errors
-            and trip `clean=False`.  When None (default), behaviour
-            is the legacy global rule-id filter — every tile from a
-            waiver rule is silently waived no matter where it lives.
+            and trip `clean=False`.  Strongly recommended for any
+            macro that contains foundry SRAM/bitcell IP.
+        allow_global_waivers: when True, falls back to the legacy
+            global rule-id filter (silently waive every tile of a
+            known-waiver rule regardless of position).  Strongly
+            discouraged — only use for macros that contain foundry
+            cells across their entire footprint, where spatial
+            footprints would equal the macro bbox.  When False
+            (default), `waiver_footprints=None` means NO waivers
+            at all (every known-waiver-rule tile counts as real).
 
     Returns:
         DRCResult with error count and details.
@@ -435,8 +452,22 @@ quit -noprompt
                 real_errors.append(header)
                 continue
             if not waiver_footprints:
-                # Legacy: every tile from this rule waived globally.
-                waiver_tiles += n
+                if allow_global_waivers:
+                    # Legacy: every tile from this rule waived globally.
+                    # Caller explicitly opted in to the audit-flagged
+                    # global filter (see task #111).
+                    waiver_tiles += n
+                    continue
+                # Strict default (audit-2026-05-03 / task #111): with
+                # neither spatial footprints nor an explicit
+                # `allow_global_waivers=True`, treat every known-waiver-
+                # rule tile as a REAL error.  Forces callers to make
+                # the spatial-vs-global decision explicitly.
+                real_tiles += n
+                real_errors.append(
+                    f"{header}  -- no spatial footprints provided + "
+                    f"allow_global_waivers=False (strict default)"
+                )
                 continue
             # Spatial check: only tiles inside a footprint are waivers.
             inside_n = 0

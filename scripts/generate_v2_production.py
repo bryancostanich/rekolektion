@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rekolektion.macro.assembler import MacroParams, assemble
+from rekolektion.macro.blackbox import generate_blackbox
 from rekolektion.macro.lef_generator import generate_lef
 from rekolektion.macro.liberty_generator import generate_liberty
 from rekolektion.macro.spice_generator import generate_reference_spice
@@ -126,6 +127,10 @@ def _generate_one(m: ProductionMacro, output_root: Path) -> None:
     lib_path = cell_dir / f"{m.macro_name}.lib"
     generate_liberty(p, lib_path, macro_name=m.macro_name)
     print(f"  wrote {lib_path}  ({lib_path.stat().st_size} bytes)")
+
+    bb_path = cell_dir / f"{m.macro_name}_bb.v"
+    generate_blackbox(p, bb_path, macro_name=m.macro_name)
+    print(f"  wrote {bb_path}  ({bb_path.stat().st_size} bytes)")
 
 
 def main(argv: list[str] | None = None) -> int:

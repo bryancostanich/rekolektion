@@ -4,6 +4,7 @@ open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
 open Avalonia.Controls
 open Avalonia.Layout
+open Avalonia.Media
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model
 
@@ -16,7 +17,8 @@ let private layerRow
     let visible = Visibility.isLayerVisible toggle key
     StackPanel.create [
         StackPanel.orientation Orientation.Horizontal
-        StackPanel.spacing 6.0
+        StackPanel.spacing 4.0
+        StackPanel.verticalAlignment VerticalAlignment.Center
         StackPanel.children [
             Border.create [
                 Border.width 10.0
@@ -24,10 +26,18 @@ let private layerRow
                 Border.background (sprintf "#%02x%02x%02x" layer.Color.R layer.Color.G layer.Color.B)
                 Border.borderThickness 1.0
                 Border.borderBrush "#555"
+                Border.verticalAlignment VerticalAlignment.Center
             ]
             CheckBox.create [
                 CheckBox.isChecked visible
                 CheckBox.content layer.Name
+                CheckBox.fontSize 11.0
+                CheckBox.padding (Avalonia.Thickness(2.0, 0.0, 0.0, 0.0))
+                CheckBox.minHeight 0.0
+                CheckBox.verticalAlignment VerticalAlignment.Center
+                CheckBox.verticalContentAlignment VerticalAlignment.Center
+                CheckBox.renderTransform (ScaleTransform(0.8, 0.8))
+                CheckBox.renderTransformOrigin (Avalonia.RelativePoint(0.0, 0.5, Avalonia.RelativeUnit.Relative))
                 CheckBox.onIsCheckedChanged (fun e ->
                     match e.Source with
                     | :? CheckBox as cb ->
@@ -67,12 +77,41 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         Layout.Layer.allDrawing
         |> List.map (layerRow model.Toggle dispatch)
 
+    let layersHeader : IView =
+        DockPanel.create [
+            DockPanel.lastChildFill false
+            DockPanel.children [
+                TextBlock.create [
+                    TextBlock.text "Layers"
+                    TextBlock.fontWeight FontWeight.Bold
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                    DockPanel.dock Dock.Left
+                ] :> IView
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing 4.0
+                    DockPanel.dock Dock.Right
+                    StackPanel.children [
+                        Button.create [
+                            Button.content "All"
+                            Button.fontSize 10.0
+                            Button.padding (Avalonia.Thickness(6.0, 1.0))
+                            Button.onClick (fun _ -> dispatch (Msg.SetAllLayers true))
+                        ] :> IView
+                        Button.create [
+                            Button.content "None"
+                            Button.fontSize 10.0
+                            Button.padding (Avalonia.Thickness(6.0, 1.0))
+                            Button.onClick (fun _ -> dispatch (Msg.SetAllLayers false))
+                        ] :> IView
+                    ]
+                ] :> IView
+            ]
+        ] :> IView
+
     let children : IView list =
         [
-            yield TextBlock.create [
-                TextBlock.text "Layers"
-                TextBlock.fontWeight Avalonia.Media.FontWeight.Bold
-            ] :> IView
+            yield layersHeader
             yield! layerRows
             yield Separator.create [] :> IView
             yield TextBlock.create [

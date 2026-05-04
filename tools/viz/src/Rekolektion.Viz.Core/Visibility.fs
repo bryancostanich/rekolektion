@@ -40,6 +40,11 @@ let isBlockVisible (s: ToggleState) (name: string) : bool =
 let toggleLayer (key: LayerKey) (visible: bool) (s: ToggleState) : ToggleState =
     { s with Layers = Map.add key visible s.Layers }
 
+let setAllLayers (keys: LayerKey seq) (visible: bool) (s: ToggleState) : ToggleState =
+    let layers =
+        keys |> Seq.fold (fun acc k -> Map.add k visible acc) s.Layers
+    { s with Layers = layers }
+
 let toggleNet (name: string) (visible: bool) (s: ToggleState) : ToggleState =
     { s with Nets = Map.add name visible s.Nets }
 

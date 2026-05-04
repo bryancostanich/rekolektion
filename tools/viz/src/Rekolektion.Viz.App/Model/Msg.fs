@@ -27,6 +27,7 @@ type Msg =
     // in the meantime, the stale message is dropped.
     | NetsLoaded       of path: string * nets: Map<string, NetEntry>
     | ToggleLayer      of LayerKey * visible: bool
+    | SetAllLayers     of visible: bool
     | ToggleNet        of name: string * visible: bool
     | ToggleBlock      of name: string * visible: bool
     | HighlightNet     of net: string option

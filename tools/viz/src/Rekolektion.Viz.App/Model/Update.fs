@@ -56,6 +56,11 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         appendLog (sprintf "load failed: %s — %s" path reason) model, Cmd.none
     | Msg.ToggleLayer (key, vis) ->
         { model with Toggle = Visibility.toggleLayer key vis model.Toggle }, Cmd.none
+    | Msg.SetAllLayers vis ->
+        let keys =
+            Layout.Layer.allDrawing
+            |> List.map (fun l -> (l.Number, l.DataType))
+        { model with Toggle = Visibility.setAllLayers keys vis model.Toggle }, Cmd.none
     | Msg.ToggleNet (name, vis) ->
         { model with Toggle = Visibility.toggleNet name vis model.Toggle }, Cmd.none
     | Msg.ToggleBlock (name, vis) ->

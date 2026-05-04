@@ -340,6 +340,42 @@ def run_lvs(
     for c1, c2 in _equate_pairs:
         lines.append(f"catch {{equate nets -circuit1 {c1} {c2}}}")
         lines.append(f"catch {{equate nets -circuit2 {c1} {c2}}}")
+    # netgen `equate classes` ledger.  Audit 2026-05-03 / task #101 +
+    # follow-up: the foundry SRAM bitcell hand-written body uses the
+    # SKY130 special_* SRAM models (special_nfet_pass for access W=0.14,
+    # special_nfet_latch for pull-down W=0.21, special_pfet_latch for
+    # pull-up W=0.14 + parasitic L=0.025).  Magic's ext2spice still
+    # extracts the same DIFF as generic nfet_01v8 / pfet_01v8_hvt
+    # because the sky130 tech file maps the layout DIFF+POLY to the
+    # generic 1V8 device class — there's no Magic-side device-class
+    # hint that says "this DIFF is in an SRAM cell, use special_*".
+    #
+    # Without these equates, netgen flags the qtap subckt as a device-
+    # class mismatch (extracted has nfet_01v8 instances, reference has
+    # special_nfet_pass / special_nfet_latch instances — different
+    # netgen device classes by name).  These directives reconcile the
+    # two by class-name aliasing.
+    #
+    # SPICE behavior with the special_* models is correct (narrow-W
+    # bins exist for SRAM W=0.14/0.21, generic 1V8 has wmin=5µm).  LVS
+    # behavior is correct after these equates (graph-iso + W/L
+    # parametric matching disambiguates which extracted nfet maps to
+    # which reference class within the merged super-class).
+    _equate_class_pairs = [
+        ("sky130_fd_pr__nfet_01v8", "sky130_fd_pr__special_nfet_pass"),
+        ("sky130_fd_pr__nfet_01v8", "sky130_fd_pr__special_nfet_latch"),
+        ("sky130_fd_pr__pfet_01v8_hvt", "sky130_fd_pr__special_pfet_latch"),
+    ]
+    for c_extracted, c_reference in _equate_class_pairs:
+        # Netgen syntax: `equate classes -circuit1 <cls1> -circuit2 <cls2>`
+        # tells netgen to treat these device classes as equivalent for
+        # matching purposes.  `catch` swallows the error if either class
+        # isn't present (e.g. production LVS where reference uses generic
+        # 1V8 in both circuits — the equate is a no-op there).
+        lines.append(
+            f"catch {{equate classes "
+            f"\"-circuit1 {c_extracted}\" \"-circuit2 {c_reference}\"}}"
+        )
     for cell in flatten_cells:
         lines.append(f'catch {{flatten class "-circuit1 {cell}"}}')
         lines.append(f'catch {{flatten class "-circuit2 {cell}"}}')

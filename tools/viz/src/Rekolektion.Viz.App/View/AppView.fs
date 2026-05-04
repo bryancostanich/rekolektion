@@ -38,6 +38,10 @@ let private stack3DToggleAttr (v: Visibility.ToggleState) : IAttr<StackCanvasCon
     AttrBuilder<StackCanvasControl>.CreateProperty<Visibility.ToggleState>(
         StackCanvasControl.ToggleProperty, v, ValueNone)
 
+let private stack3DPickedAttr (handler: System.Action<string, int>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<System.Action<string, int>>(
+        StackCanvasControl.PolygonPickedHandlerProperty, handler, ValueNone)
+
 let private canvas (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
     let lib = model.Macro |> Option.map (fun m -> m.Library)
     let flat =
@@ -51,11 +55,16 @@ let private canvas (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
               gds2DFlatAttr    flat
               gds2DToggleAttr   model.Toggle ]
 
+    let pickedHandler =
+        System.Action<string, int>(fun s i ->
+            _dispatch (Msg.PolygonPicked (s, i)))
+
     let canvas3D : IView =
         ViewBuilder.Create<StackCanvasControl>
             [ stack3DLibraryAttr lib
               stack3DFlatAttr    flat
-              stack3DToggleAttr   model.Toggle ]
+              stack3DToggleAttr   model.Toggle
+              stack3DPickedAttr  pickedHandler ]
 
     let activeIndex =
         match model.ActiveTab with

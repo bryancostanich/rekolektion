@@ -1,6 +1,7 @@
 module Rekolektion.Viz.App.Canvas3D.StackCanvasControl
 
 open System
+open System.Numerics
 open Avalonia
 open Avalonia.Input
 open Avalonia.OpenGL
@@ -9,6 +10,29 @@ open Silk.NET.OpenGL
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Render.Mesh
+
+/// Even-odd point-in-polygon. `poly` is in GDS DB units; `qx`/`qy`
+/// are in user µm. `uupdb` converts DBU → µm.
+let private pointInPolygon
+        (poly: Point array)
+        (qx: float32) (qy: float32)
+        (uupdb: float) : bool =
+    let n = poly.Length
+    if n < 3 then false
+    else
+        let mutable inside = false
+        let mutable j = n - 1
+        for i in 0 .. n - 1 do
+            let xi = float32 (float poly.[i].X * uupdb)
+            let yi = float32 (float poly.[i].Y * uupdb)
+            let xj = float32 (float poly.[j].X * uupdb)
+            let yj = float32 (float poly.[j].Y * uupdb)
+            let cross =
+                ((yi > qy) <> (yj > qy)) &&
+                (qx < (xj - xi) * (qy - yi) / (yj - yi) + xi)
+            if cross then inside <- not inside
+            j <- i
+        inside
 
 /// Pointer drag modes. Left = orbit (yaw/pitch). Right or middle =
 /// pan (translate target in the screen-aligned plane). NoDrag means
@@ -79,6 +103,11 @@ type StackCanvasControl() =
     // (translates target in the screen-aligned plane).
     let mutable dragMode : DragMode = NoDrag
     let mutable lastPos : Avalonia.Point = Avalonia.Point()
+    // Mouse-down position used to distinguish a click (small total
+    // travel, fires a pick) from a drag (large travel, just orbits
+    // / pans). Compared in OnPointerReleased.
+    let mutable pressStart : Avalonia.Point = Avalonia.Point()
+    let mutable pressedButton : DragMode = NoDrag
 
     static member val LibraryProperty : StyledProperty<Library option> =
         AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
@@ -88,6 +117,12 @@ type StackCanvasControl() =
         with get
     static member val ToggleProperty : StyledProperty<Visibility.ToggleState> =
         AvaloniaProperty.Register<StackCanvasControl, Visibility.ToggleState>("Toggle", Visibility.empty)
+        with get
+    /// Picking callback. The host wires this to dispatch a
+    /// `PolygonPicked` Msg. Holds an Action(structure, index) — null
+    /// means "no host listener", which silently no-ops on click.
+    static member val PolygonPickedHandlerProperty : StyledProperty<Action<string, int>> =
+        AvaloniaProperty.Register<StackCanvasControl, Action<string, int>>("PolygonPickedHandler", null)
         with get
 
     member this.Library
@@ -101,6 +136,10 @@ type StackCanvasControl() =
     member this.Toggle
         with get() : Visibility.ToggleState = this.GetValue(StackCanvasControl.ToggleProperty)
         and set(v: Visibility.ToggleState) = this.SetValue(StackCanvasControl.ToggleProperty, v) |> ignore
+
+    member this.PolygonPickedHandler
+        with get() : Action<string, int> = this.GetValue(StackCanvasControl.PolygonPickedHandlerProperty)
+        and set(v: Action<string, int>) = this.SetValue(StackCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
 
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
         yawDeg <- yaw
@@ -192,8 +231,10 @@ type StackCanvasControl() =
             if props.IsRightButtonPressed || props.IsMiddleButtonPressed then PanDrag
             elif props.IsLeftButtonPressed then OrbitDrag
             else NoDrag
+        pressedButton <- dragMode
         if dragMode <> NoDrag then
             lastPos <- e.GetPosition this
+            pressStart <- lastPos
             e.Pointer.Capture this
             this.Focus () |> ignore
 
@@ -244,8 +285,92 @@ type StackCanvasControl() =
 
     override this.OnPointerReleased e =
         base.OnPointerReleased e
+        // Treat as a click if the pointer barely moved while held.
+        // 4px threshold matches what feels intentional vs an
+        // accidental wiggle during a quick click.
+        let release = e.GetPosition this
+        let dx = release.X - pressStart.X
+        let dy = release.Y - pressStart.Y
+        let travel = sqrt (dx * dx + dy * dy)
+        let wasOrbitClick = pressedButton = OrbitDrag && travel < 4.0
         dragMode <- NoDrag
+        pressedButton <- NoDrag
         e.Pointer.Capture null
+        if wasOrbitClick then
+            this.PickAt(release)
+
+    /// Cast a ray from the camera through the screen point and find
+    /// the closest visible polygon prism it pierces. Polygon storage
+    /// is in DBU; mesh world coords are µm = DBU × UserUnitsPerDbUnit
+    /// with Z multiplied by Z_EXAGGERATION (matches what we upload to
+    /// the VBO). Hit dispatches via PolygonPickedHandler.
+    member private this.PickAt (screen: Avalonia.Point) =
+        let handler = this.PolygonPickedHandler
+        if isNull (box handler) then () else
+        match this.Library with
+        | None -> ()
+        | Some lib ->
+            let flat = this.FlatPolygons
+            if flat.Length = 0 then () else
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if w < 1.0 || h < 1.0 then () else
+            let ndcX = float32 (2.0 * screen.X / w - 1.0)
+            let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
+            let mvp =
+                Matrix4x4Helpers.buildOrbitMvp
+                    yawDeg pitchDeg zoom target extent (w, h)
+            match Matrix4x4.Invert(mvp) with
+            | false, _ -> ()
+            | true, inv ->
+                let unproj (z: float32) =
+                    let v = Vector4(ndcX, ndcY, z, 1.0f)
+                    let r = Vector4.Transform(v, inv)
+                    Vector3(r.X / r.W, r.Y / r.W, r.Z / r.W)
+                let nearW = unproj -1.0f
+                let farW  = unproj 1.0f
+                let rayO = nearW
+                let rayD = Vector3.Normalize(farW - nearW)
+                let toggle = this.Toggle
+                let mutable bestT = System.Single.MaxValue
+                let mutable best : (string * int) option = None
+                for poly in flat do
+                    let key = (poly.Layer, poly.DataType)
+                    if Visibility.isLayerVisible toggle key then
+                        match Layout.Layer.bySky130Number poly.Layer poly.DataType with
+                        | None -> ()
+                        | Some layer ->
+                            let zBot = float32 (layer.StackZ * Z_EXAGGERATION)
+                            let zTop = float32 ((layer.StackZ + layer.Thickness) * Z_EXAGGERATION)
+                            let dz = rayD.Z
+                            if MathF.Abs(dz) > 1.0e-6f then
+                                let tA = (zBot - rayO.Z) / dz
+                                let tB = (zTop - rayO.Z) / dz
+                                let tIn  = MathF.Min(tA, tB)
+                                let tOut = MathF.Max(tA, tB)
+                                if tOut > 0.0f && tIn < bestT then
+                                    // Sample at slab entry, midpoint,
+                                    // and exit. Top-down clicks hit
+                                    // the top face (entry); a steep
+                                    // grazing ray may only intersect
+                                    // the side wall (mid/exit).
+                                    let t0 = MathF.Max(tIn, 0.0f)
+                                    let t1 = (tIn + tOut) * 0.5f
+                                    let t2 = tOut
+                                    let samples = [| t0; t1; t2 |]
+                                    let mutable hitT = System.Single.MaxValue
+                                    for s in samples do
+                                        if s >= 0.0f && s < hitT then
+                                            let px = rayO.X + rayD.X * s
+                                            let py = rayO.Y + rayD.Y * s
+                                            if pointInPolygon poly.Points px py lib.UserUnitsPerDbUnit then
+                                                hitT <- s
+                                    if hitT < bestT then
+                                        bestT <- hitT
+                                        best <- Some (poly.SourceStructure, poly.SourceIndex)
+                match best with
+                | Some (s, i) -> handler.Invoke(s, i)
+                | None -> ()
 
     override this.OnPointerWheelChanged e =
         base.OnPointerWheelChanged e

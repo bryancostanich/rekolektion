@@ -95,9 +95,15 @@ def _flatten_gds(src_gds: Path, dst_gds: Path, top_cell: str) -> Path:
         1 for lbl in top.labels if lbl.text in ("BL", "BR", "WL")
     )
     if _LEFT_INTERNAL:
-        print(
-            f"  [warn] {_LEFT_INTERNAL} foundry-internal BL/BR/WL labels "
-            f"survived flatten — F11/F13 strip incomplete?"
+        # Audit-2026-05-03 / task #112: this used to be a print warning;
+        # it's now a hard fail so a strip incompletion can't slip through
+        # silently into LVS.  If you hit this, the F11/F13 label-strip
+        # path is missing a foundry cell name from `_STRIP` above.
+        raise SystemExit(
+            f"[{top_cell}] {_LEFT_INTERNAL} foundry-internal BL/BR/WL "
+            f"labels survived flatten — F11/F13 strip incomplete. "
+            f"Add the offending foundry cell to _STRIP at the top of "
+            f"this script, then re-run."
         )
 
     out_lib = gdstk.Library(
@@ -126,6 +132,57 @@ def _parse_subckt_ports(spice_path: Path, cell_name: str) -> list[str]:
     return ports
 
 
+# Audit-2026-05-03 / task #64: explicit allow-lists for what the
+# production aligner is permitted to reconcile.  The production
+# disagreement profile differs from CIM:
+#
+# Drops: source-ref ports that Magic ext2spice doesn't promote.  We
+# don't currently have known cases on production — if a drop fires
+# this guard, it's news worth investigating.  Empty pattern fails on
+# any drop.
+#
+# Adds: extract-side ports that the source ref doesn't declare.  The
+# documented case is `dec_out_<N>` — internal row-decoder li1 outputs
+# that Magic finds at the row_decoder cell boundary and over-promotes
+# to top-level ports even though they're internal to the macro
+# design.  128 of these on the 128-row variants.
+import re as _re_prod
+_PROD_ALLOWED_DROPS = _re_prod.compile(r"(?!.*)")  # match nothing
+_PROD_ALLOWED_ADDS = _re_prod.compile(r"^dec_out_\d+$")
+
+
+def _check_alignment_drift(
+    src_ports: list[str], ext_ports: list[str], cell_name: str,
+) -> None:
+    """Compare source-ref vs extracted port lists; fail on any
+    disagreement outside the documented production allow-lists.
+
+    Raises SystemExit with a precise diagnostic so an unexpected drift
+    cannot be silently absorbed by the aligner.
+    """
+    src_set, ext_set = set(src_ports), set(ext_ports)
+    dropped = src_set - ext_set
+    added = ext_set - src_set
+    bad_drops = [p for p in sorted(dropped) if not _PROD_ALLOWED_DROPS.match(p)]
+    bad_adds = [p for p in sorted(added) if not _PROD_ALLOWED_ADDS.match(p)]
+    if bad_drops or bad_adds:
+        msg = [
+            f"[{cell_name}] aligner drift outside documented allow-lists.",
+            f"  Source ref has {len(src_set)} ports; extract has {len(ext_set)}.",
+        ]
+        if bad_drops:
+            msg.append(f"  UNEXPECTED DROPS (in ref, missing from extract): {bad_drops}")
+            msg.append(f"  Allowed-drop pattern: {_PROD_ALLOWED_DROPS.pattern}")
+        if bad_adds:
+            msg.append(f"  UNEXPECTED ADDS (in extract, missing from ref): {bad_adds}")
+            msg.append(f"  Allowed-add pattern: {_PROD_ALLOWED_ADDS.pattern}")
+        msg.append(
+            "Investigate before extending the allow-list.  See "
+            "audit/hack_inventory.md A2 + task #64 + CLAUDE.md."
+        )
+        raise SystemExit("\n".join(msg))
+
+
 def _align_ref_ports(extracted: Path, ref_sp: Path, out_dir: Path,
                      cell_name: str) -> Path:
     """Rewrite ref_sp's `.subckt cell_name` line to use only the ports
@@ -138,9 +195,27 @@ def _align_ref_ports(extracted: Path, ref_sp: Path, out_dir: Path,
     netgen finish pin matching when the failure is purely about which
     nets reach the macro boundary, not connectivity.
 
+    KNOWN TRAP — DO NOT "FIX" BY ADDING LABELS TO THE MACRO TOP.
+    Adding macro-top `.pin` shapes + labels at coordinates matching
+    sub-cell port labels does NOT make Magic promote them.  This was
+    tried in commit b09c441 (F12 — also tried flat extraction); flat
+    was reverted in a97f56f because it hides issue #7 per-cell drain
+    floats.  See `audit/hack_inventory.md` entry A2, tasks #64 / #105
+    / #110, and `CLAUDE.md` "Known traps" section.  The 9-vs-2
+    disconnected-pin failure netgen prints is the same Magic tool
+    limitation; characterize via flood-fill, not via label fix.
+
+    Audit 2026-05-03: the rewrite is now guarded by an explicit
+    allow-list (`_PROD_ALLOWED_DROPS`, `_PROD_ALLOWED_ADDS`).  Any port
+    disagreement outside the documented patterns aborts the run with
+    a precise diagnostic — silently absorbing new drift is no longer
+    possible.
+
     Returns the path to the rewritten reference (under `out_dir`).
     """
     ext_ordered = _parse_subckt_ports(extracted, cell_name)
+    src_ordered = _parse_subckt_ports(ref_sp, cell_name)
+    _check_alignment_drift(src_ordered, ext_ordered, cell_name)
     lines = ref_sp.read_text().splitlines(keepends=True)
     out_lines: list[str] = []
     skip_continuations = False

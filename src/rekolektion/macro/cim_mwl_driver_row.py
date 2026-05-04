@@ -128,6 +128,14 @@ class MWLDriverRow:
             # is placed at the LEFT of the macro) to the A pin.  Place
             # the .pin shape at the boundary so Magic promotes
             # MWL_EN[row] as a top-level macro port.
+            #
+            # KNOWN TRAP — these labels are correct as emitted (verified
+            # 2026-05-03: 64 labels on layer 67/5, standalone Magic
+            # extract finds them as ports).  But Magic's hierarchical
+            # port-promotion drops them at the macro top regardless.
+            # DO NOT "fix" by adding more labels at the macro-top cell
+            # in cim_assembler.py — already tried in commit b09c441
+            # (F12) and a97f56f.  See CLAUDE.md "Known traps" section.
             a_cy = y_off + _A_LOCAL_Y
             top.add(gdstk.rectangle(
                 (0.0, a_cy - _PIN_HALF),

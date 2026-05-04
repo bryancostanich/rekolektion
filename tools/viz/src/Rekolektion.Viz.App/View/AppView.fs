@@ -167,44 +167,43 @@ let private fileTab
         )
     ] :> IView
 
-/// Horizontal strip of file tabs, one per OpenMacro. Renders an
-/// empty placeholder when no files are open — switching the
-/// child node type (placeholder vs StackPanel-of-tabs) forces
-/// FuncUI's diff to discard the old subtree, which avoids a
-/// quirk where transitioning StackPanel.children from one item
-/// to an empty list left the last tab visually attached.
+/// Horizontal strip of file tabs, one per OpenMacro. Always
+/// includes a leading zero-size phantom child so the StackPanel's
+/// `children` collection never transitions to empty — FuncUI's
+/// 1.6.0 diff was leaving the last tab visually attached when
+/// children went from `[tab]` to `[]`. With the phantom in place
+/// the collection becomes `[phantom]` and the diff cleanly
+/// removes the closed tab.
 let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
-    let body : IView =
-        if List.isEmpty model.OpenMacros then
-            TextBlock.create [
-                TextBlock.text "(no files open)"
-                TextBlock.foreground "#444"
-                TextBlock.fontSize 11.0
-                TextBlock.verticalAlignment VerticalAlignment.Center
-                TextBlock.margin (Thickness(8.0, 0.0))
-            ] :> IView
-        else
-            let tabs =
-                model.OpenMacros
-                |> List.map (fun m ->
-                    let active = (model.ActiveMacroPath = Some m.Path)
-                    fileTab active m.Path dispatch)
+    let phantom : IView =
+        Border.create [
+            Border.width 0.0
+            Border.height 0.0
+            Border.background "Transparent"
+        ] :> IView
+    let tabs =
+        model.OpenMacros
+        |> List.map (fun m ->
+            let active = (model.ActiveMacroPath = Some m.Path)
+            fileTab active m.Path dispatch)
+    let children = phantom :: tabs
+    Border.create [
+        Border.height 28.0
+        Border.background "#141414"
+        Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+        Border.borderBrush "#2a2a2a"
+        Border.child (
             ScrollViewer.create [
                 ScrollViewer.horizontalScrollBarVisibility Primitives.ScrollBarVisibility.Auto
                 ScrollViewer.verticalScrollBarVisibility Primitives.ScrollBarVisibility.Disabled
                 ScrollViewer.content (
                     StackPanel.create [
                         StackPanel.orientation Orientation.Horizontal
-                        StackPanel.children tabs
+                        StackPanel.children children
                     ]
                 )
-            ] :> IView
-    Border.create [
-        Border.height 28.0
-        Border.background "#141414"
-        Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
-        Border.borderBrush "#2a2a2a"
-        Border.child body
+            ]
+        )
     ] :> IView
 
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =

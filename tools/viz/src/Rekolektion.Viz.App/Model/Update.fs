@@ -86,6 +86,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)
         | None -> model, Cmd.none
     | Msg.CloseMacro path ->
+        eprintfn "[viz] CloseMacro: path=%s, before=%d open" path model.OpenMacros.Length
         let remaining = model.OpenMacros |> List.filter (fun m -> m.Path <> path)
         // If the closed tab was active, fall back to the last
         // remaining tab (right-most); empty list → no active tab.

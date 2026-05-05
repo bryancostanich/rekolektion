@@ -34,6 +34,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let recents =
             macro.Path :: (model.RecentFiles |> List.filter (fun p -> p <> macro.Path))
             |> List.truncate 10
+        // Hide Magic-internal marker layers (255, *) by default —
+        // checkpaint / error / feedback geometry on a freshly loaded
+        // .mag would otherwise paint a large translucent overlay
+        // over the cell. Toggleable on later from the layer panel.
+        // No-op for .gds: those keys don't appear there.
+        let toggle' =
+            [(255, 0); (255, 1); (255, 2)]
+            |> List.fold (fun t key -> Visibility.toggleLayer key false t) model.Toggle
         // Insert (or replace) by path so reopening a file just
         // refreshes its tab in place rather than duplicating it.
         let openMacros =
@@ -57,6 +65,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 OpenMacros = openMacros
                 ActiveMacroPath = Some macro.Path
                 RecentFiles = recents
+                Toggle = toggle'
                 Selection = None }
         model', cmd
     | Msg.NetsLoaded (path, nets) ->

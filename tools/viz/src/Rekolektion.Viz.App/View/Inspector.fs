@@ -55,26 +55,70 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                 if x > xMax then xMax <- x
                 if y < yMin then yMin <- y
                 if y > yMax then yMax <- y
-            // Find TextLabels in the same structure whose Origin
-            // falls inside (or within `tolUm`) of the polygon bbox.
-            // ~0.05 µm covers labels sitting on the centerline of an
-            // LI1 stripe vs the LICON1 contact polygon the user
-            // actually clicked.
-            let tolUm = 0.05
-            let matchingLabels =
+            // Find TextLabels in the same structure that are
+            // associated with the picked polygon. SKY130 labels are
+            // points placed somewhere along a signal stripe, not on
+            // every connected fragment, so a tight bbox test misses
+            // most of them. Two complementary passes:
+            //   1. Strict: point-in-polygon with 0.05 µm grace —
+            //      catches labels placed directly on the clicked
+            //      polygon (e.g. label "Q" on LI1 stripe matches
+            //      that LI1 polygon).
+            //   2. Layer-family: labels on the same layer NUMBER
+            //      (any datatype) within ~1.0 µm of the polygon
+            //      bbox — catches the common case where the user
+            //      clicked an LICON1 contact / via / fragment near
+            //      a labeled stripe of the same routing layer.
+            let strictTol = 0.05
+            let nearbyRadius = 1.0
+            let pointInPolyUm (qx: float) (qy: float) (poly: Point array) : bool =
+                let n = poly.Length
+                if n < 3 then false
+                else
+                    let mutable inside = false
+                    let mutable j = n - 1
+                    for i in 0 .. n - 1 do
+                        let xi = float poly.[i].X * uupdb
+                        let yi = float poly.[i].Y * uupdb
+                        let xj = float poly.[j].X * uupdb
+                        let yj = float poly.[j].Y * uupdb
+                        let cross =
+                            ((yi > qy) <> (yj > qy)) &&
+                            (qx < (xj - xi) * (qy - yi) / (yj - yi) + xi)
+                        if cross then inside <- not inside
+                        j <- i
+                    inside
+            let allLabels =
                 m.Library.Structures
                 |> List.tryFind (fun s -> s.Name = struc)
                 |> Option.map (fun s ->
                     s.Elements
                     |> List.choose (function
                         | Element.Text t -> Some t
-                        | _ -> None)
-                    |> List.filter (fun t ->
-                        let lx = float t.Origin.X * uupdb
-                        let ly = float t.Origin.Y * uupdb
-                        lx >= xMin - tolUm && lx <= xMax + tolUm &&
-                        ly >= yMin - tolUm && ly <= yMax + tolUm))
+                        | _ -> None))
                 |> Option.defaultValue []
+            let labelXY (t: TextLabel) =
+                float t.Origin.X * uupdb, float t.Origin.Y * uupdb
+            let strictHits =
+                allLabels
+                |> List.filter (fun t ->
+                    let lx, ly = labelXY t
+                    pointInPolyUm lx ly poly.Points
+                    || (lx >= xMin - strictTol && lx <= xMax + strictTol
+                        && ly >= yMin - strictTol && ly <= yMax + strictTol))
+            let familyHits =
+                allLabels
+                |> List.filter (fun t ->
+                    if t.Layer <> poly.Layer then false
+                    else
+                        let lx, ly = labelXY t
+                        lx >= xMin - nearbyRadius && lx <= xMax + nearbyRadius
+                        && ly >= yMin - nearbyRadius && ly <= yMax + nearbyRadius)
+            // Merge passes, de-dupe by (Layer, TextType, Origin, Text).
+            let matchingLabels =
+                strictHits @ familyHits
+                |> List.distinctBy (fun t ->
+                    (t.Layer, t.TextType, t.Origin.X, t.Origin.Y, t.Text))
 
             let labelLines : IView list =
                 matchingLabels

@@ -29,6 +29,10 @@ type Msg =
     /// Close whichever tab is currently active. Convenience for
     /// menu / hotkey paths that don't carry a path.
     | CloseActiveTab
+    /// Re-read the active tab's GDS from disk. Used by Cmd+R for
+    /// the loop where the user generates a macro in another
+    /// process and wants the viewer to refresh.
+    | ReloadActiveMacro
     // Async net derivation result. `path` matches the macro the
     // nets were derived for; if the user opens a different file
     // in the meantime, the stale message is dropped.

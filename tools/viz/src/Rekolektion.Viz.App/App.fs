@@ -135,6 +135,14 @@ type App() =
 
         fileSub.Items.Add(NativeMenuItemSeparator())
 
+        let reloadItem = NativeMenuItem("Reload")
+        reloadItem.Gesture <- KeyGesture(Key.R, KeyModifiers.Meta)
+        reloadItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.ReloadActiveMacro)
+        fileSub.Items.Add(reloadItem)
+
+        fileSub.Items.Add(NativeMenuItemSeparator())
+
         let closeItem = NativeMenuItem("Close tab")
         closeItem.Gesture <- KeyGesture(Key.W, KeyModifiers.Meta)
         closeItem.Click.Add(fun _ ->

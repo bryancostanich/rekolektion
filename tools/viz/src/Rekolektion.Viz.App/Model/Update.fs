@@ -85,6 +85,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         match model.ActiveMacroPath with
         | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)
         | None -> model, Cmd.none
+    | Msg.ReloadActiveMacro ->
+        // OpenFile → LoadComplete already replaces an existing
+        // entry by path, so re-issuing it for the active path
+        // refreshes the tab in place.
+        match model.ActiveMacroPath with
+        | Some p ->
+            eprintfn "[viz] Reload %s" p
+            model, Cmd.ofMsg (Msg.OpenFile p)
+        | None -> model, Cmd.none
     | Msg.CloseMacro path ->
         eprintfn "[viz] CloseMacro: path=%s, before=%d open" path model.OpenMacros.Length
         let remaining = model.OpenMacros |> List.filter (fun m -> m.Path <> path)

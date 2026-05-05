@@ -19,17 +19,32 @@ let private bounds (lib: Library) =
         let ys = allPts |> List.map (fun p -> p.Y)
         List.min xs, List.min ys, List.max xs, List.max ys
 
-let paint (canvas: SKCanvas) (size: int * int) (lib: Library) : unit =
-    let (w, h) = size
-    let (xmin, ymin, xmax, ymax) = bounds lib
-    let dx = float (xmax - xmin) |> max 1.0
-    let dy = float (ymax - ymin) |> max 1.0
+/// Paint into a caller-supplied ViewBox so labels share the same
+/// world-to-screen projection as `LayerPainter.paintIn` — i.e.
+/// they pan and zoom with the geometry instead of being baked
+/// into the canvas-fit rectangle.
+let paintIn (canvas: SKCanvas) (vb: LayerPainter.ViewBox) (lib: Library) : unit =
+    let dx = float (vb.MaxX - vb.MinX) |> max 1.0
+    let dy = float (vb.MaxY - vb.MinY) |> max 1.0
     use paint = new SKPaint(Color = SKColors.White, IsAntialias = true, TextSize = 11.0f, IsStroke = false)
     for s in lib.Structures do
         for el in s.Elements do
             match el with
             | Text t ->
-                let x = float (t.Origin.X - xmin) / dx * float w
-                let y = float h - (float (t.Origin.Y - ymin) / dy * float h)
+                let x = float (t.Origin.X - vb.MinX) / dx * float vb.PixelW
+                let y = float vb.PixelH - (float (t.Origin.Y - vb.MinY) / dy * float vb.PixelH)
                 canvas.DrawText(t.Text, float32 x, float32 y, paint)
             | _ -> ()
+
+/// Auto-fit variant: ViewBox derived from polygon + label bbox.
+/// Kept for callers that paint a one-off canvas-fit rendering
+/// (e.g. the headless render CLI).
+let paint (canvas: SKCanvas) (size: int * int) (lib: Library) : unit =
+    let (w, h) = size
+    let (xmin, ymin, xmax, ymax) = bounds lib
+    let vb : LayerPainter.ViewBox = {
+        MinX = xmin; MinY = ymin
+        MaxX = xmax; MaxY = ymax
+        PixelW = w;  PixelH = h
+    }
+    paintIn canvas vb lib

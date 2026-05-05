@@ -83,6 +83,7 @@ let private table : Map<string, int * int> =
 
         // Markers / non-physical layers
         "areaid.sc",      (81, 2)
+        "checkpaint",     (81, 2)         // FIXED_BBOX outline; render as marker
         "comment",        (83, 44)
 
         // ReRAM-specific (sky130_fd_pr_reram). Numbers from PDK GDS
@@ -94,26 +95,6 @@ let private table : Map<string, int * int> =
         "metal6",         (143, 20)
     ]
     |> Map.ofList
-
-/// Magic-internal marker layers that aren't real silicon. The
-/// loader silently drops rects on these layers so the renderer
-/// doesn't paint giant overlays for what is just bookkeeping.
-///   - checkpaint: incremental-extract / loaded-tile region. Often
-///     covers most of the cell.
-///   - error / feedback: Magic DRC/extract diagnostic layers.
-///   - subcell: rendered by Magic itself as a per-instance frame;
-///     we already draw cell outlines via the bbox.
-let private skipLayers : Set<string> =
-    Set.ofList [
-        "checkpaint"
-        "error"
-        "errors"
-        "feedback"
-        "subcell"
-    ]
-
-let isSkipped (name: string) : bool =
-    Set.contains (name.ToLowerInvariant()) skipLayers
 
 /// Lookup a Magic layer name. Names are matched case-insensitively
 /// because Magic accepts mixed-case in some tech files.

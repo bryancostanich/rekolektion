@@ -83,8 +83,14 @@ let private table : Map<string, int * int> =
 
         // Markers / non-physical layers
         "areaid.sc",      (81, 2)
-        "checkpaint",     (81, 2)         // FIXED_BBOX outline; render as marker
         "comment",        (83, 44)
+        // Magic-internal layers — given their own (255, *) keys
+        // so the user can toggle them independently and so AutoFit
+        // can exclude them from the cell's render bbox.
+        "checkpaint",     (255, 0)
+        "error",          (255, 1)
+        "errors",         (255, 1)
+        "feedback",       (255, 2)
 
         // ReRAM-specific (sky130_fd_pr_reram). Numbers from PDK GDS
         // layer file; if you don't see these in your install, this

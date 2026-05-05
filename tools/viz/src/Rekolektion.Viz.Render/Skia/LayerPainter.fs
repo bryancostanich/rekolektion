@@ -19,12 +19,17 @@ let private boundsOfFlat (polys: FlatPolygon array) : (int64 * int64 * int64 * i
         let mutable yMin = System.Int64.MaxValue
         let mutable xMax = System.Int64.MinValue
         let mutable yMax = System.Int64.MinValue
+        // Skip non-physical / Magic-internal markers (e.g. checkpaint
+        // tiles) so they don't pull the bbox out to several times the
+        // cell's silicon footprint. They still RENDER if the user
+        // toggles them on; this just excludes them from camera-fit.
         for p in polys do
-            for pt in p.Points do
-                if pt.X < xMin then xMin <- pt.X
-                if pt.X > xMax then xMax <- pt.X
-                if pt.Y < yMin then yMin <- pt.Y
-                if pt.Y > yMax then yMax <- pt.Y
+            if not (Layout.Layer.isNonPhysical p.Layer p.DataType) then
+                for pt in p.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
         if xMin > xMax then (0L, 0L, 1L, 1L)
         else (xMin, yMin, xMax, yMax)
 

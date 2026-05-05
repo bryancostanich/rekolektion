@@ -172,20 +172,26 @@ type StackCanvasControl() =
         // bitcell array). With raw lib.Structures the bbox would
         // only cover the top cell's polygons.
         for poly in flat do
-            for p in poly.Points do
+            // Skip Magic-internal markers (255, *) so the camera
+            // frames silicon, not bookkeeping rectangles. Mirrors
+            // the 2D AutoFit / LayerPainter.bboxOf behavior. Also
+            // applied to the Z bbox so the marker layer sitting
+            // above met5 doesn't pull the frustum vertically.
+            if not (Layout.Layer.isNonPhysical poly.Layer poly.DataType) then
+              for p in poly.Points do
                 let x = float32 ((float p.X) * lib.UserUnitsPerDbUnit)
                 let y = float32 ((float p.Y) * lib.UserUnitsPerDbUnit)
                 if x < xMin then xMin <- x
                 if x > xMax then xMax <- x
                 if y < yMin then yMin <- y
                 if y > yMax then yMax <- y
-            match Layout.Layer.bySky130Number poly.Layer poly.DataType with
-            | Some (layer: Layout.Layer.Layer) ->
-                let zBot = layer.StackZ
-                let zTop = layer.StackZ + layer.Thickness
-                if zBot < zMinPhysical then zMinPhysical <- zBot
-                if zTop > zMaxPhysical then zMaxPhysical <- zTop
-            | None -> ()
+              match Layout.Layer.bySky130Number poly.Layer poly.DataType with
+              | Some (layer: Layout.Layer.Layer) ->
+                  let zBot = layer.StackZ
+                  let zTop = layer.StackZ + layer.Thickness
+                  if zBot < zMinPhysical then zMinPhysical <- zBot
+                  if zTop > zMaxPhysical then zMaxPhysical <- zTop
+              | None -> ()
         let zMin = zMinPhysical * Z_EXAGGERATION
         let zMax = zMaxPhysical * Z_EXAGGERATION
         if xMin > xMax then

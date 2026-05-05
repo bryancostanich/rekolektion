@@ -45,7 +45,24 @@ let allDrawing : Layer list = [
     { Number =  89; DataType = 44; Name = "mimcap";  Color = rgba 0xff 0xc8 0x00 0xff; StackZ =  2.50; Thickness = 0.05 }
     // Marker (areaid.sc) — non-physical, drawn flat as a thin overlay.
     { Number =  81; DataType =  2; Name = "areaid.sc"; Color = rgba 0xff 0x00 0xff 0x40; StackZ =  4.30; Thickness = 0.05 }
+    // Magic-internal marker layers. Not silicon; Magic uses these
+    // for incremental-extract bookkeeping and DRC/extract
+    // diagnostics. Distinct key (255, *) so they're toggleable on
+    // their own row in the layers panel; AutoFit (2D + 3D) skips
+    // them so they don't distort the rendered area size; rendered
+    // dim + translucent above met5 so they read as overlays when
+    // the user does want to see them.
+    { Number = 255; DataType =  0; Name = "magic.checkpaint"; Color = rgba 0x40 0xa0 0xa0 0x30; StackZ =  4.40; Thickness = 0.05 }
+    { Number = 255; DataType =  1; Name = "magic.error";      Color = rgba 0xff 0x40 0x40 0x60; StackZ =  4.45; Thickness = 0.05 }
+    { Number = 255; DataType =  2; Name = "magic.feedback";   Color = rgba 0xff 0xa0 0x40 0x60; StackZ =  4.50; Thickness = 0.05 }
 ]
+
+/// True when the layer is a Magic-internal marker (checkpaint,
+/// error, feedback). Callers use this to skip non-physical
+/// layers when computing the cell's render bbox so that the
+/// camera frames silicon, not bookkeeping rectangles.
+let isNonPhysical (layerNumber: int) (_dataType: int) : bool =
+    layerNumber = 255
 
 let private byKey =
     allDrawing |> List.map (fun l -> (l.Number, l.DataType), l) |> Map.ofList

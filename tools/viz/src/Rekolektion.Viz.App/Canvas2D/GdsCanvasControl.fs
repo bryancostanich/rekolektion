@@ -38,7 +38,7 @@ type private SkiaDraw(bounds: Rect, lib: Library, flat: FlatPolygon array, vb: L
                 use bg = new SKPaint(Style = SKPaintStyle.Fill, Color = SKColors.Black)
                 canvas.DrawRect(clipRect, bg)
                 LayerPainter.paintIn canvas vb flat toggle
-                LabelPainter.paintIn canvas vb lib
+                LabelPainter.paintIn canvas vb lib toggle
                 canvas.RestoreToCount saved
 
 type GdsCanvasControl() =

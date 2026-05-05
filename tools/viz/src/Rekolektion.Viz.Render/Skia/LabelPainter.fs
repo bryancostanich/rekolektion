@@ -1,6 +1,7 @@
 module Rekolektion.Viz.Render.Skia.LabelPainter
 
 open SkiaSharp
+open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
 
 let private bounds (lib: Library) =
@@ -22,15 +23,23 @@ let private bounds (lib: Library) =
 /// Paint into a caller-supplied ViewBox so labels share the same
 /// world-to-screen projection as `LayerPainter.paintIn` — i.e.
 /// they pan and zoom with the geometry instead of being baked
-/// into the canvas-fit rectangle.
-let paintIn (canvas: SKCanvas) (vb: LayerPainter.ViewBox) (lib: Library) : unit =
+/// into the canvas-fit rectangle. `toggle` filters labels by
+/// (Layer, TextType) the same way polygons are filtered, so
+/// hiding e.g. li1.label in the layer panel also drops Q / WL /
+/// MWL labels from the canvas.
+let paintIn
+        (canvas: SKCanvas)
+        (vb: LayerPainter.ViewBox)
+        (lib: Library)
+        (toggle: Visibility.ToggleState)
+        : unit =
     let dx = float (vb.MaxX - vb.MinX) |> max 1.0
     let dy = float (vb.MaxY - vb.MinY) |> max 1.0
     use paint = new SKPaint(Color = SKColors.White, IsAntialias = true, TextSize = 11.0f, IsStroke = false)
     for s in lib.Structures do
         for el in s.Elements do
             match el with
-            | Text t ->
+            | Text t when Visibility.isLayerVisible toggle (t.Layer, t.TextType) ->
                 let x = float (t.Origin.X - vb.MinX) / dx * float vb.PixelW
                 let y = float vb.PixelH - (float (t.Origin.Y - vb.MinY) / dy * float vb.PixelH)
                 canvas.DrawText(t.Text, float32 x, float32 y, paint)
@@ -47,4 +56,4 @@ let paint (canvas: SKCanvas) (size: int * int) (lib: Library) : unit =
         MaxX = xmax; MaxY = ymax
         PixelW = w;  PixelH = h
     }
-    paintIn canvas vb lib
+    paintIn canvas vb lib Visibility.empty

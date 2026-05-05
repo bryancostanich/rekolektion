@@ -183,6 +183,13 @@ type GdsCanvasControl() =
     override this.Render(context) =
         base.Render context
         let bounds = Rect(0.0, 0.0, this.Bounds.Width, this.Bounds.Height)
+        // A transparent fill is required for Avalonia's hit-test to
+        // treat this control's bounds as clickable. context.Custom
+        // draws via Skia on a separate path that the hit-test layer
+        // doesn't see, so without this fill PointerPressed / wheel
+        // events fall through and pan + zoom appear broken even
+        // though all the math is in place.
+        context.FillRectangle(Avalonia.Media.Brushes.Transparent, bounds)
         match this.Library with
         | Some lib ->
             if not hasFitted then this.AutoFit ()

@@ -8,6 +8,12 @@ type Vertex = { X: float32; Y: float32; Z: float32; LayerKey: int * int }
 type ExtrudedMesh = {
     Vertices: Vertex array
     Indices : int array
+    /// Parallel to `Vertices`. Each entry is the index into the
+    /// FlatPolygon array that produced this vertex. Used to map
+    /// per-vertex highlight flags from a CPU-computed polygon set
+    /// (e.g. polygons belonging to a highlighted net) without
+    /// re-extruding geometry.
+    VertexPolyIndex : int array
 }
 
 /// Extrude a single rectilinear polygon at z0..z1. Top + bottom fan-
@@ -78,11 +84,17 @@ let extrude (umPerDbu: float) (flat: FlatPolygon array) : ExtrudedMesh =
     let estimatedIdx   = flat.Length * 36
     let allVerts = System.Collections.Generic.List<Vertex>(estimatedVerts)
     let allIdx   = System.Collections.Generic.List<int>(estimatedIdx)
-    for poly in flat do
+    let allPolyIdx = System.Collections.Generic.List<int>(estimatedVerts)
+    for polyIdx in 0 .. flat.Length - 1 do
+        let poly = flat.[polyIdx]
         match Layer.bySky130Number poly.Layer poly.DataType with
         | None -> ()
         | Some layer ->
             let v, i = extrudePolygon umPerDbu layer poly.Points allVerts.Count
             allVerts.AddRange v
             allIdx.AddRange i
-    { Vertices = allVerts.ToArray(); Indices = allIdx.ToArray() }
+            for _ in 1 .. v.Length do
+                allPolyIdx.Add(polyIdx)
+    { Vertices = allVerts.ToArray()
+      Indices = allIdx.ToArray()
+      VertexPolyIndex = allPolyIdx.ToArray() }

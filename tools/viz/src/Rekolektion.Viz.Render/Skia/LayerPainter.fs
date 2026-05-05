@@ -49,7 +49,10 @@ let private project (vb: ViewBox) (p: Point) : SKPoint =
 /// with the highlighted text exists in the same Structure and its
 /// Origin lies inside the polygon's bbox. Empty when no net is
 /// highlighted; computation is skipped on the fast path.
-let private highlightedPolyKeys
+/// Public so the 3D canvas can reuse the same set when shading
+/// the GL mesh — keeps 2D and 3D agreement on which polygons
+/// belong to a net.
+let highlightedPolyKeys
         (lib: Library)
         (flat: FlatPolygon array)
         (netName: string)

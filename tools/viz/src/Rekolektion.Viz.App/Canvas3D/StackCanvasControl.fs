@@ -10,6 +10,7 @@ open Silk.NET.OpenGL
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Render.Mesh
+open Rekolektion.Viz.Render.Skia
 
 /// Even-odd point-in-polygon. `poly` is in GDS DB units; `qx`/`qy`
 /// are in user µm. `uupdb` converts DBU → µm.
@@ -61,9 +62,18 @@ type StackCanvasControl() =
     let mutable gl : GL option = None
     let mutable vbo : uint32 = 0u
     let mutable ebo : uint32 = 0u
+    // Separate VBO carrying one float per vertex: 1.0 when the
+    // source polygon is in the active highlighted net, 0.0
+    // otherwise. Lives in its own buffer so toggling a net only
+    // re-uploads N float32s instead of the full ~80MB mesh VBO.
+    let mutable netVbo : uint32 = 0u
     let mutable vao : uint32 = 0u
     let mutable program : uint32 = 0u
     let mutable indexCount : int = 0
+    // Net highlight state. `lastHighlightNet` is the value the GPU
+    // is currently configured for; differs from this.Toggle.
+    // HighlightNet → re-upload netVbo on next render.
+    let mutable lastHighlightNet : string option = None
     // Mesh upload caching. Re-extruding 400k polygons (production
     // SRAM macro) every frame would saturate the CPU and drop the
     // canvas to <1 fps. We extrude + upload only when FlatPolygons
@@ -383,6 +393,7 @@ type StackCanvasControl() =
         gl <- Some g
         vbo <- g.GenBuffer()
         ebo <- g.GenBuffer()
+        netVbo <- g.GenBuffer()
         vao <- g.GenVertexArray()
         // Avalonia tears down + recreates the GL context when the
         // tab is hidden / reshown. Reset the upload-state so the
@@ -392,6 +403,8 @@ type StackCanvasControl() =
         meshDirty <- true
         hasUploadedAny <- false
         layerSlotMap.Clear()
+        // Force a net-flag re-upload after re-init too.
+        lastHighlightNet <- Some "<<force-mismatch-on-reinit>>"
         depthRbo <- 0u
         depthRboW <- 0
         depthRboH <- 0
@@ -409,11 +422,13 @@ type StackCanvasControl() =
             layout(location=0) in vec3 aPos;
             layout(location=1) in vec3 aColor;
             layout(location=2) in float aLayerSlot;
+            layout(location=3) in float aInNet;
             uniform mat4 uMVP;
             uniform float uLayerVis[32];
             out vec3 vColor;
             out float vVis;
             out vec3 vWorldPos;
+            out float vInNet;
             void main() {
                 gl_Position = uMVP * vec4(aPos, 1.0);
                 vColor = aColor;
@@ -422,25 +437,35 @@ type StackCanvasControl() =
                 if (slot > 31) slot = 31;
                 vVis = uLayerVis[slot];
                 vWorldPos = aPos;
+                vInNet = aInNet;
             }
         "
         // uLightDir is camera-forward (head-mounted light): faces
         // facing the camera light up, faces facing away dim. A
         // world-fixed light makes camera rotation read as flat
-        // because face brightness is invariant.
+        // because face brightness is invariant. uHighlightActive
+        // dims polygons whose source isn't part of the highlighted
+        // net so the matching geometry pops; matches the 2D net
+        // highlight behavior.
         let fsSrc = "
             #version 330 core
             in vec3 vColor;
             in float vVis;
             in vec3 vWorldPos;
+            in float vInNet;
             out vec4 FragColor;
             uniform vec3 uLightDir;
+            uniform float uHighlightActive;
             void main() {
                 if (vVis < 0.5) discard;
                 vec3 n = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
                 float lambert = max(dot(n, -uLightDir), 0.0);
                 float intensity = 0.20 + 0.80 * lambert;
-                FragColor = vec4(vColor * intensity, 1.0);
+                vec3 base = vColor * intensity;
+                if (uHighlightActive > 0.5 && vInNet < 0.5) {
+                    base *= 0.25;
+                }
+                FragColor = vec4(base, 1.0);
             }
         "
         let compile (src: string) (kind: ShaderType) =
@@ -472,6 +497,7 @@ type StackCanvasControl() =
         | Some g ->
             g.DeleteBuffer(vbo)
             g.DeleteBuffer(ebo)
+            g.DeleteBuffer(netVbo)
             g.DeleteVertexArray vao
             g.DeleteProgram(program)
             if depthRbo <> 0u then
@@ -548,7 +574,38 @@ type StackCanvasControl() =
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
                 g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
                 g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.StaticDraw)
+                // Initialize netVbo with all zeros (no highlight); the
+                // net-flag re-upload pass below fills it for the
+                // current HighlightNet, if any.
+                let zeros = Array.zeroCreate<float32> mesh.Vertices.Length
+                g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
+                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(zeros), GLEnum.DynamicDraw)
                 hasUploadedAny <- true
+                // Force net-flag refresh on first draw after upload.
+                lastHighlightNet <- Some "<<force-mismatch-after-upload>>"
+            | _ -> ()
+            // Re-upload the net-flag attribute when the highlighted
+            // net changes (or after a fresh mesh upload). Cheap —
+            // one float per vertex; for a 400k-poly macro that's
+            // ~12MB but only runs on net click, not every frame.
+            match cachedMesh with
+            | Some mesh when hasUploadedAny && lastHighlightNet <> toggle.HighlightNet ->
+                let n = mesh.Vertices.Length
+                let flags = Array.zeroCreate<float32> n
+                match toggle.HighlightNet with
+                | Some name ->
+                    let hits = LayerPainter.highlightedPolyKeys lib flat name
+                    if hits.Count > 0 then
+                        for i in 0 .. n - 1 do
+                            let polyIdx = mesh.VertexPolyIndex.[i]
+                            if polyIdx >= 0 && polyIdx < flat.Length then
+                                let p = flat.[polyIdx]
+                                if hits.Contains((p.SourceStructure, p.SourceIndex)) then
+                                    flags.[i] <- 1.0f
+                | None -> ()
+                g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
+                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(flags), GLEnum.DynamicDraw)
+                lastHighlightNet <- toggle.HighlightNet
             | _ -> ()
             g.BindVertexArray(vao)
 
@@ -589,12 +646,17 @@ type StackCanvasControl() =
 
             g.UseProgram(program)
             let strideBytes = uint32 (7 * sizeof<float32>)
+            g.BindBuffer(GLEnum.ArrayBuffer, vbo)
             g.EnableVertexAttribArray(0u)
             g.VertexAttribPointer(0u, 3, GLEnum.Float, false, strideBytes, nativeint 0)
             g.EnableVertexAttribArray(1u)
             g.VertexAttribPointer(1u, 3, GLEnum.Float, false, strideBytes, nativeint (3 * sizeof<float32>))
             g.EnableVertexAttribArray(2u)
             g.VertexAttribPointer(2u, 1, GLEnum.Float, false, strideBytes, nativeint (6 * sizeof<float32>))
+            // Net-highlight flag, one float per vertex from netVbo.
+            g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
+            g.EnableVertexAttribArray(3u)
+            g.VertexAttribPointer(3u, 1, GLEnum.Float, false, uint32 sizeof<float32>, nativeint 0)
 
             let mvp =
                 Matrix4x4Helpers.buildOrbitMvp
@@ -616,6 +678,8 @@ type StackCanvasControl() =
                     -MathF.Sin(pitchRad))
             let lightLoc = g.GetUniformLocation(program, "uLightDir")
             g.Uniform3(lightLoc, camForward)
+            let highlightLoc = g.GetUniformLocation(program, "uHighlightActive")
+            g.Uniform1(highlightLoc, if toggle.HighlightNet.IsSome then 1.0f else 0.0f)
             // Upload per-layer visibility as a uniform array. Cheap
             // (32 floats = 128 bytes) and runs every frame; toggle
             // changes show up next frame without touching the VBO.

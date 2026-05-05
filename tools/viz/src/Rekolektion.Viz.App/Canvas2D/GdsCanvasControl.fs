@@ -37,7 +37,7 @@ type private SkiaDraw(bounds: Rect, lib: Library, flat: FlatPolygon array, vb: L
                 canvas.ClipRect(clipRect, SKClipOperation.Intersect)
                 use bg = new SKPaint(Style = SKPaintStyle.Fill, Color = SKColors.Black)
                 canvas.DrawRect(clipRect, bg)
-                LayerPainter.paintIn canvas vb flat toggle
+                LayerPainter.paintIn canvas vb lib flat toggle
                 LabelPainter.paintIn canvas vb lib toggle
                 canvas.RestoreToCount saved
 

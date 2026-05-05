@@ -35,14 +35,21 @@ let paintIn
         : unit =
     let dx = float (vb.MaxX - vb.MinX) |> max 1.0
     let dy = float (vb.MaxY - vb.MinY) |> max 1.0
-    use paint = new SKPaint(Color = SKColors.White, IsAntialias = true, TextSize = 11.0f, IsStroke = false)
+    use normal = new SKPaint(Color = SKColors.White, IsAntialias = true, TextSize = 11.0f, IsStroke = false)
+    use highlight = new SKPaint(Color = SKColor(0xffuy, 0xe0uy, 0x40uy, 0xffuy), IsAntialias = true, TextSize = 12.0f, IsStroke = false)
+    use dimmed = new SKPaint(Color = SKColor(0xffuy, 0xffuy, 0xffuy, 0x40uy), IsAntialias = true, TextSize = 11.0f, IsStroke = false)
     for s in lib.Structures do
         for el in s.Elements do
             match el with
             | Text t when Visibility.isLayerVisible toggle (t.Layer, t.TextType) ->
                 let x = float (t.Origin.X - vb.MinX) / dx * float vb.PixelW
                 let y = float vb.PixelH - (float (t.Origin.Y - vb.MinY) / dy * float vb.PixelH)
-                canvas.DrawText(t.Text, float32 x, float32 y, paint)
+                let p =
+                    match toggle.HighlightNet with
+                    | Some name when name = t.Text -> highlight
+                    | Some _ -> dimmed
+                    | None -> normal
+                canvas.DrawText(t.Text, float32 x, float32 y, p)
             | _ -> ()
 
 /// Auto-fit variant: ViewBox derived from polygon + label bbox.

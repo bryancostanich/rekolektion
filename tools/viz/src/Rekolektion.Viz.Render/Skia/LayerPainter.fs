@@ -44,7 +44,67 @@ let private project (vb: ViewBox) (p: Point) : SKPoint =
 /// `vb` defines the world-coordinate window that maps to the canvas
 /// pixel rectangle. Callers compute `vb` from current pan + zoom
 /// state and pass it in; for auto-fit, use `paint` (no `_vb` arg).
-let paintIn (canvas: SKCanvas) (vb: ViewBox) (flat: FlatPolygon array) (toggle: Visibility.ToggleState) : unit =
+/// Build the set of (SourceStructure, SourceIndex) flat-polygon
+/// keys that 'belong to' the highlighted net — defined as: a label
+/// with the highlighted text exists in the same Structure and its
+/// Origin lies inside the polygon's bbox. Empty when no net is
+/// highlighted; computation is skipped on the fast path.
+let private highlightedPolyKeys
+        (lib: Library)
+        (flat: FlatPolygon array)
+        (netName: string)
+        : System.Collections.Generic.HashSet<string * int> =
+    let result = System.Collections.Generic.HashSet<string * int>()
+    // labelsByStructure[structName] = list of label origins for the
+    // highlighted net, in DBU.
+    let labelsByStruct = System.Collections.Generic.Dictionary<string, ResizeArray<int64 * int64>>()
+    for s in lib.Structures do
+        for el in s.Elements do
+            match el with
+            | Text t when t.Text = netName ->
+                let arr =
+                    match labelsByStruct.TryGetValue s.Name with
+                    | true, a -> a
+                    | false, _ ->
+                        let a = ResizeArray()
+                        labelsByStruct.[s.Name] <- a
+                        a
+                arr.Add(t.Origin.X, t.Origin.Y)
+            | _ -> ()
+    if labelsByStruct.Count = 0 then result
+    else
+        for poly in flat do
+            match labelsByStruct.TryGetValue poly.SourceStructure with
+            | false, _ -> ()
+            | true, origins ->
+                // Compute polygon bbox once.
+                let mutable xMin = System.Int64.MaxValue
+                let mutable xMax = System.Int64.MinValue
+                let mutable yMin = System.Int64.MaxValue
+                let mutable yMax = System.Int64.MinValue
+                for p in poly.Points do
+                    if p.X < xMin then xMin <- p.X
+                    if p.X > xMax then xMax <- p.X
+                    if p.Y < yMin then yMin <- p.Y
+                    if p.Y > yMax then yMax <- p.Y
+                let mutable hit = false
+                let mutable i = 0
+                while (not hit) && i < origins.Count do
+                    let (ox, oy) = origins.[i]
+                    if ox >= xMin && ox <= xMax && oy >= yMin && oy <= yMax then
+                        hit <- true
+                    i <- i + 1
+                if hit then
+                    result.Add((poly.SourceStructure, poly.SourceIndex)) |> ignore
+        result
+
+let paintIn
+        (canvas: SKCanvas)
+        (vb: ViewBox)
+        (lib: Library)
+        (flat: FlatPolygon array)
+        (toggle: Visibility.ToggleState)
+        : unit =
     // Group polys by layer key for layer-ordered draw. Faster to
     // group once than to sort each polygon's draw call.
     let byLayer =
@@ -57,18 +117,38 @@ let paintIn (canvas: SKCanvas) (vb: ViewBox) (flat: FlatPolygon array) (toggle: 
         |> Option.defaultValue 100.0
     let ordered = byLayer |> Array.sortBy (fun (k, _) -> zOf k)
 
+    // When a net is highlighted, polygons not in the matching set
+    // are dimmed so the highlighted run pops. Empty set on the
+    // fast path costs no measurable extra time.
+    let highlightSet =
+        match toggle.HighlightNet with
+        | Some name -> highlightedPolyKeys lib flat name
+        | None -> System.Collections.Generic.HashSet()
+    let isHighlightActive = toggle.HighlightNet.IsSome
+
     use fill = new SKPaint(Style = SKPaintStyle.Fill, IsAntialias = true)
     use stroke = new SKPaint(Style = SKPaintStyle.Stroke, IsAntialias = true, StrokeWidth = 0.5f)
+
+    let dimColor (c: SKColor) =
+        // Drop alpha to ~25% to dim non-matching polygons.
+        SKColor(c.Red, c.Green, c.Blue, byte (int c.Alpha * 64 / 255))
 
     for (key, polys) in ordered do
         if Visibility.isLayerVisible toggle key then
             match Layout.Layer.bySky130Number (fst key) (snd key) with
             | None -> ()
             | Some layer ->
-                fill.Color <- SkyTheme.fillFor layer.Name
-                stroke.Color <- SkyTheme.strokeFor layer.Name
+                let fillFull = SkyTheme.fillFor layer.Name
+                let strokeFull = SkyTheme.strokeFor layer.Name
+                let fillDim = dimColor fillFull
+                let strokeDim = dimColor strokeFull
                 for poly in polys do
                     if poly.Points.Length >= 3 then
+                        let isMatch =
+                            (not isHighlightActive)
+                            || highlightSet.Contains((poly.SourceStructure, poly.SourceIndex))
+                        fill.Color <- if isMatch then fillFull else fillDim
+                        stroke.Color <- if isMatch then strokeFull else strokeDim
                         use path = new SKPath()
                         path.MoveTo(project vb poly.Points.[0])
                         for i in 1 .. poly.Points.Length - 1 do
@@ -82,7 +162,13 @@ let paint (canvas: SKCanvas) (size: int * int) (flat: FlatPolygon array) (toggle
     let (w, h) = size
     let (xmin, ymin, xmax, ymax) = boundsOfFlat flat
     let vb = { MinX = xmin; MinY = ymin; MaxX = xmax; MaxY = ymax; PixelW = w; PixelH = h }
-    paintIn canvas vb flat toggle
+    // No library passed — synthesize an empty one so the highlight
+    // path is a no-op. Auto-fit callers (CLI / tests) don't
+    // exercise net highlighting.
+    let emptyLib : Library = {
+        Name = ""; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9; Structures = []
+    }
+    paintIn canvas vb emptyLib flat toggle
 
 /// Compute the bbox of the flat polygons in world DBU coordinates.
 let bboxOf (flat: FlatPolygon array) : (int64 * int64 * int64 * int64) =

@@ -7,6 +7,20 @@ open Avalonia.Media
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model
 
+/// Inspector text rows use `SelectableTextBlock` rather than the
+/// plain `TextBlock` — same rendering, but the user can drag-select
+/// a range and copy via Cmd+C / Ctrl+C. FuncUI's auto-DSL exposes
+/// the same property helpers (`text`, `textWrapping`, etc.) on
+/// `SelectableTextBlock` because it inherits from `TextBlock`.
+let private line
+        (text: string)
+        (extras: IAttr<SelectableTextBlock> list)
+        : IView =
+    SelectableTextBlock.create (
+        [ SelectableTextBlock.text text
+          SelectableTextBlock.textWrapping TextWrapping.Wrap ]
+        @ extras) :> IView
+
 let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView list =
     match Model.activeMacro model with
     | None -> []
@@ -21,12 +35,8 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
             |> Array.tryFind (fun p -> p.SourceStructure = struc && p.SourceIndex = idx)
         match hit with
         | None ->
-            [ TextBlock.create [
-                TextBlock.text (sprintf "structure: %s" struc)
-                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
-              TextBlock.create [
-                TextBlock.text (sprintf "index: %d" idx)
-                TextBlock.textWrapping TextWrapping.Wrap ] :> IView ]
+            [ line (sprintf "structure: %s" struc) []
+              line (sprintf "index: %d" idx) [] ]
         | Some poly ->
             let layerName =
                 Layout.Layer.bySky130Number poly.Layer poly.DataType
@@ -44,30 +54,22 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                 if x > xMax then xMax <- x
                 if y < yMin then yMin <- y
                 if y > yMax then yMax <- y
-            [ TextBlock.create [
-                TextBlock.text (sprintf "layer: %s (%d/%d)" layerName poly.Layer poly.DataType)
-                TextBlock.fontWeight FontWeight.SemiBold
-                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
-              TextBlock.create [
-                TextBlock.text (sprintf "structure: %s" struc)
-                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
-              TextBlock.create [
-                TextBlock.text (sprintf "polygon #%d (%d pts)" idx poly.Points.Length)
-                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
-              TextBlock.create [
-                TextBlock.text (sprintf "bbox: %.3f × %.3f µm" (xMax - xMin) (yMax - yMin))
-                TextBlock.textWrapping TextWrapping.Wrap ] :> IView
-              TextBlock.create [
-                TextBlock.text (sprintf "@ (%.3f, %.3f) µm" xMin yMin)
-                TextBlock.textWrapping TextWrapping.Wrap
-                TextBlock.foreground "#888" ] :> IView ]
+            [ line
+                (sprintf "layer: %s (%d/%d)" layerName poly.Layer poly.DataType)
+                [ SelectableTextBlock.fontWeight FontWeight.SemiBold ]
+              line (sprintf "structure: %s" struc) []
+              line (sprintf "polygon #%d (%d pts)" idx poly.Points.Length) []
+              line (sprintf "bbox: %.3f × %.3f µm" (xMax - xMin) (yMax - yMin)) []
+              line
+                (sprintf "@ (%.3f, %.3f) µm" xMin yMin)
+                [ SelectableTextBlock.foreground "#888" ] ]
 
 let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
     let body : IView list =
         [
             yield TextBlock.create [
                 TextBlock.text "Inspector"
-                TextBlock.fontWeight Avalonia.Media.FontWeight.Bold
+                TextBlock.fontWeight FontWeight.Bold
             ] :> IView
             match model.Selection with
             | None ->

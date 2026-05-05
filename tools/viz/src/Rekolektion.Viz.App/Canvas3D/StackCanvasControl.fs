@@ -212,6 +212,16 @@ type StackCanvasControl() =
             let yExt = float (yMax - yMin)
             let zExt = if zMax > zMin then zMax - zMin else 0.0
             extent <- max xExt (max yExt zExt) |> max 5.0
+            // Diagnostic — surfaces what the camera is actually
+            // framing so we can tell "marker filter not running"
+            // from "cell is genuinely tall" when a render looks
+            // larger than expected.
+            let mutable nonPhysCount = 0
+            for poly in flat do
+                if Layout.Layer.isNonPhysical poly.Layer poly.DataType then
+                    nonPhysCount <- nonPhysCount + 1
+            eprintfn "[viz3d] FitCameraTo: silicon bbox %.3f x %.3f x %.3f µm (extent=%.3f); skipped %d non-physical polys"
+                xExt yExt zExt extent nonPhysCount
 
     /// Fill a transparent rect covering the control bounds so
     /// Avalonia's hit-test treats every point inside Bounds as a

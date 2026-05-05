@@ -20,7 +20,13 @@ open Rekolektion.Viz.App.Model.Model
 /// nets fill in when the background derivation finishes.
 let load (path: string) : Async<Result<LoadedMacro, string>> = async {
     try
-        let lib = Reader.readGds path
+        // Dispatch on file extension. .mag uses the Magic parser
+        // (with subcell search rooted at the file's directory);
+        // .gds uses the existing GDS reader. Both produce the same
+        // Library shape so the rest of the pipeline is unchanged.
+        let lib, magWarnings = Layout.LayoutLoader.load path
+        for w in magWarnings do
+            eprintfn "[viz] %s" w
         let sidecarPath = Path.ChangeExtension(path, ".nets.json")
         let nets, fromSidecar, sidecarError =
             match Loader.load sidecarPath with

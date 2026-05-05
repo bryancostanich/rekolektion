@@ -31,7 +31,12 @@ let private printUsage () =
 let cmdRead (args: string list) : int =
     match args with
     | [path] ->
-        let lib = Reader.readGds path
+        // Dispatch on extension: .mag → Magic parser, .gds → GDS.
+        // Both produce the same Library shape downstream.
+        let lib, warnings =
+            Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        for w in warnings do
+            eprintfn "[viz] %s" w
         printfn "Library: %s" lib.Name
         printfn "User units/DB unit: %g" lib.UserUnitsPerDbUnit
         printfn "DB units in meters: %g" lib.DbUnitsInMeters

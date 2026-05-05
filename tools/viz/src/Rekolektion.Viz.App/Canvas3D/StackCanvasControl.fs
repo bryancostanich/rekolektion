@@ -384,6 +384,17 @@ type StackCanvasControl() =
         vbo <- g.GenBuffer()
         ebo <- g.GenBuffer()
         vao <- g.GenVertexArray()
+        // Avalonia tears down + recreates the GL context when the
+        // tab is hidden / reshown. Reset the upload-state so the
+        // mesh re-uploads against the freshly-created VBO/EBO —
+        // otherwise the VBO is empty after tab-switch and the 3D
+        // canvas renders blank.
+        meshDirty <- true
+        hasUploadedAny <- false
+        layerSlotMap.Clear()
+        depthRbo <- 0u
+        depthRboW <- 0
+        depthRboH <- 0
         // Vertex shader passes world position so the fragment shader
         // can compute a flat per-triangle normal via screen-space
         // derivatives — avoids needing per-vertex normals in the

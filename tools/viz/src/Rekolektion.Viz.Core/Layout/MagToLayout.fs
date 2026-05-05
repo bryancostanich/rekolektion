@@ -27,6 +27,8 @@ let buildLibrary
     let scaleMetersPerInternal = scaleUmPerInternal * 1.0e-6
 
     let rectToBoundary (r: MagRect) : Boundary option =
+        if Mag.LayerMap.isSkipped r.Layer then None
+        else
         match Mag.LayerMap.tryFind r.Layer with
         | None ->
             warnings.Add(sprintf "unknown layer '%s' (rect %d,%d %d,%d)"

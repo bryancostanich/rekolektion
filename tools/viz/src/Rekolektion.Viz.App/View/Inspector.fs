@@ -5,6 +5,7 @@ open Avalonia.FuncUI.Types
 open Avalonia.Controls
 open Avalonia.Media
 open Rekolektion.Viz.Core
+open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.App.Model
 
 /// Inspector text rows use `SelectableTextBlock` rather than the
@@ -54,15 +55,48 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                 if x > xMax then xMax <- x
                 if y < yMin then yMin <- y
                 if y > yMax then yMax <- y
-            [ line
+            // Find TextLabels in the same structure whose Origin
+            // falls inside (or within `tolUm`) of the polygon bbox.
+            // ~0.05 µm covers labels sitting on the centerline of an
+            // LI1 stripe vs the LICON1 contact polygon the user
+            // actually clicked.
+            let tolUm = 0.05
+            let matchingLabels =
+                m.Library.Structures
+                |> List.tryFind (fun s -> s.Name = struc)
+                |> Option.map (fun s ->
+                    s.Elements
+                    |> List.choose (function
+                        | Element.Text t -> Some t
+                        | _ -> None)
+                    |> List.filter (fun t ->
+                        let lx = float t.Origin.X * uupdb
+                        let ly = float t.Origin.Y * uupdb
+                        lx >= xMin - tolUm && lx <= xMax + tolUm &&
+                        ly >= yMin - tolUm && ly <= yMax + tolUm))
+                |> Option.defaultValue []
+
+            let labelLines : IView list =
+                matchingLabels
+                |> List.map (fun t ->
+                    let layerOf =
+                        Layout.Layer.bySky130Number t.Layer t.TextType
+                        |> Option.map (fun l -> l.Name)
+                        |> Option.defaultValue (sprintf "%d/%d" t.Layer t.TextType)
+                    line
+                        (sprintf "label \"%s\" on %s" t.Text layerOf)
+                        [ SelectableTextBlock.foreground "#a0d8ff" ])
+
+            [ yield line
                 (sprintf "layer: %s (%d/%d)" layerName poly.Layer poly.DataType)
                 [ SelectableTextBlock.fontWeight FontWeight.SemiBold ]
-              line (sprintf "structure: %s" struc) []
-              line (sprintf "polygon #%d (%d pts)" idx poly.Points.Length) []
-              line (sprintf "bbox: %.3f × %.3f µm" (xMax - xMin) (yMax - yMin)) []
-              line
+              yield line (sprintf "structure: %s" struc) []
+              yield line (sprintf "polygon #%d (%d pts)" idx poly.Points.Length) []
+              yield line (sprintf "bbox: %.3f × %.3f µm" (xMax - xMin) (yMax - yMin)) []
+              yield line
                 (sprintf "@ (%.3f, %.3f) µm" xMin yMin)
-                [ SelectableTextBlock.foreground "#888" ] ]
+                [ SelectableTextBlock.foreground "#888" ]
+              yield! labelLines ]
 
 let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
     let body : IView list =

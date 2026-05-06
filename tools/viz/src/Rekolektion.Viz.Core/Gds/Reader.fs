@@ -82,24 +82,38 @@ let private readRecords (stream: Stream) : RawRecord list =
     // leaveOpen=true: outer `use stream` in readGds owns FileStream disposal.
     use reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen = true)
     let records = System.Collections.Generic.List<RawRecord>()
-    while stream.Position < stream.Length do
+    let mutable sawEndlib = false
+    while not sawEndlib && stream.Position < stream.Length do
         let lenBytes = reader.ReadBytes(2)
         if lenBytes.Length < 2 then () // clean EOF on the record boundary
         else
             let len = int lenBytes.[0] <<< 8 ||| int lenBytes.[1]
-            let typeBytes = reader.ReadBytes(2)
-            if typeBytes.Length < 2 then
-                raise (EndOfStreamException "truncated GDSII record header")
-            let recType = uint16 (int typeBytes.[0] <<< 8 ||| int typeBytes.[1])
-            let dataLen = len - 4
-            let data =
-                if dataLen > 0 then
-                    let buf = reader.ReadBytes(dataLen)
-                    if buf.Length < dataLen then
-                        raise (EndOfStreamException "truncated GDSII record payload")
-                    buf
-                else [||]
-            records.Add({ RecordType = recType; Data = data })
+            // Many GDS writers pad the file to a 2048-byte block
+            // boundary with zero bytes after ENDLIB; once we've
+            // seen ENDLIB we stop the loop, but if for any reason
+            // we land on padding before ENDLIB, len = 0 is an
+            // unambiguous "this isn't a real record" signal — bail
+            // rather than churning through hundreds of empty
+            // pseudo-records or, worse, throwing on a half-byte
+            // tail.
+            if len < 4 then
+                ()  // pad / garbage; stop reading silently
+                sawEndlib <- true
+            else
+                let typeBytes = reader.ReadBytes(2)
+                if typeBytes.Length < 2 then
+                    raise (EndOfStreamException "truncated GDSII record header")
+                let recType = uint16 (int typeBytes.[0] <<< 8 ||| int typeBytes.[1])
+                let dataLen = len - 4
+                let data =
+                    if dataLen > 0 then
+                        let buf = reader.ReadBytes(dataLen)
+                        if buf.Length < dataLen then
+                            raise (EndOfStreamException "truncated GDSII record payload")
+                        buf
+                    else [||]
+                records.Add({ RecordType = recType; Data = data })
+                if recType = RecordType.ENDLIB then sawEndlib <- true
     records |> Seq.toList
 
 /// Extract ASCII string from record data (strip trailing nulls/padding).

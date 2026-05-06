@@ -13,10 +13,13 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                 ScrollViewer.create [
                     ScrollViewer.height 160.0
                     ScrollViewer.content (
-                        TextBlock.create [
-                            TextBlock.text (System.String.Join("\n", model.Log))
-                            TextBlock.fontFamily "Menlo,Consolas,monospace"
-                            TextBlock.foreground "#aaa"
+                        // SelectableTextBlock so the user can drag-
+                        // select log lines and copy them with
+                        // Cmd/Ctrl+C — same swap as the inspector.
+                        SelectableTextBlock.create [
+                            SelectableTextBlock.text (System.String.Join("\n", model.Log))
+                            SelectableTextBlock.fontFamily "Menlo,Consolas,monospace"
+                            SelectableTextBlock.foreground "#aaa"
                         ]
                     )
                 ] :> IView

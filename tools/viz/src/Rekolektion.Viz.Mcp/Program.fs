@@ -46,6 +46,95 @@ let private vizSocket : string =
                 ".rekolektion")
     Path.Combine(dir, "viz.sock")
 
+/// Locate the worktree root by walking up from this assembly's
+/// directory until we find a `tools/viz/src/Rekolektion.Viz.Cli`
+/// folder. Used for `dotnet run --project <CLI>` fallback when
+/// no built binary exists yet.
+let private worktreeRoot () : string =
+    let mutable dir =
+        Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)
+    let target = Path.Combine("tools", "viz", "src", "Rekolektion.Viz.Cli")
+    let mutable found = false
+    while not found && not (isNull dir) do
+        if Directory.Exists(Path.Combine(dir, target)) then found <- true
+        else dir <- Path.GetDirectoryName dir
+    if found then dir else Environment.CurrentDirectory
+
+/// Resolve the rekolektion-viz CLI invocation: prefer the built
+/// binary if present (faster startup), else fall back to
+/// `dotnet run --project tools/viz/src/Rekolektion.Viz.Cli`.
+/// Returns (executable, leadingArgs).
+let private resolveVizCli () : string * string list =
+    let root = worktreeRoot ()
+    let cliProj = Path.Combine(root, "tools", "viz", "src", "Rekolektion.Viz.Cli")
+    let builtBin =
+        Path.Combine(cliProj, "bin", "Debug", "net10.0", "rekolektion-viz")
+    if File.Exists builtBin then
+        builtBin, []
+    else
+        "dotnet", [ "run"; "--project"; cliProj; "--" ]
+
+/// True if `~/.rekolektion/viz.sock` accepts a connection right
+/// now. Stale socket files can outlive the process, so a file-
+/// exists check isn't enough — we have to try connecting.
+let private vizIsLive () : bool =
+    try
+        use sock =
+            new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified)
+        sock.SendTimeout <- 200
+        sock.ReceiveTimeout <- 200
+        sock.Connect(UnixDomainSocketEndPoint vizSocket)
+        sock.Connected
+    with _ -> false
+
+/// Once we've successfully spawned (or detected) the app this
+/// session, skip the spawn check on subsequent tool calls — saves
+/// the per-call connect probe.
+let mutable private appKnownRunning : bool = false
+
+/// Spawn the desktop app in the background if it isn't already
+/// listening on the viz UDS, then poll for the socket to come up
+/// (up to `timeoutMs`). Idempotent within an MCP session.
+///
+/// Required by `rekolektion_viz_open`'s acceptance criterion:
+/// "calling rekolektion_viz_open should launch (or focus) the
+/// live app GUI on the given GDS path." Other live-socket tools
+/// short-circuit through it too so an agent can call screenshot
+/// / toggle / highlight / set_tab without first calling open.
+let private ensureAppRunning (timeoutMs: int) : Result<unit, string> =
+    if appKnownRunning && vizIsLive () then Ok ()
+    elif vizIsLive () then
+        appKnownRunning <- true
+        Ok ()
+    else
+        try
+            let exe, lead = resolveVizCli ()
+            let psi = ProcessStartInfo(exe)
+            for a in lead do psi.ArgumentList.Add a
+            psi.ArgumentList.Add "app"
+            psi.UseShellExecute <- false
+            // Detach: don't redirect streams (Avalonia/GL needs a
+            // real terminal/window context), don't wait. The viz
+            // app exits when its window is closed; the MCP server
+            // doesn't track that — same lifecycle as a user-
+            // launched GUI.
+            psi.RedirectStandardOutput <- false
+            psi.RedirectStandardError  <- false
+            let _proc = Process.Start psi
+            // Poll until the socket is connectable.
+            let sw = Stopwatch.StartNew ()
+            let mutable up = false
+            while not up && sw.ElapsedMilliseconds < int64 timeoutMs do
+                if vizIsLive () then up <- true
+                else System.Threading.Thread.Sleep 200
+            if up then
+                appKnownRunning <- true
+                Ok ()
+            else
+                Error (sprintf "viz app did not come up within %d ms" timeoutMs)
+        with ex ->
+            Error (sprintf "viz app spawn failed: %s" ex.Message)
+
 /// Send an HTTP/1.1 request over the viz UDS and return the
 /// response body as raw bytes (binary-safe). Caller already knows
 /// whether the response is text (POST commands return JSON) or
@@ -112,23 +201,38 @@ let private toolError (msg: string) : ToolResult =
 // Tool handlers (7)
 // ---------------------------------------------------------------
 
+/// Number of milliseconds to wait for a freshly-spawned viz app
+/// to come up on the UDS. The first run goes through `dotnet run`
+/// which JITs the App and Avalonia bootstrap — comfortably under
+/// 30s on a warm machine, but the first cold run can be slower.
+let private appBootTimeoutMs = 60_000
+
 /// Tool: rekolektion_viz_screenshot — GET /screenshot on the live
-/// viz UDS, returns a PNG. No arguments.
+/// viz UDS, returns a PNG. No arguments. Auto-launches the app if
+/// it isn't already running.
 let private toolScreenshot (_args: JsonElement) : ToolResult =
-    try
-        let bytes = udsRequest "GET" "/screenshot" None
-        ImageResult ("image/png", bytes)
-    with ex ->
-        toolError (sprintf "screenshot failed: %s" ex.Message)
+    match ensureAppRunning appBootTimeoutMs with
+    | Error msg -> toolError msg
+    | Ok () ->
+        try
+            let bytes = udsRequest "GET" "/screenshot" None
+            ImageResult ("image/png", bytes)
+        with ex ->
+            toolError (sprintf "screenshot failed: %s" ex.Message)
 
 /// Tool: rekolektion_viz_open { path } — POST /open with the GDS
-/// path in JSON body.
+/// path in JSON body. Boots the app if needed (acceptance: open
+/// "should launch (or focus) the live app GUI on the given GDS
+/// path").
 let private toolOpen (args: JsonElement) : ToolResult =
     try
         let path = args.GetProperty("path").GetString()
-        let body = sprintf "{\"path\":\"%s\"}" (jsonEscape path)
-        let resp = udsRequest "POST" "/open" (Some body)
-        TextResult (Encoding.UTF8.GetString resp)
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body = sprintf "{\"path\":\"%s\"}" (jsonEscape path)
+            let resp = udsRequest "POST" "/open" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
     with ex ->
         toolError (sprintf "open failed: %s" ex.Message)
 
@@ -138,12 +242,15 @@ let private toolToggleLayer (args: JsonElement) : ToolResult =
     try
         let name    = args.GetProperty("name").GetString()
         let visible = args.GetProperty("visible").GetBoolean()
-        let body =
-            sprintf "{\"name\":\"%s\",\"visible\":%s}"
-                (jsonEscape name)
-                (if visible then "true" else "false")
-        let resp = udsRequest "POST" "/toggle/layer" (Some body)
-        TextResult (Encoding.UTF8.GetString resp)
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body =
+                sprintf "{\"name\":\"%s\",\"visible\":%s}"
+                    (jsonEscape name)
+                    (if visible then "true" else "false")
+            let resp = udsRequest "POST" "/toggle/layer" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
     with ex ->
         toolError (sprintf "toggle_layer failed: %s" ex.Message)
 
@@ -153,15 +260,18 @@ let private toolToggleLayer (args: JsonElement) : ToolResult =
 let private toolHighlightNet (args: JsonElement) : ToolResult =
     try
         let nameElem = args.GetProperty "name"
-        let body =
-            match nameElem.ValueKind with
-            | JsonValueKind.Null   -> "{\"name\":null}"
-            | JsonValueKind.String ->
-                sprintf "{\"name\":\"%s\"}" (jsonEscape (nameElem.GetString()))
-            | k ->
-                failwithf "name must be string or null, got %A" k
-        let resp = udsRequest "POST" "/highlight/net" (Some body)
-        TextResult (Encoding.UTF8.GetString resp)
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body =
+                match nameElem.ValueKind with
+                | JsonValueKind.Null   -> "{\"name\":null}"
+                | JsonValueKind.String ->
+                    sprintf "{\"name\":\"%s\"}" (jsonEscape (nameElem.GetString()))
+                | k ->
+                    failwithf "name must be string or null, got %A" k
+            let resp = udsRequest "POST" "/highlight/net" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
     with ex ->
         toolError (sprintf "highlight_net failed: %s" ex.Message)
 
@@ -170,9 +280,12 @@ let private toolHighlightNet (args: JsonElement) : ToolResult =
 let private toolSetTab (args: JsonElement) : ToolResult =
     try
         let tab = args.GetProperty("tab").GetString()
-        let body = sprintf "{\"tab\":\"%s\"}" (jsonEscape tab)
-        let resp = udsRequest "POST" "/tab" (Some body)
-        TextResult (Encoding.UTF8.GetString resp)
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body = sprintf "{\"tab\":\"%s\"}" (jsonEscape tab)
+            let resp = udsRequest "POST" "/tab" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
     with ex ->
         toolError (sprintf "set_tab failed: %s" ex.Message)
 
@@ -185,34 +298,6 @@ let private tryProp (elem: JsonElement) (name: string) : JsonElement option =
        && v.ValueKind <> JsonValueKind.Null
     then Some v
     else None
-
-/// Locate the worktree root by walking up from this assembly's
-/// directory until we find a `tools/viz/src/Rekolektion.Viz.Cli`
-/// folder. Used for `dotnet run --project <CLI>` fallback when
-/// no built binary exists yet.
-let private worktreeRoot () : string =
-    let mutable dir =
-        Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)
-    let target = Path.Combine("tools", "viz", "src", "Rekolektion.Viz.Cli")
-    let mutable found = false
-    while not found && not (isNull dir) do
-        if Directory.Exists(Path.Combine(dir, target)) then found <- true
-        else dir <- Path.GetDirectoryName dir
-    if found then dir else Environment.CurrentDirectory
-
-/// Resolve the rekolektion-viz CLI invocation: prefer the built
-/// binary if present (faster startup), else fall back to
-/// `dotnet run --project tools/viz/src/Rekolektion.Viz.Cli`.
-/// Returns (executable, leadingArgs).
-let private resolveVizCli () : string * string list =
-    let root = worktreeRoot ()
-    let cliProj = Path.Combine(root, "tools", "viz", "src", "Rekolektion.Viz.Cli")
-    let builtBin =
-        Path.Combine(cliProj, "bin", "Debug", "net10.0", "rekolektion-viz")
-    if File.Exists builtBin then
-        builtBin, []
-    else
-        "dotnet", [ "run"; "--project"; cliProj; "--" ]
 
 /// Spawn a child process and wait up to `timeoutMs`. Returns
 /// (exitCode, stderrText) where exitCode = -1 means "timed out

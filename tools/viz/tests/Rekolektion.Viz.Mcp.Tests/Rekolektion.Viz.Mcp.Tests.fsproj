@@ -15,6 +15,7 @@
     <ProjectReference Include="..\..\src\Rekolektion.Viz.Mcp\Rekolektion.Viz.Mcp.fsproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="McpHandshakeTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

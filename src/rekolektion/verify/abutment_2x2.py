@@ -32,6 +32,8 @@ From the ReRAM_IRL audit (cells that failed prior tape-outs):
 from __future__ import annotations
 
 import math
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
@@ -56,6 +58,75 @@ class TileResult:
     tile_pitch: tuple[float, float]
     """Assembled 2×2 tile ``(2*cw, 2*ch)`` in µm."""
     drc: DRCResult
+
+
+def mag_to_gds(
+    mag_path: Path,
+    *,
+    out_gds: Path,
+    top_cell: Optional[str] = None,
+    pdk_root: Optional[Path] = None,
+) -> Path:
+    """Stream a Magic .mag file out to GDS via headless Magic.
+
+    Magic runs with ``cwd=mag_path.parent`` so any sub-cells the .mag
+    references (e.g., a reram device wrapper saved as a sibling .mag)
+    are resolved from disk via Magic's default cellpath search.
+
+    Args:
+        mag_path: Path to the .mag file to stream out.
+        out_gds: Where to write the resulting GDS. Parent dirs created.
+        top_cell: Cell name to load before writing. Defaults to the
+            .mag file's stem (Magic convention: cell-per-file with
+            matching basename).
+        pdk_root: PDK_ROOT override; defaults to :func:`find_pdk_root`.
+
+    Returns:
+        Path to the written GDS file.
+
+    Raises:
+        FileNotFoundError: if the .mag doesn't exist.
+        RuntimeError: if Magic exits non-zero or doesn't write the GDS.
+    """
+    from rekolektion.tech.sky130 import magic_rcfile
+
+    mag_path = Path(mag_path)
+    if not mag_path.exists():
+        raise FileNotFoundError(f"Magic source not found: {mag_path}")
+
+    pdk_root = Path(pdk_root) if pdk_root else find_pdk_root()
+    magicrc = magic_rcfile(pdk_root)
+    cell_name = top_cell or mag_path.stem
+
+    out_gds = Path(out_gds).resolve()
+    out_gds.parent.mkdir(parents=True, exist_ok=True)
+
+    tcl = (
+        f"load {cell_name}\n"
+        f"gds write {out_gds}\n"
+        "quit -noprompt\n"
+    )
+
+    env = os.environ.copy()
+    env["PDK_ROOT"] = str(pdk_root)
+
+    result = subprocess.run(
+        ["magic", "-dnull", "-noconsole", "-rcfile", str(magicrc)],
+        input=tcl,
+        text=True,
+        capture_output=True,
+        cwd=str(mag_path.parent),
+        env=env,
+    )
+
+    if result.returncode != 0 or not out_gds.exists():
+        raise RuntimeError(
+            f"magic gds write failed (exit={result.returncode}):\n"
+            f"--- stdout ---\n{result.stdout}\n"
+            f"--- stderr ---\n{result.stderr}\n"
+        )
+
+    return out_gds
 
 
 def _discover_top_cell(lib: gdstk.Library) -> gdstk.Cell:

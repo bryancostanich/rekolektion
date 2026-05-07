@@ -12,6 +12,59 @@ open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Render.Mesh
 open Rekolektion.Viz.Render.Skia
 
+/// 5×7 bitmap-font column data for digits + '-' + '.' (12 glyphs).
+/// Each byte is one column; bit 0 = top row, bit 6 = bottom row.
+/// Standard ASCII-ish 5×7 font (compact, public-domain encoding).
+let private fontGlyphCols : byte[][] = [|
+    [| 0x3Euy; 0x51uy; 0x49uy; 0x45uy; 0x3Euy |]   // 0
+    [| 0x00uy; 0x42uy; 0x7Fuy; 0x40uy; 0x00uy |]   // 1
+    [| 0x42uy; 0x61uy; 0x51uy; 0x49uy; 0x46uy |]   // 2
+    [| 0x21uy; 0x41uy; 0x45uy; 0x4Buy; 0x31uy |]   // 3
+    [| 0x18uy; 0x14uy; 0x12uy; 0x7Fuy; 0x10uy |]   // 4
+    [| 0x27uy; 0x45uy; 0x45uy; 0x45uy; 0x39uy |]   // 5
+    [| 0x3Cuy; 0x4Auy; 0x49uy; 0x49uy; 0x30uy |]   // 6
+    [| 0x01uy; 0x71uy; 0x09uy; 0x05uy; 0x03uy |]   // 7
+    [| 0x36uy; 0x49uy; 0x49uy; 0x49uy; 0x36uy |]   // 8
+    [| 0x06uy; 0x49uy; 0x49uy; 0x29uy; 0x1Euy |]   // 9
+    [| 0x08uy; 0x08uy; 0x08uy; 0x08uy; 0x08uy |]   // -
+    [| 0x00uy; 0x60uy; 0x60uy; 0x00uy; 0x00uy |]   // .
+|]
+
+let private fontGlyphIndex (c: char) : int =
+    match c with
+    | c when c >= '0' && c <= '9' -> int c - int '0'
+    | '-' -> 10
+    | '.' -> 11
+    | _ -> 11    // unknown chars render as '.' (smallest visual)
+
+[<Literal>]
+let private FONT_GLYPH_W = 5
+[<Literal>]
+let private FONT_GLYPH_H = 7
+[<Literal>]
+let private FONT_GLYPH_COUNT = 12
+[<Literal>]
+let private FONT_ATLAS_W = 60   // 12 glyphs × 5 px
+[<Literal>]
+let private FONT_ATLAS_H = 7
+
+/// Bake the column-encoded glyphs into a single linear byte array
+/// suitable for upload as a GL_R8 texture. atlas[row*W + col] = 0
+/// or 255.
+let private buildFontAtlas () : byte[] =
+    let pixels = Array.zeroCreate<byte> (FONT_ATLAS_W * FONT_ATLAS_H)
+    for g in 0 .. FONT_GLYPH_COUNT - 1 do
+        let cols = fontGlyphCols.[g]
+        for col in 0 .. FONT_GLYPH_W - 1 do
+            let bits = cols.[col]
+            for row in 0 .. FONT_GLYPH_H - 1 do
+                let bit = (int bits >>> row) &&& 1
+                if bit = 1 then
+                    let x = g * FONT_GLYPH_W + col
+                    let y = row
+                    pixels.[y * FONT_ATLAS_W + x] <- 255uy
+    pixels
+
 /// Even-odd point-in-polygon. `poly` is in GDS DB units; `qx`/`qy`
 /// are in user µm. `uupdb` converts DBU → µm.
 let private pointInPolygon
@@ -101,6 +154,16 @@ type StackCanvasControl() =
     // override to draw screen-space numeric labels via Avalonia.
     let mutable rulerXMajors : float[] = [||]
     let mutable rulerYMajors : float[] = [||]
+    // Bitmap font for ruler tick labels. Avalonia 11.3 composes the
+    // GL FBO on top of Control.Render output, so DrawText paint
+    // doesn't reach the screen — we render text via GL textured
+    // quads sampled from a baked 5x7 atlas (digits, '-', '.', 'µ',
+    // 'm'). Atlas + shader live alongside the ruler.
+    let mutable fontTex : uint32 = 0u
+    let mutable textProgram : uint32 = 0u
+    let mutable textVao : uint32 = 0u
+    let mutable textVbo : uint32 = 0u
+    let mutable textVertexCount : int = 0
     // MVP from the last GL frame; used by Render to project the
     // ruler tick world positions into screen pixels for label
     // placement. Updated at the bottom of OnOpenGlRender.
@@ -632,6 +695,69 @@ type StackCanvasControl() =
         rulerVbo <- g.GenBuffer()
         rulerDirty <- true
 
+        // ---- Bitmap font ----
+        let textVsSrc = "
+            #version 330 core
+            layout(location=0) in vec3 aPos;
+            layout(location=1) in vec2 aUv;
+            layout(location=2) in vec3 aColor;
+            uniform mat4 uMVP;
+            out vec2 vUv;
+            out vec3 vColor;
+            void main() {
+                gl_Position = uMVP * vec4(aPos, 1.0);
+                vUv = aUv;
+                vColor = aColor;
+            }
+        "
+        let textFsSrc = "
+            #version 330 core
+            in vec2 vUv;
+            in vec3 vColor;
+            uniform sampler2D uFont;
+            out vec4 FragColor;
+            void main() {
+                float a = texture(uFont, vUv).r;
+                if (a < 0.5) discard;
+                FragColor = vec4(vColor, 1.0);
+            }
+        "
+        let tvs = compile textVsSrc ShaderType.VertexShader
+        let tfs = compile textFsSrc ShaderType.FragmentShader
+        textProgram <- g.CreateProgram()
+        g.AttachShader(textProgram, tvs)
+        g.AttachShader(textProgram, tfs)
+        g.LinkProgram textProgram
+        let mutable tlink = 0
+        g.GetProgram(textProgram, ProgramPropertyARB.LinkStatus, &tlink)
+        if tlink = 0 then
+            eprintfn "[viz3d] text program link failed: %s" (g.GetProgramInfoLog textProgram)
+        g.DeleteShader tvs
+        g.DeleteShader tfs
+
+        textVao <- g.GenVertexArray ()
+        textVbo <- g.GenBuffer ()
+        // Atlas: single-channel R8 texture, no filtering (so the
+        // bitmap stays crisp), no wrapping (UVs are in-bounds by
+        // construction).
+        let atlas = buildFontAtlas ()
+        fontTex <- g.GenTexture ()
+        g.BindTexture(GLEnum.Texture2D, fontTex)
+        g.PixelStore(GLEnum.UnpackAlignment, 1)
+        g.TexImage2D(
+            GLEnum.Texture2D,
+            0,
+            int InternalFormat.R8,
+            uint32 FONT_ATLAS_W, uint32 FONT_ATLAS_H,
+            0,
+            GLEnum.Red,
+            GLEnum.UnsignedByte,
+            ReadOnlySpan<byte>(atlas))
+        g.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, int GLEnum.Nearest)
+        g.TexParameter(GLEnum.Texture2D, GLEnum.TextureMagFilter, int GLEnum.Nearest)
+        g.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapS, int GLEnum.ClampToEdge)
+        g.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT, int GLEnum.ClampToEdge)
+
     override this.OnOpenGlDeinit(_gli) =
         match gl with
         | Some g ->
@@ -644,6 +770,10 @@ type StackCanvasControl() =
             if rulerVao <> 0u then g.DeleteVertexArray rulerVao
             if rulerVbo <> 0u then g.DeleteBuffer rulerVbo
             if rulerProgram <> 0u then g.DeleteProgram rulerProgram
+            if textVao <> 0u then g.DeleteVertexArray textVao
+            if textVbo <> 0u then g.DeleteBuffer textVbo
+            if textProgram <> 0u then g.DeleteProgram textProgram
+            if fontTex <> 0u then g.DeleteTexture fontTex
             if depthRbo <> 0u then
                 g.DeleteRenderbuffer depthRbo
                 depthRbo <- 0u
@@ -1004,6 +1134,81 @@ type StackCanvasControl() =
                     g.BindVertexArray rulerVao
                     g.BindBuffer(GLEnum.ArrayBuffer, rulerVbo)
                     g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
+                // Build text quad geometry for major-tick numeric
+                // labels. One textured quad per glyph; pos / uv /
+                // color packed inline (8 floats per vertex, 6 verts
+                // per quad). Atlas covers digits + '-' + '.', so
+                // values like '0', '5', '15', '-2.5' all bake.
+                let textVerts = ResizeArray<float32>()
+                let charW = float32 (step * 0.20)
+                let charH = float32 (step * 0.30)
+                let labelGap = float32 (step * 0.10)  // gap between tick + label
+                let pushQuad
+                        (x0: float32) (y0: float32)
+                        (x1: float32) (y1: float32)
+                        (u0: float32) (v0: float32)
+                        (u1: float32) (v1: float32)
+                        (struct (r, g, b)) =
+                    // Two triangles, CCW from screen perspective.
+                    // V increases downward in atlas (row 0 = top),
+                    // so we map v0 to the TOP of the quad (high y)
+                    // and v1 to the BOTTOM (low y).
+                    let push3 px py uvx uvy =
+                        textVerts.Add px;  textVerts.Add py;  textVerts.Add z
+                        textVerts.Add uvx; textVerts.Add uvy
+                        textVerts.Add r;   textVerts.Add g;   textVerts.Add b
+                    push3 x0 y1 u0 v0   // top-left
+                    push3 x1 y1 u1 v0   // top-right
+                    push3 x1 y0 u1 v1   // bottom-right
+                    push3 x0 y1 u0 v0   // top-left
+                    push3 x1 y0 u1 v1   // bottom-right
+                    push3 x0 y0 u0 v1   // bottom-left
+                let pushString
+                        (text: string)
+                        (originX: float32) (originY: float32)
+                        (color: struct (float32 * float32 * float32)) =
+                    let mutable cx = originX
+                    for c in text do
+                        let g = fontGlyphIndex c
+                        let u0 = float32 (g * FONT_GLYPH_W) / float32 FONT_ATLAS_W
+                        let u1 = float32 ((g + 1) * FONT_GLYPH_W) / float32 FONT_ATLAS_W
+                        let v0 = 0.0f
+                        let v1 = 1.0f
+                        pushQuad cx originY (cx + charW) (originY + charH) u0 v0 u1 v1 color
+                        cx <- cx + charW + charW * 0.20f   // small advance gap between chars
+                let formatLabel (v: float) (s: float) =
+                    let dec =
+                        if s >= 1.0 then 0
+                        elif s >= 0.1 then 1
+                        else 2
+                    let formatted =
+                        v.ToString("F" + string dec, System.Globalization.CultureInfo.InvariantCulture)
+                    if dec > 0 && formatted.EndsWith ".0" then
+                        formatted.Substring(0, formatted.Length - 2)
+                    else formatted
+                // X axis labels — below the spine (negative-Y).
+                if xRange > 0.0 then
+                    for v in rulerXMajors do
+                        let txt = formatLabel v step
+                        // Center label horizontally on the tick.
+                        let approxW = float32 txt.Length * (charW + charW * 0.20f)
+                        let originX = cornerX + float32 v - approxW * 0.5f
+                        let originY = cornerY - majorTick - charH - labelGap
+                        pushString txt originX originY xColor
+                // Y axis labels — left of the spine (negative-X).
+                if yRange > 0.0 then
+                    for v in rulerYMajors do
+                        let txt = formatLabel v step
+                        let approxW = float32 txt.Length * (charW + charW * 0.20f)
+                        let originX = cornerX - majorTick - approxW - labelGap
+                        let originY = cornerY + float32 v - charH * 0.5f
+                        pushString txt originX originY yColor
+                textVertexCount <- textVerts.Count / 8
+                if textVertexCount > 0 then
+                    let arr = textVerts.ToArray()
+                    g.BindVertexArray textVao
+                    g.BindBuffer(GLEnum.ArrayBuffer, textVbo)
+                    g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
                 rulerDirty <- false
 
             if rulerVertexCount > 0 && rulerProgram <> 0u then
@@ -1020,6 +1225,25 @@ type StackCanvasControl() =
                 g.UniformMatrix4(rulerLoc, 1u, false, ReadOnlySpan<float32>(mvpArr2))
                 g.LineWidth 1.5f
                 g.DrawArrays(GLEnum.Lines, 0, uint32 rulerVertexCount)
+            if textVertexCount > 0 && textProgram <> 0u && fontTex <> 0u then
+                g.UseProgram textProgram
+                g.BindVertexArray textVao
+                g.BindBuffer(GLEnum.ArrayBuffer, textVbo)
+                let textStride = uint32 (8 * sizeof<float32>)
+                g.EnableVertexAttribArray 0u
+                g.VertexAttribPointer(0u, 3, GLEnum.Float, false, textStride, nativeint 0)
+                g.EnableVertexAttribArray 1u
+                g.VertexAttribPointer(1u, 2, GLEnum.Float, false, textStride, nativeint (3 * sizeof<float32>))
+                g.EnableVertexAttribArray 2u
+                g.VertexAttribPointer(2u, 3, GLEnum.Float, false, textStride, nativeint (5 * sizeof<float32>))
+                let mvpArr3 = Matrix4x4Helpers.toFloatArray mvp
+                let textMvpLoc = g.GetUniformLocation(textProgram, "uMVP")
+                g.UniformMatrix4(textMvpLoc, 1u, false, ReadOnlySpan<float32>(mvpArr3))
+                g.ActiveTexture GLEnum.Texture0
+                g.BindTexture(GLEnum.Texture2D, fontTex)
+                let fontLoc = g.GetUniformLocation(textProgram, "uFont")
+                g.Uniform1(fontLoc, 0)
+                g.DrawArrays(GLEnum.Triangles, 0, uint32 textVertexCount)
             // Stash MVP for the Avalonia text-overlay pass in
             // Render() — labels project the same camera the GL
             // ruler lines just drew.

@@ -1057,8 +1057,8 @@ type StackCanvasControl() =
                 rulerStep <- step
                 let minor = step / 5.0
                 let z = -0.5f
-                let majorTick = float32 (step * 0.30)
-                let minorTick = float32 (step * 0.12)
+                let majorTick = float32 (step * 0.20)
+                let minorTick = float32 (step * 0.08)
                 let xColor = struct (1.0f, 0.35f, 0.35f)
                 let yColor = struct (0.35f, 1.0f, 0.35f)
                 let verts = ResizeArray<float32>()

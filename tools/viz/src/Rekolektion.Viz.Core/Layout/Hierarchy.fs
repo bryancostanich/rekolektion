@@ -46,6 +46,31 @@ let private childrenOf (s: Structure) : string list =
         | _ -> None)
     |> List.distinct
 
+/// Transitive set of cell names reachable from `rootName` via SRef
+/// + ARef edges (rootName itself is always included). Used by the
+/// "Isolate block" feature so a single block click can hide every
+/// polygon outside that block's subtree.
+let closure (lib: Library) (rootName: string) : Set<string> =
+    let byName =
+        lib.Structures |> List.map (fun s -> s.Name, s) |> Map.ofList
+    let visited = System.Collections.Generic.HashSet<string>()
+    visited.Add rootName |> ignore
+    let queue = System.Collections.Generic.Queue<string>()
+    queue.Enqueue rootName
+    while queue.Count > 0 do
+        let name = queue.Dequeue()
+        match Map.tryFind name byName with
+        | None -> ()
+        | Some s ->
+            for el in s.Elements do
+                match el with
+                | SRef sr when visited.Add sr.StructureName ->
+                    queue.Enqueue sr.StructureName
+                | ARef ar when visited.Add ar.StructureName ->
+                    queue.Enqueue ar.StructureName
+                | _ -> ()
+    Set.ofSeq visited
+
 /// Build a flat list of blocks for every structure in the library,
 /// skipping `Other` blocks unless they reference children. An `Other`
 /// with no children is almost certainly a leaf cell — bitcell, std

@@ -134,6 +134,15 @@ let paintIn
         | None -> System.Collections.Generic.HashSet()
     let isHighlightActive = toggle.HighlightNet.IsSome
 
+    // When a block is isolated, only render polygons whose source
+    // cell is inside the block's transitive closure (the block
+    // itself plus every cell reached via SRef/ARef). Polygons
+    // outside the closure are skipped entirely — semantics is
+    // 'hide other blocks', per Visibility.isBlockVisible.
+    let blockClosure : Set<string> option =
+        toggle.IsolatedBlock
+        |> Option.map (fun name -> Layout.Hierarchy.closure lib name)
+
     use fill = new SKPaint(Style = SKPaintStyle.Fill, IsAntialias = true)
     use stroke = new SKPaint(Style = SKPaintStyle.Stroke, IsAntialias = true, StrokeWidth = 0.5f)
 
@@ -151,7 +160,11 @@ let paintIn
                 let fillDim = dimColor fillFull
                 let strokeDim = dimColor strokeFull
                 for poly in polys do
-                    if poly.Points.Length >= 3 then
+                    let inBlock =
+                        match blockClosure with
+                        | Some s -> s.Contains poly.SourceStructure
+                        | None   -> true
+                    if poly.Points.Length >= 3 && inBlock then
                         let isMatch =
                             (not isHighlightActive)
                             || highlightSet.Contains((poly.SourceStructure, poly.SourceIndex))

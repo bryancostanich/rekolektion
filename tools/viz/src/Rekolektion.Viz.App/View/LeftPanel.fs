@@ -112,10 +112,37 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         | Some m ->
             m.Blocks
             |> List.map (fun b ->
+                let isActive = (model.Toggle.IsolatedBlock = Some b.Name)
                 Button.create [
                     Button.content b.Name
-                    Button.onClick (fun _ -> dispatch (Msg.IsolateBlock (Some b.Name)))
+                    Button.fontSize 11.0
+                    Button.padding (Avalonia.Thickness(6.0, 2.0))
+                    Button.background (if isActive then "#4090ff" else "Transparent")
+                    Button.foreground (if isActive then "#000" else "#ddd")
+                    Button.onClick (fun _ ->
+                        if isActive then dispatch (Msg.IsolateBlock None)
+                        else dispatch (Msg.IsolateBlock (Some b.Name)))
                 ] :> IView)
+    let blocksHeader : IView =
+        DockPanel.create [
+            DockPanel.lastChildFill false
+            DockPanel.children [
+                TextBlock.create [
+                    TextBlock.text "Blocks"
+                    TextBlock.fontWeight FontWeight.Bold
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                    DockPanel.dock Dock.Left
+                ] :> IView
+                Button.create [
+                    Button.content "Clear"
+                    Button.fontSize 10.0
+                    Button.padding (Avalonia.Thickness(6.0, 1.0))
+                    Button.isEnabled (model.Toggle.IsolatedBlock.IsSome)
+                    DockPanel.dock Dock.Right
+                    Button.onClick (fun _ -> dispatch (Msg.IsolateBlock None))
+                ] :> IView
+            ]
+        ] :> IView
 
     let layerRows : IView list =
         // Top-of-stack (met5) at the top of the list; allDrawing is
@@ -174,10 +201,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             yield netsHeader
             yield! netButtons
             yield Separator.create [] :> IView
-            yield TextBlock.create [
-                TextBlock.text "Blocks"
-                TextBlock.fontWeight Avalonia.Media.FontWeight.Bold
-            ] :> IView
+            yield blocksHeader
             yield! blockButtons
         ]
 

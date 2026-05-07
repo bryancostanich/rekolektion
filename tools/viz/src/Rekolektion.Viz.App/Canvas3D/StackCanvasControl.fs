@@ -74,6 +74,14 @@ type StackCanvasControl() =
     // is currently configured for; differs from this.Toggle.
     // HighlightNet → re-upload netVbo on next render.
     let mutable lastHighlightNet : string option = None
+    // Block isolation state. Mirror of the net flag pattern: per-
+    // vertex 1.0 if the source polygon's structure is inside the
+    // isolated block's transitive closure, else 0.0. Shader
+    // discards everything outside the block when the uniform
+    // uIsolateActive is set, so 'isolate block' really hides
+    // other geometry instead of just dimming.
+    let mutable blockVbo : uint32 = 0u
+    let mutable lastIsolatedBlock : string option = None
     // Mesh upload caching. Re-extruding 400k polygons (production
     // SRAM macro) every frame would saturate the CPU and drop the
     // canvas to <1 fps. We extrude + upload only when FlatPolygons
@@ -410,6 +418,7 @@ type StackCanvasControl() =
         vbo <- g.GenBuffer()
         ebo <- g.GenBuffer()
         netVbo <- g.GenBuffer()
+        blockVbo <- g.GenBuffer()
         vao <- g.GenVertexArray()
         // Avalonia tears down + recreates the GL context when the
         // tab is hidden / reshown. Reset the upload-state so the
@@ -421,6 +430,7 @@ type StackCanvasControl() =
         layerSlotMap.Clear()
         // Force a net-flag re-upload after re-init too.
         lastHighlightNet <- Some "<<force-mismatch-on-reinit>>"
+        lastIsolatedBlock <- Some "<<force-mismatch-on-reinit>>"
         depthRbo <- 0u
         depthRboW <- 0
         depthRboH <- 0
@@ -439,12 +449,14 @@ type StackCanvasControl() =
             layout(location=1) in vec3 aColor;
             layout(location=2) in float aLayerSlot;
             layout(location=3) in float aInNet;
+            layout(location=4) in float aInBlock;
             uniform mat4 uMVP;
             uniform float uLayerVis[32];
             out vec3 vColor;
             out float vVis;
             out vec3 vWorldPos;
             out float vInNet;
+            out float vInBlock;
             void main() {
                 gl_Position = uMVP * vec4(aPos, 1.0);
                 vColor = aColor;
@@ -454,6 +466,7 @@ type StackCanvasControl() =
                 vVis = uLayerVis[slot];
                 vWorldPos = aPos;
                 vInNet = aInNet;
+                vInBlock = aInBlock;
             }
         "
         // uLightDir is camera-forward (head-mounted light): faces
@@ -469,11 +482,16 @@ type StackCanvasControl() =
             in float vVis;
             in vec3 vWorldPos;
             in float vInNet;
+            in float vInBlock;
             out vec4 FragColor;
             uniform vec3 uLightDir;
             uniform float uHighlightActive;
+            uniform float uIsolateActive;
             void main() {
                 if (vVis < 0.5) discard;
+                // Block isolation hides anything outside the block
+                // — semantics of Visibility.isBlockVisible.
+                if (uIsolateActive > 0.5 && vInBlock < 0.5) discard;
                 vec3 n = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
                 float lambert = max(dot(n, -uLightDir), 0.0);
                 float intensity = 0.20 + 0.80 * lambert;
@@ -514,6 +532,7 @@ type StackCanvasControl() =
             g.DeleteBuffer(vbo)
             g.DeleteBuffer(ebo)
             g.DeleteBuffer(netVbo)
+            g.DeleteBuffer(blockVbo)
             g.DeleteVertexArray vao
             g.DeleteProgram(program)
             if depthRbo <> 0u then
@@ -590,15 +609,18 @@ type StackCanvasControl() =
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
                 g.BindBuffer(GLEnum.ElementArrayBuffer, ebo)
                 g.BufferData(GLEnum.ElementArrayBuffer, ReadOnlySpan<int>(mesh.Indices), GLEnum.StaticDraw)
-                // Initialize netVbo with all zeros (no highlight); the
-                // net-flag re-upload pass below fills it for the
-                // current HighlightNet, if any.
+                // Initialize netVbo + blockVbo with all zeros; the
+                // re-upload passes below fill them for the current
+                // HighlightNet / IsolatedBlock, if any.
                 let zeros = Array.zeroCreate<float32> mesh.Vertices.Length
                 g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(zeros), GLEnum.DynamicDraw)
+                g.BindBuffer(GLEnum.ArrayBuffer, blockVbo)
+                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(zeros), GLEnum.DynamicDraw)
                 hasUploadedAny <- true
-                // Force net-flag refresh on first draw after upload.
+                // Force per-vertex flag refresh on first draw.
                 lastHighlightNet <- Some "<<force-mismatch-after-upload>>"
+                lastIsolatedBlock <- Some "<<force-mismatch-after-upload>>"
             | _ -> ()
             // Re-upload the net-flag attribute when the highlighted
             // net changes (or after a fresh mesh upload). Cheap —
@@ -622,6 +644,27 @@ type StackCanvasControl() =
                 g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(flags), GLEnum.DynamicDraw)
                 lastHighlightNet <- toggle.HighlightNet
+            | _ -> ()
+            // Same dance for the block-isolation flag. Recomputed
+            // when IsolatedBlock changes; one float per vertex.
+            match cachedMesh with
+            | Some mesh when hasUploadedAny && lastIsolatedBlock <> toggle.IsolatedBlock ->
+                let n = mesh.Vertices.Length
+                let flags = Array.zeroCreate<float32> n
+                match toggle.IsolatedBlock with
+                | Some name ->
+                    let closure = Layout.Hierarchy.closure lib name
+                    if not (Set.isEmpty closure) then
+                        for i in 0 .. n - 1 do
+                            let polyIdx = mesh.VertexPolyIndex.[i]
+                            if polyIdx >= 0 && polyIdx < flat.Length then
+                                let p = flat.[polyIdx]
+                                if Set.contains p.SourceStructure closure then
+                                    flags.[i] <- 1.0f
+                | None -> ()
+                g.BindBuffer(GLEnum.ArrayBuffer, blockVbo)
+                g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(flags), GLEnum.DynamicDraw)
+                lastIsolatedBlock <- toggle.IsolatedBlock
             | _ -> ()
             g.BindVertexArray(vao)
 
@@ -673,6 +716,10 @@ type StackCanvasControl() =
             g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
             g.EnableVertexAttribArray(3u)
             g.VertexAttribPointer(3u, 1, GLEnum.Float, false, uint32 sizeof<float32>, nativeint 0)
+            // Block-isolation flag, one float per vertex from blockVbo.
+            g.BindBuffer(GLEnum.ArrayBuffer, blockVbo)
+            g.EnableVertexAttribArray(4u)
+            g.VertexAttribPointer(4u, 1, GLEnum.Float, false, uint32 sizeof<float32>, nativeint 0)
 
             let mvp =
                 Matrix4x4Helpers.buildOrbitMvp
@@ -696,6 +743,8 @@ type StackCanvasControl() =
             g.Uniform3(lightLoc, camForward)
             let highlightLoc = g.GetUniformLocation(program, "uHighlightActive")
             g.Uniform1(highlightLoc, if toggle.HighlightNet.IsSome then 1.0f else 0.0f)
+            let isolateLoc = g.GetUniformLocation(program, "uIsolateActive")
+            g.Uniform1(isolateLoc, if toggle.IsolatedBlock.IsSome then 1.0f else 0.0f)
             // Upload per-layer visibility as a uniform array. Cheap
             // (32 floats = 128 bytes) and runs every frame; toggle
             // changes show up next frame without touching the VBO.

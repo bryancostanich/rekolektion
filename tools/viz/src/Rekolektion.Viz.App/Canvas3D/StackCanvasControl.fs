@@ -1183,9 +1183,9 @@ type StackCanvasControl() =
                 let cameraDist = extent * 1.5
                 // World units per screen pixel near the text plane.
                 let worldPerPixel = 2.0 * cameraDist * tan(fovYr / 2.0) / viewH
-                // Target ~9 px tall glyphs; smaller-than-default and
-                // independent of cell scale (user ask).
-                let charH = float32 (worldPerPixel * 9.0)
+                // Target ~36 px tall glyphs (4× the prior 9 px) —
+                // independent of cell scale per user ask.
+                let charH = float32 (worldPerPixel * 36.0)
                 let charW = charH * (5.0f / 7.0f)   // 5×7 font aspect
                 let charGap = charW * 0.2f
                 let labelGap = charH * 0.5f

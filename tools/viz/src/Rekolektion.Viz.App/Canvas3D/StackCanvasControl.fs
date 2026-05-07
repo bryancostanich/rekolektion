@@ -302,37 +302,16 @@ type StackCanvasControl() =
         context.FillRectangle(
             Avalonia.Media.Brushes.Transparent,
             Avalonia.Rect(this.Bounds.Size))
-        // Numeric tick labels overlaid on top of the GL ruler.
-        // Drawn here (Avalonia compositor layer) rather than
-        // baked into the GL pipeline because GL text rendering
-        // wants a font atlas + textured quads — and a flat 2D
-        // overlay is what users actually expect for rulers.
-        if rulerStep > 0.0 then
-            let xColor = Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0xffuy, 0xa0uy, 0xa0uy))
-            let yColor = Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0xa0uy, 0xffuy, 0xa0uy))
-            let typeface = Avalonia.Media.Typeface.Default
-            let zRuler = -0.5f
-            let drawLabel (text: string) (worldX: float32) (worldY: float32) (offset: Avalonia.Vector) (brush: Avalonia.Media.IBrush) =
-                match this.ProjectWorldToScreen worldX worldY zRuler with
-                | None -> ()
-                | Some p ->
-                    let ft =
-                        Avalonia.Media.FormattedText(
-                            text,
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            Avalonia.Media.FlowDirection.LeftToRight,
-                            typeface,
-                            10.0,
-                            brush)
-                    context.DrawText(ft, p + offset)
-            // X axis: labels below their tick (positive screen-Y).
-            for v in rulerXMajors do
-                let txt = this.FormatRulerLabel v rulerStep
-                drawLabel txt (float32 v) 0.0f (Avalonia.Vector(2.0, 4.0)) xColor
-            // Y axis: labels to the left of their tick.
-            for v in rulerYMajors do
-                let txt = this.FormatRulerLabel v rulerStep
-                drawLabel txt 0.0f (float32 v) (Avalonia.Vector(-22.0, -7.0)) yColor
+        // Numeric tick labels are NOT drawn here — Avalonia 11.3's
+        // OpenGlControlBase composes the GL FBO on top of this
+        // control's DrawingContext output, so anything painted via
+        // context here gets covered by the 3D scene. A future
+        // commit will either bake a GL bitmap-font atlas or move
+        // labels into a sibling overlay panel above the GL canvas.
+        // For now the GL ruler ticks (major / minor at the bbox
+        // corner, every 5 µm) are the only on-canvas indicator;
+        // the user reads off the count visually.
+        ()
 
     override this.OnPropertyChanged e =
         base.OnPropertyChanged e
@@ -927,12 +906,22 @@ type StackCanvasControl() =
                             elif ratio < 7.5 then 5.0
                             else 10.0
                         mag * mult
-                let step = niceStep longest
+                // Major step: prefer 5 µm so tick numbers land on
+                // 0, 5, 10, 15... For tiny cells (< 5 µm) fall
+                // back to 1 µm or 0.5 µm so SOME ticks fit. For
+                // very large macros (> 200 µm) the 1-2-5 picker
+                // kicks in to avoid hundreds of labels.
+                let step =
+                    if longest >= 200.0 then niceStep longest
+                    elif longest >= 5.0 then 5.0
+                    elif longest >= 1.0 then 1.0
+                    elif longest >= 0.2 then 0.2
+                    else niceStep longest
                 rulerStep <- step
                 let minor = step / 5.0
                 let z = -0.5f
-                let majorTick = float32 (step * 0.20)
-                let minorTick = float32 (step * 0.08)
+                let majorTick = float32 (step * 0.30)
+                let minorTick = float32 (step * 0.12)
                 let xColor = struct (1.0f, 0.35f, 0.35f)
                 let yColor = struct (0.35f, 1.0f, 0.35f)
                 let verts = ResizeArray<float32>()
@@ -947,40 +936,68 @@ type StackCanvasControl() =
                             yield t
                             t <- t + s
                     }
-                // X axis spine + ticks
+                // Anchor the ruler to the cell's bbox corner, NOT
+                // world (0, 0). Foundry cells (e.g. SkyWater 4T1R)
+                // have their design origin sitting INSIDE the cell
+                // — using world origin makes the ruler cross the
+                // middle of the cell and reads as wrong. The
+                // 'starting at 0,0,0' user ask is best satisfied
+                // by treating the bbox corner as the ruler's 0
+                // and counting along the cell. Tick values are
+                // offsets from the corner (0, 5, 10, … µm).
+                let cornerX = float32 rulerXMin
+                let cornerY = float32 rulerYMin
+                // X axis spine + ticks along the bottom edge.
                 if xRange > 0.0 then
-                    push (float32 rulerXMin) 0.0f z xColor
-                    push (float32 rulerXMax) 0.0f z xColor
-                    for t in snap (float rulerXMin) (float rulerXMax) minor do
-                        let tf = float32 t
-                        push tf -minorTick z xColor
-                        push tf  minorTick z xColor
+                    push cornerX cornerY z xColor
+                    push (cornerX + float32 xRange) cornerY z xColor
+                    let mutable t = 0.0
+                    while t <= xRange + minor * 1e-6 do
+                        let tf = cornerX + float32 t
+                        push tf cornerY               z xColor
+                        push tf (cornerY - minorTick) z xColor
+                        t <- t + minor
                     let majorsX = ResizeArray<float>()
-                    for t in snap (float rulerXMin) (float rulerXMax) step do
-                        majorsX.Add t
-                        let tf = float32 t
-                        push tf -majorTick z xColor
-                        push tf  majorTick z xColor
+                    let mutable tm = 0.0
+                    while tm <= xRange + step * 1e-6 do
+                        majorsX.Add tm
+                        let tf = cornerX + float32 tm
+                        push tf cornerY               z xColor
+                        push tf (cornerY - majorTick) z xColor
+                        tm <- tm + step
                     rulerXMajors <- majorsX.ToArray()
                 else
                     rulerXMajors <- [||]
-                // Y axis spine + ticks
+                // Y axis spine + ticks along the left edge.
                 if yRange > 0.0 then
-                    push 0.0f (float32 rulerYMin) z yColor
-                    push 0.0f (float32 rulerYMax) z yColor
-                    for t in snap (float rulerYMin) (float rulerYMax) minor do
-                        let tf = float32 t
-                        push -minorTick tf z yColor
-                        push  minorTick tf z yColor
+                    push cornerX cornerY                    z yColor
+                    push cornerX (cornerY + float32 yRange) z yColor
+                    let mutable t = 0.0
+                    while t <= yRange + minor * 1e-6 do
+                        let tf = cornerY + float32 t
+                        push cornerX               tf z yColor
+                        push (cornerX - minorTick) tf z yColor
+                        t <- t + minor
                     let majorsY = ResizeArray<float>()
-                    for t in snap (float rulerYMin) (float rulerYMax) step do
-                        majorsY.Add t
-                        let tf = float32 t
-                        push -majorTick tf z yColor
-                        push  majorTick tf z yColor
+                    let mutable tm = 0.0
+                    while tm <= yRange + step * 1e-6 do
+                        majorsY.Add tm
+                        let tf = cornerY + float32 tm
+                        push cornerX               tf z yColor
+                        push (cornerX - majorTick) tf z yColor
+                        tm <- tm + step
                     rulerYMajors <- majorsY.ToArray()
                 else
                     rulerYMajors <- [||]
+                // Explicit origin marker at the bbox corner — a
+                // small white cross so the user can spot where the
+                // ruler's "0" sits even at oblique camera angles.
+                let originColor = struct (1.0f, 1.0f, 1.0f)
+                let originSize = float32 (max minor 0.05)
+                push (cornerX - originSize) cornerY               z originColor
+                push (cornerX + originSize) cornerY               z originColor
+                push cornerX               (cornerY - originSize) z originColor
+                push cornerX               (cornerY + originSize) z originColor
                 rulerVertexCount <- verts.Count / 6
                 if rulerVertexCount > 0 then
                     let arr = verts.ToArray()

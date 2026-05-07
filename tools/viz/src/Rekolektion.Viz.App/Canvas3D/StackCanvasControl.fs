@@ -82,6 +82,18 @@ type StackCanvasControl() =
     // other geometry instead of just dimming.
     let mutable blockVbo : uint32 = 0u
     let mutable lastIsolatedBlock : string option = None
+    // Ruler state. Two lines from origin along +X (red) and +Y
+    // (green) with tick marks. Sit just below the lowest layer
+    // (z = -0.5 µm) so they don't z-fight with geometry. Extent
+    // tracks the cell's silicon bbox; rebuilt when FitCameraTo
+    // sees new bounds.
+    let mutable rulerProgram : uint32 = 0u
+    let mutable rulerVao : uint32 = 0u
+    let mutable rulerVbo : uint32 = 0u
+    let mutable rulerVertexCount : int = 0
+    let mutable rulerXMax : float32 = 0.0f
+    let mutable rulerYMax : float32 = 0.0f
+    let mutable rulerDirty : bool = true
     // Mesh upload caching. Re-extruding 400k polygons (production
     // SRAM macro) every frame would saturate the CPU and drop the
     // canvas to <1 fps. We extrude + upload only when FlatPolygons
@@ -220,6 +232,14 @@ type StackCanvasControl() =
             let yExt = float (yMax - yMin)
             let zExt = if zMax > zMin then zMax - zMin else 0.0
             extent <- max xExt (max yExt zExt) |> max 5.0
+            // Ruler runs from origin to whichever direction the
+            // cell extends. If a cell sits entirely in negative
+            // territory the ruler reads as 0-length on that axis;
+            // a follow-up could draw bidirectional but most cells
+            // are origin-anchored or origin-positive in viz use.
+            rulerXMax <- max 0.0f xMax
+            rulerYMax <- max 0.0f yMax
+            rulerDirty <- true
             // Diagnostic — surfaces what the camera is actually
             // framing so we can tell "marker filter not running"
             // from "cell is genuinely tall" when a render looks
@@ -526,6 +546,41 @@ type StackCanvasControl() =
         g.DeleteShader(vs)
         g.DeleteShader(fs)
 
+        // Minimal ruler shader: position + color, no lighting / no
+        // visibility flags. Drawn as GL_LINES after the main mesh.
+        let rulerVsSrc = "
+            #version 330 core
+            layout(location=0) in vec3 aPos;
+            layout(location=1) in vec3 aColor;
+            uniform mat4 uMVP;
+            out vec3 vColor;
+            void main() {
+                gl_Position = uMVP * vec4(aPos, 1.0);
+                vColor = aColor;
+            }
+        "
+        let rulerFsSrc = "
+            #version 330 core
+            in vec3 vColor;
+            out vec4 FragColor;
+            void main() { FragColor = vec4(vColor, 1.0); }
+        "
+        let rvs = compile rulerVsSrc ShaderType.VertexShader
+        let rfs = compile rulerFsSrc ShaderType.FragmentShader
+        rulerProgram <- g.CreateProgram()
+        g.AttachShader(rulerProgram, rvs)
+        g.AttachShader(rulerProgram, rfs)
+        g.LinkProgram(rulerProgram)
+        let mutable rulerLink = 0
+        g.GetProgram(rulerProgram, ProgramPropertyARB.LinkStatus, &rulerLink)
+        if rulerLink = 0 then
+            eprintfn "[viz3d] ruler program link failed: %s" (g.GetProgramInfoLog rulerProgram)
+        g.DeleteShader rvs
+        g.DeleteShader rfs
+        rulerVao <- g.GenVertexArray()
+        rulerVbo <- g.GenBuffer()
+        rulerDirty <- true
+
     override this.OnOpenGlDeinit(_gli) =
         match gl with
         | Some g ->
@@ -535,6 +590,9 @@ type StackCanvasControl() =
             g.DeleteBuffer(blockVbo)
             g.DeleteVertexArray vao
             g.DeleteProgram(program)
+            if rulerVao <> 0u then g.DeleteVertexArray rulerVao
+            if rulerVbo <> 0u then g.DeleteBuffer rulerVbo
+            if rulerProgram <> 0u then g.DeleteProgram rulerProgram
             if depthRbo <> 0u then
                 g.DeleteRenderbuffer depthRbo
                 depthRbo <- 0u
@@ -768,4 +826,73 @@ type StackCanvasControl() =
             let mvpArr = Matrix4x4Helpers.toFloatArray mvp
             g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
             g.DrawElements(GLEnum.Triangles, uint32 indexCount, GLEnum.UnsignedInt, IntPtr.Zero.ToPointer())
+
+            // ---- Ruler overlay ----
+            // Two axis lines from origin (0,0,-0.5) to (xMax,0,-0.5)
+            // and (0,yMax,-0.5), with tick marks every `step` µm.
+            // Step is the largest power of 10 that fits at least 4
+            // ticks on the longer axis (so a 1.8 µm cell gets 0.1
+            // µm ticks; an 80 µm macro gets 10 µm ticks). Z = -0.5
+            // sits below nwell (StackZ = -0.20) so the ruler reads
+            // as a substrate-level reference grid, not an overlay
+            // floating in the metal stack.
+            if rulerDirty && rulerProgram <> 0u then
+                let xm = rulerXMax
+                let ym = rulerYMax
+                let longest = max (float xm) (float ym)
+                let step =
+                    if longest <= 0.0 then 1.0
+                    else
+                        // Largest 10^k with at least ~4 ticks fitting.
+                        let target = longest / 4.0
+                        let k = floor (log10 target)
+                        max (System.Math.Pow(10.0, k)) 0.001
+                let z = -0.5f
+                let tickHalf = float32 (step * 0.15)
+                let xColor = struct (1.0f, 0.35f, 0.35f) // red-ish for X
+                let yColor = struct (0.35f, 1.0f, 0.35f) // green-ish for Y
+                let verts = ResizeArray<float32>()
+                let push (x: float32) (y: float32) (zz: float32) (struct (r, g, b)) =
+                    verts.Add x;  verts.Add y;  verts.Add zz
+                    verts.Add r;  verts.Add g;  verts.Add b
+                if xm > 0.0f then
+                    push 0.0f 0.0f z xColor
+                    push xm   0.0f z xColor
+                    let mutable t = step
+                    while t <= float xm + 1e-6 do
+                        let tf = float32 t
+                        push tf -tickHalf z xColor
+                        push tf  tickHalf z xColor
+                        t <- t + step
+                if ym > 0.0f then
+                    push 0.0f 0.0f z yColor
+                    push 0.0f ym   z yColor
+                    let mutable t = step
+                    while t <= float ym + 1e-6 do
+                        let tf = float32 t
+                        push -tickHalf tf z yColor
+                        push  tickHalf tf z yColor
+                        t <- t + step
+                rulerVertexCount <- verts.Count / 6
+                if rulerVertexCount > 0 then
+                    let arr = verts.ToArray()
+                    g.BindVertexArray rulerVao
+                    g.BindBuffer(GLEnum.ArrayBuffer, rulerVbo)
+                    g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
+                rulerDirty <- false
+
+            if rulerVertexCount > 0 && rulerProgram <> 0u then
+                g.UseProgram rulerProgram
+                g.BindVertexArray rulerVao
+                g.BindBuffer(GLEnum.ArrayBuffer, rulerVbo)
+                let rulerStride = uint32 (6 * sizeof<float32>)
+                g.EnableVertexAttribArray 0u
+                g.VertexAttribPointer(0u, 3, GLEnum.Float, false, rulerStride, nativeint 0)
+                g.EnableVertexAttribArray 1u
+                g.VertexAttribPointer(1u, 3, GLEnum.Float, false, rulerStride, nativeint (3 * sizeof<float32>))
+                let rulerLoc = g.GetUniformLocation(rulerProgram, "uMVP")
+                let mvpArr2 = Matrix4x4Helpers.toFloatArray mvp
+                g.UniformMatrix4(rulerLoc, 1u, false, ReadOnlySpan<float32>(mvpArr2))
+                g.LineWidth 1.5f
+                g.DrawArrays(GLEnum.Lines, 0, uint32 rulerVertexCount)
         | _ -> ()

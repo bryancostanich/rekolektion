@@ -143,9 +143,23 @@ let private fileTab
                         Button.minWidth 0.0
                         Button.minHeight 0.0
                         Button.cursor (new Cursor(StandardCursorType.Hand))
+                        // Tag the button with its path via Avalonia's
+                        // Tag property so the click handler can read
+                        // the CURRENT path off the source control
+                        // rather than relying on a captured closure
+                        // — FuncUI 1.6.0 was reusing old lambdas
+                        // across renders, which left stale path
+                        // captures on visual-element-reused tabs
+                        // after a LoadComplete-induced reorder.
+                        Button.tag (box path)
                         Button.onClick (fun e ->
                             e.Handled <- true
-                            dispatch (Msg.SetActiveMacro path))
+                            match e.Source with
+                            | :? Avalonia.Controls.Button as b ->
+                                match b.Tag with
+                                | :? string as p -> dispatch (Msg.SetActiveMacro p)
+                                | _ -> ()
+                            | _ -> ())
                     ]
                     Button.create [
                         Button.content "×"
@@ -158,9 +172,15 @@ let private fileTab
                         Button.minHeight 0.0
                         Button.verticalAlignment VerticalAlignment.Center
                         Button.cursor (new Cursor(StandardCursorType.Hand))
+                        Button.tag (box path)
                         Button.onClick (fun e ->
                             e.Handled <- true
-                            dispatch (Msg.CloseMacro path))
+                            match e.Source with
+                            | :? Avalonia.Controls.Button as b ->
+                                match b.Tag with
+                                | :? string as p -> dispatch (Msg.CloseMacro p)
+                                | _ -> ()
+                            | _ -> ())
                     ]
                 ]
             ]

@@ -17,6 +17,7 @@
     <Compile Include="Layout/Hierarchy.fs" />
     <Compile Include="Layout/Picking.fs" />
     <Compile Include="Layout/Flatten.fs" />
+    <Compile Include="Layout/LayerAlias.fs" />
     <Compile Include="Layout/MagToLayout.fs" />
     <Compile Include="Layout/LayoutLoader.fs" />
     <Compile Include="Sidecar/Types.fs" />

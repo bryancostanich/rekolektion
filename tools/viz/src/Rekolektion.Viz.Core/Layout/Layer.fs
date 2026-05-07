@@ -43,6 +43,11 @@ let allDrawing : Layer list = [
     // legacy stackup. Without this, the cap top plate of CIM cells
     // doesn't render in 3D.
     { Number =  89; DataType = 44; Name = "mimcap";  Color = rgba 0xff 0xc8 0x00 0xff; StackZ =  2.50; Thickness = 0.05 }
+    // ReRAM body. The sky130_fd_pr_reram PDK uses 201/20 for the
+    // ReRAM cell stack; physical position sits between li1 and
+    // met1 (post-li1 contact, pre-via). Distinctive purple keeps
+    // it visually separate from li1 and met1 colors.
+    { Number = 201; DataType = 20; Name = "reram";   Color = rgba 0xc8 0x40 0xff 0xff; StackZ =  0.55; Thickness = 0.30 }
     // Marker (areaid.sc) — non-physical, drawn flat as a thin overlay.
     { Number =  81; DataType =  2; Name = "areaid.sc"; Color = rgba 0xff 0x00 0xff 0x40; StackZ =  4.30; Thickness = 0.05 }
     // Magic-internal marker layers. Not silicon; Magic uses these

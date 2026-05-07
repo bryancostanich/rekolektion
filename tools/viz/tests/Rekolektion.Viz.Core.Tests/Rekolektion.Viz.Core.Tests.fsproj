@@ -24,6 +24,7 @@
     <Compile Include="PickingTests.fs" />
     <Compile Include="LabelFloodTests.fs" />
     <Compile Include="MagReaderTests.fs" />
+    <Compile Include="LayerAliasTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -154,6 +154,13 @@ type StackCanvasControl() =
     // override to draw screen-space numeric labels via Avalonia.
     let mutable rulerXMajors : float[] = [||]
     let mutable rulerYMajors : float[] = [||]
+    // Cached ruler placement constants the per-frame text-quad
+    // builder needs (the line-geometry pass that wrote them only
+    // runs when rulerDirty fires; text rebuilds every frame so
+    // its glyphs scale with the camera distance, not the cell).
+    let mutable rulerCornerX : float32 = 0.0f
+    let mutable rulerCornerY : float32 = 0.0f
+    let mutable rulerMajorTickLen : float32 = 0.0f
     // Bitmap font for ruler tick labels. Avalonia 11.3 composes the
     // GL FBO on top of Control.Render output, so DrawText paint
     // doesn't reach the screen — we render text via GL textured
@@ -1077,46 +1084,73 @@ type StackCanvasControl() =
                 // offsets from the corner (0, 5, 10, … µm).
                 let cornerX = float32 rulerXMin
                 let cornerY = float32 rulerYMin
+                rulerCornerX <- cornerX
+                rulerCornerY <- cornerY
+                rulerMajorTickLen <- majorTick
+                // Tick scheme: minor every 1 µm. Major + label at
+                // every 1 µm for the first 10 µm of the axis, then
+                // every 5 µm thereafter. Sub-µm cells fall back to
+                // the 1-2-5 picker so they still get some labels.
+                let labelPositions (axisRange: float) : float[] =
+                    if axisRange < 1.0 then
+                        let s = niceStep axisRange
+                        let result = ResizeArray<float>()
+                        let mutable t = 0.0
+                        while t <= axisRange + s * 1e-6 do
+                            result.Add t
+                            t <- t + s
+                        result.ToArray()
+                    else
+                        let result = ResizeArray<float>()
+                        let firstMax = min axisRange 10.0
+                        let mutable t = 0.0
+                        while t <= firstMax + 1e-6 do
+                            result.Add t
+                            t <- t + 1.0
+                        if axisRange > 10.0 then
+                            let mutable t = 15.0
+                            while t <= axisRange + 1e-6 do
+                                result.Add t
+                                t <- t + 5.0
+                        result.ToArray()
+                let minorPositions (axisRange: float) : float seq =
+                    seq {
+                        let s = if axisRange < 1.0 then niceStep axisRange / 5.0 else 1.0
+                        let mutable t = 0.0
+                        while t <= axisRange + s * 1e-6 do
+                            yield t
+                            t <- t + s
+                    }
                 // X axis spine + ticks along the bottom edge.
                 if xRange > 0.0 then
                     push cornerX cornerY z xColor
                     push (cornerX + float32 xRange) cornerY z xColor
-                    let mutable t = 0.0
-                    while t <= xRange + minor * 1e-6 do
+                    for t in minorPositions xRange do
                         let tf = cornerX + float32 t
                         push tf cornerY               z xColor
                         push tf (cornerY - minorTick) z xColor
-                        t <- t + minor
-                    let majorsX = ResizeArray<float>()
-                    let mutable tm = 0.0
-                    while tm <= xRange + step * 1e-6 do
-                        majorsX.Add tm
-                        let tf = cornerX + float32 tm
+                    let majors = labelPositions xRange
+                    for t in majors do
+                        let tf = cornerX + float32 t
                         push tf cornerY               z xColor
                         push tf (cornerY - majorTick) z xColor
-                        tm <- tm + step
-                    rulerXMajors <- majorsX.ToArray()
+                    rulerXMajors <- majors
                 else
                     rulerXMajors <- [||]
                 // Y axis spine + ticks along the left edge.
                 if yRange > 0.0 then
                     push cornerX cornerY                    z yColor
                     push cornerX (cornerY + float32 yRange) z yColor
-                    let mutable t = 0.0
-                    while t <= yRange + minor * 1e-6 do
+                    for t in minorPositions yRange do
                         let tf = cornerY + float32 t
                         push cornerX               tf z yColor
                         push (cornerX - minorTick) tf z yColor
-                        t <- t + minor
-                    let majorsY = ResizeArray<float>()
-                    let mutable tm = 0.0
-                    while tm <= yRange + step * 1e-6 do
-                        majorsY.Add tm
-                        let tf = cornerY + float32 tm
+                    let majors = labelPositions yRange
+                    for t in majors do
+                        let tf = cornerY + float32 t
                         push cornerX               tf z yColor
                         push (cornerX - majorTick) tf z yColor
-                        tm <- tm + step
-                    rulerYMajors <- majorsY.ToArray()
+                    rulerYMajors <- majors
                 else
                     rulerYMajors <- [||]
                 // Explicit origin marker at the bbox corner — a
@@ -1134,72 +1168,76 @@ type StackCanvasControl() =
                     g.BindVertexArray rulerVao
                     g.BindBuffer(GLEnum.ArrayBuffer, rulerVbo)
                     g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
-                // Build text quad geometry for major-tick numeric
-                // labels. One textured quad per glyph; pos / uv /
-                // color packed inline (8 floats per vertex, 6 verts
-                // per quad). Atlas covers digits + '-' + '.', so
-                // values like '0', '5', '15', '-2.5' all bake.
+                rulerDirty <- false
+
+            // Text quad geometry rebuilt EVERY frame so glyph
+            // size scales with camera distance, not the cell —
+            // user expectation: ruler numbers stay readable at
+            // the same on-screen pixel height regardless of zoom.
+            // Cheap: ~20 majors × ~3 chars × 6 verts = ~360 verts.
+            if rulerXMajors.Length > 0 || rulerYMajors.Length > 0 then
+                let xColor = struct (1.0f, 0.35f, 0.35f)
+                let yColor = struct (0.35f, 1.0f, 0.35f)
+                let viewH = max this.Bounds.Height 1.0
+                let fovYr = float (60.0 / max zoom 0.05) * System.Math.PI / 180.0
+                let cameraDist = extent * 1.5
+                // World units per screen pixel near the text plane.
+                let worldPerPixel = 2.0 * cameraDist * tan(fovYr / 2.0) / viewH
+                // Target ~9 px tall glyphs; smaller-than-default and
+                // independent of cell scale (user ask).
+                let charH = float32 (worldPerPixel * 9.0)
+                let charW = charH * (5.0f / 7.0f)   // 5×7 font aspect
+                let charGap = charW * 0.2f
+                let labelGap = charH * 0.5f
                 let textVerts = ResizeArray<float32>()
-                let charW = float32 (step * 0.20)
-                let charH = float32 (step * 0.30)
-                let labelGap = float32 (step * 0.10)  // gap between tick + label
+                let zText = -0.5f
                 let pushQuad
                         (x0: float32) (y0: float32)
                         (x1: float32) (y1: float32)
                         (u0: float32) (v0: float32)
                         (u1: float32) (v1: float32)
-                        (struct (r, g, b)) =
-                    // Two triangles, CCW from screen perspective.
-                    // V increases downward in atlas (row 0 = top),
-                    // so we map v0 to the TOP of the quad (high y)
-                    // and v1 to the BOTTOM (low y).
+                        (struct (r, gr, b)) =
                     let push3 px py uvx uvy =
-                        textVerts.Add px;  textVerts.Add py;  textVerts.Add z
+                        textVerts.Add px;  textVerts.Add py;  textVerts.Add zText
                         textVerts.Add uvx; textVerts.Add uvy
-                        textVerts.Add r;   textVerts.Add g;   textVerts.Add b
-                    push3 x0 y1 u0 v0   // top-left
-                    push3 x1 y1 u1 v0   // top-right
-                    push3 x1 y0 u1 v1   // bottom-right
-                    push3 x0 y1 u0 v0   // top-left
-                    push3 x1 y0 u1 v1   // bottom-right
-                    push3 x0 y0 u0 v1   // bottom-left
+                        textVerts.Add r;   textVerts.Add gr;  textVerts.Add b
+                    push3 x0 y1 u0 v0
+                    push3 x1 y1 u1 v0
+                    push3 x1 y0 u1 v1
+                    push3 x0 y1 u0 v0
+                    push3 x1 y0 u1 v1
+                    push3 x0 y0 u0 v1
                 let pushString
                         (text: string)
                         (originX: float32) (originY: float32)
                         (color: struct (float32 * float32 * float32)) =
                     let mutable cx = originX
                     for c in text do
-                        let g = fontGlyphIndex c
-                        let u0 = float32 (g * FONT_GLYPH_W) / float32 FONT_ATLAS_W
-                        let u1 = float32 ((g + 1) * FONT_GLYPH_W) / float32 FONT_ATLAS_W
-                        let v0 = 0.0f
-                        let v1 = 1.0f
-                        pushQuad cx originY (cx + charW) (originY + charH) u0 v0 u1 v1 color
-                        cx <- cx + charW + charW * 0.20f   // small advance gap between chars
-                let formatLabel (v: float) (s: float) =
-                    let dec =
-                        if s >= 1.0 then 0
-                        elif s >= 0.1 then 1
-                        else 2
-                    let formatted =
-                        v.ToString("F" + string dec, System.Globalization.CultureInfo.InvariantCulture)
-                    if dec > 0 && formatted.EndsWith ".0" then
-                        formatted.Substring(0, formatted.Length - 2)
-                    else formatted
-                // X axis labels — below the spine (negative-Y).
-                if xRange > 0.0 then
+                        let glyph = fontGlyphIndex c
+                        let u0 = float32 (glyph * FONT_GLYPH_W) / float32 FONT_ATLAS_W
+                        let u1 = float32 ((glyph + 1) * FONT_GLYPH_W) / float32 FONT_ATLAS_W
+                        pushQuad cx originY (cx + charW) (originY + charH) u0 0.0f u1 1.0f color
+                        cx <- cx + charW + charGap
+                let formatLabel (v: float) =
+                    // 1-µm-step ticks need integer formatting; sub-µm
+                    // fallback (cells < 1 µm) gets one decimal.
+                    let dec = if abs v < 1e-6 || abs (v - round v) < 1e-6 then 0 else 1
+                    let s = v.ToString("F" + string dec, System.Globalization.CultureInfo.InvariantCulture)
+                    if dec > 0 && s.EndsWith ".0" then s.Substring(0, s.Length - 2) else s
+                let cornerX = rulerCornerX
+                let cornerY = rulerCornerY
+                let majorTick = rulerMajorTickLen
+                if rulerXMajors.Length > 0 then
                     for v in rulerXMajors do
-                        let txt = formatLabel v step
-                        // Center label horizontally on the tick.
-                        let approxW = float32 txt.Length * (charW + charW * 0.20f)
+                        let txt = formatLabel v
+                        let approxW = float32 txt.Length * (charW + charGap) - charGap
                         let originX = cornerX + float32 v - approxW * 0.5f
                         let originY = cornerY - majorTick - charH - labelGap
                         pushString txt originX originY xColor
-                // Y axis labels — left of the spine (negative-X).
-                if yRange > 0.0 then
+                if rulerYMajors.Length > 0 then
                     for v in rulerYMajors do
-                        let txt = formatLabel v step
-                        let approxW = float32 txt.Length * (charW + charW * 0.20f)
+                        let txt = formatLabel v
+                        let approxW = float32 txt.Length * (charW + charGap) - charGap
                         let originX = cornerX - majorTick - approxW - labelGap
                         let originY = cornerY + float32 v - charH * 0.5f
                         pushString txt originX originY yColor
@@ -1208,8 +1246,9 @@ type StackCanvasControl() =
                     let arr = textVerts.ToArray()
                     g.BindVertexArray textVao
                     g.BindBuffer(GLEnum.ArrayBuffer, textVbo)
-                    g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.StaticDraw)
-                rulerDirty <- false
+                    g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
+            else
+                textVertexCount <- 0
 
             if rulerVertexCount > 0 && rulerProgram <> 0u then
                 g.UseProgram rulerProgram

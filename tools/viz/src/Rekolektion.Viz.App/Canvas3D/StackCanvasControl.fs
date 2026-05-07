@@ -1087,10 +1087,16 @@ type StackCanvasControl() =
                 rulerCornerX <- cornerX
                 rulerCornerY <- cornerY
                 rulerMajorTickLen <- majorTick
-                // Tick scheme: minor every 1 µm. Major + label at
-                // every 1 µm for the first 10 µm of the axis, then
-                // every 5 µm thereafter. Sub-µm cells fall back to
-                // the 1-2-5 picker so they still get some labels.
+                // Tick scheme:
+                //  • Minor (small) every 1 µm.
+                //  • Major (longer) ONLY at 15, 20, 25, … µm — the
+                //    outer-region majors. Ticks in the 0..10 µm
+                //    region keep minor length even though they get
+                //    labels (user: "just because they have numbers
+                //    doesn't mean they need large ticks").
+                //  • Labels at every 1 µm in 0..10, then every 5 µm
+                //    after 10.
+                //  • Sub-µm cells fall back to the 1-2-5 picker.
                 let labelPositions (axisRange: float) : float[] =
                     if axisRange < 1.0 then
                         let s = niceStep axisRange
@@ -1113,6 +1119,14 @@ type StackCanvasControl() =
                                 result.Add t
                                 t <- t + 5.0
                         result.ToArray()
+                let outerMajorPositions (axisRange: float) : float seq =
+                    seq {
+                        if axisRange > 10.0 then
+                            let mutable t = 15.0
+                            while t <= axisRange + 1e-6 do
+                                yield t
+                                t <- t + 5.0
+                    }
                 let minorPositions (axisRange: float) : float seq =
                     seq {
                         let s = if axisRange < 1.0 then niceStep axisRange / 5.0 else 1.0
@@ -1129,12 +1143,11 @@ type StackCanvasControl() =
                         let tf = cornerX + float32 t
                         push tf cornerY               z xColor
                         push tf (cornerY - minorTick) z xColor
-                    let majors = labelPositions xRange
-                    for t in majors do
+                    for t in outerMajorPositions xRange do
                         let tf = cornerX + float32 t
                         push tf cornerY               z xColor
                         push tf (cornerY - majorTick) z xColor
-                    rulerXMajors <- majors
+                    rulerXMajors <- labelPositions xRange
                 else
                     rulerXMajors <- [||]
                 // Y axis spine + ticks along the left edge.
@@ -1145,12 +1158,11 @@ type StackCanvasControl() =
                         let tf = cornerY + float32 t
                         push cornerX               tf z yColor
                         push (cornerX - minorTick) tf z yColor
-                    let majors = labelPositions yRange
-                    for t in majors do
+                    for t in outerMajorPositions yRange do
                         let tf = cornerY + float32 t
                         push cornerX               tf z yColor
                         push (cornerX - majorTick) tf z yColor
-                    rulerYMajors <- majors
+                    rulerYMajors <- labelPositions yRange
                 else
                     rulerYMajors <- [||]
                 // Explicit origin marker at the bbox corner — a
@@ -1178,15 +1190,17 @@ type StackCanvasControl() =
             if rulerXMajors.Length > 0 || rulerYMajors.Length > 0 then
                 let xColor = struct (1.0f, 0.35f, 0.35f)
                 let yColor = struct (0.35f, 1.0f, 0.35f)
-                let viewH = max this.Bounds.Height 1.0
-                let fovYr = float (60.0 / max zoom 0.05) * System.Math.PI / 180.0
-                let cameraDist = extent * 1.5
-                // World units per screen pixel near the text plane.
-                let worldPerPixel = 2.0 * cameraDist * tan(fovYr / 2.0) / viewH
-                // Target ~36 px tall glyphs (4× the prior 9 px) —
-                // independent of cell scale per user ask.
-                let charH = float32 (worldPerPixel * 36.0)
-                let charW = charH * (5.0f / 7.0f)   // 5×7 font aspect
+                // Font size in world µm — fixed to the drawing,
+                // not to the screen, so labels don't bunch up when
+                // zoomed out. Sized to fit between 1-µm-spaced
+                // labels: char height = 0.55 µm, width = 0.40 µm,
+                // so '10' (~0.85 µm wide) clears the next tick.
+                // Sub-µm cells scale down via rulerStep.
+                let baseHeight =
+                    if rulerStep >= 1.0 then 0.55
+                    else rulerStep * 0.55
+                let charH = float32 baseHeight
+                let charW = charH * (5.0f / 7.0f)
                 let charGap = charW * 0.2f
                 let labelGap = charH * 0.5f
                 let textVerts = ResizeArray<float32>()

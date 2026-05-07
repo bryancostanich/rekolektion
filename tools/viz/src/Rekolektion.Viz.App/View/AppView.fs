@@ -134,29 +134,25 @@ let private fileTab
                 StackPanel.orientation Orientation.Horizontal
                 StackPanel.spacing 0.0
                 StackPanel.children [
-                    Button.create [
-                        Button.content label
-                        Button.background "Transparent"
-                        Button.borderThickness (Thickness(0.0))
-                        Button.foreground fg
-                        Button.padding (Thickness(8.0, 4.0))
-                        Button.minWidth 0.0
-                        Button.minHeight 0.0
-                        Button.cursor (new Cursor(StandardCursorType.Hand))
-                        // Tag the button with its path via Avalonia's
-                        // Tag property so the click handler can read
-                        // the CURRENT path off the source control
-                        // rather than relying on a captured closure
-                        // — FuncUI 1.6.0 was reusing old lambdas
-                        // across renders, which left stale path
-                        // captures on visual-element-reused tabs
-                        // after a LoadComplete-induced reorder.
-                        Button.tag (box path)
-                        Button.onClick (fun e ->
+                    // Selectable label: drag-select inside the tab
+                    // name to grab the filename for copy/paste.
+                    // Tap (single click without drag) activates the
+                    // tab — Tapped vs PointerPressed is the
+                    // distinction that lets selection still work.
+                    // Path lives on Tag so FuncUI's lambda-dedup
+                    // can't desync the click target from its label.
+                    SelectableTextBlock.create [
+                        SelectableTextBlock.text label
+                        SelectableTextBlock.foreground fg
+                        SelectableTextBlock.padding (Thickness(8.0, 4.0))
+                        SelectableTextBlock.verticalAlignment VerticalAlignment.Center
+                        SelectableTextBlock.cursor (new Cursor(StandardCursorType.Ibeam))
+                        SelectableTextBlock.tag (box path)
+                        SelectableTextBlock.onTapped (fun e ->
                             e.Handled <- true
                             match e.Source with
-                            | :? Avalonia.Controls.Button as b ->
-                                match b.Tag with
+                            | :? Avalonia.Controls.Control as c ->
+                                match c.Tag with
                                 | :? string as p -> dispatch (Msg.SetActiveMacro p)
                                 | _ -> ()
                             | _ -> ())

@@ -91,9 +91,21 @@ type StackCanvasControl() =
     let mutable rulerVao : uint32 = 0u
     let mutable rulerVbo : uint32 = 0u
     let mutable rulerVertexCount : int = 0
+    let mutable rulerXMin : float32 = 0.0f
     let mutable rulerXMax : float32 = 0.0f
+    let mutable rulerYMin : float32 = 0.0f
     let mutable rulerYMax : float32 = 0.0f
+    let mutable rulerStep : float = 1.0   // major step (µm)
     let mutable rulerDirty : bool = true
+    // Major-tick world positions kept around for the Render
+    // override to draw screen-space numeric labels via Avalonia.
+    let mutable rulerXMajors : float[] = [||]
+    let mutable rulerYMajors : float[] = [||]
+    // MVP from the last GL frame; used by Render to project the
+    // ruler tick world positions into screen pixels for label
+    // placement. Updated at the bottom of OnOpenGlRender.
+    let mutable lastMvp : System.Numerics.Matrix4x4 =
+        System.Numerics.Matrix4x4.Identity
     // Mesh upload caching. Re-extruding 400k polygons (production
     // SRAM macro) every frame would saturate the CPU and drop the
     // canvas to <1 fps. We extrude + upload only when FlatPolygons
@@ -232,13 +244,14 @@ type StackCanvasControl() =
             let yExt = float (yMax - yMin)
             let zExt = if zMax > zMin then zMax - zMin else 0.0
             extent <- max xExt (max yExt zExt) |> max 5.0
-            // Ruler runs from origin to whichever direction the
-            // cell extends. If a cell sits entirely in negative
-            // territory the ruler reads as 0-length on that axis;
-            // a follow-up could draw bidirectional but most cells
-            // are origin-anchored or origin-positive in viz use.
-            rulerXMax <- max 0.0f xMax
-            rulerYMax <- max 0.0f yMax
+            // Ruler spans the full silicon bbox — origin (0,0) is
+            // marked but the rule itself runs from xMin..xMax /
+            // yMin..yMax, so a cell centered around origin (e.g.
+            // many foundry layouts) shows the negative half too.
+            rulerXMin <- xMin
+            rulerXMax <- xMax
+            rulerYMin <- yMin
+            rulerYMax <- yMax
             rulerDirty <- true
             // Diagnostic — surfaces what the camera is actually
             // framing so we can tell "marker filter not running"
@@ -256,11 +269,70 @@ type StackCanvasControl() =
     /// hit. Without this, pointer events fall THROUGH the GL canvas
     /// (the GL framebuffer isn't part of Avalonia's visual tree for
     /// hit-test purposes) and PointerPressed never fires.
+    /// Format a ruler label. Drops a trailing ".0" so integer
+    /// values read as plain numbers.
+    member private _.FormatRulerLabel (v: float) (step: float) : string =
+        let decimals =
+            if step >= 1.0 then 0
+            elif step >= 0.1 then 1
+            else 2
+        let s = v.ToString("F" + string decimals, System.Globalization.CultureInfo.InvariantCulture)
+        if decimals > 0 && s.EndsWith ".0" then s.Substring(0, s.Length - 2) else s
+
+    /// Project a world-space point through the most recent MVP
+    /// into Avalonia control-space pixels. Returns None if the
+    /// point's clip-space w is non-positive (point behind camera).
+    member private this.ProjectWorldToScreen
+            (worldX: float32) (worldY: float32) (worldZ: float32)
+            : Avalonia.Point option =
+        let v =
+            System.Numerics.Vector4.Transform(
+                System.Numerics.Vector4(worldX, worldY, worldZ, 1.0f),
+                lastMvp)
+        if v.W <= 1e-6f then None
+        else
+            let ndcX = v.X / v.W
+            let ndcY = v.Y / v.W
+            let sx = (float ndcX + 1.0) * 0.5 * this.Bounds.Width
+            let sy = (1.0 - float ndcY) * 0.5 * this.Bounds.Height
+            Some (Avalonia.Point(sx, sy))
+
     override this.Render (context: Avalonia.Media.DrawingContext) =
         base.Render context
         context.FillRectangle(
             Avalonia.Media.Brushes.Transparent,
             Avalonia.Rect(this.Bounds.Size))
+        // Numeric tick labels overlaid on top of the GL ruler.
+        // Drawn here (Avalonia compositor layer) rather than
+        // baked into the GL pipeline because GL text rendering
+        // wants a font atlas + textured quads — and a flat 2D
+        // overlay is what users actually expect for rulers.
+        if rulerStep > 0.0 then
+            let xColor = Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0xffuy, 0xa0uy, 0xa0uy))
+            let yColor = Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0xa0uy, 0xffuy, 0xa0uy))
+            let typeface = Avalonia.Media.Typeface.Default
+            let zRuler = -0.5f
+            let drawLabel (text: string) (worldX: float32) (worldY: float32) (offset: Avalonia.Vector) (brush: Avalonia.Media.IBrush) =
+                match this.ProjectWorldToScreen worldX worldY zRuler with
+                | None -> ()
+                | Some p ->
+                    let ft =
+                        Avalonia.Media.FormattedText(
+                            text,
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            Avalonia.Media.FlowDirection.LeftToRight,
+                            typeface,
+                            10.0,
+                            brush)
+                    context.DrawText(ft, p + offset)
+            // X axis: labels below their tick (positive screen-Y).
+            for v in rulerXMajors do
+                let txt = this.FormatRulerLabel v rulerStep
+                drawLabel txt (float32 v) 0.0f (Avalonia.Vector(2.0, 4.0)) xColor
+            // Y axis: labels to the left of their tick.
+            for v in rulerYMajors do
+                let txt = this.FormatRulerLabel v rulerStep
+                drawLabel txt 0.0f (float32 v) (Avalonia.Vector(-22.0, -7.0)) yColor
 
     override this.OnPropertyChanged e =
         base.OnPropertyChanged e
@@ -828,51 +900,87 @@ type StackCanvasControl() =
             g.DrawElements(GLEnum.Triangles, uint32 indexCount, GLEnum.UnsignedInt, IntPtr.Zero.ToPointer())
 
             // ---- Ruler overlay ----
-            // Two axis lines from origin (0,0,-0.5) to (xMax,0,-0.5)
-            // and (0,yMax,-0.5), with tick marks every `step` µm.
-            // Step is the largest power of 10 that fits at least 4
-            // ticks on the longer axis (so a 1.8 µm cell gets 0.1
-            // µm ticks; an 80 µm macro gets 10 µm ticks). Z = -0.5
-            // sits below nwell (StackZ = -0.20) so the ruler reads
-            // as a substrate-level reference grid, not an overlay
-            // floating in the metal stack.
+            // Substrate-level reference grid at z = -0.5 µm (just
+            // below nwell). Span the FULL silicon bbox on each
+            // axis (including negative regions) so a cell centered
+            // around origin still shows the full ruler. Major
+            // ticks every `step` µm via 1-2-5 nice-numbers picker;
+            // minor ticks at step / 5. Major ticks are longer and
+            // get numeric labels in the Render() Avalonia overlay.
             if rulerDirty && rulerProgram <> 0u then
-                let xm = rulerXMax
-                let ym = rulerYMax
-                let longest = max (float xm) (float ym)
-                let step =
-                    if longest <= 0.0 then 1.0
+                let xRange = float (rulerXMax - rulerXMin)
+                let yRange = float (rulerYMax - rulerYMin)
+                let longest = max xRange yRange
+                let niceStep (range: float) =
+                    if range <= 0.0 then 1.0
                     else
-                        // Largest 10^k with at least ~4 ticks fitting.
-                        let target = longest / 4.0
-                        let k = floor (log10 target)
-                        max (System.Math.Pow(10.0, k)) 0.001
+                        // ~4 major ticks across the longer axis;
+                        // 1-2-5 series feels natural for cell sizes
+                        // (e.g. 23 µm → 5 µm step, 80 µm → 10 µm,
+                        // 1.8 µm → 0.5 µm).
+                        let target = range / 4.0
+                        let mag = System.Math.Pow(10.0, floor (log10 target))
+                        let ratio = target / mag
+                        let mult =
+                            if ratio < 1.5 then 1.0
+                            elif ratio < 3.5 then 2.0
+                            elif ratio < 7.5 then 5.0
+                            else 10.0
+                        mag * mult
+                let step = niceStep longest
+                rulerStep <- step
+                let minor = step / 5.0
                 let z = -0.5f
-                let tickHalf = float32 (step * 0.15)
-                let xColor = struct (1.0f, 0.35f, 0.35f) // red-ish for X
-                let yColor = struct (0.35f, 1.0f, 0.35f) // green-ish for Y
+                let majorTick = float32 (step * 0.20)
+                let minorTick = float32 (step * 0.08)
+                let xColor = struct (1.0f, 0.35f, 0.35f)
+                let yColor = struct (0.35f, 1.0f, 0.35f)
                 let verts = ResizeArray<float32>()
                 let push (x: float32) (y: float32) (zz: float32) (struct (r, g, b)) =
                     verts.Add x;  verts.Add y;  verts.Add zz
                     verts.Add r;  verts.Add g;  verts.Add b
-                if xm > 0.0f then
-                    push 0.0f 0.0f z xColor
-                    push xm   0.0f z xColor
-                    let mutable t = step
-                    while t <= float xm + 1e-6 do
+                let snap (lo: float) (hi: float) (s: float) : float seq =
+                    seq {
+                        let first = ceil (lo / s) * s
+                        let mutable t = first
+                        while t <= hi + s * 1e-6 do
+                            yield t
+                            t <- t + s
+                    }
+                // X axis spine + ticks
+                if xRange > 0.0 then
+                    push (float32 rulerXMin) 0.0f z xColor
+                    push (float32 rulerXMax) 0.0f z xColor
+                    for t in snap (float rulerXMin) (float rulerXMax) minor do
                         let tf = float32 t
-                        push tf -tickHalf z xColor
-                        push tf  tickHalf z xColor
-                        t <- t + step
-                if ym > 0.0f then
-                    push 0.0f 0.0f z yColor
-                    push 0.0f ym   z yColor
-                    let mutable t = step
-                    while t <= float ym + 1e-6 do
+                        push tf -minorTick z xColor
+                        push tf  minorTick z xColor
+                    let majorsX = ResizeArray<float>()
+                    for t in snap (float rulerXMin) (float rulerXMax) step do
+                        majorsX.Add t
                         let tf = float32 t
-                        push -tickHalf tf z yColor
-                        push  tickHalf tf z yColor
-                        t <- t + step
+                        push tf -majorTick z xColor
+                        push tf  majorTick z xColor
+                    rulerXMajors <- majorsX.ToArray()
+                else
+                    rulerXMajors <- [||]
+                // Y axis spine + ticks
+                if yRange > 0.0 then
+                    push 0.0f (float32 rulerYMin) z yColor
+                    push 0.0f (float32 rulerYMax) z yColor
+                    for t in snap (float rulerYMin) (float rulerYMax) minor do
+                        let tf = float32 t
+                        push -minorTick tf z yColor
+                        push  minorTick tf z yColor
+                    let majorsY = ResizeArray<float>()
+                    for t in snap (float rulerYMin) (float rulerYMax) step do
+                        majorsY.Add t
+                        let tf = float32 t
+                        push -majorTick tf z yColor
+                        push  majorTick tf z yColor
+                    rulerYMajors <- majorsY.ToArray()
+                else
+                    rulerYMajors <- [||]
                 rulerVertexCount <- verts.Count / 6
                 if rulerVertexCount > 0 then
                     let arr = verts.ToArray()
@@ -895,4 +1003,8 @@ type StackCanvasControl() =
                 g.UniformMatrix4(rulerLoc, 1u, false, ReadOnlySpan<float32>(mvpArr2))
                 g.LineWidth 1.5f
                 g.DrawArrays(GLEnum.Lines, 0, uint32 rulerVertexCount)
+            // Stash MVP for the Avalonia text-overlay pass in
+            // Render() — labels project the same camera the GL
+            // ruler lines just drew.
+            lastMvp <- mvp
         | _ -> ()

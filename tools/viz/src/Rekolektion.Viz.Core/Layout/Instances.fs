@@ -237,6 +237,112 @@ let selectionBbox (selected: Instance array)
             if d > y2 then y2 <- d
         Some (x1, y1, x2, y2)
 
+/// Per-(layer, datatype) world-DBU bboxes for *each individual
+/// polygon* in a flat polygon set. Dimension overlay + DRC need
+/// per-polygon bboxes (not the per-layer union) — two instances
+/// placed side-by-side will always have overlapping per-layer
+/// unions because both have polys spanning the full row, even
+/// when their actual silicon footprints are cleanly separated.
+/// Skips polygons with empty point arrays.
+let layerPolyBboxesOf (polys: System.Collections.Generic.IEnumerable<Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon>)
+                      : Map<int * int, (int64 * int64 * int64 * int64) array> =
+    let acc =
+        System.Collections.Generic.Dictionary<int * int,
+            System.Collections.Generic.List<int64 * int64 * int64 * int64>>()
+    for p in polys do
+        if p.Points.Length > 0 then
+            let key = (p.Layer, p.DataType)
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for pt in p.Points do
+                if pt.X < xMin then xMin <- pt.X
+                if pt.X > xMax then xMax <- pt.X
+                if pt.Y < yMin then yMin <- pt.Y
+                if pt.Y > yMax then yMax <- pt.Y
+            let bb = (xMin, yMin, xMax, yMax)
+            match acc.TryGetValue key with
+            | true, lst -> lst.Add bb
+            | _ ->
+                let lst = System.Collections.Generic.List<_>()
+                lst.Add bb
+                acc.[key] <- lst
+    acc
+    |> Seq.map (fun kv -> kv.Key, kv.Value.ToArray())
+    |> Map.ofSeq
+
+/// Per-top-instance, per-layer per-polygon bbox map. Built from
+/// `flattenInstance` so bboxes are already in world coordinates.
+let layerPolyBboxesByInstance (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+                              : Map<int, Map<int * int, (int64 * int64 * int64 * int64) array>> =
+    let top = findTop lib
+    top.Elements
+    |> List.indexed
+    |> List.choose (fun (idx, el) ->
+        match el with
+        | Rekolektion.Viz.Core.Gds.Types.SRef _ ->
+            let polys = Rekolektion.Viz.Core.Layout.Flatten.flattenInstance lib idx
+            Some (idx, layerPolyBboxesOf polys)
+        | _ -> None)
+    |> Map.ofList
+
+/// Physical bbox of one top-instance: union of every polygon's
+/// bbox EXCLUDING non-physical Magic-marker layers (checkpaint,
+/// error, feedback). The dimension overlay uses this as the cell's
+/// "outside edge" so arrows measure visible silicon extent, not
+/// bookkeeping rectangles whose footprint extends past the actual
+/// content. Returns None for instances with no physical geometry.
+let physicalBboxOfInstance
+        (perLayer: Map<int * int, (int64 * int64 * int64 * int64) array>)
+        : (int64 * int64 * int64 * int64) option =
+    let mutable xMin = System.Int64.MaxValue
+    let mutable yMin = System.Int64.MaxValue
+    let mutable xMax = System.Int64.MinValue
+    let mutable yMax = System.Int64.MinValue
+    let mutable any = false
+    for kv in perLayer do
+        let (l, dt) = kv.Key
+        if not (Rekolektion.Viz.Core.Layout.Layer.isNonPhysical l dt) then
+            for (a, b, c, d) in kv.Value do
+                if a < xMin then xMin <- a
+                if b < yMin then yMin <- b
+                if c > xMax then xMax <- c
+                if d > yMax then yMax <- d
+                any <- true
+    if any then Some (xMin, yMin, xMax, yMax) else None
+
+/// Convenience wrapper: per-top-instance physical bbox, derived
+/// from `layerPolyBboxesByInstance`.
+let physicalBboxesByInstance (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+                             : Map<int, int64 * int64 * int64 * int64> =
+    layerPolyBboxesByInstance lib
+    |> Map.toSeq
+    |> Seq.choose (fun (idx, perLayer) ->
+        physicalBboxOfInstance perLayer
+        |> Option.map (fun bb -> idx, bb))
+    |> Map.ofSeq
+
+/// Convenience: union per-layer bbox over all polygons. Useful for
+/// the "is the neighbor close enough at all?" coarse filter — much
+/// cheaper than scanning per-polygon. Not appropriate for the
+/// dimension overlay's actual gap math; see `layerPolyBboxesOf`.
+let layerBboxesOf (polys: System.Collections.Generic.IEnumerable<Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon>)
+                  : Map<int * int, int64 * int64 * int64 * int64> =
+    let perPoly = layerPolyBboxesOf polys
+    perPoly
+    |> Map.map (fun _ arr ->
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for (a, b, c, d) in arr do
+            if a < xMin then xMin <- a
+            if b < yMin then yMin <- b
+            if c > xMax then xMax <- c
+            if d > yMax then yMax <- d
+        (xMin, yMin, xMax, yMax))
+
 /// Apply a translation Δ (DBU) to every SRef whose Index is in
 /// `selectionByIndex`. Returns a new Library with the top cell's
 /// SRef Origins updated; non-selected elements and other structures

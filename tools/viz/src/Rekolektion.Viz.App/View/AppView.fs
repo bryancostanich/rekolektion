@@ -51,6 +51,14 @@ let private gds2DMoveSelectionHandlerAttr (h: System.Action<int64, int64>) : IAt
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int64, int64>>(
         GdsCanvasControl.MoveSelectionHandlerProperty, h, ValueNone)
 
+let private gds2DShowDimensionsAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowDimensionsProperty, v, ValueNone)
+
+let private gds2DToggleDimensionsHandlerAttr (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.ToggleDimensionsHandlerProperty, h, ValueNone)
+
 let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
@@ -90,6 +98,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         System.Action(fun () -> dispatch Msg.ClearInstanceSelection)
     let moveSelectionHandler =
         System.Action<int64, int64>(fun dx dy -> dispatch (Msg.MoveSelectionDbu (dx, dy)))
+    let toggleDimensionsHandler =
+        System.Action(fun () -> dispatch Msg.ToggleDimensions)
 
     let canvas2D : IView =
         ViewBuilder.Create<GdsCanvasControl>
@@ -100,7 +110,9 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DInstanceSelectionAttr model.InstanceSelection
               gds2DSetSelectionHandlerAttr setSelectionHandler
               gds2DClearSelectionHandlerAttr clearSelectionHandler
-              gds2DMoveSelectionHandlerAttr moveSelectionHandler ]
+              gds2DMoveSelectionHandlerAttr moveSelectionHandler
+              gds2DShowDimensionsAttr model.ShowDimensions
+              gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler ]
 
     let pickedHandler =
         System.Action<string, int>(fun s i ->

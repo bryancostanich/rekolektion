@@ -145,6 +145,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.SetTab tab -> { model with ActiveTab = tab }, Cmd.none
     | Msg.PolygonPicked (s, i) -> { model with Selection = Some (s, i) }, Cmd.none
     | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
+    | Msg.ToggleDimensions ->
+        { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
     | Msg.SetInstanceSelection indices ->
         { model with InstanceSelection = indices }, Cmd.none
     | Msg.ClearInstanceSelection ->

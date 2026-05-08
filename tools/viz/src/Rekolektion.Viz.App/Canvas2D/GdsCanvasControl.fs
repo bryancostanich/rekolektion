@@ -29,6 +29,14 @@ type private SelectionOverlay = {
     /// stale relative to the moved geometry) — the moved polygons
     /// are themselves the indicator.
     Dragging  : bool
+    /// When ShowDimensions, the canvas hands per-instance per-layer
+    /// per-polygon bboxes to the overlay so it can dim between
+    /// individual feature shapes (not just cell bboxes).
+    /// Recomputed every frame from the renderLib so arrows track
+    /// edits live during a drag.
+    ShowDimensions     : bool
+    InstancePolyBboxes :
+        Map<int, Map<int * int, (int64 * int64 * int64 * int64) array>>
 }
 
 /// Skia draw operation that takes an explicit ViewBox so the canvas
@@ -90,6 +98,15 @@ type private SkiaDraw(bounds: Rect,
                             let sy2 = float vb.PixelH - (float y2 - float vb.MinY) * scaleY |> float32
                             let r = SKRect(min sx1 sx2, min sy1 sy2, max sx1 sx2, max sy1 sy2)
                             canvas.DrawRect(r, stroke)
+
+                if overlay.ShowDimensions
+                   && overlay.Selected.Count > 0
+                   && overlay.Instances.Length > 0 then
+                    DimensionOverlay.render
+                        canvas vb lib
+                        overlay.Instances overlay.Selected
+                        overlay.InstancePolyBboxes
+                        DimensionOverlay.defaultSettings
                 canvas.RestoreToCount saved
 
 type private DragKind = NoDrag | PanDrag | SelectionDrag
@@ -166,6 +183,13 @@ type GdsCanvasControl() =
         AvaloniaProperty.Register<GdsCanvasControl, Action<int64, int64>>(
             "MoveSelectionHandler", null)
         with get
+    static member val ShowDimensionsProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDimensions", false)
+        with get
+    static member val ToggleDimensionsHandlerProperty : StyledProperty<Action> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action>(
+            "ToggleDimensionsHandler", null)
+        with get
 
     member this.Library
         with get() : Library option = this.GetValue(GdsCanvasControl.LibraryProperty)
@@ -204,6 +228,16 @@ type GdsCanvasControl() =
             this.GetValue(GdsCanvasControl.MoveSelectionHandlerProperty)
         and set(v: Action<int64, int64>) =
             this.SetValue(GdsCanvasControl.MoveSelectionHandlerProperty, v) |> ignore
+
+    member this.ShowDimensions
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowDimensionsProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDimensionsProperty, v) |> ignore
+
+    member this.ToggleDimensionsHandler
+        with get() : Action =
+            this.GetValue(GdsCanvasControl.ToggleDimensionsHandlerProperty)
+        and set(v: Action) =
+            this.SetValue(GdsCanvasControl.ToggleDimensionsHandlerProperty, v) |> ignore
 
     override _.MeasureOverride(constraint': Size) : Size =
         let w =
@@ -275,7 +309,8 @@ type GdsCanvasControl() =
             this.InvalidateVisual()
         elif e.Property = GdsCanvasControl.ToggleProperty
              || e.Property = GdsCanvasControl.InstancesProperty
-             || e.Property = GdsCanvasControl.InstanceSelectionProperty then
+             || e.Property = GdsCanvasControl.InstanceSelectionProperty
+             || e.Property = GdsCanvasControl.ShowDimensionsProperty then
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----
@@ -448,10 +483,6 @@ type GdsCanvasControl() =
             if not hasFitted then this.AutoFit ()
             let vb = this.MakeViewBox ()
             let dragging = (dragKind = SelectionDrag)
-            let overlay : SelectionOverlay =
-                { Instances = this.Instances
-                  Selected  = this.InstanceSelection
-                  Dragging  = dragging }
             // While a drag is in flight, render the speculatively
             // translated Library + FlatPolygons so the moved
             // geometry tracks the cursor. The bound props haven't
@@ -460,6 +491,23 @@ type GdsCanvasControl() =
                 match dragLiveLib with
                 | Some live when dragging -> live, dragLiveFlat
                 | _ -> lib, this.FlatPolygons
+            // Per-instance per-layer bboxes for the dimension
+            // overlay. Only computed when the overlay is on AND
+            // there's a selection — keeps the at-rest render path
+            // free of layer-walk cost. Recomputed every frame so
+            // the arrows track the speculative library during a
+            // drag.
+            let instPolyBboxes =
+                if this.ShowDimensions && not this.InstanceSelection.IsEmpty then
+                    Instances.layerPolyBboxesByInstance renderLib
+                else
+                    Map.empty
+            let overlay : SelectionOverlay =
+                { Instances = this.Instances
+                  Selected  = this.InstanceSelection
+                  Dragging  = dragging
+                  ShowDimensions = this.ShowDimensions
+                  InstancePolyBboxes = instPolyBboxes }
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay))
         | None ->
             // Closing the active tab leaves None for Library; without

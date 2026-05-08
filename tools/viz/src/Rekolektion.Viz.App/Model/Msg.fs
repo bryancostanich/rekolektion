@@ -61,6 +61,8 @@ type Msg =
     /// The canvas snaps the delta to the mfg grid before dispatch
     /// (see Layout.Snap), so Update can apply it verbatim.
     | MoveSelectionDbu of dxDbu: int64 * dyDbu: int64
+    /// Flip the dimension overlay on/off.
+    | ToggleDimensions
     | Pan2D            of dx: float * dy: float
     | Zoom2D           of factor: float
     | Orbit3D          of dyaw: float * dpitch: float

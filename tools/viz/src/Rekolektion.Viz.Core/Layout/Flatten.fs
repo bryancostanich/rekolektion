@@ -152,3 +152,73 @@ let flatten (lib: Library) : FlatPolygon array =
             | _ -> ())
     walk top identityXform
     result.ToArray()
+
+/// Flatten just one top-level SRef's subtree. The returned polygons
+/// are in world coordinates with the SRef's own transform composed
+/// in, identical to what `flatten` produces for that branch — the
+/// difference is the result is tagged-by-instance so dimension
+/// overlay / DRC can compare instances pairwise without re-walking
+/// the whole hierarchy. Returns an empty array if `topInstanceIdx`
+/// doesn't point to a top-level SRef whose target cell is present.
+let flattenInstance (lib: Library) (topInstanceIdx: int) : FlatPolygon array =
+    let byName =
+        lib.Structures
+        |> List.map (fun s -> s.Name, s)
+        |> Map.ofList
+    let top = findTop lib
+    let topSref =
+        top.Elements
+        |> List.indexed
+        |> List.tryPick (fun (idx, el) ->
+            if idx = topInstanceIdx then
+                match el with
+                | SRef sr -> Some sr
+                | _ -> None
+            else None)
+    match topSref with
+    | None -> [||]
+    | Some sr ->
+        match Map.tryFind sr.StructureName byName with
+        | None -> [||]
+        | Some childCell ->
+            let result = System.Collections.Generic.List<FlatPolygon>()
+            let rec walk (struc: Structure) (xform: Affine) =
+                struc.Elements
+                |> List.iteri (fun idx el ->
+                    match el with
+                    | Boundary b ->
+                        let pts =
+                            b.Points
+                            |> List.map (apply xform)
+                            |> List.toArray
+                        result.Add {
+                            Layer = b.Layer
+                            DataType = b.DataType
+                            Points = pts
+                            SourceStructure = struc.Name
+                            SourceIndex = idx }
+                    | SRef sr2 ->
+                        match Map.tryFind sr2.StructureName byName with
+                        | None -> ()
+                        | Some child ->
+                            walk child (compose xform (fromSref sr2))
+                    | ARef ar ->
+                        match Map.tryFind ar.StructureName byName with
+                        | None -> ()
+                        | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                            let baseXform = fromArefBase ar
+                            let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                            let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                            let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                            let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                            for r in 0 .. ar.Rows - 1 do
+                                for c in 0 .. ar.Cols - 1 do
+                                    let instXform =
+                                        { baseXform with
+                                            Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                            Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                                    walk child (compose xform instXform)
+                        | _ -> ()
+                    | _ -> ())
+            walk childCell (fromSref sr)
+            result.ToArray()

@@ -48,6 +48,12 @@ type Model = {
     /// the active macro's top structure. Empty set = nothing
     /// selected. Switching tabs / loading a new file clears this.
     InstanceSelection : Set<int>
+    /// Whether the canvas draws the dimension overlay (arrows +
+    /// µm labels between selected instances and their nearest
+    /// in-radius neighbors). Toggleable via TopBar / D key. Off
+    /// by default — the overlay can hairball the canvas on dense
+    /// layouts.
+    ShowDimensions : bool
     ActiveTab       : Tab
     View2D          : View2DState
     View3D          : View3DState
@@ -71,6 +77,7 @@ let empty : Model = {
     Toggle = Visibility.empty
     Selection = None
     InstanceSelection = Set.empty
+    ShowDimensions = false
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }
     View3D = { OrbitYaw = 30.0; OrbitPitch = -25.0; ZoomFactor = 1.0; Ortho = false }

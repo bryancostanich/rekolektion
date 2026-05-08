@@ -75,7 +75,7 @@ module private Subscriptions =
 type MainWindow() as this =
     inherit HostWindow()
     do
-        base.Title <- "rekolektion-viz"
+        base.Title <- "rekolektion-viz v2"
         base.Width <- 1400.0
         base.Height <- 900.0
 
@@ -95,6 +95,20 @@ type MainWindow() as this =
         Program.mkProgram init update view
         |> Program.withHost this
         |> Program.runWithDispatch Subscriptions.syncDispatch ()
+
+        // Window-level key handling for editor shortcuts that
+        // shouldn't depend on which focusable child currently has
+        // keyboard focus. KeyDown bubbles from the focused element
+        // up to the window — by handling here we catch the key
+        // even when focus is on a button or panel that has no
+        // local handler. Routes through AppDispatch so the Elmish
+        // loop owns the state transition.
+        this.KeyDown.Add(fun e ->
+            match e.Key, e.KeyModifiers with
+            | Key.D, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleDimensions
+                e.Handled <- true
+            | _ -> ())
 
 type App() =
     inherit Application()

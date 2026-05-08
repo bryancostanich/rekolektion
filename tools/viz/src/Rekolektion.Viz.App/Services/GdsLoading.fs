@@ -39,10 +39,12 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
         // polygons to ~400k flat polygons. The cost is paid once at
         // load time so per-frame rendering doesn't pay it.
         let flat = Layout.Flatten.flatten lib
+        let instances = Layout.Instances.enumerate lib
         return Ok {
             Path = path
             Library = lib
             FlatPolygons = flat
+            TopInstances = instances
             Nets = nets
             Blocks = blocks
             NetsFromSidecar = fromSidecar

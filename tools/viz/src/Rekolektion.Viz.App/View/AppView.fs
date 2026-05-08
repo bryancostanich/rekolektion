@@ -31,6 +31,26 @@ let private gds2DToggleAttr (v: Visibility.ToggleState) : IAttr<GdsCanvasControl
     AttrBuilder<GdsCanvasControl>.CreateProperty<Visibility.ToggleState>(
         GdsCanvasControl.ToggleProperty, v, ValueNone)
 
+let private gds2DInstancesAttr (v: Layout.Instances.Instance array) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Layout.Instances.Instance array>(
+        GdsCanvasControl.InstancesProperty, v, ValueNone)
+
+let private gds2DInstanceSelectionAttr (v: Set<int>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<int>>(
+        GdsCanvasControl.InstanceSelectionProperty, v, ValueNone)
+
+let private gds2DSetSelectionHandlerAttr (h: System.Action<Set<int>>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<int>>>(
+        GdsCanvasControl.SetInstanceSelectionHandlerProperty, h, ValueNone)
+
+let private gds2DClearSelectionHandlerAttr (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.ClearInstanceSelectionHandlerProperty, h, ValueNone)
+
+let private gds2DMoveSelectionHandlerAttr (h: System.Action<int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int64, int64>>(
+        GdsCanvasControl.MoveSelectionHandlerProperty, h, ValueNone)
+
 let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
@@ -59,11 +79,28 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         |> Option.map (fun m -> m.FlatPolygons)
         |> Option.defaultValue [||]
 
+    let instances =
+        active
+        |> Option.map (fun m -> m.TopInstances)
+        |> Option.defaultValue [||]
+
+    let setSelectionHandler =
+        System.Action<Set<int>>(fun s -> dispatch (Msg.SetInstanceSelection s))
+    let clearSelectionHandler =
+        System.Action(fun () -> dispatch Msg.ClearInstanceSelection)
+    let moveSelectionHandler =
+        System.Action<int64, int64>(fun dx dy -> dispatch (Msg.MoveSelectionDbu (dx, dy)))
+
     let canvas2D : IView =
         ViewBuilder.Create<GdsCanvasControl>
             [ gds2DLibraryAttr lib
               gds2DFlatAttr    flat
-              gds2DToggleAttr   model.Toggle ]
+              gds2DToggleAttr   model.Toggle
+              gds2DInstancesAttr instances
+              gds2DInstanceSelectionAttr model.InstanceSelection
+              gds2DSetSelectionHandlerAttr setSelectionHandler
+              gds2DClearSelectionHandlerAttr clearSelectionHandler
+              gds2DMoveSelectionHandlerAttr moveSelectionHandler ]
 
     let pickedHandler =
         System.Action<string, int>(fun s i ->

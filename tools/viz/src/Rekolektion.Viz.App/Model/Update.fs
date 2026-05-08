@@ -66,7 +66,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 ActiveMacroPath = Some macro.Path
                 RecentFiles = recents
                 Toggle = toggle'
-                Selection = None }
+                Selection = None
+                InstanceSelection = Set.empty }
         model', cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
@@ -88,7 +89,10 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             // requests (e.g. socket-driven from outside).
             let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
             if exists then
-                { model with ActiveMacroPath = Some path; Selection = None }, Cmd.none
+                { model with
+                    ActiveMacroPath = Some path
+                    Selection = None
+                    InstanceSelection = Set.empty }, Cmd.none
             else model, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
@@ -117,7 +121,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             { model with
                 OpenMacros = remaining
                 ActiveMacroPath = nextActive
-                Selection = None }
+                Selection = None
+                InstanceSelection = Set.empty }
         model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
         { model with Toggle = Visibility.toggleLayer key vis model.Toggle }, Cmd.none
@@ -140,6 +145,34 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.SetTab tab -> { model with ActiveTab = tab }, Cmd.none
     | Msg.PolygonPicked (s, i) -> { model with Selection = Some (s, i) }, Cmd.none
     | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
+    | Msg.SetInstanceSelection indices ->
+        { model with InstanceSelection = indices }, Cmd.none
+    | Msg.ClearInstanceSelection ->
+        { model with InstanceSelection = Set.empty }, Cmd.none
+    | Msg.MoveSelectionDbu (dxDbu, dyDbu) ->
+        // No-op when nothing selected or the snapped delta is zero
+        // — avoids a pointless re-flatten on a sub-grid drag.
+        if model.InstanceSelection.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then
+            model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let lib' =
+                                Layout.Instances.translateSelection
+                                    mc.Library model.InstanceSelection dxDbu dyDbu
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            { mc with
+                                Library = lib'
+                                FlatPolygons = flat'
+                                TopInstances = inst' })
+                { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.Pan2D (dx, dy) ->
         let v = model.View2D
         { model with View2D = { v with OffsetX = v.OffsetX + dx; OffsetY = v.OffsetY + dy } }, Cmd.none

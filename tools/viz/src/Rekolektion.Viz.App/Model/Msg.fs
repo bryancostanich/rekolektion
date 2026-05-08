@@ -51,6 +51,16 @@ type Msg =
     | SetTab           of Model.Tab
     | PolygonPicked    of structure: string * index: int
     | ClearSelection
+    /// Replace the current top-instance selection with `indices`
+    /// (empty set = nothing selected). The canvas hit-test path
+    /// emits this with the result of a left-click; shift-click
+    /// extends the prior set before dispatching.
+    | SetInstanceSelection of indices: Set<int>
+    | ClearInstanceSelection
+    /// Translate every currently-selected instance by (dxDbu, dyDbu).
+    /// The canvas snaps the delta to the mfg grid before dispatch
+    /// (see Layout.Snap), so Update can apply it verbatim.
+    | MoveSelectionDbu of dxDbu: int64 * dyDbu: int64
     | Pan2D            of dx: float * dy: float
     | Zoom2D           of factor: float
     | Orbit3D          of dyaw: float * dpitch: float

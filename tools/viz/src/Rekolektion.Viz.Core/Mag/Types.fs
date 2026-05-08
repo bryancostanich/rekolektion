@@ -53,8 +53,11 @@ type MagCell = {
     BBox: (int64 * int64 * int64 * int64) option
 }
 
-/// Default lambda value (nm) for sky130A. Magic's tech file has
-/// the authoritative number; we hard-code here so the parser
-/// doesn't need to read the .tech file. If we ever want to
-/// support a different process, plumb `lambda` through here.
-let sky130LambdaNm : float = 5.0
+/// Magic-internal-unit size in nanometers for sky130A/B at the
+/// default `magscale 1 1`. Comes from the tech file's
+/// `cifoutput scalefactor 10 nanometers` directive — one magic
+/// unit = 10 nm on this PDK. With `magscale a b` in a .mag, the
+/// effective scale is `sky130MagicUnitNm * (a / b)`. Hard-coded
+/// here so the parser doesn't need to read the .tech file; if we
+/// ever support a different process, plumb this through.
+let sky130MagicUnitNm : float = 10.0

@@ -21,9 +21,9 @@ let buildLibrary
         (allCells: MagCell list)
         : Library * string list =
     let warnings = ResizeArray<string>()
-    let lambdaUm = Mag.Types.sky130LambdaNm / 1000.0
+    let unitUm = Mag.Types.sky130MagicUnitNm / 1000.0
     let scaleUmPerInternal =
-        lambdaUm * float top.MagscaleNum / float top.MagscaleDenom
+        unitUm * float top.MagscaleNum / float top.MagscaleDenom
     let scaleMetersPerInternal = scaleUmPerInternal * 1.0e-6
 
     let rectToBoundary (r: MagRect) : Boundary option =

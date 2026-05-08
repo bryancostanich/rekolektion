@@ -62,9 +62,9 @@ let ``magscale 1 2 yields half-lambda DBU`` () =
         let cell = Reader.read path
         cell.MagscaleNum |> should equal 1
         cell.MagscaleDenom |> should equal 2
-        // 1 internal unit = lambda * num/denom = 5nm * 1/2 = 2.5nm
+        // 1 internal unit = magic-unit * num/denom = 10nm * 1/2 = 5nm
         let lib, _ = Layout.MagToLayout.buildLibrary cell [cell]
-        lib.UserUnitsPerDbUnit |> should (equalWithin 1e-9) 0.0025
+        lib.UserUnitsPerDbUnit |> should (equalWithin 1e-9) 0.005
     finally
         File.Delete path
 

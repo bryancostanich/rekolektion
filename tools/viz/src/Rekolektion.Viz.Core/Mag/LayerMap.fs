@@ -19,6 +19,7 @@ let private table : Map<string, int * int> =
         "pwell",          (64, 44)        // SKY130 has no native pwell layer; render dimly via nwell.pin
         "subscont",       (65, 44)
         "psubdiff",       (65, 20)
+        "psubdiffcont",   (65, 44)
         "pwellcont",      (64, 44)
 
         // Diffusion
@@ -28,6 +29,14 @@ let private table : Map<string, int * int> =
         "pdiffc",         (65, 44)
         "diff",           (65, 20)
         "tap",            (65, 44)
+
+        // Transistor-channel "paint" types — Magic abstracts an
+        // NMOS/PMOS gate area as a single rect with these names;
+        // GDS extraction decomposes them into poly-over-diff. For
+        // viz we surface the diff portion (65, 20) so the channel
+        // shows up under the diffusion toggle.
+        "nmos",           (65, 20)
+        "pmos",           (65, 20)
 
         // MV (medium-voltage) variants — same physical drawing layer,
         // distinct markers in real PDK; for viz purposes alias to the

@@ -147,6 +147,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
     | Msg.ToggleDimensions ->
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
+    | Msg.ToggleDrc ->
+        { model with ShowDrc = not model.ShowDrc }, Cmd.none
     | Msg.RotateSelection90
     | Msg.MirrorSelectionX
     | Msg.MirrorSelectionY ->

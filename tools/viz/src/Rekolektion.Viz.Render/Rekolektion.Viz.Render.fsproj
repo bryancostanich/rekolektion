@@ -17,6 +17,7 @@
     <Compile Include="Skia/LayerPainter.fs" />
     <Compile Include="Skia/LabelPainter.fs" />
     <Compile Include="Skia/DimensionOverlay.fs" />
+    <Compile Include="Skia/DrcOverlay.fs" />
     <Compile Include="Mesh/Extruder.fs" />
     <Compile Include="Mesh/Picking.fs" />
     <Compile Include="Placeholder.fs" />

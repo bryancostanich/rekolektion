@@ -59,6 +59,10 @@ let private gds2DToggleDimensionsHandlerAttr (h: System.Action) : IAttr<GdsCanva
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
         GdsCanvasControl.ToggleDimensionsHandlerProperty, h, ValueNone)
 
+let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowDrcProperty, v, ValueNone)
+
 let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
@@ -112,7 +116,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DClearSelectionHandlerAttr clearSelectionHandler
               gds2DMoveSelectionHandlerAttr moveSelectionHandler
               gds2DShowDimensionsAttr model.ShowDimensions
-              gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler ]
+              gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
+              gds2DShowDrcAttr model.ShowDrc ]
 
     let pickedHandler =
         System.Action<string, int>(fun s i ->

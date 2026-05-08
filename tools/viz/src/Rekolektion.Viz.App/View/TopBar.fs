@@ -32,6 +32,20 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.verticalAlignment VerticalAlignment.Center
             Button.onClick (fun _ -> dispatch Msg.ToggleDimensions)
         ] :> IView
+    let drcBg = if model.ShowDrc then "#7a2c2c" else "#262626"
+    let drcFg = if model.ShowDrc then "#ffffff" else "#bbbbbb"
+    let drcToggle : IView =
+        Button.create [
+            Button.content "DRC (R)"
+            Button.background drcBg
+            Button.foreground drcFg
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.onClick (fun _ -> dispatch Msg.ToggleDrc)
+        ] :> IView
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -45,7 +59,12 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                     Border.create [
                         DockPanel.dock Dock.Right
                         Border.padding (Thickness(8.0, 2.0))
-                        Border.child dimensionsToggle
+                        Border.child (
+                            StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.children [ drcToggle; dimensionsToggle ]
+                            ]
+                        )
                     ] :> IView
                 ]
             ]

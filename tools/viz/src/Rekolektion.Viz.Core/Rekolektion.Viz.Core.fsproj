@@ -25,6 +25,8 @@
     <Compile Include="Sidecar/Types.fs" />
     <Compile Include="Sidecar/Loader.fs" />
     <Compile Include="Net/LabelFlood.fs" />
+    <Compile Include="Drc/Rules.fs" />
+    <Compile Include="Drc/Check.fs" />
     <Compile Include="Visibility.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>

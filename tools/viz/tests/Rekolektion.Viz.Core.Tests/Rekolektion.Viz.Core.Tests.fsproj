@@ -26,6 +26,7 @@
     <Compile Include="MagReaderTests.fs" />
     <Compile Include="LayerAliasTests.fs" />
     <Compile Include="SmokeP0Instances.fs" />
+    <Compile Include="DrcCheckTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

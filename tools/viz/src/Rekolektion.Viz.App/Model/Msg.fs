@@ -63,6 +63,8 @@ type Msg =
     | MoveSelectionDbu of dxDbu: int64 * dyDbu: int64
     /// Flip the dimension overlay on/off.
     | ToggleDimensions
+    /// Flip the in-process DRC overlay on/off.
+    | ToggleDrc
     /// Duplicate every currently-selected top-level SRef. Each
     /// clone is appended to the top cell's Elements with a small
     /// rightward offset (one selection-bbox width, snapped to the

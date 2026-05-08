@@ -54,6 +54,12 @@ type Model = {
     /// by default — the overlay can hairball the canvas on dense
     /// layouts.
     ShowDimensions : bool
+    /// Whether the canvas runs the in-process DRC and renders
+    /// violations. Toggleable via TopBar / R key. Off by default
+    /// because DRC runs every frame on edit and is O(N²) per
+    /// layer — fine for a single-cell edit, expensive on a full
+    /// macro flatten.
+    ShowDrc : bool
     ActiveTab       : Tab
     View2D          : View2DState
     View3D          : View3DState
@@ -78,6 +84,7 @@ let empty : Model = {
     Selection = None
     InstanceSelection = Set.empty
     ShowDimensions = false
+    ShowDrc = false
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }
     View3D = { OrbitYaw = 30.0; OrbitPitch = -25.0; ZoomFactor = 1.0; Ortho = false }

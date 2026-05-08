@@ -37,6 +37,10 @@ type private SelectionOverlay = {
     ShowDimensions     : bool
     InstancePolyBboxes :
         Map<int, Map<int * int, (int64 * int64 * int64 * int64) array>>
+    /// In-process DRC violations from the active library, drawn
+    /// as red bbox outlines + connectors. Empty when the toggle
+    /// is off.
+    Violations : Drc.Check.Violation array
 }
 
 /// Skia draw operation that takes an explicit ViewBox so the canvas
@@ -107,6 +111,8 @@ type private SkiaDraw(bounds: Rect,
                         overlay.Instances overlay.Selected
                         overlay.InstancePolyBboxes
                         DimensionOverlay.defaultSettings
+                if overlay.Violations.Length > 0 then
+                    DrcOverlay.render canvas vb lib.UserUnitsPerDbUnit overlay.Violations
                 canvas.RestoreToCount saved
 
 type private DragKind = NoDrag | PanDrag | SelectionDrag
@@ -190,6 +196,9 @@ type GdsCanvasControl() =
         AvaloniaProperty.Register<GdsCanvasControl, Action>(
             "ToggleDimensionsHandler", null)
         with get
+    static member val ShowDrcProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
+        with get
 
     member this.Library
         with get() : Library option = this.GetValue(GdsCanvasControl.LibraryProperty)
@@ -238,6 +247,10 @@ type GdsCanvasControl() =
             this.GetValue(GdsCanvasControl.ToggleDimensionsHandlerProperty)
         and set(v: Action) =
             this.SetValue(GdsCanvasControl.ToggleDimensionsHandlerProperty, v) |> ignore
+
+    member this.ShowDrc
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
 
     override _.MeasureOverride(constraint': Size) : Size =
         let w =
@@ -310,7 +323,8 @@ type GdsCanvasControl() =
         elif e.Property = GdsCanvasControl.ToggleProperty
              || e.Property = GdsCanvasControl.InstancesProperty
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
-             || e.Property = GdsCanvasControl.ShowDimensionsProperty then
+             || e.Property = GdsCanvasControl.ShowDimensionsProperty
+             || e.Property = GdsCanvasControl.ShowDrcProperty then
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----
@@ -514,12 +528,31 @@ type GdsCanvasControl() =
                     Instances.layerPolyBboxesByInstance renderLib
                 else
                     Map.empty
+            let violations =
+                if this.ShowDrc then
+                    // Inter-instance only: DRCs entirely inside
+                    // one SRef are not editable from here (the
+                    // user can't reshape an SRef's polygons), so
+                    // we drop them. checkInterInstance also uses
+                    // the same orthogonal-only filter as the
+                    // dimension overlay so the canvas isn't a
+                    // hairball of diagonal violations.
+                    let perInstance =
+                        this.Instances
+                        |> Array.map (fun inst ->
+                            inst.Index,
+                            Layout.Flatten.flattenInstance renderLib inst.Index)
+                        |> Map.ofArray
+                    Drc.Check.checkInterInstance renderLib perInstance
+                else
+                    [||]
             let overlay : SelectionOverlay =
                 { Instances = this.Instances
                   Selected  = this.InstanceSelection
                   Dragging  = dragging
                   ShowDimensions = this.ShowDimensions
-                  InstancePolyBboxes = instPolyBboxes }
+                  InstancePolyBboxes = instPolyBboxes
+                  Violations = violations }
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay))
         | None ->
             // Closing the active tab leaves None for Library; without

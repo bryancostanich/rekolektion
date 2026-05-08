@@ -27,6 +27,15 @@ type LoadedMacro = {
     Blocks   : Layout.Hierarchy.Block list
     NetsFromSidecar : bool       // false → derived from labels
     SidecarError : string option
+    /// Path the macro was originally opened from. `Path` flips to
+    /// the `_edited.mag` copy on first edit; `OriginalPath` stays
+    /// pinned at the source so Save knows where to round-trip
+    /// from. Same as `Path` for unedited macros.
+    OriginalPath : string
+    /// True after the user has made any edit that hasn't been
+    /// saved. Drives the title-bar "[edited]" indicator and the
+    /// close-with-unsaved-changes prompt.
+    Dirty : bool
 }
 
 type RunState =
@@ -60,6 +69,11 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Path of the tab currently in inline-rename mode (file-tab
+    /// title swapped for a TextBox). None when no tab is being
+    /// renamed. Cleared on Esc, on commit, or when the user
+    /// switches tabs.
+    RenamingPath : string option
     ActiveTab       : Tab
     View2D          : View2DState
     View3D          : View3DState
@@ -85,6 +99,7 @@ let empty : Model = {
     InstanceSelection = Set.empty
     ShowDimensions = false
     ShowDrc = false
+    RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }
     View3D = { OrbitYaw = 30.0; OrbitPitch = -25.0; ZoomFactor = 1.0; Ortho = false }

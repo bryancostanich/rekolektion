@@ -49,6 +49,8 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             Blocks = blocks
             NetsFromSidecar = fromSidecar
             SidecarError = sidecarError
+            OriginalPath = path
+            Dirty = false
         }
     with ex -> return Error ex.Message
 }

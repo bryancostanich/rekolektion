@@ -22,7 +22,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Model/Model.fs" />
+    <Compile Include="Services/EditSession.fs" />
     <Compile Include="Model/Msg.fs" />
+    <Compile Include="Services/AppDispatch.fs" />
     <Compile Include="Model/Update.fs" />
     <Compile Include="HeadlessRenderArgs.fs" />
     <Compile Include="Services/RekolektionCli.fs" />

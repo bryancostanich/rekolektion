@@ -171,12 +171,16 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
 /// SetActiveMacro instead of CloseMacro and made × appear broken.
 let private fileTab
         (active: bool)
+        (dirty: bool)
+        (renaming: bool)
         (path: string)
         (dispatch: Msg.Msg -> unit)
         : IView =
     let label =
-        try Path.GetFileName(path)
-        with _ -> path
+        let name =
+            try Path.GetFileName(path)
+            with _ -> path
+        if dirty then name + " •" else name
     let bg = if active then "#3a3a3a" else "#1f1f1f"
     let fg = if active then "#ffffff" else "#aaaaaa"
     Border.create [
@@ -195,22 +199,88 @@ let private fileTab
                     // distinction that lets selection still work.
                     // Path lives on Tag so FuncUI's lambda-dedup
                     // can't desync the click target from its label.
-                    SelectableTextBlock.create [
-                        SelectableTextBlock.text label
-                        SelectableTextBlock.foreground fg
-                        SelectableTextBlock.padding (Thickness(8.0, 4.0))
-                        SelectableTextBlock.verticalAlignment VerticalAlignment.Center
-                        SelectableTextBlock.cursor (new Cursor(StandardCursorType.Ibeam))
-                        SelectableTextBlock.tag (box path)
-                        SelectableTextBlock.onTapped (fun e ->
-                            e.Handled <- true
-                            match e.Source with
-                            | :? Avalonia.Controls.Control as c ->
-                                match c.Tag with
-                                | :? string as p -> dispatch (Msg.SetActiveMacro p)
-                                | _ -> ()
-                            | _ -> ())
-                    ]
+                    (if renaming then
+                        // Inline rename mode: TextBox prefilled
+                        // with the current basename. Enter commits;
+                        // Esc cancels; lost focus also cancels.
+                        let basename =
+                            try Path.GetFileName(path)
+                            with _ -> path
+                        TextBox.create [
+                            TextBox.text basename
+                            TextBox.foreground "#ffffff"
+                            TextBox.background "#222222"
+                            TextBox.padding (Thickness(8.0, 2.0))
+                            TextBox.verticalAlignment VerticalAlignment.Center
+                            TextBox.fontSize 12.0
+                            TextBox.tag (box path)
+                            TextBox.minWidth 140.0
+                            TextBox.onKeyDown (fun e ->
+                                match e.Key with
+                                | Key.Enter ->
+                                    e.Handled <- true
+                                    match e.Source with
+                                    | :? Avalonia.Controls.TextBox as tb ->
+                                        match tb.Tag with
+                                        | :? string as oldP ->
+                                            dispatch
+                                                (Msg.CommitRenameTab (oldP, tb.Text))
+                                        | _ -> ()
+                                    | _ -> ()
+                                | Key.Escape ->
+                                    e.Handled <- true
+                                    dispatch Msg.CancelRenameTab
+                                | _ -> ())
+                            // Commit on lost focus — clicking the
+                            // Save menu, switching tabs, or any
+                            // stray click outside the box should
+                            // accept the typed name (Finder /
+                            // Slack convention). Esc explicitly
+                            // cancels above. Update guards against
+                            // a stale post-Esc commit by checking
+                            // model.RenamingPath.
+                            TextBox.onLostFocus (fun e ->
+                                match e.Source with
+                                | :? Avalonia.Controls.TextBox as tb ->
+                                    match tb.Tag with
+                                    | :? string as oldP ->
+                                        dispatch (Msg.CommitRenameTab (oldP, tb.Text))
+                                    | _ -> ()
+                                | _ -> ())
+                        ] :> IView
+                     else
+                        SelectableTextBlock.create [
+                            SelectableTextBlock.text label
+                            SelectableTextBlock.foreground fg
+                            SelectableTextBlock.padding (Thickness(8.0, 4.0))
+                            SelectableTextBlock.verticalAlignment VerticalAlignment.Center
+                            SelectableTextBlock.cursor (new Cursor(StandardCursorType.Ibeam))
+                            SelectableTextBlock.tag (box path)
+                            SelectableTextBlock.onTapped (fun e ->
+                                e.Handled <- true
+                                match e.Source with
+                                | :? Avalonia.Controls.Control as c ->
+                                    match c.Tag with
+                                    | :? string as p -> dispatch (Msg.SetActiveMacro p)
+                                    | _ -> ()
+                                | _ -> ())
+                            // Double-tap → enter rename mode for
+                            // this tab. Avalonia raises Tapped
+                            // even on double-tap, but DoubleTapped
+                            // additionally fires once for the
+                            // second click; we handle both by
+                            // dispatching BeginRename here, and
+                            // the TextBox view-swap kicks in on
+                            // the next render tick.
+                            SelectableTextBlock.onDoubleTapped (fun e ->
+                                e.Handled <- true
+                                match e.Source with
+                                | :? Avalonia.Controls.Control as c ->
+                                    match c.Tag with
+                                    | :? string as p -> dispatch (Msg.BeginRenameTab p)
+                                    | _ -> ()
+                                | _ -> ())
+                        ] :> IView)
                     Button.create [
                         Button.content "×"
                         Button.fontSize 14.0
@@ -255,7 +325,8 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
         model.OpenMacros
         |> List.map (fun m ->
             let active = (model.ActiveMacroPath = Some m.Path)
-            fileTab active m.Path dispatch)
+            let renaming = (model.RenamingPath = Some m.Path)
+            fileTab active m.Dirty renaming m.Path dispatch)
     let children = phantom :: tabs
     Border.create [
         Border.height 28.0
@@ -277,6 +348,10 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
     ] :> IView
 
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
+    // Publish the active path each render so the native-menu Save
+    // As item (which can't reach the FuncUI tree) can ask for the
+    // right starting folder. See `AppDispatch.currentActivePath`.
+    Rekolektion.Viz.App.Services.AppDispatch.currentActivePath <- model.ActiveMacroPath
     // Cmd+O / Ctrl+O hotkeys live on the NativeMenuItem ("Open...")
     // attached to the window in App.fs — Avalonia auto-routes the
     // gesture through the native menu so we don't need an explicit

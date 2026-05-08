@@ -71,7 +71,7 @@ module HeadlessRender =
                 // ToggleLayer, HighlightNet, SetTab) into the Elmish
                 // model BEFORE the hold loop pumps the resulting Cmds.
                 for msg in preRenderMsgs do
-                    AppDispatch.send msg
+                    Rekolektion.Viz.App.Services.AppDispatch.send msg
                 // Pump dispatcher frames so initial layout, Elmish init,
                 // and any async data subscriptions get a chance to render.
                 // HoldMs is caller-tunable: async content can take a few

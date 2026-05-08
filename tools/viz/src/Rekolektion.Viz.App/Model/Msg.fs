@@ -81,6 +81,27 @@ type Msg =
     /// Mirror the selection about the Y axis through the
     /// bbox-of-bboxes centroid (flips X).
     | MirrorSelectionY
+    /// Save the active macro to disk. On first save of an opened
+    /// file, writes to `<base>_edited.mag` (auto-suffix on
+    /// collision); subsequent saves overwrite that copy in place.
+    | SaveActiveMacro
+    /// Save the active macro to a chosen path. The macro's Path
+    /// retargets to that path; subsequent Save calls overwrite
+    /// it in place.
+    | SaveActiveMacroAs of targetPath: string
+    /// Result message from the async save Cmd.
+    | SaveCompleted of writtenPath: string
+    | SaveFailed    of reason: string
+    /// Enter inline-rename mode for the tab at `path`.
+    | BeginRenameTab of path: string
+    /// Cancel inline rename without changes.
+    | CancelRenameTab
+    /// Commit a tab rename. `newName` is the new basename (with
+    /// or without `.mag` extension); the new full path is
+    /// `dirname(oldPath) + newName(.mag)`. If the file already
+    /// exists on disk, it gets renamed; otherwise the in-memory
+    /// path retargets and a future Save lands at the new location.
+    | CommitRenameTab of oldPath: string * newName: string
     | Pan2D            of dx: float * dy: float
     | Zoom2D           of factor: float
     | Orbit3D          of dyaw: float * dpitch: float

@@ -147,6 +147,54 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
     | Msg.ToggleDimensions ->
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
+    | Msg.DuplicateSelection ->
+        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                // Snap the duplicate offset to the SKY130 mfg grid
+                // so clones land on-grid even if the source's bbox
+                // width doesn't divide evenly.
+                let mutable nextSelection : Set<int> = model.InstanceSelection
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            // Offset = bbox-of-bboxes width + a
+                            // small gap so duplicates clearly sit
+                            // beside the originals, not on top.
+                            let selected =
+                                mc.TopInstances
+                                |> Array.filter (fun i ->
+                                    model.InstanceSelection.Contains i.Index)
+                            let bb = Layout.Instances.selectionBbox selected
+                            let dxRaw, dyRaw =
+                                match bb with
+                                | Some (x1, _, x2, _) ->
+                                    let w = x2 - x1
+                                    // 5 % gap or 1 DBU minimum.
+                                    let gap = max 1L (w / 20L)
+                                    w + gap, 0L
+                                | None -> 0L, 0L
+                            let dx, dy =
+                                Layout.Snap.snapDeltaDbu
+                                    mc.Library Layout.Snap.sky130MfgGridNm
+                                    dxRaw dyRaw
+                            let lib', clones =
+                                Layout.Instances.duplicateSelection
+                                    mc.Library model.InstanceSelection dx dy
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            nextSelection <- clones
+                            { mc with
+                                Library = lib'
+                                FlatPolygons = flat'
+                                TopInstances = inst' })
+                { model with
+                    OpenMacros = openMacros'
+                    InstanceSelection = nextSelection }, Cmd.none
     | Msg.SetInstanceSelection indices ->
         { model with InstanceSelection = indices }, Cmd.none
     | Msg.ClearInstanceSelection ->

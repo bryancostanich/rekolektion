@@ -387,6 +387,18 @@ type GdsCanvasControl() =
             let wx, wy = this.ScreenToWorld p
             let dxRaw = int64 (System.Math.Round (wx - dragStartWorldX))
             let dyRaw = int64 (System.Math.Round (wy - dragStartWorldY))
+            // Shift held → ortho-lock. Whichever axis has the
+            // larger absolute Δ since drag-start wins, the other
+            // is forced to zero. Re-evaluated every move so the
+            // user can flip the dominant axis by reversing
+            // direction; the moment they release Shift, free
+            // motion resumes.
+            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            let dxRaw, dyRaw =
+                if shift then
+                    if abs dxRaw >= abs dyRaw then dxRaw, 0L
+                    else 0L, dyRaw
+                else dxRaw, dyRaw
             // Snap the Δ to the SKY130 5 nm grid using the active
             // library's DBU scale. Without snapping the drag preview
             // (and final commit) drift fractionally as the cursor

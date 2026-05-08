@@ -63,6 +63,13 @@ type Msg =
     | MoveSelectionDbu of dxDbu: int64 * dyDbu: int64
     /// Flip the dimension overlay on/off.
     | ToggleDimensions
+    /// Duplicate every currently-selected top-level SRef. Each
+    /// clone is appended to the top cell's Elements with a small
+    /// rightward offset (one selection-bbox width, snapped to the
+    /// mfg grid) so the duplicates don't sit on top of the
+    /// originals; selection moves to the clones so they become
+    /// the next drag target.
+    | DuplicateSelection
     | Pan2D            of dx: float * dy: float
     | Zoom2D           of factor: float
     | Orbit3D          of dyaw: float * dpitch: float

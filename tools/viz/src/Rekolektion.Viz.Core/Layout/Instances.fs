@@ -343,6 +343,54 @@ let layerBboxesOf (polys: System.Collections.Generic.IEnumerable<Rekolektion.Viz
             if d > yMax then yMax <- d
         (xMin, yMin, xMax, yMax))
 
+/// Duplicate every SRef whose Index is in `selectionByIndex` by
+/// appending a clone of each one to the top cell's `Elements`,
+/// with each clone shifted by `(dxDbu, dyDbu)` from its original
+/// origin. Returns the new Library plus the new top-element
+/// indices of the clones in the order they appeared in the
+/// selection (caller swaps the selection over to those indices
+/// so the duplicates become the active editing target).
+let duplicateSelection
+        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (selectionByIndex: Set<int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Rekolektion.Viz.Core.Gds.Types.Library * Set<int> =
+    if selectionByIndex.IsEmpty then lib, Set.empty
+    else
+        let topName = (findTop lib).Name
+        // Build the list of clones to append, preserving the
+        // SRefs' relative order so groups stay together.
+        let mutable cloneIndices = []
+        let updateStruct (s: Rekolektion.Viz.Core.Gds.Types.Structure)
+                         : Rekolektion.Viz.Core.Gds.Types.Structure =
+            if s.Name <> topName then s
+            else
+                let originals =
+                    s.Elements
+                    |> List.indexed
+                    |> List.choose (fun (idx, el) ->
+                        if not (selectionByIndex.Contains idx) then None
+                        else
+                            match el with
+                            | Rekolektion.Viz.Core.Gds.Types.SRef sr ->
+                                let o = sr.Origin
+                                let cloned : Rekolektion.Viz.Core.Gds.Types.SRef =
+                                    { sr with
+                                        Origin =
+                                            { X = o.X + dxDbu; Y = o.Y + dyDbu } }
+                                Some (Rekolektion.Viz.Core.Gds.Types.Element.SRef cloned)
+                            | _ -> None)
+                let elems' = s.Elements @ originals
+                // Record the new indices (= original length .. +N-1)
+                let baseIdx = s.Elements.Length
+                cloneIndices <-
+                    [ for i in 0 .. originals.Length - 1 -> baseIdx + i ]
+                { s with Elements = elems' }
+        let lib' =
+            { lib with
+                Structures = lib.Structures |> List.map updateStruct }
+        lib', Set.ofList cloneIndices
+
 /// Apply a translation Δ (DBU) to every SRef whose Index is in
 /// `selectionByIndex`. Returns a new Library with the top cell's
 /// SRef Origins updated; non-selected elements and other structures

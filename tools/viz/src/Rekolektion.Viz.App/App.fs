@@ -108,6 +108,10 @@ type MainWindow() as this =
             | Key.D, KeyModifiers.None ->
                 AppDispatch.send Msg.ToggleDimensions
                 e.Handled <- true
+            | Key.D, KeyModifiers.Meta ->
+                // Cmd+D — duplicate the current instance selection.
+                AppDispatch.send Msg.DuplicateSelection
+                e.Handled <- true
             | _ -> ())
 
 type App() =

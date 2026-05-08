@@ -39,12 +39,18 @@ type ToolResult =
 // ---------------------------------------------------------------
 
 /// Absolute path to the live viz desktop app's Unix domain socket.
-/// The App's `ScreenshotListener` binds here at startup.
+/// The App's `ScreenshotListener` binds here at startup. Honours
+/// the `REKOLEKTION_VIZ_SOCKET` env var so that v1 and v2 (or any
+/// other parallel instance) can run side by side on distinct
+/// sockets; defaults to `~/.rekolektion/viz.sock`.
 let private vizSocket : string =
-    let dir = Path.Combine(
-                Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
-                ".rekolektion")
-    Path.Combine(dir, "viz.sock")
+    let env = Environment.GetEnvironmentVariable "REKOLEKTION_VIZ_SOCKET"
+    if not (String.IsNullOrWhiteSpace env) then env
+    else
+        let dir = Path.Combine(
+                    Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
+                    ".rekolektion")
+        Path.Combine(dir, "viz.sock")
 
 /// Locate the worktree root by walking up from this assembly's
 /// directory until we find a `tools/viz/src/Rekolektion.Viz.Cli`

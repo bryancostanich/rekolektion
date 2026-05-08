@@ -192,17 +192,24 @@ type App() =
                 not (String.IsNullOrEmpty v) && v <> "0"
 
             if not isHeadless then
-                // Compute the screenshot/command socket path under
-                // ~/.rekolektion/viz.sock. Ensure the parent directory
-                // exists and stale-cleanup any leftover socket file
-                // from a previous run that didn't shut down cleanly.
-                let rekoDir =
-                    Path.Combine(
-                        Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
-                        ".rekolektion")
-                if not (Directory.Exists rekoDir) then
-                    Directory.CreateDirectory rekoDir |> ignore
-                let sockPath = Path.Combine(rekoDir, "viz.sock")
+                // Compute the screenshot/command socket path. Honours
+                // the `REKOLEKTION_VIZ_SOCKET` env var so v1 and v2 (or
+                // any other parallel instance) can bind distinct sockets;
+                // defaults to ~/.rekolektion/viz.sock. Ensure the parent
+                // directory exists and stale-cleanup any leftover socket
+                // file from a previous run that didn't shut down cleanly.
+                let sockPath =
+                    let env = Environment.GetEnvironmentVariable "REKOLEKTION_VIZ_SOCKET"
+                    if not (String.IsNullOrWhiteSpace env) then env
+                    else
+                        let rekoDir =
+                            Path.Combine(
+                                Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
+                                ".rekolektion")
+                        Path.Combine(rekoDir, "viz.sock")
+                let sockDir = Path.GetDirectoryName sockPath
+                if not (String.IsNullOrEmpty sockDir) && not (Directory.Exists sockDir) then
+                    Directory.CreateDirectory sockDir |> ignore
                 // Bind the screenshot listener on the project-scoped
                 // viz socket so the MCP `rekolektion_viz_screenshot`
                 // tool can fetch a PNG of the running window.

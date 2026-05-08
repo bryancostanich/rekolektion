@@ -70,6 +70,15 @@ type Msg =
     /// originals; selection moves to the clones so they become
     /// the next drag target.
     | DuplicateSelection
+    /// Rotate the current instance selection 90° CCW around the
+    /// bbox-of-bboxes centroid (grid-snapped).
+    | RotateSelection90
+    /// Mirror the selection about the X axis through the
+    /// bbox-of-bboxes centroid (flips Y).
+    | MirrorSelectionX
+    /// Mirror the selection about the Y axis through the
+    /// bbox-of-bboxes centroid (flips X).
+    | MirrorSelectionY
     | Pan2D            of dx: float * dy: float
     | Zoom2D           of factor: float
     | Orbit3D          of dyaw: float * dpitch: float

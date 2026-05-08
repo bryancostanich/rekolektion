@@ -112,6 +112,18 @@ type MainWindow() as this =
                 // Cmd+D — duplicate the current instance selection.
                 AppDispatch.send Msg.DuplicateSelection
                 e.Handled <- true
+            | Key.Space, KeyModifiers.None ->
+                // Rotate selection 90° CCW around bbox centroid.
+                AppDispatch.send Msg.RotateSelection90
+                e.Handled <- true
+            | Key.X, KeyModifiers.None ->
+                // Mirror about X-axis (flips Y) through bbox centroid.
+                AppDispatch.send Msg.MirrorSelectionX
+                e.Handled <- true
+            | Key.Y, KeyModifiers.None ->
+                // Mirror about Y-axis (flips X) through bbox centroid.
+                AppDispatch.send Msg.MirrorSelectionY
+                e.Handled <- true
             | _ -> ())
 
 type App() =

@@ -391,6 +391,138 @@ let duplicateSelection
                 Structures = lib.Structures |> List.map updateStruct }
         lib', Set.ofList cloneIndices
 
+// 2x2 rotation matrices for the supported rigid transforms. Each
+// has integer entries so applying R to integer origins, with a
+// snapped pivot, keeps every result on the manufacturing grid by
+// construction.
+let private R_rot90  : float * float * float * float = 0.0, -1.0, 1.0, 0.0
+let private R_mirrorX: float * float * float * float = 1.0, 0.0, 0.0, -1.0
+let private R_mirrorY: float * float * float * float = -1.0, 0.0, 0.0, 1.0
+
+/// Multiply 2x2 R · M.
+let private mul2x2
+        ((ra, rb, rc, rd): float * float * float * float)
+        ((ma, mb, mc, md): float * float * float * float)
+        : float * float * float * float =
+    (ra * ma + rb * mc,
+     ra * mb + rb * md,
+     rc * ma + rd * mc,
+     rc * mb + rd * md)
+
+/// Linear part of an SRef (mag * R * Refl^k as a 2×2). Mirrors
+/// `Layout.Flatten.fromSref` minus the translation.
+let private linearOfSref (sr: Rekolektion.Viz.Core.Gds.Types.SRef)
+                         : float * float * float * float =
+    let rad = sr.Angle * System.Math.PI / 180.0
+    let cosA = System.Math.Cos rad
+    let sinA = System.Math.Sin rad
+    let mag = sr.Mag
+    if sr.Reflected then
+        (mag * cosA,  mag * sinA,
+         mag * sinA, -mag * cosA)
+    else
+        (mag * cosA, -mag * sinA,
+         mag * sinA,  mag * cosA)
+
+/// Re-emit an SRef given a new linear part and origin. Decomposes
+/// the linear matrix back into (Mag, Angle, Reflected) via
+/// `Mag.Transform.toSref`. StructureName is preserved.
+let private srefWith
+        (sr: Rekolektion.Viz.Core.Gds.Types.SRef)
+        ((a, b, c, d): float * float * float * float)
+        (originX: int64) (originY: int64)
+        : Rekolektion.Viz.Core.Gds.Types.SRef =
+    let decomposed =
+        Rekolektion.Viz.Core.Mag.Transform.toSref
+            sr.StructureName a b c d (float originX) (float originY)
+    { decomposed with StructureName = sr.StructureName }
+
+/// Apply rigid transform `R` to every SRef in `selectionByIndex`,
+/// pivoting around `pivotDbu` (snapped centroid). Each instance's
+/// linear part becomes `R · old_linear` and its origin becomes
+/// `R · (origin - pivot) + pivot`. With integer R, integer origin,
+/// and a grid-snapped pivot, results stay on the mfg grid.
+let private transformSelection
+        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (selectionByIndex: Set<int>)
+        (R: float * float * float * float)
+        ((px, py): int64 * int64)
+        : Rekolektion.Viz.Core.Gds.Types.Library =
+    if selectionByIndex.IsEmpty then lib
+    else
+        let topName = (findTop lib).Name
+        let (ra, rb, rc, rd) = R
+        let updateStruct (s: Rekolektion.Viz.Core.Gds.Types.Structure)
+                         : Rekolektion.Viz.Core.Gds.Types.Structure =
+            if s.Name <> topName then s
+            else
+                let elems' =
+                    s.Elements
+                    |> List.mapi (fun idx el ->
+                        if not (selectionByIndex.Contains idx) then el
+                        else
+                            match el with
+                            | Rekolektion.Viz.Core.Gds.Types.SRef sr ->
+                                let oldLin = linearOfSref sr
+                                let newLin = mul2x2 R oldLin
+                                let ox = sr.Origin.X
+                                let oy = sr.Origin.Y
+                                let dx = float (ox - px)
+                                let dy = float (oy - py)
+                                let nx = ra * dx + rb * dy + float px
+                                let ny = rc * dx + rd * dy + float py
+                                let newOX = int64 (System.Math.Round nx)
+                                let newOY = int64 (System.Math.Round ny)
+                                Rekolektion.Viz.Core.Gds.Types.Element.SRef
+                                    (srefWith sr newLin newOX newOY)
+                            | other -> other)
+                { s with Elements = elems' }
+        { lib with Structures = lib.Structures |> List.map updateStruct }
+
+/// Centroid of the bbox-of-bboxes for a selection, snapped to the
+/// manufacturing grid. The snapped centroid is mandatory: with
+/// integer R and integer origins, only a snapped pivot keeps the
+/// transform results on-grid.
+let selectionPivotSnapped
+        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (selected: Instance array)
+        : (int64 * int64) option =
+    selectionBbox selected
+    |> Option.map (fun (x1, y1, x2, y2) ->
+        let cx = (x1 + x2) / 2L
+        let cy = (y1 + y2) / 2L
+        let p =
+            Rekolektion.Viz.Core.Layout.Snap.snapPointDbu lib
+                Rekolektion.Viz.Core.Layout.Snap.sky130MfgGridNm
+                { X = cx; Y = cy }
+        p.X, p.Y)
+
+/// Rotate every SRef in `selectionByIndex` 90° CCW around `pivot`.
+let rotate90Selection
+        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (selectionByIndex: Set<int>)
+        (pivot: int64 * int64)
+        : Rekolektion.Viz.Core.Gds.Types.Library =
+    transformSelection lib selectionByIndex R_rot90 pivot
+
+/// Mirror every SRef in `selectionByIndex` about the X axis through
+/// `pivot` (flips Y).
+let mirrorXSelection
+        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (selectionByIndex: Set<int>)
+        (pivot: int64 * int64)
+        : Rekolektion.Viz.Core.Gds.Types.Library =
+    transformSelection lib selectionByIndex R_mirrorX pivot
+
+/// Mirror every SRef in `selectionByIndex` about the Y axis through
+/// `pivot` (flips X).
+let mirrorYSelection
+        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (selectionByIndex: Set<int>)
+        (pivot: int64 * int64)
+        : Rekolektion.Viz.Core.Gds.Types.Library =
+    transformSelection lib selectionByIndex R_mirrorY pivot
+
 /// Apply a translation Δ (DBU) to every SRef whose Index is in
 /// `selectionByIndex`. Returns a new Library with the top cell's
 /// SRef Origins updated; non-selected elements and other structures

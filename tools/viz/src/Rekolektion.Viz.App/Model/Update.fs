@@ -147,6 +147,45 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
     | Msg.ToggleDimensions ->
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
+    | Msg.RotateSelection90
+    | Msg.MirrorSelectionX
+    | Msg.MirrorSelectionY ->
+        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let selected =
+                                mc.TopInstances
+                                |> Array.filter (fun i ->
+                                    model.InstanceSelection.Contains i.Index)
+                            match Layout.Instances.selectionPivotSnapped
+                                    mc.Library selected with
+                            | None -> mc
+                            | Some pivot ->
+                                let lib' =
+                                    match msg with
+                                    | Msg.RotateSelection90 ->
+                                        Layout.Instances.rotate90Selection
+                                            mc.Library model.InstanceSelection pivot
+                                    | Msg.MirrorSelectionX ->
+                                        Layout.Instances.mirrorXSelection
+                                            mc.Library model.InstanceSelection pivot
+                                    | _ ->
+                                        Layout.Instances.mirrorYSelection
+                                            mc.Library model.InstanceSelection pivot
+                                let flat' = Layout.Flatten.flatten lib'
+                                let inst' = Layout.Instances.enumerate lib'
+                                { mc with
+                                    Library = lib'
+                                    FlatPolygons = flat'
+                                    TopInstances = inst' })
+                { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.DuplicateSelection ->
         if model.InstanceSelection.IsEmpty then model, Cmd.none
         else

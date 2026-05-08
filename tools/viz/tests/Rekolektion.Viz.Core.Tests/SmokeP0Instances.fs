@@ -157,6 +157,50 @@ let ``physical bboxes overlap in cim fixture (transistor abutment)`` () =
         | _ -> failwith "expected exactly two instances"
 
 [<Fact>]
+let ``rotate90 around origin sends (10,0) to (0,10) at fixture instance`` () =
+    if not (System.IO.File.Exists fixturePath) then ()
+    else
+        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let instances = Layout.Instances.enumerate lib
+        instances.Length |> should equal 2
+        // Move the first instance's origin to (10, 0) so we can
+        // assert what 90° CCW rotation around the world origin does.
+        let pickIdx = instances.[0].Index
+        let lib0 = Layout.Instances.translateSelection
+                       lib (Set.singleton pickIdx)
+                       (10L - instances.[0].Sref.Origin.X)
+                       (0L  - instances.[0].Sref.Origin.Y)
+        let after =
+            Layout.Instances.rotate90Selection
+                lib0 (Set.singleton pickIdx) (0L, 0L)
+        let updated =
+            Layout.Instances.enumerate after
+            |> Array.find (fun i -> i.Index = pickIdx)
+        // (10, 0) → (0, 10) for R = [[0,-1],[1,0]] · (10,0) = (0,10)
+        updated.Sref.Origin.X |> should equal 0L
+        updated.Sref.Origin.Y |> should equal 10L
+
+[<Fact>]
+let ``mirrorX flips Y origin around pivot`` () =
+    if not (System.IO.File.Exists fixturePath) then ()
+    else
+        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let instances = Layout.Instances.enumerate lib
+        let pickIdx = instances.[0].Index
+        let lib0 = Layout.Instances.translateSelection
+                       lib (Set.singleton pickIdx)
+                       (0L - instances.[0].Sref.Origin.X)
+                       (50L - instances.[0].Sref.Origin.Y)
+        let after =
+            Layout.Instances.mirrorXSelection
+                lib0 (Set.singleton pickIdx) (0L, 0L)
+        let updated =
+            Layout.Instances.enumerate after
+            |> Array.find (fun i -> i.Index = pickIdx)
+        updated.Sref.Origin.X |> should equal 0L
+        updated.Sref.Origin.Y |> should equal -50L
+
+[<Fact>]
 let ``snap helper handles negative deltas symmetrically`` () =
     let lib : Rekolektion.Viz.Core.Gds.Types.Library = {
         Name = "x"

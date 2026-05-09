@@ -63,47 +63,42 @@ let highlightedPolyKeys
         (netName: string)
         : System.Collections.Generic.HashSet<string * int> =
     let result = System.Collections.Generic.HashSet<string * int>()
-    // labelsByStructure[structName] = list of label origins for the
-    // highlighted net, in DBU.
-    let labelsByStruct = System.Collections.Generic.Dictionary<string, ResizeArray<int64 * int64>>()
-    for s in lib.Structures do
-        for el in s.Elements do
-            match el with
-            | Text t when t.Text = netName ->
-                let arr =
-                    match labelsByStruct.TryGetValue s.Name with
-                    | true, a -> a
-                    | false, _ ->
-                        let a = ResizeArray()
-                        labelsByStruct.[s.Name] <- a
-                        a
-                arr.Add(t.Origin.X, t.Origin.Y)
-            | _ -> ()
-    if labelsByStruct.Count = 0 then result
+    // Collect every label of this net in flat (top-cell) coords.
+    // Labels authored inside a sub-cell get their origin transformed
+    // through the SRef/ARef chain, so a label like "BE" defined at
+    // (0,0) in sky130_fd_pr_reram__reram_cell shows up at its real
+    // on-screen position, not the sub-cell's local origin.
+    let origins = ResizeArray<int64 * int64>()
+    for l in Layout.Flatten.flattenLabels lib do
+        if l.Text = netName then
+            origins.Add(l.Origin.X, l.Origin.Y)
+    if origins.Count = 0 then result
     else
+        // For each flat polygon, mark it highlighted if any of the
+        // net's flat-frame label origins falls in its bbox. No
+        // SourceStructure filter — that was the old bug, since it
+        // required label and polygon to live in the SAME source
+        // cell, which excluded sub-cell routing whose labels are
+        // placed in the parent.
         for poly in flat do
-            match labelsByStruct.TryGetValue poly.SourceStructure with
-            | false, _ -> ()
-            | true, origins ->
-                // Compute polygon bbox once.
-                let mutable xMin = System.Int64.MaxValue
-                let mutable xMax = System.Int64.MinValue
-                let mutable yMin = System.Int64.MaxValue
-                let mutable yMax = System.Int64.MinValue
-                for p in poly.Points do
-                    if p.X < xMin then xMin <- p.X
-                    if p.X > xMax then xMax <- p.X
-                    if p.Y < yMin then yMin <- p.Y
-                    if p.Y > yMax then yMax <- p.Y
-                let mutable hit = false
-                let mutable i = 0
-                while (not hit) && i < origins.Count do
-                    let (ox, oy) = origins.[i]
-                    if ox >= xMin && ox <= xMax && oy >= yMin && oy <= yMax then
-                        hit <- true
-                    i <- i + 1
-                if hit then
-                    result.Add((poly.SourceStructure, poly.SourceIndex)) |> ignore
+            let mutable xMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable yMax = System.Int64.MinValue
+            for p in poly.Points do
+                if p.X < xMin then xMin <- p.X
+                if p.X > xMax then xMax <- p.X
+                if p.Y < yMin then yMin <- p.Y
+                if p.Y > yMax then yMax <- p.Y
+            let mutable hit = false
+            let mutable i = 0
+            while (not hit) && i < origins.Count do
+                let (ox, oy) = origins.[i]
+                if ox >= xMin && ox <= xMax && oy >= yMin && oy <= yMax then
+                    hit <- true
+                i <- i + 1
+            if hit then
+                result.Add((poly.SourceStructure, poly.SourceIndex)) |> ignore
         result
 
 let paintIn

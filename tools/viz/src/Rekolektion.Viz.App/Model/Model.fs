@@ -13,13 +13,34 @@ type LoadedMacro = {
     // renderers (LayerPainter, Extruder) iterate this rather than
     // raw `Library.Structures` so hierarchical macros render their
     // full content (e.g. an SRAM macro's bitcell array) instead of
-    // showing only the top cell's polygons. Computed once at load
-    // time in GdsLoading.load.
+    // showing only the top cell's polygons. Recomputed every time
+    // `Library` changes (drag commit, rotate, mirror) so the canvas
+    // always renders the edited geometry.
     FlatPolygons : Layout.Flatten.FlatPolygon array
+    /// Movable top-level SRef instances, with their world bbox.
+    /// Hit-test, selection, and drag operate on these. Recomputed
+    /// alongside `FlatPolygons` after each edit. ARefs at the top
+    /// are intentionally excluded — array unrolls aren't movable
+    /// as a unit at P0.
+    TopInstances : Layout.Instances.Instance array
     Nets     : Map<string, NetEntry>
     Blocks   : Layout.Hierarchy.Block list
     NetsFromSidecar : bool       // false → derived from labels
     SidecarError : string option
+    /// Path the macro was originally opened from. `Path` flips to
+    /// the `_edited.mag` copy on first edit; `OriginalPath` stays
+    /// pinned at the source so Save knows where to round-trip
+    /// from. Same as `Path` for unedited macros.
+    OriginalPath : string
+    /// True after the user has made any edit that hasn't been
+    /// saved. Drives the title-bar "[edited]" indicator and the
+    /// close-with-unsaved-changes prompt.
+    Dirty : bool
+    /// Per-macro undo stack — snapshots of `Library` from before
+    /// each edit (newest first). Capped to keep memory bounded.
+    /// Cmd+Z pops and restores; the popped library replaces the
+    /// current one and re-derives FlatPolygons / TopInstances.
+    UndoStack : Library list
 }
 
 type RunState =
@@ -37,6 +58,27 @@ type Model = {
     ActiveMacroPath : string option
     Toggle          : Visibility.ToggleState
     Selection       : (string * int) option   // (structure, element index)
+    /// Selected top-level SRef instances by their stable Index in
+    /// the active macro's top structure. Empty set = nothing
+    /// selected. Switching tabs / loading a new file clears this.
+    InstanceSelection : Set<int>
+    /// Whether the canvas draws the dimension overlay (arrows +
+    /// µm labels between selected instances and their nearest
+    /// in-radius neighbors). Toggleable via TopBar / D key. Off
+    /// by default — the overlay can hairball the canvas on dense
+    /// layouts.
+    ShowDimensions : bool
+    /// Whether the canvas runs the in-process DRC and renders
+    /// violations. Toggleable via TopBar / R key. Off by default
+    /// because DRC runs every frame on edit and is O(N²) per
+    /// layer — fine for a single-cell edit, expensive on a full
+    /// macro flatten.
+    ShowDrc : bool
+    /// Path of the tab currently in inline-rename mode (file-tab
+    /// title swapped for a TextBox). None when no tab is being
+    /// renamed. Cleared on Esc, on commit, or when the user
+    /// switches tabs.
+    RenamingPath : string option
     ActiveTab       : Tab
     View2D          : View2DState
     View3D          : View3DState
@@ -59,9 +101,13 @@ let empty : Model = {
     ActiveMacroPath = None
     Toggle = Visibility.empty
     Selection = None
+    InstanceSelection = Set.empty
+    ShowDimensions = false
+    ShowDrc = false
+    RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }
-    View3D = { OrbitYaw = 30.0; OrbitPitch = -25.0; ZoomFactor = 1.0; Ortho = false }
+    View3D = { OrbitYaw = 225.0; OrbitPitch = 35.0; ZoomFactor = 1.0; Ortho = false }
     Run = Idle
     RecentFiles = []
     LogVisible = false

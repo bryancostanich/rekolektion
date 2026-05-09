@@ -29,6 +29,8 @@ type Msg =
     /// Close whichever tab is currently active. Convenience for
     /// menu / hotkey paths that don't carry a path.
     | CloseActiveTab
+    /// Close every open macro (test isolation).
+    | CloseAllTabs
     /// Re-read the active tab's GDS from disk. Used by Cmd+R for
     /// the loop where the user generates a macro in another
     /// process and wants the viewer to refresh.
@@ -51,6 +53,66 @@ type Msg =
     | SetTab           of Model.Tab
     | PolygonPicked    of structure: string * index: int
     | ClearSelection
+    /// Replace the current top-instance selection with `indices`
+    /// (empty set = nothing selected). The canvas hit-test path
+    /// emits this with the result of a left-click; shift-click
+    /// extends the prior set before dispatching.
+    | SetInstanceSelection of indices: Set<int>
+    | ClearInstanceSelection
+    /// Translate every currently-selected instance by (dxDbu, dyDbu).
+    /// The canvas snaps the delta to the mfg grid before dispatch
+    /// (see Layout.Snap), so Update can apply it verbatim.
+    | MoveSelectionDbu of dxDbu: int64 * dyDbu: int64
+    /// Flip the dimension overlay on/off.
+    | ToggleDimensions
+    /// Flip the in-process DRC overlay on/off.
+    | ToggleDrc
+    /// Duplicate every currently-selected top-level SRef. Each
+    /// clone is appended to the top cell's Elements with a small
+    /// rightward offset (one selection-bbox width, snapped to the
+    /// mfg grid) so the duplicates don't sit on top of the
+    /// originals; selection moves to the clones so they become
+    /// the next drag target.
+    | DuplicateSelection
+    /// Rotate the current instance selection 90° CCW around the
+    /// bbox-of-bboxes centroid (grid-snapped).
+    | RotateSelection90
+    /// Mirror the selection about the X axis through the
+    /// bbox-of-bboxes centroid (flips Y).
+    | MirrorSelectionX
+    /// Mirror the selection about the Y axis through the
+    /// bbox-of-bboxes centroid (flips X).
+    | MirrorSelectionY
+    /// Collapse the selection toward its nearest non-selected
+    /// neighbor in whichever cardinal direction has the smallest
+    /// positive DRC slack — the "most binding" gap. Moves by
+    /// that slack so the closest cross-cell pair lands exactly
+    /// at the rule's min-spacing.
+    | TightenSelection
+    /// Pop the active macro's undo stack and restore the
+    /// previous library. No-op when the stack is empty.
+    | UndoActiveMacro
+    /// Save the active macro to disk. On first save of an opened
+    /// file, writes to `<base>_edited.mag` (auto-suffix on
+    /// collision); subsequent saves overwrite that copy in place.
+    | SaveActiveMacro
+    /// Save the active macro to a chosen path. The macro's Path
+    /// retargets to that path; subsequent Save calls overwrite
+    /// it in place.
+    | SaveActiveMacroAs of targetPath: string
+    /// Result message from the async save Cmd.
+    | SaveCompleted of writtenPath: string
+    | SaveFailed    of reason: string
+    /// Enter inline-rename mode for the tab at `path`.
+    | BeginRenameTab of path: string
+    /// Cancel inline rename without changes.
+    | CancelRenameTab
+    /// Commit a tab rename. `newName` is the new basename (with
+    /// or without `.mag` extension); the new full path is
+    /// `dirname(oldPath) + newName(.mag)`. If the file already
+    /// exists on disk, it gets renamed; otherwise the in-memory
+    /// path retargets and a future Save lands at the new location.
+    | CommitRenameTab of oldPath: string * newName: string
     | Pan2D            of dx: float * dy: float
     | Zoom2D           of factor: float
     | Orbit3D          of dyaw: float * dpitch: float

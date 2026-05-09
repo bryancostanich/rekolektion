@@ -29,12 +29,16 @@ open Rekolektion.Viz.App.View
 /// that, so a plain `option` ref is fine. `send` is a no-op
 /// before the dispatcher is wired so early calls (e.g. headless
 /// boot) don't NPE. Pattern lifted from Moroder.Viz's App.fs.
+/// Shim that re-exports the canonical dispatcher module so the
+/// rest of App.fs (and anything that imports `Rekolektion.Viz.App`
+/// for `AppDispatch`) keeps the same module path it had before
+/// dispatching moved into its own file.
 module AppDispatch =
-    let mutable current : (Msg.Msg -> unit) option = None
-    let send (msg: Msg.Msg) : unit =
-        match current with
-        | Some d -> d msg
-        | None   -> ()
+    let send (msg: Msg.Msg) = Services.AppDispatch.send msg
+    let setCurrent (d: (Msg.Msg -> unit) option) =
+        Services.AppDispatch.current <- d
+    let setCurrentActivePath (p: string option) =
+        Services.AppDispatch.currentActivePath <- p
 
 module private Subscriptions =
 
@@ -65,7 +69,7 @@ module private Subscriptions =
     /// marshalling path.
     let syncDispatch (inner: Dispatch<Msg.Msg>) : Dispatch<Msg.Msg> =
         let ui = uiDispatch inner
-        AppDispatch.current <- Some ui
+        Services.AppDispatch.current <- Some ui
         ui
 
 /// Root Avalonia window. Bootstraps the Elmish MVU loop via FuncUI's
@@ -86,6 +90,16 @@ type MainWindow() as this =
                 let args = RekolektionCli.buildMacroArgs p
                 let! exit = RekolektionCli.runProcess "rekolektion" args onLog
                 return (if exit = 0 then Ok p.OutputPath else Error exit) }
+            SaveMacro = fun mc -> async {
+                do! Async.SwitchToThreadPool ()
+                try
+                    let target =
+                        if mc.Path = mc.OriginalPath then
+                            EditSession.suggestEditedPath mc.OriginalPath
+                        else
+                            mc.Path
+                    return Ok (EditSession.saveTo mc target)
+                with ex -> return Error ex.Message }
         }
 
         let init () = Model.empty, Cmd.none
@@ -95,6 +109,48 @@ type MainWindow() as this =
         Program.mkProgram init update view
         |> Program.withHost this
         |> Program.runWithDispatch Subscriptions.syncDispatch ()
+
+        // Window-level key handling for editor shortcuts that
+        // shouldn't depend on which focusable child currently has
+        // keyboard focus. KeyDown bubbles from the focused element
+        // up to the window — by handling here we catch the key
+        // even when focus is on a button or panel that has no
+        // local handler. Routes through AppDispatch so the Elmish
+        // loop owns the state transition.
+        this.KeyDown.Add(fun e ->
+            match e.Key, e.KeyModifiers with
+            | Key.D, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleDimensions
+                e.Handled <- true
+            | Key.R, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleDrc
+                e.Handled <- true
+            | Key.D, KeyModifiers.Meta ->
+                // Cmd+D — duplicate the current instance selection.
+                AppDispatch.send Msg.DuplicateSelection
+                e.Handled <- true
+            | Key.Z, KeyModifiers.Meta ->
+                AppDispatch.send Msg.UndoActiveMacro
+                e.Handled <- true
+            | Key.Space, KeyModifiers.None ->
+                // Rotate selection 90° CCW around bbox centroid.
+                AppDispatch.send Msg.RotateSelection90
+                e.Handled <- true
+            | Key.X, KeyModifiers.None ->
+                // Mirror about X-axis (flips Y) through bbox centroid.
+                AppDispatch.send Msg.MirrorSelectionX
+                e.Handled <- true
+            | Key.Y, KeyModifiers.None ->
+                // Mirror about Y-axis (flips X) through bbox centroid.
+                AppDispatch.send Msg.MirrorSelectionY
+                e.Handled <- true
+            | Key.T, KeyModifiers.None ->
+                // Tighten — collapse selection toward its nearest
+                // non-selected neighbor at the most-binding DRC
+                // limit. Single-step; user can repeat T to chain.
+                AppDispatch.send Msg.TightenSelection
+                e.Handled <- true
+            | _ -> ())
 
 type App() =
     inherit Application()
@@ -142,6 +198,29 @@ type App() =
         fileSub.Items.Add(reloadItem)
 
         fileSub.Items.Add(NativeMenuItemSeparator())
+
+        let undoItem = NativeMenuItem("Undo")
+        undoItem.Gesture <- KeyGesture(Key.Z, KeyModifiers.Meta)
+        undoItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.UndoActiveMacro)
+        fileSub.Items.Add(undoItem)
+
+        let saveItem = NativeMenuItem("Save")
+        saveItem.Gesture <- KeyGesture(Key.S, KeyModifiers.Meta)
+        saveItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.SaveActiveMacro)
+        fileSub.Items.Add(saveItem)
+
+        let saveAsItem = NativeMenuItem("Save As...")
+        saveAsItem.Gesture <-
+            KeyGesture(Key.S, KeyModifiers.Meta ||| KeyModifiers.Shift)
+        saveAsItem.Click.Add(fun _ ->
+            // Use the latest known active path as the picker's
+            // suggested location; falls back to "" if no macro is
+            // open (the picker will start at the platform default).
+            let suggested = AppDispatch.currentActivePath |> Option.defaultValue ""
+            FilePickers.dispatchSaveAs (window :> obj) suggested AppDispatch.send)
+        fileSub.Items.Add(saveAsItem)
 
         let closeItem = NativeMenuItem("Close tab")
         closeItem.Gesture <- KeyGesture(Key.W, KeyModifiers.Meta)

@@ -23,6 +23,10 @@ let private gds2DLibraryAttr (v: Library option) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Library option>(
         GdsCanvasControl.LibraryProperty, v, ValueNone)
 
+let private gds2DMacroPathAttr (v: string option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<string option>(
+        GdsCanvasControl.MacroPathProperty, v, ValueNone)
+
 let private gds2DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Layout.Flatten.FlatPolygon array>(
         GdsCanvasControl.FlatPolygonsProperty, v, ValueNone)
@@ -30,6 +34,38 @@ let private gds2DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<GdsCanva
 let private gds2DToggleAttr (v: Visibility.ToggleState) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Visibility.ToggleState>(
         GdsCanvasControl.ToggleProperty, v, ValueNone)
+
+let private gds2DInstancesAttr (v: Layout.Instances.Instance array) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Layout.Instances.Instance array>(
+        GdsCanvasControl.InstancesProperty, v, ValueNone)
+
+let private gds2DInstanceSelectionAttr (v: Set<int>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<int>>(
+        GdsCanvasControl.InstanceSelectionProperty, v, ValueNone)
+
+let private gds2DSetSelectionHandlerAttr (h: System.Action<Set<int>>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<int>>>(
+        GdsCanvasControl.SetInstanceSelectionHandlerProperty, h, ValueNone)
+
+let private gds2DClearSelectionHandlerAttr (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.ClearInstanceSelectionHandlerProperty, h, ValueNone)
+
+let private gds2DMoveSelectionHandlerAttr (h: System.Action<int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int64, int64>>(
+        GdsCanvasControl.MoveSelectionHandlerProperty, h, ValueNone)
+
+let private gds2DShowDimensionsAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowDimensionsProperty, v, ValueNone)
+
+let private gds2DToggleDimensionsHandlerAttr (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.ToggleDimensionsHandlerProperty, h, ValueNone)
+
+let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowDrcProperty, v, ValueNone)
 
 let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
@@ -59,11 +95,41 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         |> Option.map (fun m -> m.FlatPolygons)
         |> Option.defaultValue [||]
 
+    let instances =
+        active
+        |> Option.map (fun m -> m.TopInstances)
+        |> Option.defaultValue [||]
+
+    let setSelectionHandler =
+        System.Action<Set<int>>(fun s -> dispatch (Msg.SetInstanceSelection s))
+    let clearSelectionHandler =
+        System.Action(fun () -> dispatch Msg.ClearInstanceSelection)
+    let moveSelectionHandler =
+        System.Action<int64, int64>(fun dx dy -> dispatch (Msg.MoveSelectionDbu (dx, dy)))
+    let toggleDimensionsHandler =
+        System.Action(fun () -> dispatch Msg.ToggleDimensions)
+
+    // OriginalPath is the auto-fit trigger — stays pinned across
+    // edits and only changes on a genuinely new file load. Using
+    // mc.Path (the in-memory edited path) would refit on every
+    // first edit because Path retargets to `_edited.mag`.
+    let macroPath =
+        active |> Option.map (fun m -> m.OriginalPath)
+
     let canvas2D : IView =
         ViewBuilder.Create<GdsCanvasControl>
             [ gds2DLibraryAttr lib
+              gds2DMacroPathAttr macroPath
               gds2DFlatAttr    flat
-              gds2DToggleAttr   model.Toggle ]
+              gds2DToggleAttr   model.Toggle
+              gds2DInstancesAttr instances
+              gds2DInstanceSelectionAttr model.InstanceSelection
+              gds2DSetSelectionHandlerAttr setSelectionHandler
+              gds2DClearSelectionHandlerAttr clearSelectionHandler
+              gds2DMoveSelectionHandlerAttr moveSelectionHandler
+              gds2DShowDimensionsAttr model.ShowDimensions
+              gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
+              gds2DShowDrcAttr model.ShowDrc ]
 
     let pickedHandler =
         System.Action<string, int>(fun s i ->
@@ -117,12 +183,16 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
 /// SetActiveMacro instead of CloseMacro and made × appear broken.
 let private fileTab
         (active: bool)
+        (dirty: bool)
+        (renaming: bool)
         (path: string)
         (dispatch: Msg.Msg -> unit)
         : IView =
     let label =
-        try Path.GetFileName(path)
-        with _ -> path
+        let name =
+            try Path.GetFileName(path)
+            with _ -> path
+        if dirty then name + " •" else name
     let bg = if active then "#3a3a3a" else "#1f1f1f"
     let fg = if active then "#ffffff" else "#aaaaaa"
     Border.create [
@@ -141,22 +211,88 @@ let private fileTab
                     // distinction that lets selection still work.
                     // Path lives on Tag so FuncUI's lambda-dedup
                     // can't desync the click target from its label.
-                    SelectableTextBlock.create [
-                        SelectableTextBlock.text label
-                        SelectableTextBlock.foreground fg
-                        SelectableTextBlock.padding (Thickness(8.0, 4.0))
-                        SelectableTextBlock.verticalAlignment VerticalAlignment.Center
-                        SelectableTextBlock.cursor (new Cursor(StandardCursorType.Ibeam))
-                        SelectableTextBlock.tag (box path)
-                        SelectableTextBlock.onTapped (fun e ->
-                            e.Handled <- true
-                            match e.Source with
-                            | :? Avalonia.Controls.Control as c ->
-                                match c.Tag with
-                                | :? string as p -> dispatch (Msg.SetActiveMacro p)
-                                | _ -> ()
-                            | _ -> ())
-                    ]
+                    (if renaming then
+                        // Inline rename mode: TextBox prefilled
+                        // with the current basename. Enter commits;
+                        // Esc cancels; lost focus also cancels.
+                        let basename =
+                            try Path.GetFileName(path)
+                            with _ -> path
+                        TextBox.create [
+                            TextBox.text basename
+                            TextBox.foreground "#ffffff"
+                            TextBox.background "#222222"
+                            TextBox.padding (Thickness(8.0, 2.0))
+                            TextBox.verticalAlignment VerticalAlignment.Center
+                            TextBox.fontSize 12.0
+                            TextBox.tag (box path)
+                            TextBox.minWidth 140.0
+                            TextBox.onKeyDown (fun e ->
+                                match e.Key with
+                                | Key.Enter ->
+                                    e.Handled <- true
+                                    match e.Source with
+                                    | :? Avalonia.Controls.TextBox as tb ->
+                                        match tb.Tag with
+                                        | :? string as oldP ->
+                                            dispatch
+                                                (Msg.CommitRenameTab (oldP, tb.Text))
+                                        | _ -> ()
+                                    | _ -> ()
+                                | Key.Escape ->
+                                    e.Handled <- true
+                                    dispatch Msg.CancelRenameTab
+                                | _ -> ())
+                            // Commit on lost focus — clicking the
+                            // Save menu, switching tabs, or any
+                            // stray click outside the box should
+                            // accept the typed name (Finder /
+                            // Slack convention). Esc explicitly
+                            // cancels above. Update guards against
+                            // a stale post-Esc commit by checking
+                            // model.RenamingPath.
+                            TextBox.onLostFocus (fun e ->
+                                match e.Source with
+                                | :? Avalonia.Controls.TextBox as tb ->
+                                    match tb.Tag with
+                                    | :? string as oldP ->
+                                        dispatch (Msg.CommitRenameTab (oldP, tb.Text))
+                                    | _ -> ()
+                                | _ -> ())
+                        ] :> IView
+                     else
+                        SelectableTextBlock.create [
+                            SelectableTextBlock.text label
+                            SelectableTextBlock.foreground fg
+                            SelectableTextBlock.padding (Thickness(8.0, 4.0))
+                            SelectableTextBlock.verticalAlignment VerticalAlignment.Center
+                            SelectableTextBlock.cursor (new Cursor(StandardCursorType.Ibeam))
+                            SelectableTextBlock.tag (box path)
+                            SelectableTextBlock.onTapped (fun e ->
+                                e.Handled <- true
+                                match e.Source with
+                                | :? Avalonia.Controls.Control as c ->
+                                    match c.Tag with
+                                    | :? string as p -> dispatch (Msg.SetActiveMacro p)
+                                    | _ -> ()
+                                | _ -> ())
+                            // Double-tap → enter rename mode for
+                            // this tab. Avalonia raises Tapped
+                            // even on double-tap, but DoubleTapped
+                            // additionally fires once for the
+                            // second click; we handle both by
+                            // dispatching BeginRename here, and
+                            // the TextBox view-swap kicks in on
+                            // the next render tick.
+                            SelectableTextBlock.onDoubleTapped (fun e ->
+                                e.Handled <- true
+                                match e.Source with
+                                | :? Avalonia.Controls.Control as c ->
+                                    match c.Tag with
+                                    | :? string as p -> dispatch (Msg.BeginRenameTab p)
+                                    | _ -> ()
+                                | _ -> ())
+                        ] :> IView)
                     Button.create [
                         Button.content "×"
                         Button.fontSize 14.0
@@ -201,7 +337,8 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
         model.OpenMacros
         |> List.map (fun m ->
             let active = (model.ActiveMacroPath = Some m.Path)
-            fileTab active m.Path dispatch)
+            let renaming = (model.RenamingPath = Some m.Path)
+            fileTab active m.Dirty renaming m.Path dispatch)
     let children = phantom :: tabs
     Border.create [
         Border.height 28.0
@@ -223,6 +360,11 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
     ] :> IView
 
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
+    // Publish the active path each render so the native-menu Save
+    // As item (which can't reach the FuncUI tree) can ask for the
+    // right starting folder. See `AppDispatch.currentActivePath`.
+    Rekolektion.Viz.App.Services.AppDispatch.currentActivePath <- model.ActiveMacroPath
+    Rekolektion.Viz.App.Services.AppDispatch.currentModel <- Some model
     // Cmd+O / Ctrl+O hotkeys live on the NativeMenuItem ("Open...")
     // attached to the window in App.fs — Avalonia auto-routes the
     // gesture through the native menu so we don't need an explicit

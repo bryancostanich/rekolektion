@@ -82,6 +82,72 @@ let dispatchOpen (source: obj) (dispatch: Msg.Msg -> unit) : unit =
                 | None -> ()
             })
 
+/// Save-file picker for "Save As". Defaults to the same folder
+/// as `suggestedPath` and pre-fills with that file's basename.
+let pickSavePath (win: Window) (suggestedPath: string)
+        : System.Threading.Tasks.Task<string option> =
+    task {
+        let opts = FilePickerSaveOptions()
+        opts.Title <- "Save As"
+        // macOS's NSSavePanel auto-appends the extension that
+        // matches the FileTypeChoices filter ("*.mag" here). So
+        // SuggestedFileName must be the bare stem; if we hand
+        // it a name already ending in ".mag" the panel renders
+        // ".mag.mag". DefaultExtension is similarly redundant
+        // and triggers the same double-suffix on some Avalonia
+        // builds, so we leave it unset.
+        let stem =
+            try System.IO.Path.GetFileNameWithoutExtension suggestedPath
+            with _ -> "macro"
+        opts.SuggestedFileName <- stem
+        let magFilter = FilePickerFileType("Magic files")
+        magFilter.Patterns <- List<string>([ "*.mag" ])
+        opts.FileTypeChoices <- List<FilePickerFileType>([ magFilter ])
+        // Anchor the picker to the same folder as the source so
+        // SaveAs lands beside the original by default.
+        try
+            let dir =
+                System.IO.Path.GetDirectoryName suggestedPath
+            if not (System.String.IsNullOrEmpty dir) && System.IO.Directory.Exists dir then
+                let! folder = win.StorageProvider.TryGetFolderFromPathAsync(System.Uri dir)
+                if not (isNull folder) then
+                    opts.SuggestedStartLocation <- folder
+        with _ -> ()
+        let! file = win.StorageProvider.SaveFilePickerAsync(opts)
+        if isNull file then return None
+        else
+            let path = file.TryGetLocalPath()
+            if isNull path then return None else return Some path
+    }
+
+let dispatchSaveAs (source: obj) (suggestedPath: string)
+                   (dispatch: Msg.Msg -> unit) : unit =
+    let win =
+        match hostWindow source with
+        | Some w -> Some w
+        | None -> mainWindow ()
+    match win with
+    | None -> ()
+    | Some w ->
+        ignore (
+            task {
+                let! picked = pickSavePath w suggestedPath
+                match picked with
+                | Some path ->
+                    // Auto-append `.mag` if the chosen path has
+                    // no extension. macOS's save panel is happy
+                    // to write a file without one when DefaultExtension
+                    // isn't set; we want the editor's invariant
+                    // "edited macros end in .mag" to hold so
+                    // round-trip reads still work.
+                    let final =
+                        if System.String.IsNullOrEmpty (System.IO.Path.GetExtension path) then
+                            path + ".mag"
+                        else path
+                    dispatch (Msg.SaveActiveMacroAs final)
+                | None -> ()
+            })
+
 let openRunDialog (win: Window) (initial: Msg.RunMacroParams)
         : System.Threading.Tasks.Task<Msg.RunMacroParams option> =
     task {

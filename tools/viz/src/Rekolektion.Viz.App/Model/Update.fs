@@ -3,6 +3,7 @@ module Rekolektion.Viz.App.Model.Update
 open Elmish
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Sidecar.Types
+open Rekolektion.Viz.App.Services
 
 /// Side-effect surface — resolved at boot and curried into update.
 /// Test code provides stubs; production wires real services.
@@ -12,6 +13,9 @@ type ServiceBackend = {
     // ^ second arg = log-line callback for streaming stderr.
     DeriveNets: Rekolektion.Viz.Core.Gds.Types.Library
                   -> Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>>
+    /// Round-trip the macro through `Mag.Writer.writeUpdated`,
+    /// returning the path that ended up on disk.
+    SaveMacro : Model.LoadedMacro -> Async<Result<string, string>>
 }
 
 let private appendLog (line: string) (model: Model.Model) : Model.Model =
@@ -44,9 +48,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             |> List.fold (fun t key -> Visibility.toggleLayer key false t) model.Toggle
         // Insert (or replace) by path so reopening a file just
         // refreshes its tab in place rather than duplicating it.
+        // Also remove any open `<base>_edited*.mag` derived from
+        // the same source — leaving those would create two tabs
+        // that both retarget to the same edited Path on first
+        // edit, masking one of them under List.map's by-path
+        // mutation. Match by OriginalPath so we catch every
+        // edited variant of the file we're (re)opening.
         let openMacros =
             let withoutExisting =
-                model.OpenMacros |> List.filter (fun m -> m.Path <> macro.Path)
+                model.OpenMacros
+                |> List.filter (fun m ->
+                    m.Path <> macro.Path
+                    && m.OriginalPath <> macro.Path)
             withoutExisting @ [macro]
         // If nets came from a sidecar, we're done. Otherwise schedule
         // a background LabelFlood — it can take 10+ s for production
@@ -66,7 +79,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 ActiveMacroPath = Some macro.Path
                 RecentFiles = recents
                 Toggle = toggle'
-                Selection = None }
+                Selection = None
+                InstanceSelection = Set.empty }
         model', cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
@@ -88,8 +102,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             // requests (e.g. socket-driven from outside).
             let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
             if exists then
-                { model with ActiveMacroPath = Some path; Selection = None }, Cmd.none
+                { model with
+                    ActiveMacroPath = Some path
+                    Selection = None
+                    InstanceSelection = Set.empty }, Cmd.none
             else model, Cmd.none
+    | Msg.CloseAllTabs ->
+        { model with
+            OpenMacros = []
+            ActiveMacroPath = None
+            Selection = None
+            InstanceSelection = Set.empty
+            RenamingPath = None }, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
         | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)
@@ -117,7 +141,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             { model with
                 OpenMacros = remaining
                 ActiveMacroPath = nextActive
-                Selection = None }
+                Selection = None
+                InstanceSelection = Set.empty }
         model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
         { model with Toggle = Visibility.toggleLayer key vis model.Toggle }, Cmd.none
@@ -140,6 +165,226 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.SetTab tab -> { model with ActiveTab = tab }, Cmd.none
     | Msg.PolygonPicked (s, i) -> { model with Selection = Some (s, i) }, Cmd.none
     | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
+    | Msg.ToggleDimensions ->
+        { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
+    | Msg.ToggleDrc ->
+        { model with ShowDrc = not model.ShowDrc }, Cmd.none
+    | Msg.TightenSelection ->
+        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            // Build per-side polygon sets:
+                            // selected = polys belonging to any
+                            // SRef in InstanceSelection;
+                            // others = polys from every other
+                            // top-level instance.
+                            let selectedPolys =
+                                mc.TopInstances
+                                |> Array.filter (fun i -> model.InstanceSelection.Contains i.Index)
+                                |> Array.collect (fun i ->
+                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                            let otherPolys =
+                                mc.TopInstances
+                                |> Array.filter (fun i -> not (model.InstanceSelection.Contains i.Index))
+                                |> Array.collect (fun i ->
+                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                            // Try all 4 cardinal directions; pick
+                            // the one with the smallest positive
+                            // slack (most binding gap). That's the
+                            // axis along which the cells are
+                            // closest to each other and tightening
+                            // gives the most useful collapse.
+                            let candidates =
+                                [ ( 1,  0); (-1,  0); ( 0,  1); ( 0, -1) ]
+                                |> List.choose (fun (dx, dy) ->
+                                    Drc.Check.maxOrthoSlackDbu
+                                        mc.Library selectedPolys otherPolys dx dy
+                                    |> Option.bind (fun s ->
+                                        if s > 0L then Some (dx, dy, s) else None))
+                            // Apply slack from all valid
+                            // directions in one move. X-slack and
+                            // Y-slack are independent (the selected
+                            // cell's X / Y motion don't interact
+                            // with each other under axis-aligned
+                            // bbox math), and opposite directions
+                            // along the same axis are mutually
+                            // exclusive for a two-cell setup
+                            // (selected is on one side of other).
+                            let dxDbu =
+                                candidates
+                                |> List.sumBy (fun (dx, _, s) -> int64 dx * s)
+                            let dyDbu =
+                                candidates
+                                |> List.sumBy (fun (_, dy, s) -> int64 dy * s)
+                            if dxDbu = 0L && dyDbu = 0L then mc
+                            else
+                                let lib' =
+                                    Layout.Instances.translateSelection
+                                        mc.Library model.InstanceSelection dxDbu dyDbu
+                                let flat' = Layout.Flatten.flatten lib'
+                                let inst' = Layout.Instances.enumerate lib'
+                                let mc' =
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun m ->
+                                        { m with
+                                            Library = lib'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
+                                    |> EditSession.markDirty
+                                activePath' <- mc'.Path
+                                mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath' }, Cmd.none
+    | Msg.RotateSelection90
+    | Msg.MirrorSelectionX
+    | Msg.MirrorSelectionY ->
+        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let selected =
+                                mc.TopInstances
+                                |> Array.filter (fun i ->
+                                    model.InstanceSelection.Contains i.Index)
+                            match Layout.Instances.selectionPivotSnapped
+                                    mc.Library selected with
+                            | None -> mc
+                            | Some pivot ->
+                                let lib' =
+                                    match msg with
+                                    | Msg.RotateSelection90 ->
+                                        Layout.Instances.rotate90Selection
+                                            mc.Library model.InstanceSelection pivot
+                                    | Msg.MirrorSelectionX ->
+                                        Layout.Instances.mirrorXSelection
+                                            mc.Library model.InstanceSelection pivot
+                                    | _ ->
+                                        Layout.Instances.mirrorYSelection
+                                            mc.Library model.InstanceSelection pivot
+                                let flat' = Layout.Flatten.flatten lib'
+                                let inst' = Layout.Instances.enumerate lib'
+                                let mc' =
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun m ->
+                                        { m with
+                                            Library = lib'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
+                                    |> EditSession.markDirty
+                                activePath' <- mc'.Path
+                                mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath' }, Cmd.none
+    | Msg.DuplicateSelection ->
+        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                // Snap the duplicate offset to the SKY130 mfg grid
+                // so clones land on-grid even if the source's bbox
+                // width doesn't divide evenly.
+                let mutable nextSelection : Set<int> = model.InstanceSelection
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            // Offset = bbox-of-bboxes width + a
+                            // small gap so duplicates clearly sit
+                            // beside the originals, not on top.
+                            let selected =
+                                mc.TopInstances
+                                |> Array.filter (fun i ->
+                                    model.InstanceSelection.Contains i.Index)
+                            let bb = Layout.Instances.selectionBbox selected
+                            let dxRaw, dyRaw =
+                                match bb with
+                                | Some (x1, _, x2, _) ->
+                                    let w = x2 - x1
+                                    // 5 % gap or 1 DBU minimum.
+                                    let gap = max 1L (w / 20L)
+                                    w + gap, 0L
+                                | None -> 0L, 0L
+                            let dx, dy =
+                                Layout.Snap.snapDeltaDbu
+                                    mc.Library Layout.Snap.sky130MfgGridNm
+                                    dxRaw dyRaw
+                            let lib', clones =
+                                Layout.Instances.duplicateSelection
+                                    mc.Library model.InstanceSelection dx dy
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            nextSelection <- clones
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Library = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath'
+                    InstanceSelection = nextSelection }, Cmd.none
+    | Msg.SetInstanceSelection indices ->
+        { model with InstanceSelection = indices }, Cmd.none
+    | Msg.ClearInstanceSelection ->
+        { model with InstanceSelection = Set.empty }, Cmd.none
+    | Msg.MoveSelectionDbu (dxDbu, dyDbu) ->
+        // No-op when nothing selected or the snapped delta is zero
+        // — avoids a pointless re-flatten on a sub-grid drag.
+        if model.InstanceSelection.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then
+            model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let lib' =
+                                Layout.Instances.translateSelection
+                                    mc.Library model.InstanceSelection dxDbu dyDbu
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Library = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.Pan2D (dx, dy) ->
         let v = model.View2D
         { model with View2D = { v with OffsetX = v.OffsetX + dx; OffsetY = v.OffsetY + dy } }, Cmd.none
@@ -173,3 +418,166 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { m with Run = Model.RunState.Idle }, Cmd.none
     | Msg.ToggleLogPane -> { model with LogVisible = not model.LogVisible }, Cmd.none
     | Msg.RecentFileClicked p -> model, Cmd.ofMsg (Msg.OpenFile p)
+    | Msg.UndoActiveMacro ->
+        match Model.activeMacro model with
+        | None -> model, Cmd.none
+        | Some mc ->
+            match mc.UndoStack with
+            | [] -> model, Cmd.none
+            | prevLib :: rest ->
+                let flat' = Layout.Flatten.flatten prevLib
+                let inst' = Layout.Instances.enumerate prevLib
+                let stillDirty = not (List.isEmpty rest)
+                // When the stack drains we're back at the load
+                // state — also revert the in-memory Path from
+                // `<base>_edited.<ext>` back to the original so
+                // the tab name no longer says "edited" and a
+                // following Save would write to the original file
+                // again. (If the user explicitly renamed the tab
+                // away from the auto-suggested `_edited` path,
+                // that rename stays — we only revert the
+                // automatic retarget, not user intent.)
+                let pathRestored =
+                    if stillDirty then mc.Path
+                    elif mc.Path = EditSession.suggestEditedPathFor mc.OriginalPath then
+                        mc.OriginalPath
+                    else mc.Path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun m ->
+                        if m.Path <> mc.Path then m
+                        else
+                            { m with
+                                Library = prevLib
+                                FlatPolygons = flat'
+                                TopInstances = inst'
+                                UndoStack = rest
+                                Dirty = stillDirty
+                                Path = pathRestored })
+                let activePath' =
+                    if model.ActiveMacroPath = Some mc.Path then Some pathRestored
+                    else model.ActiveMacroPath
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = activePath' }, Cmd.none
+    | Msg.SaveActiveMacro ->
+        match Model.activeMacro model with
+        | None -> model, Cmd.none
+        | Some mc ->
+            let cmd =
+                Cmd.OfAsync.either
+                    backend.SaveMacro mc
+                    (function
+                        | Ok p -> Msg.SaveCompleted p
+                        | Error r -> Msg.SaveFailed r)
+                    (fun ex -> Msg.SaveFailed ex.Message)
+            model, cmd
+    | Msg.SaveActiveMacroAs target ->
+        match Model.activeMacro model with
+        | None -> model, Cmd.none
+        | Some mc ->
+            // SaveAs retargets the macro's Path to the chosen path
+            // first, then runs the same async save. The Path
+            // retarget makes the writer read the *current* file
+            // (mc.Path holds the latest saved-or-edit-copy state)
+            // and write to `target`. After completion the active
+            // path snaps to `target` via SaveCompleted.
+            let openMacros' =
+                model.OpenMacros
+                |> List.map (fun m ->
+                    if m.Path = mc.Path then { m with Path = target }
+                    else m)
+            let mc' = { mc with Path = target }
+            let activePath' = Some target
+            let cmd =
+                Cmd.OfAsync.either
+                    backend.SaveMacro mc'
+                    (function
+                        | Ok p -> Msg.SaveCompleted p
+                        | Error r -> Msg.SaveFailed r)
+                    (fun ex -> Msg.SaveFailed ex.Message)
+            { model with
+                OpenMacros = openMacros'
+                ActiveMacroPath = activePath' }, cmd
+    | Msg.BeginRenameTab path ->
+        { model with RenamingPath = Some path }, Cmd.none
+    | Msg.CancelRenameTab ->
+        { model with RenamingPath = None }, Cmd.none
+    | Msg.CommitRenameTab (oldPath, newName) ->
+        // Guard against stale commits: Esc clears RenamingPath
+        // before TextBox.LostFocus fires its own commit. Without
+        // this check, the LostFocus dispatch would undo Esc.
+        if model.RenamingPath <> Some oldPath then model, Cmd.none
+        else
+        let trimmed = newName.Trim()
+        if trimmed = "" then
+            // Empty name → cancel.
+            { model with RenamingPath = None }, Cmd.none
+        elif trimmed.Contains "/" || trimmed.Contains "\\" then
+            // No path separators in a tab rename; user can use
+            // SaveAs for a directory move.
+            appendLog "rename: name may not contain path separators"
+                { model with RenamingPath = None }, Cmd.none
+        else
+            let dir = System.IO.Path.GetDirectoryName oldPath
+            let withExt =
+                if trimmed.EndsWith ".mag" then trimmed
+                else trimmed + ".mag"
+            let newPath = System.IO.Path.Combine(dir, withExt)
+            if newPath = oldPath then
+                { model with RenamingPath = None }, Cmd.none
+            elif System.IO.File.Exists newPath then
+                appendLog (sprintf "rename: target %s already exists" newPath)
+                    { model with RenamingPath = None }, Cmd.none
+            else
+                // If the source exists on disk, do a real move;
+                // otherwise the macro hasn't been saved yet and
+                // we just retarget the in-memory Path.
+                try
+                    if System.IO.File.Exists oldPath then
+                        System.IO.File.Move(oldPath, newPath)
+                with ex ->
+                    eprintfn "[viz] rename move failed: %s" ex.Message
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun m ->
+                        if m.Path = oldPath then
+                            // OriginalPath stays pinned at the
+                            // original source so a later
+                            // round-trip read still finds it. If
+                            // the user renamed the original (rare),
+                            // OriginalPath also retargets so the
+                            // round-trip read works.
+                            let newOriginal =
+                                if m.OriginalPath = oldPath then newPath
+                                else m.OriginalPath
+                            { m with Path = newPath; OriginalPath = newOriginal }
+                        else m)
+                let activePath' =
+                    match model.ActiveMacroPath with
+                    | Some p when p = oldPath -> Some newPath
+                    | other -> other
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = activePath'
+                    RenamingPath = None }, Cmd.none
+    | Msg.SaveCompleted writtenPath ->
+        // Update the active macro: Path moves to the saved file
+        // (no-op when already pointing there), Dirty clears.
+        let openMacros' =
+            model.OpenMacros
+            |> List.map (fun mc ->
+                if mc.Path = writtenPath
+                   || (model.ActiveMacroPath = Some mc.Path
+                       && mc.Path <> writtenPath) then
+                    { mc with Path = writtenPath; Dirty = false }
+                else mc)
+        let activePath' =
+            if model.ActiveMacroPath.IsSome then Some writtenPath
+            else None
+        appendLog (sprintf "saved %s" writtenPath)
+            { model with
+                OpenMacros = openMacros'
+                ActiveMacroPath = activePath' }, Cmd.none
+    | Msg.SaveFailed reason ->
+        appendLog (sprintf "save failed: %s" reason) model, Cmd.none

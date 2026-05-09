@@ -176,6 +176,11 @@ let private handleClient
         let! response =
             async {
                 match methodAndPath with
+                | Some (m, p) when m.Equals("GET", StringComparison.OrdinalIgnoreCase)
+                                 && p = "/instances" ->
+                    let respBody = CommandListener.handleQuery p dispatch
+                    let bytes = Encoding.UTF8.GetBytes respBody
+                    return httpResponse "200 OK" "application/json; charset=utf-8" bytes
                 | Some (m, _) when m.Equals("GET", StringComparison.OrdinalIgnoreCase) ->
                     return! handleScreenshot windowProvider
                 | Some (m, p) when m.Equals("POST", StringComparison.OrdinalIgnoreCase) ->

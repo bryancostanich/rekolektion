@@ -20,6 +20,17 @@ type FlatPolygon = {
     SourceIndex: int
 }
 
+/// One label after the GDS hierarchy has been walked and all SRef /
+/// ARef transforms applied. `Origin` is in flat (top-cell) DBU
+/// coordinates, so spatial tests against `FlatPolygon.Points` are
+/// in the same frame regardless of which sub-cell defined the label.
+type FlatLabel = {
+    Layer: int
+    TextType: int
+    Origin: Point
+    Text: string
+}
+
 /// 2D affine in homogenous form: [A B Tx; C D Ty]. Avoids carrying
 /// rotation+reflection+scale separately, which compose poorly.
 type private Affine = {
@@ -150,5 +161,51 @@ let flatten (lib: Library) : FlatPolygon array =
                             walk child (compose xform instXform)
                 | _ -> ()
             | _ -> ())
+    walk top identityXform
+    result.ToArray()
+
+/// Same hierarchy walk as `flatten`, but emits Text labels with
+/// origins transformed into the top-cell coordinate frame. Used by
+/// net highlighting so a label authored in a sub-cell still matches
+/// flat polygons by spatial position.
+let flattenLabels (lib: Library) : FlatLabel array =
+    let byName =
+        lib.Structures
+        |> List.map (fun s -> s.Name, s)
+        |> Map.ofList
+    let top = findTop lib
+    let result = System.Collections.Generic.List<FlatLabel>()
+    let rec walk (struc: Structure) (xform: Affine) =
+        for el in struc.Elements do
+            match el with
+            | Text t ->
+                result.Add {
+                    Layer = t.Layer
+                    TextType = t.TextType
+                    Origin = apply xform t.Origin
+                    Text = t.Text }
+            | SRef sr ->
+                match Map.tryFind sr.StructureName byName with
+                | None -> ()
+                | Some child ->
+                    walk child (compose xform (fromSref sr))
+            | ARef ar ->
+                match Map.tryFind ar.StructureName byName with
+                | None -> ()
+                | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                    let baseXform = fromArefBase ar
+                    let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                    let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                    let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                    let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                    for r in 0 .. ar.Rows - 1 do
+                        for c in 0 .. ar.Cols - 1 do
+                            let instXform =
+                                { baseXform with
+                                    Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                    Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                            walk child (compose xform instXform)
+                | _ -> ()
+            | _ -> ()
     walk top identityXform
     result.ToArray()

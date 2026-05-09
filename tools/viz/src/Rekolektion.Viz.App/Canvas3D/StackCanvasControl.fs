@@ -197,11 +197,17 @@ type StackCanvasControl() =
     let mutable depthRbo : uint32 = 0u
     let mutable depthRboW : int = 0
     let mutable depthRboH : int = 0
-    let mutable yawDeg = 30.0
-    // ~20° pitch keeps the camera above the substrate but at a
-    // shallow enough angle to see layer thickness in the metal
-    // stack rather than just the top of met5.
-    let mutable pitchDeg = 20.0
+    // Back-right isometric: camera in the (-X, -Y, +Z) octant
+    // (yaw=135 rotated 90° CCW around the up axis — yaw
+    // increases CW when viewed from above in this
+    // parameterization, so CCW means +90°). Maps the world axes
+    // so origin renders in the LOWER LEFT of the viewport with
+    // the cell extending up-and-right.
+    let mutable yawDeg = 225.0
+    // ~35.26° = arctan(1/√2) is the true isometric pitch — equal
+    // foreshortening on every axis. Steeper than the prior 20°
+    // but still shows layer thickness clearly.
+    let mutable pitchDeg = 35.0
     let mutable zoom = 1.0
     // Camera target + extent. Set by FitCameraTo when a Library is
     // assigned; defaults work if Library is never set.

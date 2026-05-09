@@ -41,6 +41,11 @@ type private SelectionOverlay = {
     /// as red bbox outlines + connectors. Empty when the toggle
     /// is off.
     Violations : Drc.Check.Violation array
+    /// Marquee rectangle in world DBU (xmin,ymin,xmax,ymax) when a
+    /// MarqueeDrag is in flight. None at rest. Renderer shows the
+    /// rect translucent so the user sees what they're about to
+    /// pick up.
+    MarqueeWorld : (int64 * int64 * int64 * int64) option
 }
 
 /// Skia draw operation that takes an explicit ViewBox so the canvas
@@ -113,9 +118,40 @@ type private SkiaDraw(bounds: Rect,
                         DimensionOverlay.defaultSettings
                 if overlay.Violations.Length > 0 then
                     DrcOverlay.render canvas vb lib.UserUnitsPerDbUnit overlay.Violations
+
+                match overlay.MarqueeWorld with
+                | Some (mx1, my1, mx2, my2) ->
+                    let scaleX =
+                        if vb.MaxX = vb.MinX then 1.0
+                        else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                    let scaleY =
+                        if vb.MaxY = vb.MinY then 1.0
+                        else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                    let toScreen (x: int64, y: int64) =
+                        let sx = (float x - float vb.MinX) * scaleX |> float32
+                        let sy = float vb.PixelH - (float y - float vb.MinY) * scaleY |> float32
+                        sx, sy
+                    let (sx1, sy1) = toScreen (mx1, my1)
+                    let (sx2, sy2) = toScreen (mx2, my2)
+                    let r = SKRect(min sx1 sx2, min sy1 sy2, max sx1 sx2, max sy1 sy2)
+                    use mFill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0x22uy),
+                            IsAntialias = true)
+                    use mStroke =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xFFuy),
+                            StrokeWidth = 1.0f,
+                            IsAntialias = true,
+                            PathEffect = SKPathEffect.CreateDash([| 4.0f; 3.0f |], 0.0f))
+                    canvas.DrawRect(r, mFill)
+                    canvas.DrawRect(r, mStroke)
+                | None -> ()
                 canvas.RestoreToCount saved
 
-type private DragKind = NoDrag | PanDrag | SelectionDrag
+type private DragKind = NoDrag | PanDrag | SelectionDrag | MarqueeDrag
 
 type GdsCanvasControl() =
     inherit Control()
@@ -149,6 +185,15 @@ type GdsCanvasControl() =
     // cursor. None when no drag is active.
     let mutable dragLiveLib : Library option = None
     let mutable dragLiveFlat : FlatPolygon array = [||]
+    // Marquee select state. World-DBU corners, both updated in
+    // OnPointerMoved. Render shows a translucent rect; on release
+    // we select every instance whose bbox intersects this rect.
+    // `marqueeAdditive` records the Shift modifier at press time
+    // so the marquee acts as "add to selection" instead of
+    // replace.
+    let mutable marqueeWorldStart : (int64 * int64) = 0L, 0L
+    let mutable marqueeWorldEnd   : (int64 * int64) = 0L, 0L
+    let mutable marqueeAdditive   : bool = false
 
     // Make the control focusable so ESC (clear selection) lands
     // here. Setting Focusable from the instance ctor triggers
@@ -366,8 +411,18 @@ type GdsCanvasControl() =
                 Instances.hitTest this.Instances (int64 (System.Math.Round wx)) (int64 (System.Math.Round wy))
             let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
             if hit.Length > 0 then
-                // Topmost in declaration order = last array element.
-                let target = hit.[hit.Length - 1]
+                // Front-most under the cursor = the SMALLEST
+                // bbox containing the click. When a small cell
+                // (e.g. ReRAM stack) sits inside a larger cell's
+                // bbox (e.g. nfet), the user wants to grab the
+                // small one — declaration order picks the larger
+                // outer cell instead and makes the inner cell
+                // unselectable.
+                let bboxArea (i: Instances.Instance) =
+                    let (x1, y1, x2, y2) = i.BBox
+                    (x2 - x1) * (y2 - y1)
+                let target =
+                    hit |> Array.minBy bboxArea
                 let prior = this.InstanceSelection
                 let next =
                     if shift then
@@ -393,16 +448,29 @@ type GdsCanvasControl() =
                 dragLiveDeltaDbu <- 0L, 0L
                 dragKind <- if next.IsEmpty then PanDrag else SelectionDrag
             else
-                // Empty space → clear any prior selection and pan.
-                if not this.InstanceSelection.IsEmpty then
-                    let h = this.ClearInstanceSelectionHandler
-                    if not (isNull h) then h.Invoke ()
-                dragKind <- PanDrag
+                // Empty space → start a marquee. Shift extends
+                // the existing selection; bare click replaces it
+                // (we DON'T clear yet — that happens at release
+                // if the marquee captures nothing). Pan stays on
+                // middle / right button.
+                marqueeAdditive <- shift
+                let mxi = int64 (System.Math.Round wx)
+                let myi = int64 (System.Math.Round wy)
+                marqueeWorldStart <- mxi, myi
+                marqueeWorldEnd   <- mxi, myi
+                dragKind <- MarqueeDrag
 
     override this.OnPointerMoved e =
         base.OnPointerMoved e
         match dragKind with
         | NoDrag -> ()
+        | MarqueeDrag ->
+            let p = e.GetPosition this
+            let wx, wy = this.ScreenToWorld p
+            marqueeWorldEnd <-
+                int64 (System.Math.Round wx),
+                int64 (System.Math.Round wy)
+            this.InvalidateVisual()
         | PanDrag ->
             let p = e.GetPosition this
             let dxPx = p.X - lastPos.X
@@ -478,6 +546,46 @@ type GdsCanvasControl() =
             // speculative re-flatten on the next Render.
             let h = this.MoveSelectionHandler
             if not (isNull h) then h.Invoke(dx, dy)
+            this.InvalidateVisual()
+        | MarqueeDrag ->
+            let (x1, y1) = marqueeWorldStart
+            let (x2, y2) = marqueeWorldEnd
+            let mxMin, myMin = min x1 x2, min y1 y2
+            let mxMax, myMax = max x1 x2, max y1 y2
+            // Sub-pixel marquee = effectively a click on empty
+            // space. Treat as "clear selection" to match the
+            // pre-marquee behaviour.
+            let degenerate =
+                (mxMax - mxMin) < 1L && (myMax - myMin) < 1L
+            if degenerate then
+                if not this.InstanceSelection.IsEmpty
+                   && not marqueeAdditive then
+                    let h = this.ClearInstanceSelectionHandler
+                    if not (isNull h) then h.Invoke ()
+            else
+                // Pick every instance whose bbox INTERSECTS the
+                // marquee. Compromise between "fully enclosed"
+                // (too restrictive when partial drags happen) and
+                // "any touch" (too greedy on small drags).
+                let hits =
+                    this.Instances
+                    |> Array.filter (fun i ->
+                        let (a, b, c, d) = i.BBox
+                        not (c < mxMin || a > mxMax
+                             || d < myMin || b > myMax))
+                    |> Array.map (fun i -> i.Index)
+                    |> Set.ofArray
+                let next =
+                    if marqueeAdditive then
+                        Set.union this.InstanceSelection hits
+                    else
+                        hits
+                let h = this.SetInstanceSelectionHandler
+                if not (isNull h) then h.Invoke next
+            // Reset the marquee state so the overlay clears.
+            marqueeWorldStart <- 0L, 0L
+            marqueeWorldEnd <- 0L, 0L
+            marqueeAdditive <- false
             this.InvalidateVisual()
         | _ ->
             this.InvalidateVisual()
@@ -562,13 +670,20 @@ type GdsCanvasControl() =
                     Drc.Check.checkInterInstance renderLib perInstance
                 else
                     [||]
+            let marquee =
+                if dragKind = MarqueeDrag then
+                    let (x1, y1) = marqueeWorldStart
+                    let (x2, y2) = marqueeWorldEnd
+                    Some (min x1 x2, min y1 y2, max x1 x2, max y1 y2)
+                else None
             let overlay : SelectionOverlay =
                 { Instances = this.Instances
                   Selected  = this.InstanceSelection
                   Dragging  = dragging
                   ShowDimensions = this.ShowDimensions
                   InstancePolyBboxes = instPolyBboxes
-                  Violations = violations }
+                  Violations = violations
+                  MarqueeWorld = marquee }
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay))
         | None ->
             // Closing the active tab leaves None for Library; without

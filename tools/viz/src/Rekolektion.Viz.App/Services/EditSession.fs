@@ -4,6 +4,16 @@ open System.IO
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model.Model
 
+/// First-form `_edited` path for a given source — no collision
+/// check, just `<base>_edited<ext>`. Used by the undo path-revert
+/// to recognise an auto-suggested name vs. a user-typed one
+/// without touching the filesystem.
+let suggestEditedPathFor (originalPath: string) : string =
+    let dir = Path.GetDirectoryName originalPath
+    let stem = Path.GetFileNameWithoutExtension originalPath
+    let ext = Path.GetExtension originalPath
+    Path.Combine(dir, sprintf "%s_edited%s" stem ext)
+
 /// Compute the `_edited.mag` path used on first edit. If
 /// `<base>_edited.mag` already exists, append `_2`, `_3`, … until
 /// we land on an unused name. Lives next to the original so the

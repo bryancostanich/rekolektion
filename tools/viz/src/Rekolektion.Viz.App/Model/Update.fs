@@ -427,12 +427,21 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             | prevLib :: rest ->
                 let flat' = Layout.Flatten.flatten prevLib
                 let inst' = Layout.Instances.enumerate prevLib
-                // Stay dirty if we still differ from the original
-                // file's library. Cheap heuristic: stack size ↔
-                // edit count from origin; once we undo back to
-                // empty stack we're at the load state and can
-                // clear Dirty.
                 let stillDirty = not (List.isEmpty rest)
+                // When the stack drains we're back at the load
+                // state — also revert the in-memory Path from
+                // `<base>_edited.<ext>` back to the original so
+                // the tab name no longer says "edited" and a
+                // following Save would write to the original file
+                // again. (If the user explicitly renamed the tab
+                // away from the auto-suggested `_edited` path,
+                // that rename stays — we only revert the
+                // automatic retarget, not user intent.)
+                let pathRestored =
+                    if stillDirty then mc.Path
+                    elif mc.Path = EditSession.suggestEditedPathFor mc.OriginalPath then
+                        mc.OriginalPath
+                    else mc.Path
                 let openMacros' =
                     model.OpenMacros
                     |> List.map (fun m ->
@@ -443,8 +452,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 FlatPolygons = flat'
                                 TopInstances = inst'
                                 UndoStack = rest
-                                Dirty = stillDirty })
-                { model with OpenMacros = openMacros' }, Cmd.none
+                                Dirty = stillDirty
+                                Path = pathRestored })
+                let activePath' =
+                    if model.ActiveMacroPath = Some mc.Path then Some pathRestored
+                    else model.ActiveMacroPath
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = activePath' }, Cmd.none
     | Msg.SaveActiveMacro ->
         match Model.activeMacro model with
         | None -> model, Cmd.none

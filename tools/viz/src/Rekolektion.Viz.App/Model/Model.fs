@@ -107,7 +107,7 @@ let empty : Model = {
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }
-    View3D = { OrbitYaw = 30.0; OrbitPitch = -25.0; ZoomFactor = 1.0; Ortho = false }
+    View3D = { OrbitYaw = 225.0; OrbitPitch = 35.0; ZoomFactor = 1.0; Ortho = false }
     Run = Idle
     RecentFiles = []
     LogVisible = false

@@ -162,6 +162,13 @@ type GdsCanvasControl() =
     static member val LibraryProperty : StyledProperty<Library option> =
         AvaloniaProperty.Register<GdsCanvasControl, Library option>("Library", None)
         with get
+    /// Path of the active macro. Changes ONLY on new-file load
+    /// (or rename), not on every edit. The canvas uses this as
+    /// the auto-fit trigger so geometry edits (drag, Tighten,
+    /// rotate, mirror) don't reset the user's pan/zoom.
+    static member val MacroPathProperty : StyledProperty<string option> =
+        AvaloniaProperty.Register<GdsCanvasControl, string option>("MacroPath", None)
+        with get
     static member val FlatPolygonsProperty : StyledProperty<FlatPolygon array> =
         AvaloniaProperty.Register<GdsCanvasControl, FlatPolygon array>("FlatPolygons", [||])
         with get
@@ -203,6 +210,10 @@ type GdsCanvasControl() =
     member this.Library
         with get() : Library option = this.GetValue(GdsCanvasControl.LibraryProperty)
         and set(v: Library option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
+
+    member this.MacroPath
+        with get() : string option = this.GetValue(GdsCanvasControl.MacroPathProperty)
+        and set(v: string option) = this.SetValue(GdsCanvasControl.MacroPathProperty, v) |> ignore
 
     member this.FlatPolygons
         with get() : FlatPolygon array = this.GetValue(GdsCanvasControl.FlatPolygonsProperty)
@@ -308,23 +319,28 @@ type GdsCanvasControl() =
 
     override this.OnPropertyChanged(e) =
         base.OnPropertyChanged e
-        if e.Property = GdsCanvasControl.FlatPolygonsProperty
-           || e.Property = GdsCanvasControl.LibraryProperty then
-            // New macro → re-fit on next render. Drag in flight (if
-            // any) is also stale at this point — a different macro is
-            // about to render, so any accumulated Δ no longer maps to
-            // the new geometry.
+        if e.Property = GdsCanvasControl.MacroPathProperty then
+            // Path changed → genuinely new file or rename to a
+            // different file. Reset auto-fit so the camera frames
+            // the new geometry. Cancel any in-flight drag too —
+            // its Δ doesn't apply to the new macro.
             hasFitted <- false
             dragKind <- NoDrag
             dragLiveDeltaDbu <- 0L, 0L
             dragLiveLib <- None
             dragLiveFlat <- [||]
             this.InvalidateVisual()
-        elif e.Property = GdsCanvasControl.ToggleProperty
+        elif e.Property = GdsCanvasControl.FlatPolygonsProperty
+             || e.Property = GdsCanvasControl.LibraryProperty
+             || e.Property = GdsCanvasControl.ToggleProperty
              || e.Property = GdsCanvasControl.InstancesProperty
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
              || e.Property = GdsCanvasControl.ShowDimensionsProperty
              || e.Property = GdsCanvasControl.ShowDrcProperty then
+            // Geometry / overlay state changed — re-render but
+            // KEEP the existing pan/zoom so editing operations
+            // (Tighten, drag, rotate, mirror) don't snap the
+            // camera away from the user's working view.
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----

@@ -23,6 +23,10 @@ let private gds2DLibraryAttr (v: Library option) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Library option>(
         GdsCanvasControl.LibraryProperty, v, ValueNone)
 
+let private gds2DMacroPathAttr (v: string option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<string option>(
+        GdsCanvasControl.MacroPathProperty, v, ValueNone)
+
 let private gds2DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Layout.Flatten.FlatPolygon array>(
         GdsCanvasControl.FlatPolygonsProperty, v, ValueNone)
@@ -105,9 +109,17 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     let toggleDimensionsHandler =
         System.Action(fun () -> dispatch Msg.ToggleDimensions)
 
+    // OriginalPath is the auto-fit trigger — stays pinned across
+    // edits and only changes on a genuinely new file load. Using
+    // mc.Path (the in-memory edited path) would refit on every
+    // first edit because Path retargets to `_edited.mag`.
+    let macroPath =
+        active |> Option.map (fun m -> m.OriginalPath)
+
     let canvas2D : IView =
         ViewBuilder.Create<GdsCanvasControl>
             [ gds2DLibraryAttr lib
+              gds2DMacroPathAttr macroPath
               gds2DFlatAttr    flat
               gds2DToggleAttr   model.Toggle
               gds2DInstancesAttr instances
@@ -352,6 +364,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     // As item (which can't reach the FuncUI tree) can ask for the
     // right starting folder. See `AppDispatch.currentActivePath`.
     Rekolektion.Viz.App.Services.AppDispatch.currentActivePath <- model.ActiveMacroPath
+    Rekolektion.Viz.App.Services.AppDispatch.currentModel <- Some model
     // Cmd+O / Ctrl+O hotkeys live on the NativeMenuItem ("Open...")
     // attached to the window in App.fs — Avalonia auto-routes the
     // gesture through the native menu so we don't need an explicit

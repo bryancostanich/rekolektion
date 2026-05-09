@@ -51,6 +51,7 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             SidecarError = sidecarError
             OriginalPath = path
             Dirty = false
+            UndoStack = []
         }
     with ex -> return Error ex.Message
 }

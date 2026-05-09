@@ -40,7 +40,6 @@ let saveTo (mc: LoadedMacro) (targetPath: string) : string =
     let readPath =
         if File.Exists mc.Path then mc.Path
         else mc.OriginalPath
-    eprintfn "[viz] save read=%s -> write=%s" readPath targetPath
     Mag.Writer.writeUpdated readPath mc.Library targetPath
     targetPath
 
@@ -56,3 +55,20 @@ let markDirty (mc: LoadedMacro) : LoadedMacro =
         { mc with Path = edited; Dirty = true }
     else
         { mc with Dirty = true }
+
+/// Maximum undo history per macro. Bounded so a long editing
+/// session doesn't grow the heap without limit. 200 is well past
+/// what feels useful interactively but small enough that even at
+/// production-macro library sizes (~100 KB / snapshot) the
+/// total stays under ~20 MB.
+let undoLimit = 200
+
+/// Push the current `Library` onto `mc.UndoStack` so a future
+/// Undo can restore it. Trims to `undoLimit` from the end. Used
+/// by Update.fs *before* applying any edit.
+let pushUndoSnapshot (mc: LoadedMacro) : LoadedMacro =
+    let stack = mc.Library :: mc.UndoStack
+    let trimmed =
+        if stack.Length > undoLimit then List.truncate undoLimit stack
+        else stack
+    { mc with UndoStack = trimmed }

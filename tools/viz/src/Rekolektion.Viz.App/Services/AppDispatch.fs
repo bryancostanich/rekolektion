@@ -19,3 +19,10 @@ let send (msg: Msg.Msg) : unit =
 /// and any other handler that needs to root a file picker at the
 /// current working file.
 let mutable currentActivePath : string option = None
+
+/// Latest model snapshot — published by AppView on every render.
+/// Read by out-of-tree query endpoints (CommandListener
+/// `/instances`) so they can serve the current state without
+/// piping the model through an extra channel. None until the
+/// first render fires.
+let mutable currentModel : Model.Model option = None

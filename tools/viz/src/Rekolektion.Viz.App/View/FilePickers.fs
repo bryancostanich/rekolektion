@@ -144,10 +144,8 @@ let dispatchSaveAs (source: obj) (suggestedPath: string)
                         if System.String.IsNullOrEmpty (System.IO.Path.GetExtension path) then
                             path + ".mag"
                         else path
-                    eprintfn "[viz] SaveAs picked: %s -> %s" path final
                     dispatch (Msg.SaveActiveMacroAs final)
-                | None ->
-                    eprintfn "[viz] SaveAs cancelled by user"
+                | None -> ()
             })
 
 let openRunDialog (win: Window) (initial: Msg.RunMacroParams)

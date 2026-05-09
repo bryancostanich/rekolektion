@@ -29,6 +29,8 @@ type Msg =
     /// Close whichever tab is currently active. Convenience for
     /// menu / hotkey paths that don't carry a path.
     | CloseActiveTab
+    /// Close every open macro (test isolation).
+    | CloseAllTabs
     /// Re-read the active tab's GDS from disk. Used by Cmd+R for
     /// the loop where the user generates a macro in another
     /// process and wants the viewer to refresh.
@@ -81,6 +83,15 @@ type Msg =
     /// Mirror the selection about the Y axis through the
     /// bbox-of-bboxes centroid (flips X).
     | MirrorSelectionY
+    /// Collapse the selection toward its nearest non-selected
+    /// neighbor in whichever cardinal direction has the smallest
+    /// positive DRC slack — the "most binding" gap. Moves by
+    /// that slack so the closest cross-cell pair lands exactly
+    /// at the rule's min-spacing.
+    | TightenSelection
+    /// Pop the active macro's undo stack and restore the
+    /// previous library. No-op when the stack is empty.
+    | UndoActiveMacro
     /// Save the active macro to disk. On first save of an opened
     /// file, writes to `<base>_edited.mag` (auto-suffix on
     /// collision); subsequent saves overwrite that copy in place.

@@ -129,6 +129,9 @@ type MainWindow() as this =
                 // Cmd+D — duplicate the current instance selection.
                 AppDispatch.send Msg.DuplicateSelection
                 e.Handled <- true
+            | Key.Z, KeyModifiers.Meta ->
+                AppDispatch.send Msg.UndoActiveMacro
+                e.Handled <- true
             | Key.Space, KeyModifiers.None ->
                 // Rotate selection 90° CCW around bbox centroid.
                 AppDispatch.send Msg.RotateSelection90
@@ -140,6 +143,12 @@ type MainWindow() as this =
             | Key.Y, KeyModifiers.None ->
                 // Mirror about Y-axis (flips X) through bbox centroid.
                 AppDispatch.send Msg.MirrorSelectionY
+                e.Handled <- true
+            | Key.T, KeyModifiers.None ->
+                // Tighten — collapse selection toward its nearest
+                // non-selected neighbor at the most-binding DRC
+                // limit. Single-step; user can repeat T to chain.
+                AppDispatch.send Msg.TightenSelection
                 e.Handled <- true
             | _ -> ())
 
@@ -189,6 +198,12 @@ type App() =
         fileSub.Items.Add(reloadItem)
 
         fileSub.Items.Add(NativeMenuItemSeparator())
+
+        let undoItem = NativeMenuItem("Undo")
+        undoItem.Gesture <- KeyGesture(Key.Z, KeyModifiers.Meta)
+        undoItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.UndoActiveMacro)
+        fileSub.Items.Add(undoItem)
 
         let saveItem = NativeMenuItem("Save")
         saveItem.Gesture <- KeyGesture(Key.S, KeyModifiers.Meta)

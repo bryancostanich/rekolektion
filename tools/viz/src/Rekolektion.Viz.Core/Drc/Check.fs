@@ -126,6 +126,109 @@ let check (lib: Library) (flat: FlatPolygon array) : Violation array =
 
     result.ToArray()
 
+/// Compute how far the selection (a set of instance polygons in
+/// world coords) can move along `dirX, dirY` (one of {(+1,0),
+/// (-1,0), (0,+1), (0,-1)}) before its physical bbox collides
+/// with non-selected geometry at the worst-case DRC rule limit.
+///
+/// Uses cell-bbox-to-cell-bbox distance (not pairwise polygon
+/// matching) so the calculation is robust to "approximate" cell
+/// placement: even when no polygons share an axis projection,
+/// Tighten can collapse the gap. The chosen rule limit is the
+/// maximum min-spacing across every shared layer between the
+/// two cells — a conservative bound that won't violate any
+/// per-layer rule.
+///
+/// Returns the safe Δ in DBU, or None if the selected bbox is
+/// not on `(dirX, dirY)`-side of the other bbox (e.g. asking
+/// for +X tighten when nothing is to the selected's right).
+let maxOrthoSlackDbu
+        (lib: Library)
+        (selectedPolys: FlatPolygon array)
+        (otherPolys:    FlatPolygon array)
+        (dirX: int)
+        (dirY: int)
+        : int64 option =
+    let umPerDbu = lib.UserUnitsPerDbUnit
+    let physical (p: FlatPolygon) =
+        not (Rekolektion.Viz.Core.Layout.Layer.isNonPhysical p.Layer p.DataType)
+    let selPhys = selectedPolys |> Array.filter physical
+    let othPhys = otherPolys    |> Array.filter physical
+    if selPhys.Length = 0 || othPhys.Length = 0 then None
+    else
+        // Per-poly bbox keyed by (layer, datatype). Each polygon
+        // is its own bbox so a met1 wire poking past the diff
+        // doesn't conflate with the diff edge.
+        let bboxOf (p: FlatPolygon) =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for pt in p.Points do
+                if pt.X < xMin then xMin <- pt.X
+                if pt.X > xMax then xMax <- pt.X
+                if pt.Y < yMin then yMin <- pt.Y
+                if pt.Y > yMax then yMax <- pt.Y
+            xMin, yMin, xMax, yMax
+        let groupBy (polys: FlatPolygon array) =
+            polys
+            |> Array.map (fun p -> (p.Layer, p.DataType), bboxOf p)
+            |> Array.groupBy fst
+            |> Array.map (fun (k, arr) -> k, arr |> Array.map snd)
+            |> Map.ofArray
+        let selByLayer = groupBy selPhys
+        let othByLayer = groupBy othPhys
+
+        // For every shared layer that has a per-layer DRC rule:
+        // find the closest facing poly-pair on the requested
+        // direction (oth-poly on dir-side of sel-poly with
+        // perpendicular-axis projection overlap). Δ for that
+        // layer = (closest facing gap) − (layer min-spacing).
+        // The MIN Δ across layers is the binding constraint —
+        // tightening by that amount lands the closest facing
+        // pair exactly at its rule limit; every other layer ends
+        // up at gap ≥ its own limit.
+        let layerSlack =
+            selByLayer
+            |> Map.toSeq
+            |> Seq.choose (fun (key, selBbs) ->
+                match Rules.tryFind (fst key) (snd key) with
+                | None -> None
+                | Some rule ->
+                    match Map.tryFind key othByLayer with
+                    | None -> None
+                    | Some othBbs ->
+                        let limit = umToDbu umPerDbu rule.MinSpacingUm
+                        let mutable bestGap : int64 option = None
+                        for sBb in selBbs do
+                            let (sx1, sy1, sx2, sy2) = sBb
+                            for oBb in othBbs do
+                                let (ox1, oy1, ox2, oy2) = oBb
+                                let yOverlap = (min sy2 oy2) > (max sy1 oy1)
+                                let xOverlap = (min sx2 ox2) > (max sx1 ox1)
+                                let g =
+                                    if dirX = 1 && yOverlap && ox1 >= sx2 then Some (ox1 - sx2)
+                                    elif dirX = -1 && yOverlap && ox2 <= sx1 then Some (sx1 - ox2)
+                                    elif dirY = 1 && xOverlap && oy1 >= sy2 then Some (oy1 - sy2)
+                                    elif dirY = -1 && xOverlap && oy2 <= sy1 then Some (sy1 - oy2)
+                                    else None
+                                match g with
+                                | Some gv ->
+                                    match bestGap with
+                                    | None -> bestGap <- Some gv
+                                    | Some cur when gv < cur -> bestGap <- Some gv
+                                    | _ -> ()
+                                | None -> ()
+                        bestGap |> Option.map (fun gv -> rule.Layer, gv, limit, gv - limit))
+            |> Seq.toList
+
+        match layerSlack with
+        | [] -> None
+        | _ ->
+            let minSlack =
+                layerSlack |> List.map (fun (_, _, _, s) -> s) |> List.min
+            if minSlack > 0L then Some minSlack else None
+
 // Side classification reused by `checkInterInstance`. Returns Some
 // for an orthogonally-facing pair (perpendicular projections
 // overlap, parallel projections disjoint), None for a diagonal

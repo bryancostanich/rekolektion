@@ -48,9 +48,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             |> List.fold (fun t key -> Visibility.toggleLayer key false t) model.Toggle
         // Insert (or replace) by path so reopening a file just
         // refreshes its tab in place rather than duplicating it.
+        // Also remove any open `<base>_edited*.mag` derived from
+        // the same source — leaving those would create two tabs
+        // that both retarget to the same edited Path on first
+        // edit, masking one of them under List.map's by-path
+        // mutation. Match by OriginalPath so we catch every
+        // edited variant of the file we're (re)opening.
         let openMacros =
             let withoutExisting =
-                model.OpenMacros |> List.filter (fun m -> m.Path <> macro.Path)
+                model.OpenMacros
+                |> List.filter (fun m ->
+                    m.Path <> macro.Path
+                    && m.OriginalPath <> macro.Path)
             withoutExisting @ [macro]
         // If nets came from a sidecar, we're done. Otherwise schedule
         // a background LabelFlood — it can take 10+ s for production
@@ -98,6 +107,13 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     Selection = None
                     InstanceSelection = Set.empty }, Cmd.none
             else model, Cmd.none
+    | Msg.CloseAllTabs ->
+        { model with
+            OpenMacros = []
+            ActiveMacroPath = None
+            Selection = None
+            InstanceSelection = Set.empty
+            RenamingPath = None }, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
         | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)
@@ -153,6 +169,81 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
     | Msg.ToggleDrc ->
         { model with ShowDrc = not model.ShowDrc }, Cmd.none
+    | Msg.TightenSelection ->
+        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            // Build per-side polygon sets:
+                            // selected = polys belonging to any
+                            // SRef in InstanceSelection;
+                            // others = polys from every other
+                            // top-level instance.
+                            let selectedPolys =
+                                mc.TopInstances
+                                |> Array.filter (fun i -> model.InstanceSelection.Contains i.Index)
+                                |> Array.collect (fun i ->
+                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                            let otherPolys =
+                                mc.TopInstances
+                                |> Array.filter (fun i -> not (model.InstanceSelection.Contains i.Index))
+                                |> Array.collect (fun i ->
+                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                            // Try all 4 cardinal directions; pick
+                            // the one with the smallest positive
+                            // slack (most binding gap). That's the
+                            // axis along which the cells are
+                            // closest to each other and tightening
+                            // gives the most useful collapse.
+                            let candidates =
+                                [ ( 1,  0); (-1,  0); ( 0,  1); ( 0, -1) ]
+                                |> List.choose (fun (dx, dy) ->
+                                    Drc.Check.maxOrthoSlackDbu
+                                        mc.Library selectedPolys otherPolys dx dy
+                                    |> Option.bind (fun s ->
+                                        if s > 0L then Some (dx, dy, s) else None))
+                            // Apply slack from all valid
+                            // directions in one move. X-slack and
+                            // Y-slack are independent (the selected
+                            // cell's X / Y motion don't interact
+                            // with each other under axis-aligned
+                            // bbox math), and opposite directions
+                            // along the same axis are mutually
+                            // exclusive for a two-cell setup
+                            // (selected is on one side of other).
+                            let dxDbu =
+                                candidates
+                                |> List.sumBy (fun (dx, _, s) -> int64 dx * s)
+                            let dyDbu =
+                                candidates
+                                |> List.sumBy (fun (_, dy, s) -> int64 dy * s)
+                            if dxDbu = 0L && dyDbu = 0L then mc
+                            else
+                                let lib' =
+                                    Layout.Instances.translateSelection
+                                        mc.Library model.InstanceSelection dxDbu dyDbu
+                                let flat' = Layout.Flatten.flatten lib'
+                                let inst' = Layout.Instances.enumerate lib'
+                                let mc' =
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun m ->
+                                        { m with
+                                            Library = lib'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
+                                    |> EditSession.markDirty
+                                activePath' <- mc'.Path
+                                mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.RotateSelection90
     | Msg.MirrorSelectionX
     | Msg.MirrorSelectionY ->
@@ -189,10 +280,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 let flat' = Layout.Flatten.flatten lib'
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
-                                    { mc with
-                                        Library = lib'
-                                        FlatPolygons = flat'
-                                        TopInstances = inst' }
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun m ->
+                                        { m with
+                                            Library = lib'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
                                     |> EditSession.markDirty
                                 activePath' <- mc'.Path
                                 mc')
@@ -242,10 +335,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             let inst' = Layout.Instances.enumerate lib'
                             nextSelection <- clones
                             let mc' =
-                                { mc with
-                                    Library = lib'
-                                    FlatPolygons = flat'
-                                    TopInstances = inst' }
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Library = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
                                 |> EditSession.markDirty
                             activePath' <- mc'.Path
                             mc')
@@ -278,10 +373,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
                             let mc' =
-                                { mc with
-                                    Library = lib'
-                                    FlatPolygons = flat'
-                                    TopInstances = inst' }
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Library = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
                                 |> EditSession.markDirty
                             activePath' <- mc'.Path
                             mc')
@@ -321,6 +418,33 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { m with Run = Model.RunState.Idle }, Cmd.none
     | Msg.ToggleLogPane -> { model with LogVisible = not model.LogVisible }, Cmd.none
     | Msg.RecentFileClicked p -> model, Cmd.ofMsg (Msg.OpenFile p)
+    | Msg.UndoActiveMacro ->
+        match Model.activeMacro model with
+        | None -> model, Cmd.none
+        | Some mc ->
+            match mc.UndoStack with
+            | [] -> model, Cmd.none
+            | prevLib :: rest ->
+                let flat' = Layout.Flatten.flatten prevLib
+                let inst' = Layout.Instances.enumerate prevLib
+                // Stay dirty if we still differ from the original
+                // file's library. Cheap heuristic: stack size ↔
+                // edit count from origin; once we undo back to
+                // empty stack we're at the load state and can
+                // clear Dirty.
+                let stillDirty = not (List.isEmpty rest)
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun m ->
+                        if m.Path <> mc.Path then m
+                        else
+                            { m with
+                                Library = prevLib
+                                FlatPolygons = flat'
+                                TopInstances = inst'
+                                UndoStack = rest
+                                Dirty = stillDirty })
+                { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.SaveActiveMacro ->
         match Model.activeMacro model with
         | None -> model, Cmd.none

@@ -36,6 +36,11 @@ type LoadedMacro = {
     /// saved. Drives the title-bar "[edited]" indicator and the
     /// close-with-unsaved-changes prompt.
     Dirty : bool
+    /// Per-macro undo stack — snapshots of `Library` from before
+    /// each edit (newest first). Capped to keep memory bounded.
+    /// Cmd+Z pops and restores; the popped library replaces the
+    /// current one and re-derives FlatPolygons / TopInstances.
+    UndoStack : Library list
 }
 
 type RunState =

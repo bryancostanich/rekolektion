@@ -876,7 +876,7 @@ type GdsCanvasControl() =
                 match this.Library with
                 | Some lib ->
                     let lib' =
-                        Instances.translateSelection
+                        Instances.Library.translateSelection
                             lib this.InstanceSelection dxSnap dySnap
                     dragLiveLib <- Some lib'
                     dragLiveFlat <- Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
@@ -1127,7 +1127,7 @@ type GdsCanvasControl() =
             // drag.
             let instPolyBboxes =
                 if this.ShowDimensions && not this.InstanceSelection.IsEmpty then
-                    Instances.layerPolyBboxesByInstance renderLib
+                    Instances.Library.layerPolyBboxesByInstance renderLib
                 else
                     Map.empty
             let violations =

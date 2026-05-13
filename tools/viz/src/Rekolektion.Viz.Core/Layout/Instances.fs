@@ -1,19 +1,19 @@
 module Rekolektion.Viz.Core.Layout.Instances
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 
 /// One movable instance at the top level. Hit-testing, selection,
 /// and drag/rotate/mirror operate on these — they're the unit of
 /// edit per the locked decision "SRef instances only (no top-level
 /// paint editing)".
 ///
-/// `Index` is the position of the SRef within the top structure's
+/// `Index` is the position of the SRef within the top cell's
 /// `Elements` list, used as a stable identity for selection across
 /// re-flattens. `BBox` is the axis-aligned world-DBU bounding box
 /// of the instance (after the SRef's transform is applied to its
 /// child polygons), suitable for pointer hit-testing.
 type Instance = {
-    /// Stable identity — index into top structure's Elements.
+    /// Stable identity — index into top cell's Elements.
     Index : int
     /// SRef metadata at point of enumeration. After an edit the
     /// caller should re-enumerate to get the updated origin /
@@ -41,11 +41,11 @@ let private apply (m: Affine) (x: float) (y: float) : float * float =
     m.C * x + m.D * y + m.Ty
 
 let private fromSref (s: SRef) : Affine =
-    let rad = s.Angle * System.Math.PI / 180.0
+    let rad = s.Rot * System.Math.PI / 180.0
     let cosA = System.Math.Cos rad
     let sinA = System.Math.Sin rad
     let mag = s.Mag
-    if s.Reflected then
+    if s.Reflect then
         { A = mag * cosA;  B = mag * sinA
           C = mag * sinA;  D = -mag * cosA
           Tx = float s.Origin.X; Ty = float s.Origin.Y }
@@ -54,16 +54,16 @@ let private fromSref (s: SRef) : Affine =
           C = mag * sinA;  D = mag * cosA
           Tx = float s.Origin.X; Ty = float s.Origin.Y }
 
-/// Find a structure's untransformed bbox (over its own Boundary +
-/// Path elements + every SRef/ARef child it contains). Recurses
-/// through children. Memoised by name to keep hierarchical macros
-/// cheap — a 256x64 SRAM with one bitcell type is enumerated once,
-/// not once per row*col.
-let private buildLocalBboxes (lib: Library)
+/// Find a cell's untransformed bbox (over its own poly + rect + path
+/// elements + every SRef/ARef child it contains). Recurses through
+/// children. Memoised by name to keep hierarchical macros cheap — a
+/// 256x64 SRAM with one bitcell type is enumerated once, not once
+/// per row*col.
+let private buildLocalBboxes (doc: Document)
         : System.Collections.Generic.IDictionary<string, (int64 * int64 * int64 * int64) option> =
     let byName =
-        lib.Structures
-        |> List.map (fun s -> s.Name, s)
+        doc.Cells
+        |> List.map (fun c -> c.Name, c)
         |> Map.ofList
     let cache =
         System.Collections.Generic.Dictionary<string, (int64 * int64 * int64 * int64) option>()
@@ -84,40 +84,56 @@ let private buildLocalBboxes (lib: Library)
             let result =
                 match Map.tryFind name byName with
                 | None -> None
-                | Some s ->
+                | Some c ->
                     let mutable acc : (int64 * int64 * int64 * int64) option = None
-                    for el in s.Elements do
+                    for el in c.Elements do
                         match el with
-                        | Boundary b ->
-                            for p in b.Points do
-                                let cur = (p.X, p.Y, p.X, p.Y)
+                        | PolyEl p ->
+                            for pt in p.Points do
+                                let cur = (pt.X, pt.Y, pt.X, pt.Y)
                                 acc <- merge acc (Some cur)
-                        | Path p ->
+                        | RectEl r ->
+                            let cur =
+                                (min r.X1 r.X2, min r.Y1 r.Y2,
+                                 max r.X1 r.X2, max r.Y1 r.Y2)
+                            acc <- merge acc (Some cur)
+                        | PathEl p ->
                             // Path widens by Width/2 each side. We
                             // approximate with the centerline plus
                             // half-width in both axes; good enough
                             // for hit-testing.
-                            let half = int64 p.Width / 2L
+                            let half = p.Width / 2L
                             for pt in p.Points do
                                 let cur = (pt.X - half, pt.Y - half, pt.X + half, pt.Y + half)
                                 acc <- merge acc (Some cur)
-                        | SRef sr ->
-                            match bboxOf sr.StructureName with
+                        | SRefEl sr ->
+                            match bboxOf sr.Cell with
                             | None -> ()
                             | Some childBb ->
                                 acc <- merge acc (Some (transformBbox (fromSref sr) childBb))
-                        | ARef ar ->
-                            match bboxOf ar.StructureName with
+                        | ARefEl ar ->
+                            match bboxOf ar.Cell with
                             | None -> ()
                             | Some childBb ->
                                 if ar.Cols > 0 && ar.Rows > 0 then
+                                    let rad = ar.Rot * System.Math.PI / 180.0
+                                    let cosA = System.Math.Cos rad
+                                    let sinA = System.Math.Sin rad
                                     let baseAff =
-                                        { A = (if ar.Reflected then ar.Mag * System.Math.Cos(ar.Angle * System.Math.PI / 180.0) else ar.Mag * System.Math.Cos(ar.Angle * System.Math.PI / 180.0))
-                                          B = (if ar.Reflected then ar.Mag * System.Math.Sin(ar.Angle * System.Math.PI / 180.0) else -ar.Mag * System.Math.Sin(ar.Angle * System.Math.PI / 180.0))
-                                          C = ar.Mag * System.Math.Sin(ar.Angle * System.Math.PI / 180.0)
-                                          D = (if ar.Reflected then -ar.Mag * System.Math.Cos(ar.Angle * System.Math.PI / 180.0) else ar.Mag * System.Math.Cos(ar.Angle * System.Math.PI / 180.0))
-                                          Tx = float ar.Origin.X
-                                          Ty = float ar.Origin.Y }
+                                        if ar.Reflect then
+                                            { A = ar.Mag * cosA
+                                              B = ar.Mag * sinA
+                                              C = ar.Mag * sinA
+                                              D = -ar.Mag * cosA
+                                              Tx = float ar.Origin.X
+                                              Ty = float ar.Origin.Y }
+                                        else
+                                            { A = ar.Mag * cosA
+                                              B = -ar.Mag * sinA
+                                              C = ar.Mag * sinA
+                                              D = ar.Mag * cosA
+                                              Tx = float ar.Origin.X
+                                              Ty = float ar.Origin.Y }
                                     let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
                                     let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
                                     let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
@@ -147,67 +163,73 @@ let private buildLocalBboxes (lib: Library)
         int64 (System.Math.Floor (Array.min ys)),
         int64 (System.Math.Ceiling (Array.max xs)),
         int64 (System.Math.Ceiling (Array.max ys))
-    for s in lib.Structures do
-        bboxOf s.Name |> ignore
+    for c in doc.Cells do
+        bboxOf c.Name |> ignore
     cache :> System.Collections.Generic.IDictionary<_,_>
 
-/// Same top-cell heuristic as Flatten.findTop — pick the structure
-/// no other structure references, falling back to the first cell.
-let private findTop (lib: Library) : Structure =
-    let referenced = System.Collections.Generic.HashSet<string>()
-    for s in lib.Structures do
-        for el in s.Elements do
-            match el with
-            | SRef sr -> referenced.Add sr.StructureName |> ignore
-            | ARef ar -> referenced.Add ar.StructureName |> ignore
-            | _ -> ()
-    lib.Structures
-    |> List.tryFind (fun s -> not (referenced.Contains s.Name))
-    |> Option.defaultWith (fun () -> List.head lib.Structures)
+/// Same top-cell heuristic as `Flatten.findTop` — pick the cell no
+/// other cell references, falling back to the first cell. Returns
+/// None for an empty document.
+let private findTop (doc: Document) : Cell option =
+    if List.isEmpty doc.Cells then None
+    else
+        let referenced = System.Collections.Generic.HashSet<string>()
+        for c in doc.Cells do
+            for el in c.Elements do
+                match el with
+                | SRefEl s -> referenced.Add s.Cell |> ignore
+                | ARefEl a -> referenced.Add a.Cell |> ignore
+                | _ -> ()
+        doc.Cells
+        |> List.tryFind (fun c -> not (referenced.Contains c.Name))
+        |> Option.defaultWith (fun () -> List.head doc.Cells)
+        |> Some
 
 /// Enumerate every SRef directly under the top cell with its world
 /// bbox. ARefs at the top level are skipped — multi-instance arrays
 /// are not yet movable as a unit (P0 scope).
-let enumerate (lib: Library) : Instance array =
-    let top = findTop lib
-    let local = buildLocalBboxes lib
-    let result = System.Collections.Generic.List<Instance>()
-    top.Elements
-    |> List.iteri (fun idx el ->
-        match el with
-        | SRef sr ->
-            let bb =
-                match local.TryGetValue sr.StructureName with
-                | true, Some bb ->
-                    let aff = fromSref sr
-                    let (x1, y1, x2, y2) = bb
-                    let corners = [|
-                        apply aff (float x1) (float y1)
-                        apply aff (float x2) (float y1)
-                        apply aff (float x2) (float y2)
-                        apply aff (float x1) (float y2)
-                    |]
-                    let xs = corners |> Array.map fst
-                    let ys = corners |> Array.map snd
-                    int64 (System.Math.Floor (Array.min xs)),
-                    int64 (System.Math.Floor (Array.min ys)),
-                    int64 (System.Math.Ceiling (Array.max xs)),
-                    int64 (System.Math.Ceiling (Array.max ys))
-                | _ ->
-                    // Empty / unresolved child: use a degenerate
-                    // bbox at the instance origin so click tests
-                    // can still select via the SRef's hot point.
-                    let x = sr.Origin.X
-                    let y = sr.Origin.Y
-                    (x, y, x, y)
-            result.Add {
-                Index = idx
-                Sref = sr
-                BBox = bb
-                Name = sprintf "%s[%d]" sr.StructureName idx
-            }
-        | _ -> ())
-    result.ToArray()
+let enumerate (doc: Document) : Instance array =
+    match findTop doc with
+    | None -> [||]
+    | Some top ->
+        let local = buildLocalBboxes doc
+        let result = System.Collections.Generic.List<Instance>()
+        top.Elements
+        |> List.iteri (fun idx el ->
+            match el with
+            | SRefEl sr ->
+                let bb =
+                    match local.TryGetValue sr.Cell with
+                    | true, Some bb ->
+                        let aff = fromSref sr
+                        let (x1, y1, x2, y2) = bb
+                        let corners = [|
+                            apply aff (float x1) (float y1)
+                            apply aff (float x2) (float y1)
+                            apply aff (float x2) (float y2)
+                            apply aff (float x1) (float y2)
+                        |]
+                        let xs = corners |> Array.map fst
+                        let ys = corners |> Array.map snd
+                        int64 (System.Math.Floor (Array.min xs)),
+                        int64 (System.Math.Floor (Array.min ys)),
+                        int64 (System.Math.Ceiling (Array.max xs)),
+                        int64 (System.Math.Ceiling (Array.max ys))
+                    | _ ->
+                        // Empty / unresolved child: use a degenerate
+                        // bbox at the instance origin so click tests
+                        // can still select via the SRef's hot point.
+                        let x = sr.Origin.X
+                        let y = sr.Origin.Y
+                        (x, y, x, y)
+                result.Add {
+                    Index = idx
+                    Sref = sr
+                    BBox = bb
+                    Name = sprintf "%s[%d]" sr.Cell idx
+                }
+            | _ -> ())
+        result.ToArray()
 
 /// Hit-test: return all instances whose bbox contains `(x, y)` in
 /// world DBU. Multiple overlapping hits are returned in declaration
@@ -274,21 +296,20 @@ let layerPolyBboxesOf (polys: System.Collections.Generic.IEnumerable<Rekolektion
 
 /// Per-top-instance, per-layer per-polygon bbox map. Built from
 /// `flattenInstance` so bboxes are already in world coordinates.
-let layerPolyBboxesByInstance (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+let layerPolyBboxesByInstance (doc: Document)
                               : Map<int, Map<int * int, (int64 * int64 * int64 * int64) array>> =
-    let top = findTop lib
-    // Flatten now consumes Rkt.Document; convert at the call site
-    // until Instances itself migrates.
-    let doc = Rekolektion.Viz.Core.Rkt.OfGds.fromLibrary lib
-    top.Elements
-    |> List.indexed
-    |> List.choose (fun (idx, el) ->
-        match el with
-        | Rekolektion.Viz.Core.Gds.Types.SRef _ ->
-            let polys = Rekolektion.Viz.Core.Layout.Flatten.flattenInstance doc idx
-            Some (idx, layerPolyBboxesOf polys)
-        | _ -> None)
-    |> Map.ofList
+    match findTop doc with
+    | None -> Map.empty
+    | Some top ->
+        top.Elements
+        |> List.indexed
+        |> List.choose (fun (idx, el) ->
+            match el with
+            | SRefEl _ ->
+                let polys = Rekolektion.Viz.Core.Layout.Flatten.flattenInstance doc idx
+                Some (idx, layerPolyBboxesOf polys)
+            | _ -> None)
+        |> Map.ofList
 
 /// Physical bbox of one top-instance: union of every polygon's
 /// bbox EXCLUDING non-physical Magic-marker layers (checkpaint,
@@ -317,9 +338,9 @@ let physicalBboxOfInstance
 
 /// Convenience wrapper: per-top-instance physical bbox, derived
 /// from `layerPolyBboxesByInstance`.
-let physicalBboxesByInstance (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+let physicalBboxesByInstance (doc: Document)
                              : Map<int, int64 * int64 * int64 * int64> =
-    layerPolyBboxesByInstance lib
+    layerPolyBboxesByInstance doc
     |> Map.toSeq
     |> Seq.choose (fun (idx, perLayer) ->
         physicalBboxOfInstance perLayer
@@ -346,53 +367,52 @@ let layerBboxesOf (polys: System.Collections.Generic.IEnumerable<Rekolektion.Viz
             if d > yMax then yMax <- d
         (xMin, yMin, xMax, yMax))
 
+/// Replace the top cell's Elements with a new list. Helper for the
+/// mutating ops below.
+let private withTopElements (doc: Document) (top: Cell) (elements: Element list) : Document =
+    { doc with
+        Cells =
+            doc.Cells
+            |> List.map (fun c ->
+                if c.Name = top.Name then { c with Elements = elements } else c) }
+
 /// Duplicate every SRef whose Index is in `selectionByIndex` by
 /// appending a clone of each one to the top cell's `Elements`,
 /// with each clone shifted by `(dxDbu, dyDbu)` from its original
-/// origin. Returns the new Library plus the new top-element
+/// origin. Returns the new Document plus the new top-element
 /// indices of the clones in the order they appeared in the
 /// selection (caller swaps the selection over to those indices
 /// so the duplicates become the active editing target).
 let duplicateSelection
-        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (doc: Document)
         (selectionByIndex: Set<int>)
         (dxDbu: int64) (dyDbu: int64)
-        : Rekolektion.Viz.Core.Gds.Types.Library * Set<int> =
-    if selectionByIndex.IsEmpty then lib, Set.empty
+        : Document * Set<int> =
+    if selectionByIndex.IsEmpty then doc, Set.empty
     else
-        let topName = (findTop lib).Name
-        // Build the list of clones to append, preserving the
-        // SRefs' relative order so groups stay together.
-        let mutable cloneIndices = []
-        let updateStruct (s: Rekolektion.Viz.Core.Gds.Types.Structure)
-                         : Rekolektion.Viz.Core.Gds.Types.Structure =
-            if s.Name <> topName then s
-            else
-                let originals =
-                    s.Elements
-                    |> List.indexed
-                    |> List.choose (fun (idx, el) ->
-                        if not (selectionByIndex.Contains idx) then None
-                        else
-                            match el with
-                            | Rekolektion.Viz.Core.Gds.Types.SRef sr ->
-                                let o = sr.Origin
-                                let cloned : Rekolektion.Viz.Core.Gds.Types.SRef =
-                                    { sr with
-                                        Origin =
-                                            { X = o.X + dxDbu; Y = o.Y + dyDbu } }
-                                Some (Rekolektion.Viz.Core.Gds.Types.Element.SRef cloned)
-                            | _ -> None)
-                let elems' = s.Elements @ originals
-                // Record the new indices (= original length .. +N-1)
-                let baseIdx = s.Elements.Length
-                cloneIndices <-
-                    [ for i in 0 .. originals.Length - 1 -> baseIdx + i ]
-                { s with Elements = elems' }
-        let lib' =
-            { lib with
-                Structures = lib.Structures |> List.map updateStruct }
-        lib', Set.ofList cloneIndices
+        match findTop doc with
+        | None -> doc, Set.empty
+        | Some top ->
+            let originals =
+                top.Elements
+                |> List.indexed
+                |> List.choose (fun (idx, el) ->
+                    if not (selectionByIndex.Contains idx) then None
+                    else
+                        match el with
+                        | SRefEl sr ->
+                            let o = sr.Origin
+                            let cloned : SRef =
+                                { sr with
+                                    Origin =
+                                        { X = o.X + dxDbu; Y = o.Y + dyDbu } }
+                            Some (SRefEl cloned)
+                        | _ -> None)
+            let elems' = top.Elements @ originals
+            let baseIdx = top.Elements.Length
+            let cloneIndices =
+                Set.ofList [ for i in 0 .. originals.Length - 1 -> baseIdx + i ]
+            withTopElements doc top elems', cloneIndices
 
 // 2x2 rotation matrices for the supported rigid transforms. Each
 // has integer entries so applying R to integer origins, with a
@@ -414,31 +434,35 @@ let private mul2x2
 
 /// Linear part of an SRef (mag * R * Refl^k as a 2×2). Mirrors
 /// `Layout.Flatten.fromSref` minus the translation.
-let private linearOfSref (sr: Rekolektion.Viz.Core.Gds.Types.SRef)
-                         : float * float * float * float =
-    let rad = sr.Angle * System.Math.PI / 180.0
+let private linearOfSref (sr: SRef) : float * float * float * float =
+    let rad = sr.Rot * System.Math.PI / 180.0
     let cosA = System.Math.Cos rad
     let sinA = System.Math.Sin rad
     let mag = sr.Mag
-    if sr.Reflected then
+    if sr.Reflect then
         (mag * cosA,  mag * sinA,
          mag * sinA, -mag * cosA)
     else
         (mag * cosA, -mag * sinA,
          mag * sinA,  mag * cosA)
 
-/// Re-emit an SRef given a new linear part and origin. Decomposes
-/// the linear matrix back into (Mag, Angle, Reflected) via
-/// `Mag.Transform.toSref`. StructureName is preserved.
+/// Decompose a 2×2 linear part back into the Rkt SRef's
+/// (Mag, Rot, Reflect) trio plus a new origin. Re-uses the legacy
+/// Mag.Transform.toSref decomposition and copies its result into a
+/// fresh Rkt.SRef record so Cell / Props / Comments survive.
 let private srefWith
-        (sr: Rekolektion.Viz.Core.Gds.Types.SRef)
+        (sr: SRef)
         ((a, b, c, d): float * float * float * float)
         (originX: int64) (originY: int64)
-        : Rekolektion.Viz.Core.Gds.Types.SRef =
+        : SRef =
     let decomposed =
         Rekolektion.Viz.Core.Mag.Transform.toSref
-            sr.StructureName a b c d (float originX) (float originY)
-    { decomposed with StructureName = sr.StructureName }
+            sr.Cell a b c d (float originX) (float originY)
+    { sr with
+        Origin = { X = decomposed.Origin.X; Y = decomposed.Origin.Y }
+        Rot = decomposed.Angle
+        Mag = decomposed.Mag
+        Reflect = decomposed.Reflected }
 
 /// Apply rigid transform `R` to every SRef in `selectionByIndex`,
 /// pivoting around `pivotDbu` (snapped centroid). Each instance's
@@ -446,116 +470,167 @@ let private srefWith
 /// `R · (origin - pivot) + pivot`. With integer R, integer origin,
 /// and a grid-snapped pivot, results stay on the mfg grid.
 let private transformSelection
-        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (doc: Document)
         (selectionByIndex: Set<int>)
         (R: float * float * float * float)
         ((px, py): int64 * int64)
-        : Rekolektion.Viz.Core.Gds.Types.Library =
-    if selectionByIndex.IsEmpty then lib
+        : Document =
+    if selectionByIndex.IsEmpty then doc
     else
-        let topName = (findTop lib).Name
-        let (ra, rb, rc, rd) = R
-        let updateStruct (s: Rekolektion.Viz.Core.Gds.Types.Structure)
-                         : Rekolektion.Viz.Core.Gds.Types.Structure =
-            if s.Name <> topName then s
-            else
-                let elems' =
-                    s.Elements
-                    |> List.mapi (fun idx el ->
-                        if not (selectionByIndex.Contains idx) then el
-                        else
-                            match el with
-                            | Rekolektion.Viz.Core.Gds.Types.SRef sr ->
-                                let oldLin = linearOfSref sr
-                                let newLin = mul2x2 R oldLin
-                                let ox = sr.Origin.X
-                                let oy = sr.Origin.Y
-                                let dx = float (ox - px)
-                                let dy = float (oy - py)
-                                let nx = ra * dx + rb * dy + float px
-                                let ny = rc * dx + rd * dy + float py
-                                let newOX = int64 (System.Math.Round nx)
-                                let newOY = int64 (System.Math.Round ny)
-                                Rekolektion.Viz.Core.Gds.Types.Element.SRef
-                                    (srefWith sr newLin newOX newOY)
-                            | other -> other)
-                { s with Elements = elems' }
-        { lib with Structures = lib.Structures |> List.map updateStruct }
+        match findTop doc with
+        | None -> doc
+        | Some top ->
+            let (ra, rb, rc, rd) = R
+            let elems' =
+                top.Elements
+                |> List.mapi (fun idx el ->
+                    if not (selectionByIndex.Contains idx) then el
+                    else
+                        match el with
+                        | SRefEl sr ->
+                            let oldLin = linearOfSref sr
+                            let newLin = mul2x2 R oldLin
+                            let ox = sr.Origin.X
+                            let oy = sr.Origin.Y
+                            let dx = float (ox - px)
+                            let dy = float (oy - py)
+                            let nx = ra * dx + rb * dy + float px
+                            let ny = rc * dx + rd * dy + float py
+                            let newOX = int64 (System.Math.Round nx)
+                            let newOY = int64 (System.Math.Round ny)
+                            SRefEl (srefWith sr newLin newOX newOY)
+                        | other -> other)
+            withTopElements doc top elems'
 
 /// Centroid of the bbox-of-bboxes for a selection, snapped to the
 /// manufacturing grid. The snapped centroid is mandatory: with
 /// integer R and integer origins, only a snapped pivot keeps the
 /// transform results on-grid.
 let selectionPivotSnapped
-        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (doc: Document)
         (selected: Instance array)
         : (int64 * int64) option =
     selectionBbox selected
     |> Option.map (fun (x1, y1, x2, y2) ->
         let cx = (x1 + x2) / 2L
         let cy = (y1 + y2) / 2L
-        // Snap now takes the unit record; derive it from the legacy
-        // Library at the call site. Instances itself still operates
-        // on Gds.Library and migrates in a later stage.
-        let units = Rekolektion.Viz.Core.Layout.Snap.unitsOfLibrary lib
         let p =
-            Rekolektion.Viz.Core.Layout.Snap.snapPointDbu units
+            Rekolektion.Viz.Core.Layout.Snap.snapPointDbu doc.Units
                 Rekolektion.Viz.Core.Layout.Snap.sky130MfgGridNm
                 { X = cx; Y = cy }
         p.X, p.Y)
 
 /// Rotate every SRef in `selectionByIndex` 90° CCW around `pivot`.
 let rotate90Selection
-        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (doc: Document)
         (selectionByIndex: Set<int>)
         (pivot: int64 * int64)
-        : Rekolektion.Viz.Core.Gds.Types.Library =
-    transformSelection lib selectionByIndex R_rot90 pivot
+        : Document =
+    transformSelection doc selectionByIndex R_rot90 pivot
 
 /// Mirror every SRef in `selectionByIndex` about the X axis through
 /// `pivot` (flips Y).
 let mirrorXSelection
-        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (doc: Document)
         (selectionByIndex: Set<int>)
         (pivot: int64 * int64)
-        : Rekolektion.Viz.Core.Gds.Types.Library =
-    transformSelection lib selectionByIndex R_mirrorX pivot
+        : Document =
+    transformSelection doc selectionByIndex R_mirrorX pivot
 
 /// Mirror every SRef in `selectionByIndex` about the Y axis through
 /// `pivot` (flips X).
 let mirrorYSelection
-        (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+        (doc: Document)
         (selectionByIndex: Set<int>)
         (pivot: int64 * int64)
-        : Rekolektion.Viz.Core.Gds.Types.Library =
-    transformSelection lib selectionByIndex R_mirrorY pivot
+        : Document =
+    transformSelection doc selectionByIndex R_mirrorY pivot
 
 /// Apply a translation Δ (DBU) to every SRef whose Index is in
-/// `selectionByIndex`. Returns a new Library with the top cell's
-/// SRef Origins updated; non-selected elements and other structures
-/// are reused as-is. Δ is expected to already be grid-snapped — see
+/// `selectionByIndex`. Returns a new Document with the top cell's
+/// SRef Origins updated; non-selected elements and other cells are
+/// reused as-is. Δ is expected to already be grid-snapped — see
 /// `Layout.Snap.snapDeltaDbu`.
-let translateSelection (lib: Library)
-                       (selectionByIndex: Set<int>)
-                       (dxDbu: int64) (dyDbu: int64)
-                       : Library =
-    if selectionByIndex.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then lib
+let translateSelection
+        (doc: Document)
+        (selectionByIndex: Set<int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document =
+    if selectionByIndex.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then doc
     else
-        let topName = (findTop lib).Name
-        let updateStruct (s: Structure) : Structure =
-            if s.Name <> topName then s
-            else
-                let elems' =
-                    s.Elements
-                    |> List.mapi (fun idx el ->
-                        if not (selectionByIndex.Contains idx) then el
-                        else
-                            match el with
-                            | SRef sr ->
-                                let o = sr.Origin
-                                Element.SRef
-                                    { sr with
-                                        Origin = { X = o.X + dxDbu; Y = o.Y + dyDbu } }
-                            | other -> other)
-                { s with Elements = elems' }
-        { lib with Structures = lib.Structures |> List.map updateStruct }
+        match findTop doc with
+        | None -> doc
+        | Some top ->
+            let elems' =
+                top.Elements
+                |> List.mapi (fun idx el ->
+                    if not (selectionByIndex.Contains idx) then el
+                    else
+                        match el with
+                        | SRefEl sr ->
+                            let o = sr.Origin
+                            SRefEl
+                                { sr with
+                                    Origin = { X = o.X + dxDbu; Y = o.Y + dyDbu } }
+                        | other -> other)
+            withTopElements doc top elems'
+
+/// Transitional wrappers for callers that still hold a
+/// `Gds.Types.Library`. Each one converts to `Rkt.Document` on the
+/// way in and back to `Library` on the way out via `Rkt.OfGds` /
+/// `Rkt.ToGds`. Geometry round-trips losslessly; net metadata and
+/// comments are not synthesised from a Library that doesn't carry
+/// them. When the App's model migrates to `Rkt.Document`, this
+/// submodule retires.
+module Library =
+    type LibT = Rekolektion.Viz.Core.Gds.Types.Library
+
+    let private toRkt (lib: LibT) : Document =
+        Rekolektion.Viz.Core.Rkt.OfGds.fromLibrary lib
+
+    let private toLib (doc: Document) : LibT =
+        Rekolektion.Viz.Core.Rkt.ToGds.toLibrary doc
+
+    let enumerate (lib: LibT) : Instance array =
+        enumerate (toRkt lib)
+
+    let layerPolyBboxesByInstance (lib: LibT) =
+        layerPolyBboxesByInstance (toRkt lib)
+
+    let physicalBboxesByInstance (lib: LibT) =
+        physicalBboxesByInstance (toRkt lib)
+
+    let selectionPivotSnapped
+            (lib: LibT) (selected: Instance array) =
+        selectionPivotSnapped (toRkt lib) selected
+
+    let translateSelection
+            (lib: LibT) (selectionByIndex: Set<int>)
+            (dxDbu: int64) (dyDbu: int64) : LibT =
+        translateSelection (toRkt lib) selectionByIndex dxDbu dyDbu
+        |> toLib
+
+    let duplicateSelection
+            (lib: LibT) (selectionByIndex: Set<int>)
+            (dxDbu: int64) (dyDbu: int64) : LibT * Set<int> =
+        let doc', clones =
+            duplicateSelection (toRkt lib) selectionByIndex dxDbu dyDbu
+        toLib doc', clones
+
+    let rotate90Selection
+            (lib: LibT) (selectionByIndex: Set<int>)
+            (pivot: int64 * int64) : LibT =
+        rotate90Selection (toRkt lib) selectionByIndex pivot
+        |> toLib
+
+    let mirrorXSelection
+            (lib: LibT) (selectionByIndex: Set<int>)
+            (pivot: int64 * int64) : LibT =
+        mirrorXSelection (toRkt lib) selectionByIndex pivot
+        |> toLib
+
+    let mirrorYSelection
+            (lib: LibT) (selectionByIndex: Set<int>)
+            (pivot: int64 * int64) : LibT =
+        mirrorYSelection (toRkt lib) selectionByIndex pivot
+        |> toLib

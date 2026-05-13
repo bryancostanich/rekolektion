@@ -31,20 +31,20 @@ let ``writer rewrites the transform line for a moved instance`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let instances = Layout.Instances.enumerate lib
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
         let pickIdx = instances.[0].Index
         let movedOrig =
             instances |> Array.find (fun i -> i.Index = pickIdx)
         let lib' =
-            Layout.Instances.translateSelection
+            Layout.Instances.Library.translateSelection
                 lib (Set.singleton pickIdx) 200L 0L
         withTmp (fun tmpPath ->
             Mag.Writer.writeUpdated fixturePath lib' tmpPath
             // Re-load the written file and confirm the move
             // persisted into the transform's translation tokens.
             let lib2, _ = Layout.LayoutLoader.loadAsLibrary tmpPath
-            let inst2 = Layout.Instances.enumerate lib2
+            let inst2 = Layout.Instances.Library.enumerate lib2
             let moved =
                 inst2 |> Array.find (fun i -> i.Index = pickIdx)
             moved.Sref.Origin.X |> should equal (movedOrig.Sref.Origin.X + 200L)
@@ -55,10 +55,10 @@ let ``writer leaves comments, timestamps, and box lines verbatim`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let instances = Layout.Instances.enumerate lib
+        let instances = Layout.Instances.Library.enumerate lib
         let pickIdx = instances.[0].Index
         let lib' =
-            Layout.Instances.translateSelection
+            Layout.Instances.Library.translateSelection
                 lib (Set.singleton pickIdx) 200L 0L
         withTmp (fun tmpPath ->
             Mag.Writer.writeUpdated fixturePath lib' tmpPath

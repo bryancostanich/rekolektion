@@ -126,7 +126,7 @@ let handleQuery (path: string) (_dispatch: Msg.Msg -> unit) : string =
                                 "{\"index\":%d,\"name\":\"%s\",\"cell\":\"%s\",\"originX\":%d,\"originY\":%d,\"bbox\":[%d,%d,%d,%d]}"
                                 i.Index
                                 (i.Name.Replace("\"", "\\\""))
-                                (i.Sref.StructureName.Replace("\"", "\\\""))
+                                (i.Sref.Cell.Replace("\"", "\\\""))
                                 i.Sref.Origin.X
                                 i.Sref.Origin.Y
                                 x1 y1 x2 y2)

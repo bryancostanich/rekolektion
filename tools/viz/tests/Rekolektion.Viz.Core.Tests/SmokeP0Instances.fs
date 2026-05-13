@@ -13,7 +13,7 @@ let ``cim_reram_4t2r_wip enumerates two top-level SRef instances`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _warns = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let inst = Instances.enumerate lib
+        let inst = Instances.Library.enumerate lib
         inst.Length |> should equal 2
         for i in inst do
             let (x1, y1, x2, y2) = i.BBox
@@ -38,12 +38,12 @@ let ``translateSelection moves only selected indices`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let before = Instances.enumerate lib
+        let before = Instances.Library.enumerate lib
         before.Length |> should equal 2
         let pickIdx = before.[0].Index
         let pickedSet = Set.ofList [pickIdx]
-        let lib' = Instances.translateSelection lib pickedSet 100L 50L
-        let after = Instances.enumerate lib'
+        let lib' = Instances.Library.translateSelection lib pickedSet 100L 50L
+        let after = Instances.Library.enumerate lib'
         after.Length |> should equal 2
         let movedSref = after |> Array.find (fun i -> i.Index = pickIdx)
         let oldOrigin = before.[0].Sref.Origin
@@ -78,7 +78,7 @@ let ``flattenInstance returns only one instance's polygons`` () =
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let allPolys = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
-        let instances = Layout.Instances.enumerate lib
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
         let polys0 = Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary lib) instances.[0].Index
         let polys1 = Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary lib) instances.[1].Index
@@ -94,8 +94,8 @@ let ``cim fixture has a shared physical layer with a positive per-poly gap`` () 
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let map = Layout.Instances.layerPolyBboxesByInstance lib
-        let instances = Layout.Instances.enumerate lib
+        let map = Layout.Instances.Library.layerPolyBboxesByInstance lib
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
         let i0 = instances.[0].Index
         let i1 = instances.[1].Index
@@ -148,7 +148,7 @@ let ``physical bboxes overlap in cim fixture (transistor abutment)`` () =
         // and draws no arrows. To exercise the live overlay,
         // drag one cell clear of the other and arrows appear.
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let map = Layout.Instances.physicalBboxesByInstance lib
+        let map = Layout.Instances.Library.physicalBboxesByInstance lib
         let bbs = map |> Map.toList |> List.map snd
         bbs.Length |> should equal 2
         match bbs with
@@ -162,20 +162,20 @@ let ``rotate90 around origin sends (10,0) to (0,10) at fixture instance`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let instances = Layout.Instances.enumerate lib
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
         // Move the first instance's origin to (10, 0) so we can
         // assert what 90° CCW rotation around the world origin does.
         let pickIdx = instances.[0].Index
-        let lib0 = Layout.Instances.translateSelection
+        let lib0 = Layout.Instances.Library.translateSelection
                        lib (Set.singleton pickIdx)
                        (10L - instances.[0].Sref.Origin.X)
                        (0L  - instances.[0].Sref.Origin.Y)
         let after =
-            Layout.Instances.rotate90Selection
+            Layout.Instances.Library.rotate90Selection
                 lib0 (Set.singleton pickIdx) (0L, 0L)
         let updated =
-            Layout.Instances.enumerate after
+            Layout.Instances.Library.enumerate after
             |> Array.find (fun i -> i.Index = pickIdx)
         // (10, 0) → (0, 10) for R = [[0,-1],[1,0]] · (10,0) = (0,10)
         updated.Sref.Origin.X |> should equal 0L
@@ -186,17 +186,17 @@ let ``mirrorX flips Y origin around pivot`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let instances = Layout.Instances.enumerate lib
+        let instances = Layout.Instances.Library.enumerate lib
         let pickIdx = instances.[0].Index
-        let lib0 = Layout.Instances.translateSelection
+        let lib0 = Layout.Instances.Library.translateSelection
                        lib (Set.singleton pickIdx)
                        (0L - instances.[0].Sref.Origin.X)
                        (50L - instances.[0].Sref.Origin.Y)
         let after =
-            Layout.Instances.mirrorXSelection
+            Layout.Instances.Library.mirrorXSelection
                 lib0 (Set.singleton pickIdx) (0L, 0L)
         let updated =
-            Layout.Instances.enumerate after
+            Layout.Instances.Library.enumerate after
             |> Array.find (fun i -> i.Index = pickIdx)
         updated.Sref.Origin.X |> should equal 0L
         updated.Sref.Origin.Y |> should equal -50L

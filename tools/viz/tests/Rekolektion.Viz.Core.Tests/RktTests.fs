@@ -359,6 +359,39 @@ let ``load reports missing import file`` () =
         | Ok _ -> failwith "should have failed on missing import"
         | Error _ -> ())
 
+// ─── Python writer cross-validation ─────────────────────────────────
+
+[<Fact>]
+let ``parses verbatim output of the Python rkt writer`` () =
+    // Literal copy of what `rekolektion.io.rkt.write` emits for a
+    // small Document with header comment + cell comment + element
+    // comment + poly + net. If the Python and F# writers drift, this
+    // test catches it via parse/analyze on the Python output.
+    let pythonText =
+        "; provenance: tests\n"
+        + "(layout (version 1)\n"
+        + "  (pdk sky130)\n"
+        + "  (units (dbu_nm 1) (uu_um 1))\n"
+        + "  (top c)\n"
+        + "  ; bitcell core\n"
+        + "  (cell c\n"
+        + "    ; metal-1 bitline contact\n"
+        + "    (poly (layer sky130:met1)\n"
+        + "      (points (0 0) (10 0) (10 5) (0 5))\n"
+        + "      (net BL))))\n"
+    let ast = analyzeOk pythonText
+    ast.HeaderComments |> should equal [ "provenance: tests" ]
+    ast.TopCell |> should equal (Some "c")
+    let cell = List.head ast.Cells
+    cell.Comments |> should equal [ "bitcell core" ]
+    match cell.Elements with
+    | [ PolyEl p ] ->
+        p.Layer |> should equal (Named ("sky130", "met1"))
+        p.Points |> List.length |> should equal 4
+        p.Net |> should equal (Some "BL")
+        p.Comments |> should equal [ "metal-1 bitline contact" ]
+    | _ -> failwithf "unexpected elements: %A" cell.Elements
+
 [<Fact>]
 let ``load is idempotent when two roots share an import`` () =
     withTempDir (fun dir ->

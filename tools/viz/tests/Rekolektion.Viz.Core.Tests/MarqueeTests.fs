@@ -3,7 +3,7 @@ module Rekolektion.Viz.Core.Tests.MarqueeTests
 open Xunit
 open FsUnit.Xunit
 open Rekolektion.Viz.Core.Layout.Marquee
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 
 [<Fact>]
 let ``modeOfDirection: end >= start is Enclose`` () =

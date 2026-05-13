@@ -736,10 +736,15 @@ type GdsCanvasControl() =
                                 lib.Structures |> List.tryHead)
                         topOpt
                         |> Option.bind (fun top ->
-                            let pt =
+                            // Picking now consumes Rkt.Element; convert
+                            // the legacy Gds.Structure at the call site
+                            // (cheap — one cell's element list).
+                            let cell : Rekolektion.Viz.Core.Rkt.Types.Cell =
+                                Rekolektion.Viz.Core.Rkt.OfGds.fromStructure top
+                            let pt : Rekolektion.Viz.Core.Rkt.Types.Point =
                                 { X = int64 (System.Math.Round wx)
                                   Y = int64 (System.Math.Round wy) }
-                            Layout.Picking.pickBoundary pt top.Elements
+                            Layout.Picking.pickBoundary pt cell.Elements
                             |> Option.map (fun (idx, _) -> top.Name, idx))
                     | None -> None
                 match polyPick with
@@ -857,7 +862,7 @@ type GdsCanvasControl() =
             let dxSnap, dySnap =
                 match this.Library with
                 | Some lib ->
-                    Snap.snapDeltaDbu lib Snap.sky130MfgGridNm dxRaw dyRaw
+                    Snap.snapDeltaDbu (Snap.unitsOfLibrary lib) Snap.sky130MfgGridNm dxRaw dyRaw
                 | None ->
                     dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
@@ -894,7 +899,7 @@ type GdsCanvasControl() =
             let dxSnap, dySnap =
                 match this.Library with
                 | Some lib ->
-                    Snap.snapDeltaDbu lib Snap.sky130MfgGridNm dxRaw dyRaw
+                    Snap.snapDeltaDbu (Snap.unitsOfLibrary lib) Snap.sky130MfgGridNm dxRaw dyRaw
                 | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap

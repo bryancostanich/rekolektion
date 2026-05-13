@@ -491,8 +491,12 @@ let selectionPivotSnapped
     |> Option.map (fun (x1, y1, x2, y2) ->
         let cx = (x1 + x2) / 2L
         let cy = (y1 + y2) / 2L
+        // Snap now takes the unit record; derive it from the legacy
+        // Library at the call site. Instances itself still operates
+        // on Gds.Library and migrates in a later stage.
+        let units = Rekolektion.Viz.Core.Layout.Snap.unitsOfLibrary lib
         let p =
-            Rekolektion.Viz.Core.Layout.Snap.snapPointDbu lib
+            Rekolektion.Viz.Core.Layout.Snap.snapPointDbu units
                 Rekolektion.Viz.Core.Layout.Snap.sky130MfgGridNm
                 { X = cx; Y = cy }
         p.X, p.Y)

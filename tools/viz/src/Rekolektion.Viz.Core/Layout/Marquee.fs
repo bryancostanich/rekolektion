@@ -1,6 +1,6 @@
 module Rekolektion.Viz.Core.Layout.Marquee
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 
 /// Marquee mode derived from drag direction. Left→right reads the
 /// rectangle as enclose-only; right→left reads it as touch-select.

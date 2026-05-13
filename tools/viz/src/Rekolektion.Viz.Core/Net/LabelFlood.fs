@@ -4,12 +4,6 @@ open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Sidecar.Types
 open Rekolektion.Viz.Core.Layout.Picking
 
-/// Adapter from Rkt's `Point` to the Gds-flavored `Point` that
-/// `Layout.Picking.pointInPolygon` consumes. Both are `int64 X/Y`;
-/// only the static type differs.
-let private asGdsPoint (p: Point) : Rekolektion.Viz.Core.Gds.Types.Point =
-    { X = p.X; Y = p.Y }
-
 /// Polygon entry used during flood-fill. Layer key is the canonical
 /// `(number, datatype)` pair so `NetEntry.Polygons` round-trips into
 /// the sidecar without info loss.
@@ -18,11 +12,10 @@ type private PolyEntry = {
     Index        : int
     Layer        : int
     DataType     : int
-    Points       : Rekolektion.Viz.Core.Gds.Types.Point list
+    Points       : Point list
 }
 
-let private bbox (pts: Rekolektion.Viz.Core.Gds.Types.Point list)
-    : (int64 * int64 * int64 * int64) =
+let private bbox (pts: Point list) : (int64 * int64 * int64 * int64) =
     let xs = pts |> List.map (fun p -> p.X)
     let ys = pts |> List.map (fun p -> p.Y)
     List.min xs, List.min ys, List.max xs, List.max ys
@@ -36,10 +29,7 @@ let private bboxOverlap a b =
 /// at least one vertex of either lies inside (or on the edge of) the
 /// other. Coarse but correct for the rectilinear shapes rekolektion
 /// emits.
-let private touch
-    (a: Rekolektion.Viz.Core.Gds.Types.Point list)
-    (b: Rekolektion.Viz.Core.Gds.Types.Point list)
-    : bool =
+let private touch (a: Point list) (b: Point list) : bool =
     bboxOverlap (bbox a) (bbox b)
     && (
         a |> List.exists (fun p -> pointInPolygon p b)
@@ -66,11 +56,11 @@ let private flatten (doc: Document) : PolyEntry list =
                     Index = i
                     Layer = n
                     DataType = d
-                    Points = p.Points |> List.map asGdsPoint
+                    Points = p.Points
                 }
             | RectEl r ->
                 let n, d = layerPair r.Layer
-                let pts : Rekolektion.Viz.Core.Gds.Types.Point list = [
+                let pts : Point list = [
                     { X = r.X1; Y = r.Y1 }
                     { X = r.X2; Y = r.Y1 }
                     { X = r.X2; Y = r.Y2 }
@@ -101,7 +91,7 @@ type private LabelEntry = {
     Layer        : int
     DataType     : int
     Text         : string
-    Origin       : Rekolektion.Viz.Core.Gds.Types.Point
+    Origin       : Point
 }
 
 let private collectLabels (doc: Document) : LabelEntry list =
@@ -116,7 +106,7 @@ let private collectLabels (doc: Document) : LabelEntry list =
                     Layer = n
                     DataType = d
                     Text = l.Text
-                    Origin = asGdsPoint l.Origin
+                    Origin = l.Origin
                 }
             | _ -> None))
 

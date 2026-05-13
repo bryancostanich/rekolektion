@@ -328,7 +328,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 | None -> 0L, 0L
                             let dx, dy =
                                 Layout.Snap.snapDeltaDbu
-                                    mc.Library Layout.Snap.sky130MfgGridNm
+                                    (Layout.Snap.unitsOfLibrary mc.Library)
+                                    Layout.Snap.sky130MfgGridNm
                                     dxRaw dyRaw
                             let lib', clones =
                                 Layout.Instances.duplicateSelection

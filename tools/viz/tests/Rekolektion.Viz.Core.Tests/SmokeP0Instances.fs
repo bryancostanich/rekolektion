@@ -26,9 +26,10 @@ let ``snap delta to 5 nm grid for mag library is 1 DBU step`` () =
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         // magscale 1 2 + 10 nm internal → 5 nm/DBU → grid step = 1 DBU
-        let step = Snap.gridDbu lib Snap.sky130MfgGridNm
+        let units = Snap.unitsOfLibrary lib
+        let step = Snap.gridDbu units Snap.sky130MfgGridNm
         step |> should equal 1L
-        let (dx, dy) = Snap.snapDeltaDbu lib Snap.sky130MfgGridNm 7L 0L
+        let (dx, dy) = Snap.snapDeltaDbu units Snap.sky130MfgGridNm 7L 0L
         dx |> should equal 7L
         dy |> should equal 0L
 
@@ -202,13 +203,8 @@ let ``mirrorX flips Y origin around pivot`` () =
 
 [<Fact>]
 let ``snap helper handles negative deltas symmetrically`` () =
-    let lib : Rekolektion.Viz.Core.Gds.Types.Library = {
-        Name = "x"
-        UserUnitsPerDbUnit = 0.001       // 1 nm / DBU
-        DbUnitsInMeters = 1.0e-9
-        Structures = []
-    }
-    let step = Snap.gridDbu lib Snap.sky130MfgGridNm
+    let units : Rekolektion.Viz.Core.Rkt.Types.Units = { DbuNm = 1; UuUm = 1 }
+    let step = Snap.gridDbu units Snap.sky130MfgGridNm
     step |> should equal 5L
     Snap.snapCoord step 7L  |> should equal 5L
     Snap.snapCoord step 8L  |> should equal 10L

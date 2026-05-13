@@ -2,7 +2,7 @@ module Rekolektion.Viz.Core.Tests.PickingTests
 
 open Xunit
 open FsUnit.Xunit
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 
 let private square (x: int64) (y: int64) (size: int64) : Point list =

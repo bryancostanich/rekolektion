@@ -142,4 +142,103 @@ new `Rkt/Library.fs` or `Rkt/Imports.fs` (resolver + cycle detection).
 Decision on a separate file vs folding into Reader is deferred to
 implementation; if Reader stays small the resolver may live there.
 
+**Implementation note (post hoc).** Resolver landed in `Rkt/Reader.fs`
+alongside `parse` / `analyze`. A separate `Library.fs` was considered
+but Reader is still small (~600 LoC) and the resolver belongs with the
+file-load surface. Promote to its own module when other consumers want
+the `Library` type without pulling in lexer internals.
+
+---
+
+## D4 — In-memory model migration: in-place vs adapter — 2026-05-13
+
+**Decision point.** The viz tool currently uses `Gds.Types.Library`
+(structures of `Boundary | Path | SRef | ARef | Text`, layer = int/int
+pair) as the canonical in-memory model. Step 2 of the .rkt rollout
+calls for the in-memory model to evolve to the new schema. Two paths.
+
+**Surveyed scope.** Consumers of `Gds.Types.Library` in the current
+tree (post-step-1 commit `e69a354`):
+
+- `Layout/Layer.fs`, `Layout/Hierarchy.fs`, `Layout/Picking.fs`,
+  `Layout/Marquee.fs`, `Layout/Flatten.fs`, `Layout/Snap.fs`,
+  `Layout/Instances.fs`, `Layout/LayerAlias.fs`,
+  `Layout/MagToLayout.fs`, `Layout/LayoutLoader.fs`
+- `Drc/Rules.fs`, `Drc/Check.fs`
+- `Net/LabelFlood.fs`, `Net/Ratlines.fs`
+- `Gds/Reader.fs`, `Gds/Writer.fs` (encoder; legitimate consumer)
+- `App/*`, `Cli/Program.fs`, `Mcp/*`, `Render/*` (downstream
+  projects in `tools/viz/src/`)
+- Tests for every Core consumer above
+
+Rough size estimate: ~1500–3000 lines of consumer code touching the
+type. Mechanical changes per consumer:
+- `Structures` → `Cells`
+- `Boundary { Layer; DataType; Points }` →
+  `PolyEl { Layer = Named(pdk, name); Points; ... }`
+- `SRef { StructureName; Origin; ... }` →
+  `SRefEl { Cell; Origin; Rot; Mag; Reflect; ... }`
+- Layer comparison `(Layer, DataType) = (n, d)` →
+  `Layer = Named(pdk, name)` plus a layer-name table lookup.
+
+**Options.**
+
+| Dimension | A (chosen): in-place evolution, multi-commit | B: parallel type with adapters |
+|---|---|---|
+| End state | One canonical in-memory type (`Rkt.Types.Document`). `Gds.Types.Library` retired or reduced to encoder-internal use only. | Two parallel models maintained side-by-side: `Gds.Types.Library` for legacy consumers, `Rkt.Types.Document` for new code. Bidirectional adapters bridge them. |
+| Atomicity | Cannot land in a single commit without breaking everything mid-refactor. Plan splits the work into checkpoints: (2a) adapter Gds→Rkt + tests, (2b) adapter Rkt→Gds + tests, (2c)…(2N) consumers migrate one or two at a time, each leaves build+tests green, last commit retires `Gds.Types.Library` (or contracts it to encoder scope). | Lands incrementally by design — each adapter or consumer is its own diff. |
+| Verifiability per commit | Each checkpoint is independently testable. Migrating Hierarchy (85 LoC) is one commit with one test-pass run. | Same. |
+| Risk of "works because we got lucky" | Low. Each consumer migration is small enough to reason about end-to-end before commit. Tests adapt alongside. | Medium. Two models drift over time. Bugs at the boundary (adapter info-loss) are easy to miss. |
+| Maintenance over project life | Lowest. One model. New element shapes land in one place. | Highest. Every schema change touches both models + the adapter. Adapter loss-of-information accumulates (port flags, nets, named layers have no GDS equivalent; round-tripping silently strips them). |
+| Information fidelity | Native. Rkt is a superset of GDS semantics. | Lossy at the adapter boundary unless we synthesize sidecar storage for the surplus (port flags, nets, etc.) — and that's a new mini-model to maintain. |
+| Effort to reach end state | High up front (one big refactor distributed across N small commits). | Lower up front (just write the adapters); but the consumer migration still needs to happen eventually — option B defers it, doesn't avoid it. |
+| Hack? | No. | No, but if Phase B (consumer migration) never lands the project ships with two models indefinitely. That outcome wasn't the design intent — picking B with the unspoken assumption that "we'll migrate later" is the soft version of a hack. |
+
+**Counter-argument for B.** The adapter approach lowers the immediate
+risk surface: most of the codebase keeps using a battle-tested type,
+and the new code paths land behind a translation layer. For a project
+with many concurrent contributors or a frozen API surface, that's the
+right move. The case against, for *this* repo: solo development,
+no external API depending on `Gds.Types.Library`, and the design doc's
+own implementation note ("preferred") signals the author wants the
+single-model end state. The "we'll migrate later" outcome is the
+project's actual risk — easy to start the adapter, hard to retire the
+legacy type.
+
+**Chosen.** **A — in-place evolution, multi-commit.** Step 2 is the
+*foundation* of the migration, not the entirety. The work plan:
+
+1. **Stage 2a (this session, or next).** Add adapter
+   `Rkt.OfGds.fromLibrary : Gds.Types.Library -> Rkt.Types.Document`
+   plus tests. Lives at `Rkt/OfGds.fs` (peer of `Reader.fs`,
+   `Writer.fs`). No consumer changes; library wires in step 3 when
+   the GDS reader is taught to emit Rkt directly.
+2. **Stage 2b.** Add adapter
+   `Rkt.ToGds.toLibrary : Rkt.Types.Document -> Gds.Types.Library`
+   plus tests. Information-loss documented (named layers degrade to
+   `Unknown.Number/Datatype` on export when no PDK map entry exists;
+   port flags ride along as `(port_flags …)` text labels for
+   round-trip recovery on re-import).
+3. **Stages 2c…2N.** Migrate consumers one or two per commit.
+   Recommended order, smallest first: `Hierarchy` → `Marquee` →
+   `Snap` → `LayerAlias` → `Instances` → `Picking` → `Flatten` →
+   `Net/LabelFlood` → `Net/Ratlines` → `Drc/Rules` → `Drc/Check`.
+   `Layout/MagToLayout` and `Layout/LayoutLoader` come last (they're
+   the load-time boundary; touching them retires the adapter).
+   Downstream projects (`Render`, `App`, `Cli`, `Mcp`) migrate when
+   the Core layer is fully on Rkt.
+
+**Stop discipline.** Each stage commits independently with green
+build + tests. If any stage stalls (test won't pass cleanly, a
+consumer's logic doesn't map onto Rkt without an unresolved design
+question), stop per the continuation prompt's stop condition #3 and
+log the blocker.
+
+**Files affected (stage 2a planned).**
+- `tools/viz/src/Rekolektion.Viz.Core/Rkt/OfGds.fs` (new).
+- `tools/viz/src/Rekolektion.Viz.Core/Rekolektion.Viz.Core.fsproj`
+  (compile entry).
+- `tools/viz/tests/Rekolektion.Viz.Core.Tests/RktOfGdsTests.fs` (new).
+- Test project's `.fsproj` to register the new test file.
+
 ---

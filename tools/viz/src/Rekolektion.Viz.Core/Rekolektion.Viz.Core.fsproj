@@ -15,11 +15,12 @@
     <Compile Include="Mag/SearchPath.fs" />
     <Compile Include="Mag/Reader.fs" />
     <Compile Include="Mag/Writer.fs" />
+    <Compile Include="Layout/Layer.fs" />
     <Compile Include="Rkt/Types.fs" />
     <Compile Include="Rkt/Cst.fs" />
     <Compile Include="Rkt/Reader.fs" />
     <Compile Include="Rkt/Writer.fs" />
-    <Compile Include="Layout/Layer.fs" />
+    <Compile Include="Rkt/OfGds.fs" />
     <Compile Include="Layout/Hierarchy.fs" />
     <Compile Include="Layout/Picking.fs" />
     <Compile Include="Layout/Marquee.fs" />

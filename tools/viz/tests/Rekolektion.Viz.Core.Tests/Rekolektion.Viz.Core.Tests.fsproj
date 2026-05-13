@@ -32,6 +32,7 @@
     <Compile Include="GdsWriterTests.fs" />
     <Compile Include="RktTests.fs" />
     <Compile Include="RktOfGdsTests.fs" />
+    <Compile Include="RktToGdsTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

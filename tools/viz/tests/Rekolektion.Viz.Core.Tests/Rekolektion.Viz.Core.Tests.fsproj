@@ -30,6 +30,7 @@
     <Compile Include="DrcCheckTests.fs" />
     <Compile Include="MagWriterTests.fs" />
     <Compile Include="GdsWriterTests.fs" />
+    <Compile Include="RktTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

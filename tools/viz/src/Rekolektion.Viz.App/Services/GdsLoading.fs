@@ -38,7 +38,11 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             | Ok (Some sc) -> sc.Nets, true, None
             | Ok None      -> Map.empty, false, None
             | Error msg    -> Map.empty, false, Some msg
-        let blocks = Layout.Hierarchy.detect lib
+        // Hierarchy now operates on Rkt.Document; the App's Library
+        // still holds Gds.Library, so we convert via OfGds at the
+        // call site. Removes one Library reference from this file's
+        // future migration.
+        let blocks = Layout.Hierarchy.detect (Rkt.OfGds.fromLibrary lib)
         // Walk SRef/ARef to produce flat polygons for the renderers.
         // For a 64×64 SRAM macro this expands ~5k structure-level
         // polygons to ~400k flat polygons. The cost is paid once at

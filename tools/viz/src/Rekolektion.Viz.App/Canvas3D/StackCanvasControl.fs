@@ -925,7 +925,10 @@ type StackCanvasControl() =
                 let flags = Array.zeroCreate<float32> n
                 match toggle.IsolatedBlock with
                 | Some name ->
-                    let closure = Layout.Hierarchy.closure lib name
+                    // Hierarchy.closure now consumes Rkt.Document; convert
+                    // at the call site until the App's model migrates.
+                    let closure =
+                        Layout.Hierarchy.closure (Rkt.OfGds.fromLibrary lib) name
                     if not (Set.isEmpty closure) then
                         for i in 0 .. n - 1 do
                             let polyIdx = mesh.VertexPolyIndex.[i]

@@ -136,7 +136,11 @@ let paintIn
     // 'hide other blocks', per Visibility.isBlockVisible.
     let blockClosure : Set<string> option =
         toggle.IsolatedBlock
-        |> Option.map (fun name -> Layout.Hierarchy.closure lib name)
+        |> Option.map (fun name ->
+            // Hierarchy.closure now consumes Rkt.Document; LayerPainter's
+            // `lib` is still a Gds.Library, so we convert at the boundary.
+            // Conversion is O(cells) and runs at most once per paint.
+            Layout.Hierarchy.closure (Rkt.OfGds.fromLibrary lib) name)
 
     use fill = new SKPaint(Style = SKPaintStyle.Fill, IsAntialias = true)
     use stroke = new SKPaint(Style = SKPaintStyle.Stroke, IsAntialias = true, StrokeWidth = 0.5f)

@@ -11,6 +11,7 @@ open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.App.Canvas2D.GdsCanvasControl
 open Rekolektion.Viz.App.Canvas3D.StackCanvasControl
 open Rekolektion.Viz.App.Model
@@ -19,8 +20,8 @@ open Rekolektion.Viz.App.Model
 // Moroder DieCanvasView pattern: each AvaloniaProperty is exposed via
 // a typed CreateProperty<TValue>(prop, value, ValueNone) attr.
 
-let private gds2DLibraryAttr (v: Library option) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<Library option>(
+let private gds2DLibraryAttr (v: Document option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Document option>(
         GdsCanvasControl.LibraryProperty, v, ValueNone)
 
 let private gds2DMacroPathAttr (v: string option) : IAttr<GdsCanvasControl> =
@@ -99,8 +100,8 @@ let private gds2DClearPolygonSelectionHandlerAttr (h: System.Action) : IAttr<Gds
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
         GdsCanvasControl.ClearPolygonSelectionHandlerProperty, h, ValueNone)
 
-let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
-    AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
+let private stack3DLibraryAttr (v: Document option) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Document option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
 
 let private stack3DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<StackCanvasControl> =
@@ -125,7 +126,7 @@ let private stack3DShowRatlinesAttr (v: bool) : IAttr<StackCanvasControl> =
 /// instance itself.
 let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     let active = Model.activeMacro model
-    let lib = active |> Option.map (fun m -> m.Library)
+    let lib = active |> Option.map (fun m -> m.Document)
     let flat =
         active
         |> Option.map (fun m -> m.FlatPolygons)

@@ -11,7 +11,7 @@ type ServiceBackend = {
     OpenGds : string -> Async<Result<Model.LoadedMacro, string>>
     RunMacro: Msg.RunMacroParams -> (string -> unit) -> Async<Result<string, int>>
     // ^ second arg = log-line callback for streaming stderr.
-    DeriveNets: Rekolektion.Viz.Core.Gds.Types.Library
+    DeriveNets: Rekolektion.Viz.Core.Rkt.Types.Document
                   -> Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>>
     /// Round-trip the macro through `Mag.Writer.writeUpdated`,
     /// returning the path that ended up on disk.
@@ -76,7 +76,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             if macro.NetsFromSidecar then Cmd.none
             else
                 Cmd.OfAsync.either
-                    backend.DeriveNets macro.Library
+                    backend.DeriveNets macro.Document
                     (fun nets -> Msg.NetsLoaded (macro.Path, nets))
                     (fun ex -> Msg.LogLine (sprintf "net derivation failed: %s" ex.Message))
         let model' =
@@ -210,15 +210,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 mc.TopInstances
                                 |> Array.filter (fun i -> model.InstanceSelection.Contains i.Index)
                                 |> Array.collect (fun i ->
-                                    Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary mc.Library) i.Index)
+                                    Layout.Flatten.flattenInstance mc.Document i.Index)
                             let otherPolys =
                                 mc.TopInstances
                                 |> Array.filter (fun i -> not (model.InstanceSelection.Contains i.Index))
                                 |> Array.collect (fun i ->
-                                    Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary mc.Library) i.Index)
+                                    Layout.Flatten.flattenInstance mc.Document i.Index)
                             let candidates =
                                 Drc.Check.tightenCandidates
-                                    (Layout.Snap.unitsOfLibrary mc.Library)
+                                    mc.Document.Units
                                     selectedPolys otherPolys
                             // index is 1-based per the user-
                             // visible numbered labels.
@@ -229,15 +229,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 let dxDbu = int64 cand.DirX * cand.SlackDbu
                                 let dyDbu = int64 cand.DirY * cand.SlackDbu
                                 let lib' =
-                                    Layout.Instances.Library.translateSelection
-                                        mc.Library model.InstanceSelection dxDbu dyDbu
-                                let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
-                                let inst' = Layout.Instances.Library.enumerate lib'
+                                    Layout.Instances.translateSelection
+                                        mc.Document model.InstanceSelection dxDbu dyDbu
+                                let flat' = Layout.Flatten.flatten lib'
+                                let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
                                     EditSession.pushUndoSnapshot mc
                                     |> fun m ->
                                         { m with
-                                            Library = lib'
+                                            Document = lib'
                                             FlatPolygons = flat'
                                             TopInstances = inst' }
                                     |> EditSession.markDirty
@@ -265,28 +265,28 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 mc.TopInstances
                                 |> Array.filter (fun i ->
                                     model.InstanceSelection.Contains i.Index)
-                            match Layout.Instances.Library.selectionPivotSnapped
-                                    mc.Library selected with
+                            match Layout.Instances.selectionPivotSnapped
+                                    mc.Document selected with
                             | None -> mc
                             | Some pivot ->
                                 let lib' =
                                     match msg with
                                     | Msg.RotateSelection90 ->
-                                        Layout.Instances.Library.rotate90Selection
-                                            mc.Library model.InstanceSelection pivot
+                                        Layout.Instances.rotate90Selection
+                                            mc.Document model.InstanceSelection pivot
                                     | Msg.MirrorSelectionX ->
-                                        Layout.Instances.Library.mirrorXSelection
-                                            mc.Library model.InstanceSelection pivot
+                                        Layout.Instances.mirrorXSelection
+                                            mc.Document model.InstanceSelection pivot
                                     | _ ->
-                                        Layout.Instances.Library.mirrorYSelection
-                                            mc.Library model.InstanceSelection pivot
-                                let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
-                                let inst' = Layout.Instances.Library.enumerate lib'
+                                        Layout.Instances.mirrorYSelection
+                                            mc.Document model.InstanceSelection pivot
+                                let flat' = Layout.Flatten.flatten lib'
+                                let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
                                     EditSession.pushUndoSnapshot mc
                                     |> fun m ->
                                         { m with
-                                            Library = lib'
+                                            Document = lib'
                                             FlatPolygons = flat'
                                             TopInstances = inst' }
                                     |> EditSession.markDirty
@@ -329,20 +329,20 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 | None -> 0L, 0L
                             let dx, dy =
                                 Layout.Snap.snapDeltaDbu
-                                    (Layout.Snap.unitsOfLibrary mc.Library)
+                                    mc.Document.Units
                                     Layout.Snap.sky130MfgGridNm
                                     dxRaw dyRaw
                             let lib', clones =
-                                Layout.Instances.Library.duplicateSelection
-                                    mc.Library model.InstanceSelection dx dy
-                            let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
-                            let inst' = Layout.Instances.Library.enumerate lib'
+                                Layout.Instances.duplicateSelection
+                                    mc.Document model.InstanceSelection dx dy
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
                             nextSelection <- clones
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Library = lib'
+                                        Document = lib'
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -372,15 +372,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         if mc.Path <> path then mc
                         else
                             let lib' =
-                                Layout.Instances.Library.translateSelection
-                                    mc.Library model.InstanceSelection dxDbu dyDbu
-                            let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
-                            let inst' = Layout.Instances.Library.enumerate lib'
+                                Layout.Instances.translateSelection
+                                    mc.Document model.InstanceSelection dxDbu dyDbu
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Library = lib'
+                                        Document = lib'
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -405,46 +405,53 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.groupBy fst
                     |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
                     |> Map.ofList
-                let translatePoly (pts: Rekolektion.Viz.Core.Gds.Types.Point list) =
+                let translatePoly (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
                     pts
-                    |> List.map (fun (p: Rekolektion.Viz.Core.Gds.Types.Point) ->
-                        ({ X = p.X + dxDbu; Y = p.Y + dyDbu } : Rekolektion.Viz.Core.Gds.Types.Point))
-                let updateLib (lib: Rekolektion.Viz.Core.Gds.Types.Library) =
+                    |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                        ({ X = p.X + dxDbu; Y = p.Y + dyDbu }
+                         : Rekolektion.Viz.Core.Rkt.Types.Point))
+                let updateDoc (doc: Rekolektion.Viz.Core.Rkt.Types.Document) =
                     let updated =
-                        lib.Structures
-                        |> List.map (fun s ->
-                            match Map.tryFind s.Name perStruct with
-                            | None -> s
+                        doc.Cells
+                        |> List.map (fun c ->
+                            match Map.tryFind c.Name perStruct with
+                            | None -> c
                             | Some indices ->
                                 let elems' =
-                                    s.Elements
+                                    c.Elements
                                     |> List.mapi (fun i el ->
                                         if not (indices.Contains i) then el
                                         else
                                             match el with
-                                            | Rekolektion.Viz.Core.Gds.Types.Boundary b ->
-                                                Rekolektion.Viz.Core.Gds.Types.Boundary
-                                                    { b with Points = translatePoly b.Points }
-                                            | Rekolektion.Viz.Core.Gds.Types.Path p ->
-                                                Rekolektion.Viz.Core.Gds.Types.Path
+                                            | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
+                                                Rekolektion.Viz.Core.Rkt.Types.PolyEl
                                                     { p with Points = translatePoly p.Points }
+                                            | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
+                                                Rekolektion.Viz.Core.Rkt.Types.PathEl
+                                                    { p with Points = translatePoly p.Points }
+                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                                // Translate the rect's corners.
+                                                Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                                    { r with
+                                                        X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
+                                                        X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu }
                                             | other -> other)
-                                { s with Elements = elems' })
-                    { lib with Structures = updated }
+                                { c with Elements = elems' })
+                    { doc with Cells = updated }
                 let mutable activePath' = path
                 let openMacros' =
                     model.OpenMacros
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            let lib' = updateLib mc.Library
-                            let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
-                            let inst' = Layout.Instances.Library.enumerate lib'
+                            let lib' = updateDoc mc.Document
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Library = lib'
+                                        Document = lib'
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -493,8 +500,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             match mc.UndoStack with
             | [] -> model, Cmd.none
             | prevLib :: rest ->
-                let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary prevLib)
-                let inst' = Layout.Instances.Library.enumerate prevLib
+                let flat' = Layout.Flatten.flatten prevLib
+                let inst' = Layout.Instances.enumerate prevLib
                 let stillDirty = not (List.isEmpty rest)
                 // When the stack drains we're back at the load
                 // state — also revert the in-memory Path from
@@ -516,7 +523,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         if m.Path <> mc.Path then m
                         else
                             { m with
-                                Library = prevLib
+                                Document = prevLib
                                 FlatPolygons = flat'
                                 TopInstances = inst'
                                 UndoStack = rest

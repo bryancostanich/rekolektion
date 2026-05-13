@@ -10,7 +10,12 @@ open Avalonia.Rendering.SceneGraph
 open Avalonia.Skia
 open SkiaSharp
 open Rekolektion.Viz.Core
+// Open Rkt.Types last so `Document`, `Point`, `Cell`, `Element`,
+// and the variant cases (`PolyEl`, `RectEl`, …) all resolve to the
+// canonical model. `Gds.Types` still stays open for the few places
+// that name `Library` (the legacy on-disk type) explicitly.
 open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 open Rekolektion.Viz.Core.Layout.Flatten
 open Rekolektion.Viz.Render.Skia
@@ -68,7 +73,7 @@ type private SelectionOverlay = {
 /// pixels) so the canvas's pointer handler can map a click to a
 /// Tighten candidate index. Empty when not in Tighten mode.
 type private SkiaDraw(bounds: Rect,
-                      lib: Library,
+                      lib: Document,
                       flat: FlatPolygon array,
                       vb: LayerPainter.ViewBox,
                       toggle: Visibility.ToggleState,
@@ -201,7 +206,7 @@ type private SkiaDraw(bounds: Rect,
                         let sy = float vb.PixelH - (float pt.Y - float vb.MinY) * scaleY |> float32
                         SKPoint(sx, sy)
                     let structByName =
-                        lib.Structures
+                        lib.Cells
                         |> List.map (fun s -> s.Name, s)
                         |> Map.ofList
                     for (sname, idx) in overlay.SelectedPolygons do
@@ -209,8 +214,16 @@ type private SkiaDraw(bounds: Rect,
                         | Some s when idx >= 0 && idx < s.Elements.Length ->
                             let pts =
                                 match s.Elements.[idx] with
-                                | Boundary b -> Some b.Points
-                                | Path p -> Some p.Points
+                                | PolyEl p -> Some p.Points
+                                | PathEl p -> Some p.Points
+                                | RectEl r ->
+                                    Some [
+                                        { X = r.X1; Y = r.Y1 }
+                                        { X = r.X2; Y = r.Y1 }
+                                        { X = r.X2; Y = r.Y2 }
+                                        { X = r.X1; Y = r.Y2 }
+                                        { X = r.X1; Y = r.Y1 }
+                                    ]
                                 | _ -> None
                             match pts with
                             | Some points when points.Length > 0 ->
@@ -226,7 +239,7 @@ type private SkiaDraw(bounds: Rect,
                         | _ -> ()
 
                 if overlay.Violations.Length > 0 then
-                    DrcOverlay.render canvas vb lib.UserUnitsPerDbUnit overlay.Violations
+                    DrcOverlay.render canvas vb (float lib.Units.DbuNm * 1.0e-3) overlay.Violations
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
@@ -240,7 +253,7 @@ type private SkiaDraw(bounds: Rect,
                 if overlay.TightenCandidates.Length > 0 then
                     let hits =
                         TightenOverlay.render
-                            canvas vb lib.UserUnitsPerDbUnit
+                            canvas vb (float lib.Units.DbuNm * 1.0e-3)
                             overlay.TightenCandidates
                     tightenHitsOut := hits
                 else
@@ -326,7 +339,7 @@ type GdsCanvasControl() =
     // The Render path uses these instead of the bound FlatPolygons
     // so the moved geometry — not a ghost outline — tracks the
     // cursor. None when no drag is active.
-    let mutable dragLiveLib : Library option = None
+    let mutable dragLiveLib : Document option = None
     let mutable dragLiveFlat : FlatPolygon array = [||]
     // Tighten-mode state. `tightenHits` is overwritten by SkiaDraw
     // each render with the per-label click targets so
@@ -353,8 +366,8 @@ type GdsCanvasControl() =
     static do
         Avalonia.Input.InputElement.FocusableProperty.OverrideDefaultValue<GdsCanvasControl>(true)
 
-    static member val LibraryProperty : StyledProperty<Library option> =
-        AvaloniaProperty.Register<GdsCanvasControl, Library option>("Library", None)
+    static member val LibraryProperty : StyledProperty<Document option> =
+        AvaloniaProperty.Register<GdsCanvasControl, Document option>("Library", None)
         with get
     /// Path of the active macro. Changes ONLY on new-file load
     /// (or rename), not on every edit. The canvas uses this as
@@ -450,8 +463,8 @@ type GdsCanvasControl() =
         with get
 
     member this.Library
-        with get() : Library option = this.GetValue(GdsCanvasControl.LibraryProperty)
-        and set(v: Library option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
+        with get() : Document option = this.GetValue(GdsCanvasControl.LibraryProperty)
+        and set(v: Document option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
 
     member this.MacroPath
         with get() : string option = this.GetValue(GdsCanvasControl.MacroPathProperty)
@@ -723,28 +736,23 @@ type GdsCanvasControl() =
                     | Some lib ->
                         let referenced =
                             System.Collections.Generic.HashSet<string>()
-                        for s in lib.Structures do
-                            for el in s.Elements do
+                        for c in lib.Cells do
+                            for el in c.Elements do
                                 match el with
-                                | SRef sr -> referenced.Add sr.StructureName |> ignore
-                                | ARef ar -> referenced.Add ar.StructureName |> ignore
+                                | SRefEl sr -> referenced.Add sr.Cell |> ignore
+                                | ARefEl ar -> referenced.Add ar.Cell |> ignore
                                 | _ -> ()
                         let topOpt =
-                            lib.Structures
-                            |> List.tryFind (fun s -> not (referenced.Contains s.Name))
+                            lib.Cells
+                            |> List.tryFind (fun c -> not (referenced.Contains c.Name))
                             |> Option.orElseWith (fun () ->
-                                lib.Structures |> List.tryHead)
+                                lib.Cells |> List.tryHead)
                         topOpt
                         |> Option.bind (fun top ->
-                            // Picking now consumes Rkt.Element; convert
-                            // the legacy Gds.Structure at the call site
-                            // (cheap — one cell's element list).
-                            let cell : Rekolektion.Viz.Core.Rkt.Types.Cell =
-                                Rekolektion.Viz.Core.Rkt.OfGds.fromStructure top
-                            let pt : Rekolektion.Viz.Core.Rkt.Types.Point =
+                            let pt : Point =
                                 { X = int64 (System.Math.Round wx)
                                   Y = int64 (System.Math.Round wy) }
-                            Layout.Picking.pickBoundary pt cell.Elements
+                            Layout.Picking.pickBoundary pt top.Elements
                             |> Option.map (fun (idx, _) -> top.Name, idx))
                     | None -> None
                 match polyPick with
@@ -783,40 +791,44 @@ type GdsCanvasControl() =
                     dragKind <- MarqueeDrag
 
     /// Live-translate every polygon in `sel` by (dx, dy) in DBU.
-    /// Returns a new Library with those polygons shifted — used by
+    /// Returns a new Document with those polygons shifted — used by
     /// the in-flight PolygonDrag preview so the moved shapes track
     /// the cursor before the model commit lands.
     member private _.LibWithPolygonsShifted
-            (lib: Library) (sel: Set<string * int>)
-            (dx: int64) (dy: int64) : Library =
-        let perStruct =
+            (doc: Document) (sel: Set<string * int>)
+            (dx: int64) (dy: int64) : Document =
+        let perCell =
             sel
             |> Set.toList
             |> List.groupBy fst
             |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
             |> Map.ofList
         let translatePoly (pts: Point list) =
-            pts
-            |> List.map (fun p -> { X = p.X + dx; Y = p.Y + dy })
+            pts |> List.map (fun p -> { X = p.X + dx; Y = p.Y + dy })
         let updated =
-            lib.Structures
-            |> List.map (fun s ->
-                match Map.tryFind s.Name perStruct with
-                | None -> s
+            doc.Cells
+            |> List.map (fun c ->
+                match Map.tryFind c.Name perCell with
+                | None -> c
                 | Some indices ->
                     let elems' =
-                        s.Elements
+                        c.Elements
                         |> List.mapi (fun i el ->
                             if not (indices.Contains i) then el
                             else
                                 match el with
-                                | Boundary b ->
-                                    Boundary { b with Points = translatePoly b.Points }
-                                | Path p ->
-                                    Path { p with Points = translatePoly p.Points }
+                                | PolyEl p ->
+                                    PolyEl { p with Points = translatePoly p.Points }
+                                | PathEl p ->
+                                    PathEl { p with Points = translatePoly p.Points }
+                                | RectEl r ->
+                                    RectEl
+                                        { r with
+                                            X1 = r.X1 + dx; Y1 = r.Y1 + dy
+                                            X2 = r.X2 + dx; Y2 = r.Y2 + dy }
                                 | other -> other)
-                    { s with Elements = elems' })
-        { lib with Structures = updated }
+                    { c with Elements = elems' })
+        { doc with Cells = updated }
 
     override this.OnPointerMoved e =
         base.OnPointerMoved e
@@ -862,7 +874,7 @@ type GdsCanvasControl() =
             let dxSnap, dySnap =
                 match this.Library with
                 | Some lib ->
-                    Snap.snapDeltaDbu (Snap.unitsOfLibrary lib) Snap.sky130MfgGridNm dxRaw dyRaw
+                    Snap.snapDeltaDbu lib.Units Snap.sky130MfgGridNm dxRaw dyRaw
                 | None ->
                     dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
@@ -876,10 +888,10 @@ type GdsCanvasControl() =
                 match this.Library with
                 | Some lib ->
                     let lib' =
-                        Instances.Library.translateSelection
+                        Instances.translateSelection
                             lib this.InstanceSelection dxSnap dySnap
                     dragLiveLib <- Some lib'
-                    dragLiveFlat <- Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
+                    dragLiveFlat <- Layout.Flatten.flatten lib
                 | None ->
                     dragLiveLib <- None
                     dragLiveFlat <- [||]
@@ -899,7 +911,7 @@ type GdsCanvasControl() =
             let dxSnap, dySnap =
                 match this.Library with
                 | Some lib ->
-                    Snap.snapDeltaDbu (Snap.unitsOfLibrary lib) Snap.sky130MfgGridNm dxRaw dyRaw
+                    Snap.snapDeltaDbu lib.Units Snap.sky130MfgGridNm dxRaw dyRaw
                 | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap
@@ -1004,17 +1016,17 @@ type GdsCanvasControl() =
                 | Some lib ->
                     let referenced =
                         System.Collections.Generic.HashSet<string>()
-                    for s in lib.Structures do
-                        for el in s.Elements do
+                    for c in lib.Cells do
+                        for el in c.Elements do
                             match el with
-                            | SRef sr -> referenced.Add sr.StructureName |> ignore
-                            | ARef ar -> referenced.Add ar.StructureName |> ignore
+                            | SRefEl sr -> referenced.Add sr.Cell |> ignore
+                            | ARefEl ar -> referenced.Add ar.Cell |> ignore
                             | _ -> ()
                     let topOpt =
-                        lib.Structures
-                        |> List.tryFind (fun s -> not (referenced.Contains s.Name))
+                        lib.Cells
+                        |> List.tryFind (fun c -> not (referenced.Contains c.Name))
                         |> Option.orElseWith (fun () ->
-                            lib.Structures |> List.tryHead)
+                            lib.Cells |> List.tryHead)
                     match topOpt with
                     | None -> ()
                     | Some top ->
@@ -1035,14 +1047,19 @@ type GdsCanvasControl() =
                             |> List.mapi (fun i el -> i, el)
                             |> List.choose (fun (i, el) ->
                                 match el with
-                                | Boundary b ->
-                                    polyBbox b.Points
-                                    |> Option.bind (fun bb ->
-                                        if bboxFits bb then Some (top.Name, i) else None)
-                                | Path p ->
+                                | PolyEl p ->
                                     polyBbox p.Points
                                     |> Option.bind (fun bb ->
                                         if bboxFits bb then Some (top.Name, i) else None)
+                                | PathEl p ->
+                                    polyBbox p.Points
+                                    |> Option.bind (fun bb ->
+                                        if bboxFits bb then Some (top.Name, i) else None)
+                                | RectEl r ->
+                                    let bb =
+                                        (min r.X1 r.X2, min r.Y1 r.Y2,
+                                         max r.X1 r.X2, max r.Y1 r.Y2)
+                                    if bboxFits bb then Some (top.Name, i) else None
                                 | _ -> None)
                             |> Set.ofList
                         let nextPoly =
@@ -1127,7 +1144,7 @@ type GdsCanvasControl() =
             // drag.
             let instPolyBboxes =
                 if this.ShowDimensions && not this.InstanceSelection.IsEmpty then
-                    Instances.Library.layerPolyBboxesByInstance renderLib
+                    Instances.layerPolyBboxesByInstance renderLib
                 else
                     Map.empty
             let violations =
@@ -1143,10 +1160,10 @@ type GdsCanvasControl() =
                         this.Instances
                         |> Array.map (fun inst ->
                             inst.Index,
-                            Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) inst.Index)
+                            Layout.Flatten.flattenInstance (renderLib) inst.Index)
                         |> Map.ofArray
                     Drc.Check.checkInterInstance
-                        (Layout.Snap.unitsOfLibrary renderLib) perInstance
+                        renderLib.Units perInstance
                 else
                     [||]
             let marquee =
@@ -1163,7 +1180,7 @@ type GdsCanvasControl() =
             let routes =
                 if this.ShowRatlines || highlightNet.IsSome then
                     // Ratlines now takes Rkt.Document; convert at boundary.
-                    Net.Ratlines.compute (Rkt.OfGds.fromLibrary renderLib)
+                    Net.Ratlines.compute (renderLib)
                 else [||]
             // Tighten-mode candidates: per-cardinal binding pair
             // for the current selection vs. every other top
@@ -1174,14 +1191,14 @@ type GdsCanvasControl() =
                         this.Instances
                         |> Array.filter (fun i -> this.InstanceSelection.Contains i.Index)
                         |> Array.collect (fun i ->
-                            Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) i.Index)
+                            Layout.Flatten.flattenInstance (renderLib) i.Index)
                     let otherPolys =
                         this.Instances
                         |> Array.filter (fun i -> not (this.InstanceSelection.Contains i.Index))
                         |> Array.collect (fun i ->
-                            Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) i.Index)
+                            Layout.Flatten.flattenInstance (renderLib) i.Index)
                     Drc.Check.tightenCandidates
-                        (Layout.Snap.unitsOfLibrary renderLib)
+                        renderLib.Units
                         selectedPolys otherPolys
                 else
                     [||]

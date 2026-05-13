@@ -33,19 +33,18 @@ let suggestEditedPath (originalPath: string) : string =
         n <- n + 1
     candidate n
 
-/// Persist `mc.Library` to disk. Reads from the most recent
-/// version on disk for line-level round-trip preservation,
-/// substitutes the `transform` lines for every top-level
-/// instance, and writes to `targetPath`. Returns the path that
-/// was actually written.
+/// Persist `mc.Document` to disk. The save target's extension
+/// determines the writer; the model's canonical `Rkt.Document`
+/// converts back to legacy `Gds.Library` only at the boundary for
+/// the GDS / Mag writers that still consume it.
 ///
-/// **Read source resolution:** prefer `mc.Path` if that file
-/// exists on disk (the user may have saved before, or be
+/// **Read source resolution:** for the Mag writer, prefer `mc.Path`
+/// if it exists on disk (the user may have saved before, or be
 /// overwriting an existing edited copy); otherwise fall back to
 /// `mc.OriginalPath`. The fallback is critical after the user
-/// renames an unsaved edit — `mc.Path` will be the new name
-/// they typed, but no file with that name exists yet, and the
-/// only round-trip-safe source is the original file.
+/// renames an unsaved edit — `mc.Path` will be the new name they
+/// typed, but no file with that name exists yet, and the only
+/// round-trip-safe source is the original file.
 let private extOf (path: string) : string =
     (Path.GetExtension path).ToLowerInvariant()
 
@@ -54,9 +53,8 @@ let saveTo (mc: LoadedMacro) (targetPath: string) : string =
     let dstExt = extOf targetPath
     // Cross-format save between .gds and .mag isn't supported — the
     // two writers consume different intermediate states. `.rkt` is
-    // the exception: it's always available as an export target since
-    // the in-memory `Library` converts cleanly to the canonical
-    // model (`Rkt.OfGds.fromLibrary`).
+    // the universal export target — the in-memory `Document` is
+    // already in the canonical model.
     if srcExt <> dstExt && dstExt <> ".rkt" then
         failwithf
             "Save format mismatch: source %s → target %s. The viz \
@@ -65,28 +63,25 @@ let saveTo (mc: LoadedMacro) (targetPath: string) : string =
             srcExt dstExt
     match dstExt with
     | ".gds" | ".gds2" ->
-        // Full regeneration from the in-memory Library — the
-        // writer doesn't round-trip the source byte-for-byte
-        // but every structure, element, and transform is
-        // reproduced. Sufficient for the editor's
-        // save-and-reopen loop.
-        Gds.Writer.writeGds targetPath mc.Library
+        // Convert to the legacy Library shape for the GDS encoder.
+        // Geometry round-trips losslessly; comments / nets / port
+        // metadata stay in the `.rkt`-side Document.
+        let lib = Rkt.ToGds.toLibrary mc.Document
+        Gds.Writer.writeGds targetPath lib
     | ".rkt" ->
-        // Convert the legacy in-memory `Library` to the canonical
-        // `Rkt.Document` and emit canonical text. Layer numbers
-        // resolve to named layers; unknown pairs land as
-        // `Unknown(n, d)`. Comments are not preserved on this path
-        // because the App's model still holds a `Library` (which
-        // doesn't carry them); once the model is migrated to
-        // `Rkt.Document` natively, edits propagate comments through.
-        let doc = Rkt.OfGds.fromLibrary mc.Library
-        let text = Rkt.Writer.write doc
+        // Canonical save: emit the in-memory Document directly.
+        let text = Rkt.Writer.write mc.Document
         File.WriteAllText(targetPath, text)
     | _ ->
+        // Magic writer reads the source file for line-level
+        // round-trip preservation and only rewrites the `transform`
+        // lines for each top-level instance. It still takes a
+        // Library; we materialise one at the boundary.
+        let lib = Rkt.ToGds.toLibrary mc.Document
         let readPath =
             if File.Exists mc.Path then mc.Path
             else mc.OriginalPath
-        Mag.Writer.writeUpdated readPath mc.Library targetPath
+        Mag.Writer.writeUpdated readPath lib targetPath
     targetPath
 
 /// Mark a macro as dirty (called by every editing transition in
@@ -105,15 +100,14 @@ let markDirty (mc: LoadedMacro) : LoadedMacro =
 /// Maximum undo history per macro. Bounded so a long editing
 /// session doesn't grow the heap without limit. 200 is well past
 /// what feels useful interactively but small enough that even at
-/// production-macro library sizes (~100 KB / snapshot) the
-/// total stays under ~20 MB.
+/// production-macro Document sizes the total stays under ~20 MB.
 let undoLimit = 200
 
-/// Push the current `Library` onto `mc.UndoStack` so a future
-/// Undo can restore it. Trims to `undoLimit` from the end. Used
-/// by Update.fs *before* applying any edit.
+/// Push the current `Document` onto `mc.UndoStack` so a future Undo
+/// can restore it. Trims to `undoLimit` from the end. Used by
+/// Update.fs *before* applying any edit.
 let pushUndoSnapshot (mc: LoadedMacro) : LoadedMacro =
-    let stack = mc.Library :: mc.UndoStack
+    let stack = mc.Document :: mc.UndoStack
     let trimmed =
         if stack.Length > undoLimit then List.truncate undoLimit stack
         else stack

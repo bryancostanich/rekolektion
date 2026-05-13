@@ -166,7 +166,7 @@ let private synthesizePath (i: int) (p: Path) : Sexp =
     | None -> ()
     mkList lead (List.ofSeq kids) ""
 
-let private synthesizeRect (i: int) (r: Rect) : Sexp =
+let private synthesizeRect (i: int) (r: Rectangle) : Sexp =
     let lead = leading i r.Comments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "rect")

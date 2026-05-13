@@ -240,8 +240,8 @@ type StackCanvasControl() =
     let mutable pressStart : Avalonia.Point = Avalonia.Point()
     let mutable pressedButton : DragMode = NoDrag
 
-    static member val LibraryProperty : StyledProperty<Library option> =
-        AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
+    static member val LibraryProperty : StyledProperty<Document option> =
+        AvaloniaProperty.Register<StackCanvasControl, Document option>("Library", None)
         with get
     static member val FlatPolygonsProperty : StyledProperty<Layout.Flatten.FlatPolygon array> =
         AvaloniaProperty.Register<StackCanvasControl, Layout.Flatten.FlatPolygon array>("FlatPolygons", [||])
@@ -260,8 +260,8 @@ type StackCanvasControl() =
         with get
 
     member this.Library
-        with get() : Library option = this.GetValue(StackCanvasControl.LibraryProperty)
-        and set(v: Library option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
+        with get() : Document option = this.GetValue(StackCanvasControl.LibraryProperty)
+        and set(v: Document option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
 
     member this.FlatPolygons
         with get() : Layout.Flatten.FlatPolygon array = this.GetValue(StackCanvasControl.FlatPolygonsProperty)
@@ -290,14 +290,14 @@ type StackCanvasControl() =
     /// `lib`. Called when Library is assigned. Without this, a small
     /// bitcell renders as a single pixel inside the default 80-µm
     /// frustum.
-    member private this.FitCameraTo (lib: Library) (flat: Layout.Flatten.FlatPolygon array) =
+    member private this.FitCameraTo (lib: Document) (flat: Layout.Flatten.FlatPolygon array) =
         let mutable xMin, xMax = System.Single.MaxValue, System.Single.MinValue
         let mutable yMin, yMax = System.Single.MaxValue, System.Single.MinValue
         let mutable zMinPhysical = System.Double.MaxValue
         let mutable zMaxPhysical = System.Double.MinValue
         // Use FlatPolygons (post-hierarchy) so the bbox correctly
         // includes SRef/ARef-instanced content (e.g. an SRAM macro's
-        // bitcell array). With raw lib.Structures the bbox would
+        // bitcell array). With raw lib.Cells the bbox would
         // only cover the top cell's polygons.
         for poly in flat do
             // Skip Magic-internal markers (255, *) so the camera
@@ -307,8 +307,8 @@ type StackCanvasControl() =
             // above met5 doesn't pull the frustum vertically.
             if not (Layout.Layer.isNonPhysical poly.Layer poly.DataType) then
               for p in poly.Points do
-                let x = float32 ((float p.X) * lib.UserUnitsPerDbUnit)
-                let y = float32 ((float p.Y) * lib.UserUnitsPerDbUnit)
+                let x = float32 ((float p.X) * (float lib.Units.DbuNm * 1.0e-3))
+                let y = float32 ((float p.Y) * (float lib.Units.DbuNm * 1.0e-3))
                 if x < xMin then xMin <- x
                 if x > xMax then xMax <- x
                 if y < yMin then yMin <- y
@@ -564,7 +564,7 @@ type StackCanvasControl() =
                                         if s >= 0.0f && s < hitT then
                                             let px = rayO.X + rayD.X * s
                                             let py = rayO.Y + rayD.Y * s
-                                            if pointInPolygon poly.Points px py lib.UserUnitsPerDbUnit then
+                                            if pointInPolygon poly.Points px py (float lib.Units.DbuNm * 1.0e-3) then
                                                 hitT <- s
                                     if hitT < bestT then
                                         bestT <- hitT
@@ -843,7 +843,7 @@ type StackCanvasControl() =
             let toggle = this.Toggle
             // (Re-)extrude only when geometry source changed.
             if meshDirty && flat.Length > 0 then
-                cachedMesh <- Some (Extruder.extrude lib.UserUnitsPerDbUnit flat)
+                cachedMesh <- Some (Extruder.extrude (float lib.Units.DbuNm * 1.0e-3) flat)
                 meshDirty <- false
                 hasUploadedAny <- false
                 layerSlotMap.Clear()
@@ -932,7 +932,7 @@ type StackCanvasControl() =
                     // Hierarchy.closure now consumes Rkt.Document; convert
                     // at the call site until the App's model migrates.
                     let closure =
-                        Layout.Hierarchy.closure (Rkt.OfGds.fromLibrary lib) name
+                        Layout.Hierarchy.closure (lib) name
                     if not (Set.isEmpty closure) then
                         for i in 0 .. n - 1 do
                             let polyIdx = mesh.VertexPolyIndex.[i]
@@ -1325,13 +1325,13 @@ type StackCanvasControl() =
                 | Some lib ->
                     let routes =
                         // Convert Library -> Rkt.Document at the call site.
-                        Net.Ratlines.compute (Rkt.OfGds.fromLibrary lib)
+                        Net.Ratlines.compute (lib)
                     let filtered =
                         match highlightNet with
                         | Some n -> routes |> Array.filter (fun r -> r.Name = n)
                         | None -> routes
                     // World-space DBU → user µm divisor.
-                    let umPer = lib.UserUnitsPerDbUnit
+                    let umPer = (float lib.Units.DbuNm * 1.0e-3)
                     // Ratline Z: 0.5 µm above the highest tracked
                     // layer (met5 sits around 3.77 + 0.50 = 4.27);
                     // any flat constant above the stack works.

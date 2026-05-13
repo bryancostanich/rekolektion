@@ -2,11 +2,6 @@ module Rekolektion.Viz.Render.Skia.LayerPainter
 
 open SkiaSharp
 open Rekolektion.Viz.Core
-open Rekolektion.Viz.Core.Gds.Types
-// `Rkt.Types` opened after Gds.Types so `Point` in this module
-// resolves to the Rkt-flavored point — the one `Layout.Flatten`
-// now emits. `Library` stays Gds.Library (Rkt has no Library type)
-// so the public `paintIn` / `paintAutoFit` signatures don't churn.
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout.Flatten
 open Rekolektion.Viz.Render.Color
@@ -63,7 +58,7 @@ let private project (vb: ViewBox) (p: Point) : SKPoint =
 /// the GL mesh — keeps 2D and 3D agreement on which polygons
 /// belong to a net.
 let highlightedPolyKeys
-        (lib: Library)
+        (doc: Document)
         (flat: FlatPolygon array)
         (netName: string)
         : System.Collections.Generic.HashSet<string * int> =
@@ -74,9 +69,7 @@ let highlightedPolyKeys
     // (0,0) in sky130_fd_pr_reram__reram_cell shows up at its real
     // on-screen position, not the sub-cell's local origin.
     let origins = ResizeArray<int64 * int64>()
-    // Flatten now takes Rkt.Document; convert at the call site until
-    // the renderer migrates.
-    for l in Layout.Flatten.flattenLabels (Rkt.OfGds.fromLibrary lib) do
+    for l in Layout.Flatten.flattenLabels doc do
         if l.Text = netName then
             origins.Add(l.Origin.X, l.Origin.Y)
     if origins.Count = 0 then result
@@ -111,7 +104,7 @@ let highlightedPolyKeys
 let paintIn
         (canvas: SKCanvas)
         (vb: ViewBox)
-        (lib: Library)
+        (doc: Document)
         (flat: FlatPolygon array)
         (toggle: Visibility.ToggleState)
         : unit =
@@ -132,7 +125,7 @@ let paintIn
     // fast path costs no measurable extra time.
     let highlightSet =
         match toggle.HighlightNet with
-        | Some name -> highlightedPolyKeys lib flat name
+        | Some name -> highlightedPolyKeys doc flat name
         | None -> System.Collections.Generic.HashSet()
     let isHighlightActive = toggle.HighlightNet.IsSome
 
@@ -143,11 +136,7 @@ let paintIn
     // 'hide other blocks', per Visibility.isBlockVisible.
     let blockClosure : Set<string> option =
         toggle.IsolatedBlock
-        |> Option.map (fun name ->
-            // Hierarchy.closure now consumes Rkt.Document; LayerPainter's
-            // `lib` is still a Gds.Library, so we convert at the boundary.
-            // Conversion is O(cells) and runs at most once per paint.
-            Layout.Hierarchy.closure (Rkt.OfGds.fromLibrary lib) name)
+        |> Option.map (fun name -> Layout.Hierarchy.closure doc name)
 
     use fill = new SKPaint(Style = SKPaintStyle.Fill, IsAntialias = true)
     use stroke = new SKPaint(Style = SKPaintStyle.Stroke, IsAntialias = true, StrokeWidth = 0.5f)
@@ -189,13 +178,10 @@ let paint (canvas: SKCanvas) (size: int * int) (flat: FlatPolygon array) (toggle
     let (w, h) = size
     let (xmin, ymin, xmax, ymax) = boundsOfFlat flat
     let vb = { MinX = xmin; MinY = ymin; MaxX = xmax; MaxY = ymax; PixelW = w; PixelH = h }
-    // No library passed — synthesize an empty one so the highlight
-    // path is a no-op. Auto-fit callers (CLI / tests) don't
-    // exercise net highlighting.
-    let emptyLib : Library = {
-        Name = ""; UserUnitsPerDbUnit = 0.001; DbUnitsInMeters = 1e-9; Structures = []
-    }
-    paintIn canvas vb emptyLib flat toggle
+    // No document passed — synthesize an empty one so the highlight
+    // path is a no-op. Auto-fit callers (CLI / tests) don't exercise
+    // net highlighting.
+    paintIn canvas vb emptyDocument flat toggle
 
 /// Compute the bbox of the flat polygons in world DBU coordinates.
 let bboxOf (flat: FlatPolygon array) : (int64 * int64 * int64 * int64) =

@@ -30,12 +30,11 @@ let ``SetTab changes ActiveTab`` () =
 
 // --- Polygon selection / move handlers ---------------------------------
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 
-let private mkRect (x0: int64) (y0: int64) (x1: int64) (y1: int64) : Boundary = {
-    Layer = 68
-    DataType = 20
+let private mkRectPoly (x0: int64) (y0: int64) (x1: int64) (y1: int64) : Poly = {
+    Layer = Named ("sky130", "met1")
     Points = [
         { X = x0; Y = y0 }
         { X = x1; Y = y0 }
@@ -43,28 +42,30 @@ let private mkRect (x0: int64) (y0: int64) (x1: int64) (y1: int64) : Boundary = 
         { X = x0; Y = y1 }
         { X = x0; Y = y0 }
     ]
+    Net = None
+    Props = []
+    Comments = []
 }
 
-let private fixtureLib () : Library = {
-    Name = "TEST"
-    UserUnitsPerDbUnit = 0.001
-    DbUnitsInMeters = 1e-9
-    Structures = [
-        { Name = "TOP"
-          Elements = [
-              Boundary (mkRect 0L 0L 100L 100L)
-              Boundary (mkRect 200L 0L 300L 100L)
-          ] }
-    ]
-}
+let private fixtureDoc () : Document =
+    { emptyDocument with
+        Cells = [
+            { Name = "TOP"
+              Comments = []
+              Elements = [
+                  PolyEl (mkRectPoly 0L 0L 100L 100L)
+                  PolyEl (mkRectPoly 200L 0L 300L 100L)
+              ] }
+        ]
+        TopCell = Some "TOP" }
 
 let private fixtureModel () : Model.Model =
-    let lib = fixtureLib ()
+    let doc = fixtureDoc ()
     let macro : Model.LoadedMacro = {
         Path = "/tmp/fixture.gds"
-        Library = lib
-        FlatPolygons = Flatten.flatten (Rkt.OfGds.fromLibrary lib)
-        TopInstances = Instances.Library.enumerate lib
+        Document = doc
+        FlatPolygons = Flatten.flatten doc
+        TopInstances = Instances.enumerate doc
         Nets = Map.empty
         Blocks = []
         NetsFromSidecar = false
@@ -78,9 +79,6 @@ let private fixtureModel () : Model.Model =
         ActiveMacroPath = Some macro.Path }
 
 let private runUntilQuiescent (msg: Msg.Msg) (model: Model.Model) : Model.Model =
-    // Some Msgs return Cmd.ofMsg follow-ups (e.g. MovePolygonDbu →
-    // MovePolygonsDbu). Drain those synchronously so the test sees
-    // the final state.
     let mutable m = model
     let mutable pending : Msg.Msg list = [msg]
     let mutable steps = 0
@@ -90,10 +88,6 @@ let private runUntilQuiescent (msg: Msg.Msg) (model: Model.Model) : Model.Model 
         pending <- List.tail pending
         let m', cmd = Update.update stubBackend head m
         m <- m'
-        // Elmish Cmd is a list of subscribers; for Cmd.ofMsg the
-        // subscriber synchronously invokes the dispatcher with the
-        // forwarded Msg. Run with a capturing dispatcher so we
-        // collect those follow-ups.
         for sub in cmd do
             sub (fun forwarded -> pending <- pending @ [forwarded])
     m
@@ -124,22 +118,22 @@ let ``MovePolygonsDbu translates every polygon in selection`` () =
     let sel = Set.ofList [("TOP", 0); ("TOP", 1)]
     let next = runUntilQuiescent (Msg.MovePolygonsDbu (sel, 50L, -25L)) model
     let macro = next.OpenMacros |> List.head
-    let elems = (macro.Library.Structures |> List.head).Elements
+    let elems = (macro.Document.Cells |> List.head).Elements
     match elems.[0] with
-    | Boundary b ->
-        b.Points |> should equal [
+    | PolyEl p ->
+        p.Points |> should equal [
             { X = 50L;  Y = -25L }
             { X = 150L; Y = -25L }
             { X = 150L; Y = 75L }
             { X = 50L;  Y = 75L }
             { X = 50L;  Y = -25L }
         ]
-    | _ -> failwith "expected Boundary at index 0"
+    | _ -> failwith "expected PolyEl at index 0"
     match elems.[1] with
-    | Boundary b ->
+    | PolyEl p ->
         // Shifted from (200,0)-(300,100) to (250,-25)-(350,75).
-        b.Points.Head |> should equal { X = 250L; Y = -25L }
-    | _ -> failwith "expected Boundary at index 1"
+        p.Points.Head |> should equal { X = 250L; Y = -25L }
+    | _ -> failwith "expected PolyEl at index 1"
 
 [<Fact>]
 let ``MovePolygonsDbu only touches polygons in selection`` () =
@@ -147,42 +141,42 @@ let ``MovePolygonsDbu only touches polygons in selection`` () =
     let sel = Set.singleton ("TOP", 0)
     let next = runUntilQuiescent (Msg.MovePolygonsDbu (sel, 10L, 10L)) model
     let macro = next.OpenMacros |> List.head
-    let elems = (macro.Library.Structures |> List.head).Elements
+    let elems = (macro.Document.Cells |> List.head).Elements
     match elems.[1] with
-    | Boundary b ->
+    | PolyEl p ->
         // Untouched: still at original (200,0)-(300,100).
-        b.Points.Head |> should equal { X = 200L; Y = 0L }
-    | _ -> failwith "expected Boundary at index 1"
+        p.Points.Head |> should equal { X = 200L; Y = 0L }
+    | _ -> failwith "expected PolyEl at index 1"
 
 [<Fact>]
 let ``MovePolygonsDbu with zero delta is a no-op`` () =
     let model = fixtureModel ()
-    let originalLib = (List.head model.OpenMacros).Library
+    let originalDoc = (List.head model.OpenMacros).Document
     let next, _ = Update.update stubBackend
                     (Msg.MovePolygonsDbu (Set.singleton ("TOP", 0), 0L, 0L))
                     model
     let macro = next.OpenMacros |> List.head
-    macro.Library |> should equal originalLib
+    macro.Document |> should equal originalDoc
     macro.Dirty |> should equal false
-    macro.UndoStack |> should equal ([] : Library list)
+    macro.UndoStack |> should equal ([] : Document list)
 
 [<Fact>]
 let ``MovePolygonsDbu with empty selection is a no-op`` () =
     let model = fixtureModel ()
-    let originalLib = (List.head model.OpenMacros).Library
+    let originalDoc = (List.head model.OpenMacros).Document
     let next, _ = Update.update stubBackend
                     (Msg.MovePolygonsDbu (Set.empty, 50L, 50L)) model
-    (List.head next.OpenMacros).Library |> should equal originalLib
+    (List.head next.OpenMacros).Document |> should equal originalDoc
 
 [<Fact>]
 let ``MovePolygonDbu routes through MovePolygonsDbu and translates one`` () =
     let model = fixtureModel ()
     let next = runUntilQuiescent (Msg.MovePolygonDbu ("TOP", 1, 7L, 11L)) model
-    let elems = (List.head (List.head next.OpenMacros).Library.Structures).Elements
+    let elems = (List.head (List.head next.OpenMacros).Document.Cells).Elements
     match elems.[1] with
-    | Boundary b ->
-        b.Points.Head |> should equal { X = 207L; Y = 11L }
-    | _ -> failwith "expected Boundary at index 1"
+    | PolyEl p ->
+        p.Points.Head |> should equal { X = 207L; Y = 11L }
+    | _ -> failwith "expected PolyEl at index 1"
 
 [<Fact>]
 let ``MovePolygonsDbu pushes an undo snapshot`` () =

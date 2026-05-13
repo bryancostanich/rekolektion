@@ -2,7 +2,7 @@ module Rekolektion.Viz.Render.Skia.DimensionOverlay
 
 open SkiaSharp
 open Rekolektion.Viz.Core
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 open Rekolektion.Viz.Render.Skia
 
@@ -171,7 +171,7 @@ let private drawAxialArrow
 let render
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
-        (lib: Library)
+        (doc: Document)
         (instances: Instances.Instance array)
         (selected: Set<int>)
         (instancePolyBboxes:
@@ -205,7 +205,7 @@ let render
             Style = SKPaintStyle.Fill,
             Color = SKColor(0x00uy, 0x00uy, 0x00uy, 0xC0uy),
             IsAntialias = true)
-    let umPerDbu = lib.UserUnitsPerDbUnit
+    let umPerDbu = float doc.Units.DbuNm * 1.0e-3
 
     let isPhysical (layer: int) (dt: int) =
         not (Layout.Layer.isNonPhysical layer dt)

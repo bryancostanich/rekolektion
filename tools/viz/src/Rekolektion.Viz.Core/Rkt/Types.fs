@@ -63,7 +63,11 @@ type Path = {
     Comments: string list
 }
 
-type Rect = {
+/// Renamed from `Rect` to dodge a conflict with `Avalonia.Rect` in
+/// the App project. Used by the canonical model as the inner record
+/// of `RectEl`. Outside the format module, callers see only
+/// `RectEl` and don't touch this name.
+type Rectangle = {
     Layer: Layer
     X1: int64
     Y1: int64
@@ -128,7 +132,7 @@ type Props = {
 type Element =
     | PolyEl of Poly
     | PathEl of Path
-    | RectEl of Rect
+    | RectEl of Rectangle
     | PortEl of Port
     | LabelEl of Label
     | SRefEl of SRef

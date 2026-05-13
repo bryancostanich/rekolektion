@@ -1319,7 +1319,9 @@ type StackCanvasControl() =
             if (showAllRat || highlightNet.IsSome) && rulerProgram <> 0u then
                 match this.Library with
                 | Some lib ->
-                    let routes = Net.Ratlines.compute lib
+                    let routes =
+                        // Convert Library -> Rkt.Document at the call site.
+                        Net.Ratlines.compute (Rkt.OfGds.fromLibrary lib)
                     let filtered =
                         match highlightNet with
                         | Some n -> routes |> Array.filter (fun r -> r.Name = n)

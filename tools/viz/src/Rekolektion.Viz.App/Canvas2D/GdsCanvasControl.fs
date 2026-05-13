@@ -1156,7 +1156,8 @@ type GdsCanvasControl() =
             let highlightNet = this.Toggle.HighlightNet
             let routes =
                 if this.ShowRatlines || highlightNet.IsSome then
-                    Net.Ratlines.compute renderLib
+                    // Ratlines now takes Rkt.Document; convert at boundary.
+                    Net.Ratlines.compute (Rkt.OfGds.fromLibrary renderLib)
                 else [||]
             // Tighten-mode candidates: per-cardinal binding pair
             // for the current selection vs. every other top

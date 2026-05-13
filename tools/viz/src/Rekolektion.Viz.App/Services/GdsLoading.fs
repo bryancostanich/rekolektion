@@ -78,5 +78,7 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
 let deriveNets (lib: Rekolektion.Viz.Core.Gds.Types.Library)
         : Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>> = async {
     do! Async.SwitchToThreadPool ()
-    return LabelFlood.derive lib
+    // LabelFlood consumes Rkt.Document now; the App's Library is
+    // still Gds-flavored so we convert at the call site.
+    return LabelFlood.derive (Rkt.OfGds.fromLibrary lib)
 }

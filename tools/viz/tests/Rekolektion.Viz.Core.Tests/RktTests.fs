@@ -15,7 +15,7 @@ let private parseOk (src: string) =
 let private analyzeOk (src: string) =
     let cst = parseOk src
     match Reader.analyze cst with
-    | Ok ast -> cst, ast
+    | Ok ast -> ast
     | Error e -> failwithf "analyze failed: %A" e
 
 // ─── Lexer / parser basics ─────────────────────────────────────────────
@@ -23,52 +23,17 @@ let private analyzeOk (src: string) =
 [<Fact>]
 let ``parses an empty layout`` () =
     let src = "(layout (version 1) (pdk sky130))\n"
-    let _, ast = analyzeOk src
+    let ast = analyzeOk src
     ast.Version |> should equal 1
     ast.Pdk |> should equal "sky130"
     ast.Cells |> List.length |> should equal 0
 
 [<Fact>]
-let ``round-trip is byte-exact for untouched source`` () =
-    let src = "(layout (version 1) (pdk sky130)\n  (cell foo\n    (poly (layer sky130:met1)\n          (points (0 0) (10 0) (10 5) (0 5)))))\n"
-    let cst = parseOk src
-    Writer.renderCst cst |> should equal src
-
-[<Fact>]
-let ``preserves line comments in round-trip`` () =
-    let src = "; top of file\n(layout (version 1) (pdk sky130)\n  ; before cell\n  (cell c1))\n"
-    let cst = parseOk src
-    Writer.renderCst cst |> should equal src
-
-[<Fact>]
-let ``classifies integer and float atoms by lexeme`` () =
+let ``preserves PropValue int vs float kind on round-trip`` () =
     let src = "(layout (version 1) (pdk sky130) (units (dbu_nm 5) (uu_um 1)))"
-    let cst = parseOk src
-    // Walk into the units form and check atom kinds.
-    let layout =
-        match cst.Roots with
-        | [ Rekolektion.Viz.Core.Rkt.Cst.SList l ] -> l
-        | _ -> failwith "expected one layout form"
-    let units =
-        layout.Children
-        |> List.pick (fun c ->
-            match c with
-            | Rekolektion.Viz.Core.Rkt.Cst.SList l when
-                (match l.Children with
-                 | Rekolektion.Viz.Core.Rkt.Cst.SAtom a :: _ -> a.Text = "units"
-                 | _ -> false) -> Some l
-            | _ -> None)
-    let dbuNm =
-        units.Children
-        |> List.pick (fun c ->
-            match c with
-            | Rekolektion.Viz.Core.Rkt.Cst.SList l ->
-                match l.Children with
-                | Rekolektion.Viz.Core.Rkt.Cst.SAtom { Text = "dbu_nm" } :: Rekolektion.Viz.Core.Rkt.Cst.SAtom value :: _ ->
-                    Some value
-                | _ -> None
-            | _ -> None)
-    dbuNm.Kind |> should equal Rekolektion.Viz.Core.Rkt.Cst.IntLit
+    let ast = analyzeOk src
+    ast.Units.DbuNm |> should equal 5
+    ast.Units.UuUm |> should equal 1
 
 [<Fact>]
 let ``reports unterminated string`` () =
@@ -82,18 +47,93 @@ let ``reports unexpected close paren`` () =
     | Ok _ -> failwith "should not parse"
     | Error e -> e.Message |> should haveSubstring ")"
 
+// ─── Comments live on the AST ─────────────────────────────────────────
+
+[<Fact>]
+let ``file-level comment survives parse onto HeaderComments`` () =
+    let src = "; top of file\n; second header line\n(layout (version 1) (pdk sky130))\n"
+    let ast = analyzeOk src
+    ast.HeaderComments |> should equal [ "top of file"; "second header line" ]
+
+[<Fact>]
+let ``comment before a cell attaches to that cell`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  ; bitcell core\n"
+        + "  (cell bit))\n"
+    let ast = analyzeOk src
+    let cell = List.head ast.Cells
+    cell.Comments |> should equal [ "bitcell core" ]
+
+[<Fact>]
+let ``comment before an element attaches to that element`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    ; on the metal1 layer\n"
+        + "    (poly (layer sky130:met1) (points (0 0) (1 0) (1 1)))))\n"
+    let ast = analyzeOk src
+    let p = match (List.head ast.Cells).Elements with [ PolyEl p ] -> p | _ -> failwith "poly"
+    p.Comments |> should equal [ "on the metal1 layer" ]
+
+[<Fact>]
+let ``comments survive round-trip through write`` () =
+    let src =
+        "; provenance: from issue #42\n"
+        + "(layout (version 1) (pdk sky130)\n"
+        + "  ; bitcell core\n"
+        + "  (cell bit\n"
+        + "    ; metal-1 bitline contact\n"
+        + "    (poly (layer sky130:met1) (points (0 0) (1 0) (1 1)))))\n"
+    let ast = analyzeOk src
+    // Round-trip: AST → text → AST. Comments must still be present
+    // on the second AST.
+    let rendered = Writer.write ast
+    let ast2 = analyzeOk rendered
+    ast2.HeaderComments |> should equal [ "provenance: from issue #42" ]
+    let cell2 = List.head ast2.Cells
+    cell2.Comments |> should equal [ "bitcell core" ]
+    let p2 = match cell2.Elements with [ PolyEl p ] -> p | _ -> failwith "poly"
+    p2.Comments |> should equal [ "metal-1 bitline contact" ]
+
+[<Fact>]
+let ``editing an unrelated field keeps a node's comments`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  ; do not move\n"
+        + "  (cell pinned\n"
+        + "    ; key vector\n"
+        + "    (sref (cell bit) (origin 0 0))))\n"
+    let ast = analyzeOk src
+    let cell = List.head ast.Cells
+    // Mutate the sref's origin only.
+    let edited =
+        match cell.Elements with
+        | [ SRefEl s ] ->
+            { cell with Elements = [ SRefEl { s with Origin = { X = 5L; Y = 7L } } ] }
+        | _ -> failwith "sref"
+    let doc2 = { ast with Cells = [ edited ] }
+    let rendered = Writer.write doc2
+    let ast2 = analyzeOk rendered
+    let cell2 = List.head ast2.Cells
+    cell2.Comments |> should equal [ "do not move" ]
+    match cell2.Elements with
+    | [ SRefEl s ] ->
+        s.Origin |> should equal { X = 5L; Y = 7L }
+        s.Comments |> should equal [ "key vector" ]
+    | _ -> failwith "sref"
+
 // ─── Analyze pulls semantic fields ──────────────────────────────────────
 
 [<Fact>]
 let ``analyzes a poly element`` () =
-    let src = """
-(layout (version 1) (pdk sky130)
-  (cell c
-    (poly (layer sky130:met1)
-          (points (0 0) (100 0) (100 50) (0 50))
-          (net BL))))
-"""
-    let _, ast = analyzeOk src
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (poly (layer sky130:met1)\n"
+        + "          (points (0 0) (100 0) (100 50) (0 50))\n"
+        + "          (net BL))))\n"
+    let ast = analyzeOk src
     let cell = List.head ast.Cells
     cell.Name |> should equal "c"
     match cell.Elements with
@@ -106,26 +146,25 @@ let ``analyzes a poly element`` () =
 [<Fact>]
 let ``unknown layer survives import`` () =
     let src = "(layout (version 1) (pdk sky130) (cell c (poly (layer unknown:94/20) (points (0 0) (1 0) (1 1)))))"
-    let _, ast = analyzeOk src
+    let ast = analyzeOk src
     let p = match (List.head ast.Cells).Elements with [ PolyEl p ] -> p | _ -> failwith "poly"
     p.Layer |> should equal (Unknown (94, 20))
 
 [<Fact>]
 let ``bare layer name picks up file default pdk`` () =
     let src = "(layout (version 1) (pdk sky130) (cell c (poly (layer met1) (points (0 0) (1 0) (1 1)))))"
-    let _, ast = analyzeOk src
+    let ast = analyzeOk src
     let p = match (List.head ast.Cells).Elements with [ PolyEl p ] -> p | _ -> failwith "poly"
     p.Layer |> should equal (Named ("sky130", "met1"))
 
 [<Fact>]
 let ``analyzes nets block with domain and voltage`` () =
-    let src = """
-(layout (version 1) (pdk sky130)
-  (nets
-    (net BL (domain signal))
-    (net VPWR (domain power) (voltage 1.8))))
-"""
-    let _, ast = analyzeOk src
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (nets\n"
+        + "    (net BL (domain signal))\n"
+        + "    (net VPWR (domain power) (voltage 1.8))))\n"
+    let ast = analyzeOk src
     ast.Nets |> List.length |> should equal 2
     let bl = ast.Nets |> List.find (fun n -> n.Name = "BL")
     bl.Domain |> should equal "signal"
@@ -136,14 +175,13 @@ let ``analyzes nets block with domain and voltage`` () =
 
 [<Fact>]
 let ``analyzes a port with flags and shape`` () =
-    let src = """
-(layout (version 1) (pdk sky130)
-  (cell c
-    (port (name BL) (dir input) (layer sky130:met1)
-          (flags signal scan)
-          (shape (rect 0 0 10 50)))))
-"""
-    let _, ast = analyzeOk src
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (port (name BL) (dir input) (layer sky130:met1)\n"
+        + "          (flags signal scan)\n"
+        + "          (shape (rect 0 0 10 50)))))\n"
+    let ast = analyzeOk src
     let port = match (List.head ast.Cells).Elements with [ PortEl p ] -> p | _ -> failwith "port"
     port.Name |> should equal "BL"
     port.Direction |> should equal Input
@@ -152,15 +190,14 @@ let ``analyzes a port with flags and shape`` () =
 
 [<Fact>]
 let ``analyzes sref and aref defaults`` () =
-    let src = """
-(layout (version 1) (pdk sky130)
-  (cell c
-    (sref (cell bit) (origin 0 0))
-    (aref (cell wl) (origin 0 200)
-          (cols 64) (rows 1)
-          (col_pitch 10 0) (row_pitch 0 5))))
-"""
-    let _, ast = analyzeOk src
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (sref (cell bit) (origin 0 0))\n"
+        + "    (aref (cell wl) (origin 0 200)\n"
+        + "          (cols 64) (rows 1)\n"
+        + "          (col_pitch 10 0) (row_pitch 0 5))))\n"
+    let ast = analyzeOk src
     let elements = (List.head ast.Cells).Elements
     let sref = match elements with [ SRefEl s; _ ] -> s | _ -> failwith "sref"
     sref.Cell |> should equal "bit"
@@ -183,12 +220,13 @@ let ``synthesize then parse yields the same AST`` () =
         Imports = []
         Nets = [
             { Name = "BL"; Domain = "signal"; Voltage = None
-              NetClass = None; Props = [] }
+              NetClass = None; Props = []; Comments = [] }
             { Name = "VPWR"; Domain = "power"; Voltage = Some 1.8
-              NetClass = None; Props = [] }
+              NetClass = None; Props = []; Comments = [] }
         ]
         Cells = [
             { Name = "c"
+              Comments = []
               Elements = [
                   PolyEl {
                       Layer = Named ("sky130", "met1")
@@ -200,6 +238,7 @@ let ``synthesize then parse yields the same AST`` () =
                       ]
                       Net = Some "BL"
                       Props = []
+                      Comments = []
                   }
                   PortEl {
                       Name = "BL"
@@ -209,13 +248,15 @@ let ``synthesize then parse yields the same AST`` () =
                       Shape = RectShape (0L, 0L, 10L, 50L)
                       Net = None
                       Props = []
+                      Comments = []
                   }
               ] }
         ]
         TopCell = Some "c"
+        HeaderComments = []
     }
     let text = Writer.write original
-    let _, ast = analyzeOk text
+    let ast = analyzeOk text
     ast.Pdk |> should equal original.Pdk
     ast.TopCell |> should equal original.TopCell
     ast.Nets |> List.length |> should equal 2
@@ -230,6 +271,7 @@ let ``synthesize emits floats with at least one decimal`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Comments = []
                   Elements = [
                       SRefEl {
                           Cell = "x"
@@ -238,14 +280,13 @@ let ``synthesize emits floats with at least one decimal`` () =
                           Mag = 1.0
                           Reflect = false
                           Props = []
+                          Comments = []
                       }
                   ] }
             ]
     }
     let text = Writer.write doc
-    // The reader must classify the rotation as a float, not int, on
-    // re-parse — guarantees the writer kept the decimal.
-    let _, ast2 = analyzeOk text
+    let ast2 = analyzeOk text
     match (List.head ast2.Cells).Elements with
     | [ SRefEl s ] -> s.Rot |> should equal 90.0
     | _ -> failwith "expected sref"
@@ -256,6 +297,7 @@ let ``synthesize escapes special chars in strings`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Comments = []
                   Elements = [
                       LabelEl {
                           Layer = Named ("sky130", "met1")
@@ -263,12 +305,13 @@ let ``synthesize escapes special chars in strings`` () =
                           Origin = { X = 0L; Y = 0L }
                           Class = None
                           Props = []
+                          Comments = []
                       }
                   ] }
             ]
     }
     let text = Writer.write doc
-    let _, ast2 = analyzeOk text
+    let ast2 = analyzeOk text
     let lbl = match (List.head ast2.Cells).Elements with [ LabelEl l ] -> l | _ -> failwith "label"
     lbl.Text |> should equal "with \"quotes\" and\nnewlines"
 

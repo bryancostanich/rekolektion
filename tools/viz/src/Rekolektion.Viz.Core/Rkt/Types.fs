@@ -31,10 +31,7 @@ type PortShape =
     | RectShape of x1: int64 * y1: int64 * x2: int64 * y2: int64
     | PolyShape of Point list
 
-/// Property bag value. Mirrors the smallest set of S-expression atoms
-/// the writer needs to round-trip; unrecognised value shapes parse as
-/// `PvAtom` and emit verbatim. Names are prefixed to avoid clashing
-/// with the lexical `AtomKind` cases on the CST side.
+/// Property bag value.
 type PropValue =
     | PvAtom of string
     | PvString of string
@@ -43,11 +40,17 @@ type PropValue =
 
 type Property = { Key: string; Value: PropValue }
 
+/// `Comments` on every node holds the `;`-prefixed lines that
+/// preceded the form in source order. Storage strips the `;` and the
+/// trailing newline — one list entry per `;` line. The writer puts
+/// them back on synthesis. New nodes default to `Comments = []`;
+/// untouched nodes retain whatever the reader populated.
 type Poly = {
     Layer: Layer
     Points: Point list
     Net: string option
     Props: Property list
+    Comments: string list
 }
 
 type Path = {
@@ -57,6 +60,7 @@ type Path = {
     Net: string option
     Cap: string option
     Props: Property list
+    Comments: string list
 }
 
 type Rect = {
@@ -67,6 +71,7 @@ type Rect = {
     Y2: int64
     Net: string option
     Props: Property list
+    Comments: string list
 }
 
 type Port = {
@@ -77,6 +82,7 @@ type Port = {
     Shape: PortShape
     Net: string option
     Props: Property list
+    Comments: string list
 }
 
 type Label = {
@@ -85,6 +91,7 @@ type Label = {
     Origin: Point
     Class: string option
     Props: Property list
+    Comments: string list
 }
 
 type SRef = {
@@ -94,6 +101,7 @@ type SRef = {
     Mag: float
     Reflect: bool
     Props: Property list
+    Comments: string list
 }
 
 type ARef = {
@@ -107,6 +115,14 @@ type ARef = {
     Mag: float
     Reflect: bool
     Props: Property list
+    Comments: string list
+}
+
+/// Cell-level `(props ...)` wrapper. `Comments` belong to the form's
+/// position within the parent cell.
+type Props = {
+    Items: Property list
+    Comments: string list
 }
 
 type Element =
@@ -117,11 +133,37 @@ type Element =
     | LabelEl of Label
     | SRefEl of SRef
     | ARefEl of ARef
-    | PropsEl of Property list
+    | PropsEl of Props
+
+/// Leading comments of an element, regardless of variant. Useful for
+/// editor tooling that wants to display or move comments without
+/// caring about element shape.
+let elementComments (e: Element) : string list =
+    match e with
+    | PolyEl p -> p.Comments
+    | PathEl p -> p.Comments
+    | RectEl r -> r.Comments
+    | PortEl p -> p.Comments
+    | LabelEl l -> l.Comments
+    | SRefEl s -> s.Comments
+    | ARefEl a -> a.Comments
+    | PropsEl p -> p.Comments
+
+let withElementComments (comments: string list) (e: Element) : Element =
+    match e with
+    | PolyEl p -> PolyEl { p with Comments = comments }
+    | PathEl p -> PathEl { p with Comments = comments }
+    | RectEl r -> RectEl { r with Comments = comments }
+    | PortEl p -> PortEl { p with Comments = comments }
+    | LabelEl l -> LabelEl { l with Comments = comments }
+    | SRefEl s -> SRefEl { s with Comments = comments }
+    | ARefEl a -> ARefEl { a with Comments = comments }
+    | PropsEl p -> PropsEl { p with Comments = comments }
 
 type Cell = {
     Name: string
     Elements: Element list
+    Comments: string list
 }
 
 type Net = {
@@ -130,6 +172,7 @@ type Net = {
     Voltage: float option
     NetClass: string option
     Props: Property list
+    Comments: string list
 }
 
 type Units = {
@@ -139,14 +182,18 @@ type Units = {
 
 /// `(import "path")` form. Path is verbatim from source — relative to
 /// the importing file. Resolution happens in a separate pass.
-type Import = { Path: string }
+type Import = {
+    Path: string
+    Comments: string list
+}
 
 /// A single `.rkt` file's parsed semantic content.
 ///
 /// `Pdk` is the default PDK used to resolve bare layer references
 /// during analyze. `TopCell` reflects an explicit `(top cell-name)` if
 /// present; otherwise the first cell in `Cells` is the document's top
-/// by convention.
+/// by convention. `HeaderComments` holds comments that appear before
+/// the `(layout ...)` form (typical file headers).
 type Document = {
     Version: int
     Pdk: string
@@ -155,6 +202,7 @@ type Document = {
     Nets: Net list
     Cells: Cell list
     TopCell: string option
+    HeaderComments: string list
 }
 
 /// Defaults applied when a header field is omitted.
@@ -171,4 +219,5 @@ let emptyDocument : Document = {
     Nets = []
     Cells = []
     TopCell = None
+    HeaderComments = []
 }

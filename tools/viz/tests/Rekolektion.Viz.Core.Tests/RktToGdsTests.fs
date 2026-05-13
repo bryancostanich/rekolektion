@@ -25,8 +25,9 @@ let ``Poly becomes Boundary with point list preserved`` () =
             { X = 0L; Y = 50L }
             { X = 0L; Y = 0L }
         ]
-        Net = Some "BL"  // dropped; just confirm it doesn't crash
+        Net = Some "BL"
         Props = []
+        Comments = []
     }
     let b = ToGds.polyToBoundary p
     b.Layer |> should equal 68
@@ -42,6 +43,7 @@ let ``Path width and points preserved`` () =
         Net = None
         Cap = Some "round"
         Props = []
+        Comments = []
     }
     let g = ToGds.pathToGds p
     g.Width |> should equal 170
@@ -56,6 +58,7 @@ let ``SRef preserves origin and orientation`` () =
         Mag = 1.0
         Reflect = true
         Props = []
+        Comments = []
     }
     let g = ToGds.srefToGds s
     g.StructureName |> should equal "bitcell"
@@ -76,6 +79,7 @@ let ``ARef preserves rows cols pitches`` () =
         Mag = 1.0
         Reflect = false
         Props = []
+        Comments = []
     }
     let g = ToGds.arefToGds a
     g.Cols |> should equal 64
@@ -92,6 +96,7 @@ let ``Port emits one geometry element and one text label`` () =
         Shape = RectShape (0L, 0L, 10L, 50L)
         Net = None
         Props = []
+        Comments = []
     }
     let elements = ToGds.portToGds p
     elements |> List.length |> should equal 2
@@ -102,8 +107,8 @@ let ``Port emits one geometry element and one text label`` () =
 
 [<Fact>]
 let ``PropsEl drops from output`` () =
-    ToGds.elementToGds (PropsEl [ { Key = "k"; Value = PvAtom "v" } ])
-    |> should be Empty
+    let p : Props = { Items = [ { Key = "k"; Value = PvAtom "v" } ]; Comments = [] }
+    ToGds.elementToGds (PropsEl p) |> should be Empty
 
 // ─── Round-trip via OfGds ───────────────────────────────────────────────
 
@@ -113,15 +118,18 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
         emptyDocument with
             Cells = [
                 { Name = "top"
+                  Comments = []
                   Elements = [
                       SRefEl {
                           Cell = "leaf"
                           Origin = { X = 100L; Y = 0L }
                           Rot = 0.0; Mag = 1.0; Reflect = false
                           Props = []
+                          Comments = []
                       }
                   ] }
                 { Name = "leaf"
+                  Comments = []
                   Elements = [
                       PolyEl {
                           Layer = Named ("sky130", "met1")
@@ -134,6 +142,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                           ]
                           Net = None
                           Props = []
+                          Comments = []
                       }
                       PathEl {
                           Layer = Named ("sky130", "poly")
@@ -142,6 +151,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                           Net = None
                           Cap = None
                           Props = []
+                          Comments = []
                       }
                   ] }
             ]
@@ -166,6 +176,7 @@ let ``Rkt port survives as geometry + label on round trip`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Comments = []
                   Elements = [
                       PortEl {
                           Name = "BL"
@@ -175,6 +186,7 @@ let ``Rkt port survives as geometry + label on round trip`` () =
                           Shape = RectShape (0L, 0L, 10L, 50L)
                           Net = None
                           Props = []
+                          Comments = []
                       }
                   ] }
             ]
@@ -182,8 +194,6 @@ let ``Rkt port survives as geometry + label on round trip`` () =
     let lib = ToGds.toLibrary original
     let roundTripped = OfGds.fromLibrary lib
     let cell = List.head roundTripped.Cells
-    // Port loses its flags+direction; geometry comes back as a Poly,
-    // name comes back as a Label.
     cell.Elements |> List.length |> should equal 2
     let hasPoly = cell.Elements |> List.exists (function PolyEl _ -> true | _ -> false)
     let hasLabel = cell.Elements |> List.exists (function LabelEl l -> l.Text = "BL" | _ -> false)
@@ -196,6 +206,7 @@ let ``unknown layer passes through to GDS and back intact`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Comments = []
                   Elements = [
                       PolyEl {
                           Layer = Unknown (1234, 56)
@@ -207,6 +218,7 @@ let ``unknown layer passes through to GDS and back intact`` () =
                           ]
                           Net = None
                           Props = []
+                          Comments = []
                       }
                   ] }
             ]

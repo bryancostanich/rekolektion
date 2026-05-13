@@ -5,27 +5,11 @@ open System.Globalization
 open Rekolektion.Viz.Core.Rkt.Cst
 open Rekolektion.Viz.Core.Rkt.Types
 
-// ─── CST → string (byte-exact for untouched input) ────────────────────────
+// `Cst` types still appear here as an internal scaffold for emitting
+// the AST in a single linear pass — they are not part of the public
+// `Rkt` surface and consumers should not depend on this dependency.
 
-let rec private emitSexp (sb: StringBuilder) (s: Sexp) : unit =
-    match s with
-    | SAtom a ->
-        sb.Append a.Leading |> ignore
-        sb.Append a.Text |> ignore
-    | SList l ->
-        sb.Append l.Leading |> ignore
-        sb.Append '(' |> ignore
-        for c in l.Children do emitSexp sb c
-        sb.Append l.Trailing |> ignore
-        sb.Append ')' |> ignore
-
-let renderCst (doc: Cst.Document) : string =
-    let sb = StringBuilder()
-    for r in doc.Roots do emitSexp sb r
-    sb.Append doc.Trailing |> ignore
-    sb.ToString()
-
-// ─── AST → CST (canonical synthesizer) ────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────
 
 let private dummyPos : SourcePos = { Line = 0; Col = 0 }
 
@@ -48,9 +32,6 @@ let private intAtom (leading: string) (v: int64) : Sexp =
     atom leading IntLit (v.ToString CultureInfo.InvariantCulture)
 
 let private floatAtom (leading: string) (v: float) : Sexp =
-    // Always emit at least one decimal so the reader classifies as
-    // FloatLit. "R" gives round-trip precision but skips the dot for
-    // whole numbers — append ".0" in that case.
     let raw = v.ToString("R", CultureInfo.InvariantCulture)
     let text =
         if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E'
@@ -58,8 +39,6 @@ let private floatAtom (leading: string) (v: float) : Sexp =
         else raw + ".0"
     atom leading FloatLit text
 
-/// Emits a JSON-style escaped string literal. Mirrors the decoder in
-/// `Reader.stringText` for the four escapes that survive round-trip.
 let private stringAtom (leading: string) (text: string) : Sexp =
     let sb = StringBuilder()
     sb.Append '"' |> ignore
@@ -125,13 +104,36 @@ let private flagSymbol (f: PortFlag) : string =
     | Analog -> "analog"
     | Scan -> "scan"
 
-/// Indent string for canonical synthesis. Two-space indentation
-/// matches the design doc's schema-sketch style.
+/// 2-space indentation. Layout per the design doc's schema sketch.
+let private indentStr (n: int) : string =
+    String.replicate n "  "
+
 let private indent (n: int) : string =
-    "\n" + String.replicate n "  "
+    "\n" + indentStr n
+
+/// Render a comment block as the prefix portion of a form's leading
+/// trivia. Returns an empty string if the comment list is empty so
+/// `leading = commentBlock i cs + indent i` reduces to plain indent
+/// when no comments exist.
+let private commentBlock (i: int) (comments: string list) : string =
+    if List.isEmpty comments then ""
+    else
+        let pad = indentStr i
+        let sb = StringBuilder()
+        for c in comments do
+            sb.Append '\n' |> ignore
+            sb.Append pad |> ignore
+            sb.Append "; " |> ignore
+            sb.Append c |> ignore
+        sb.ToString()
+
+let private leading (i: int) (comments: string list) : string =
+    commentBlock i comments + indent i
+
+// ─── Element synthesizers ─────────────────────────────────────────────
 
 let private synthesizePoly (i: int) (poly: Poly) : Sexp =
-    let lead = indent i
+    let lead = leading i poly.Comments
     let inner = indent (i + 1)
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "poly")
@@ -146,7 +148,7 @@ let private synthesizePoly (i: int) (poly: Poly) : Sexp =
     mkList lead (List.ofSeq kids) ""
 
 let private synthesizePath (i: int) (p: Path) : Sexp =
-    let lead = indent i
+    let lead = leading i p.Comments
     let inner = indent (i + 1)
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "path")
@@ -165,7 +167,7 @@ let private synthesizePath (i: int) (p: Path) : Sexp =
     mkList lead (List.ofSeq kids) ""
 
 let private synthesizeRect (i: int) (r: Rect) : Sexp =
-    let lead = indent i
+    let lead = leading i r.Comments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "rect")
     kids.Add (mkList " " [ sym "" "layer"; layerAtom " " r.Layer ] "")
@@ -182,7 +184,7 @@ let private synthesizeRect (i: int) (r: Rect) : Sexp =
     | None -> ()
     mkList lead (List.ofSeq kids) ""
 
-let private synthesizePortShape (leading: string) (shape: PortShape) : Sexp =
+let private synthesizePortShape (lead: string) (shape: PortShape) : Sexp =
     let inner =
         match shape with
         | RectShape (x1, y1, x2, y2) ->
@@ -198,10 +200,10 @@ let private synthesizePortShape (leading: string) (shape: PortShape) : Sexp =
                     |> List.map (fun p ->
                         mkList " " [ intAtom "" p.X; intAtom " " p.Y ] ""))
             mkList " " kids ""
-    mkList leading [ sym "" "shape"; inner ] ""
+    mkList lead [ sym "" "shape"; inner ] ""
 
 let private synthesizePort (i: int) (p: Port) : Sexp =
-    let lead = indent i
+    let lead = leading i p.Comments
     let inner = indent (i + 1)
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "port")
@@ -223,7 +225,7 @@ let private synthesizePort (i: int) (p: Port) : Sexp =
     mkList lead (List.ofSeq kids) ""
 
 let private synthesizeLabel (i: int) (l: Label) : Sexp =
-    let lead = indent i
+    let lead = leading i l.Comments
     let inner = indent (i + 1)
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "label")
@@ -240,7 +242,7 @@ let private synthesizeLabel (i: int) (l: Label) : Sexp =
     mkList lead (List.ofSeq kids) ""
 
 let private synthesizeSRef (i: int) (r: SRef) : Sexp =
-    let lead = indent i
+    let lead = leading i r.Comments
     let inner = indent (i + 1)
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "sref")
@@ -259,7 +261,7 @@ let private synthesizeSRef (i: int) (r: SRef) : Sexp =
     mkList lead (List.ofSeq kids) ""
 
 let private synthesizeARef (i: int) (r: ARef) : Sexp =
-    let lead = indent i
+    let lead = leading i r.Comments
     let inner = indent (i + 1)
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "aref")
@@ -297,19 +299,20 @@ let private synthesizeElement (i: int) (e: Element) : Sexp =
     | SRefEl r -> synthesizeSRef i r
     | ARefEl r -> synthesizeARef i r
     | PropsEl props ->
-        let lead = indent i
-        let kids = sym "" "props" :: (props |> List.map (propForm " "))
+        let lead = leading i props.Comments
+        let kids = sym "" "props" :: (props.Items |> List.map (propForm " "))
         mkList lead kids ""
 
 let private synthesizeCell (i: int) (c: Cell) : Sexp =
-    let lead = indent i
+    let lead = leading i c.Comments
     let kids =
         sym "" "cell"
         :: sym " " c.Name
         :: (c.Elements |> List.map (synthesizeElement (i + 1)))
     mkList lead kids ""
 
-let private synthesizeNet (leading: string) (n: Net) : Sexp =
+let private synthesizeNet (i: int) (n: Net) : Sexp =
+    let lead = leading i n.Comments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "net")
     kids.Add (sym " " n.Name)
@@ -322,20 +325,20 @@ let private synthesizeNet (leading: string) (n: Net) : Sexp =
     | None -> ()
     for p in n.Props do
         kids.Add (propForm " " p)
-    mkList leading (List.ofSeq kids) ""
+    mkList lead (List.ofSeq kids) ""
 
 let private synthesizeNetsBlock (i: int) (nets: Net list) : Sexp option =
     if List.isEmpty nets then None
     else
         let lead = indent i
-        let inner = indent (i + 1)
-        let kids = sym "" "nets" :: (nets |> List.map (synthesizeNet inner))
+        let kids = sym "" "nets" :: (nets |> List.map (synthesizeNet (i + 1)))
         Some (mkList lead kids "")
 
 let private synthesizeImport (i: int) (imp: Import) : Sexp =
-    mkList (indent i) [ sym "" "import"; stringAtom " " imp.Path ] ""
+    let lead = leading i imp.Comments
+    mkList lead [ sym "" "import"; stringAtom " " imp.Path ] ""
 
-let synthesize (doc: Document) : Cst.Document =
+let private synthesizeLayoutForm (doc: Document) : Sexp =
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "layout")
     kids.Add (mkList " "
@@ -356,10 +359,37 @@ let synthesize (doc: Document) : Cst.Document =
     | None -> ()
     for c in doc.Cells do
         kids.Add (synthesizeCell 1 c)
-    let layout = mkList "" (List.ofSeq kids) ""
-    { Roots = [ layout ]
-      Trailing = "\n"
-      SourcePath = None }
+    // HeaderComments precede the `(layout ...)` form itself. The
+    // `(layout ...)` leading is just the comment block (no indent —
+    // it's column 0).
+    let layoutLead =
+        if List.isEmpty doc.HeaderComments then ""
+        else
+            let sb = StringBuilder()
+            for c in doc.HeaderComments do
+                if sb.Length > 0 then sb.Append '\n' |> ignore
+                sb.Append "; " |> ignore
+                sb.Append c |> ignore
+            sb.Append '\n' |> ignore
+            sb.ToString()
+    mkList layoutLead (List.ofSeq kids) ""
+
+// ─── Public surface ──────────────────────────────────────────────────
+
+let rec private emitSexp (sb: StringBuilder) (s: Sexp) : unit =
+    match s with
+    | SAtom a ->
+        sb.Append a.Leading |> ignore
+        sb.Append a.Text |> ignore
+    | SList l ->
+        sb.Append l.Leading |> ignore
+        sb.Append '(' |> ignore
+        for c in l.Children do emitSexp sb c
+        sb.Append l.Trailing |> ignore
+        sb.Append ')' |> ignore
 
 let write (doc: Document) : string =
-    renderCst (synthesize doc)
+    let sb = StringBuilder()
+    emitSexp sb (synthesizeLayoutForm doc)
+    sb.Append '\n' |> ignore
+    sb.ToString()

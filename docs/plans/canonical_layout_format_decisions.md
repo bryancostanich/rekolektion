@@ -16,6 +16,13 @@ Conventions:
 
 ## D1 — CST/AST type relationship — 2026-05-13
 
+> **Superseded by D5 (2026-05-13 same-day).** The split was undone once
+> whitespace preservation came off the goal list. Reading from this
+> entry forward is fine for context but the conclusion no longer
+> holds — see D5.
+
+
+
 **Decision point.** How does the in-memory representation split between a
 trivia-preserving concrete tree (CST) and a clean semantic tree (AST)?
 Affects every downstream consumer (Reader, Writer, viz tool migration,
@@ -62,6 +69,13 @@ edits and from-scratch generation.
 ---
 
 ## D2 — Trivia attachment model — 2026-05-13
+
+> **Superseded by D5 (2026-05-13 same-day).** "Trivia" as a concept
+> (whitespace + comments together, attached to CST nodes) is no longer
+> the model. Comments live on AST nodes; whitespace is canonicalised by
+> the writer. See D5.
+
+
 
 **Decision point.** Where does whitespace and comment text attach in the
 CST? Determines whether round-trip is byte-exact and how edits behave.
@@ -240,5 +254,87 @@ log the blocker.
   (compile entry).
 - `tools/viz/tests/Rekolektion.Viz.Core.Tests/RktOfGdsTests.fs` (new).
 - Test project's `.fsproj` to register the new test file.
+
+---
+
+## D5 — Collapse Cst into Ast; comments first-class on AST — 2026-05-13
+
+**Decision point.** D1 picked a distinct CST (with trivia, for byte-
+exact round-trip) and AST (clean semantic types). D2 picked leading-
+only trivia attachment on the CST. Both decisions assumed whitespace
+preservation was a goal. User feedback on the same day: **whitespace
+preservation is not a goal; comment preservation is.** That reframes
+the split's value.
+
+**Re-evaluation.**
+
+| Dimension | A: keep split (D1 + D2 status quo) | **B (chosen): collapse — single typed AST with comments per node** |
+|---|---|---|
+| Whitespace preservation | Byte-exact for unedited files; canonicalised for edited subtrees. | Always canonicalised by the writer. Not a goal, so not a loss. |
+| Comment preservation | Round-trip-only when unedited. **Edits to a node lose comments attached to that node.** Step 6 (viz Save path) would need a CST-origin-on-AST-node bookkeeping layer to fix. | Native. Comments live on the AST node. Mutating other fields keeps comments along for the ride. |
+| Type count | Two type hierarchies (Cst + Ast). Reader produces both, writer consumes both. | One type hierarchy (Ast). Reader produces it directly. Writer renders it. |
+| Reader complexity | Lex → CST → analyze → AST. CST is a separate generic S-expression tree, analyze pattern-matches on head symbols. | Lex → AST (parser is the analyzer, dispatching on head symbol while reading). The Sexp-shaped intermediate can stay as a private parser scaffold, but it does not surface in the public API. |
+| Writer complexity | `renderCst` (for byte-exact unedited case) AND `synthesize` (for from-AST case). Two paths. | One path: synthesize-from-AST emits canonical whitespace + inline comments. |
+| Identity for "is this the same comment after editing X?" | Implicit via CST node identity. Edit-time bookkeeping required. | Trivial — comment is a field on the AST node. Touching another field doesn't disturb it. |
+| AI-authored layout traceability | Same as comment preservation: only when not edited. | Native: the AST a model generates carries its reasoning comments through every subsequent edit. |
+| Footprint hit on existing work | Reader + Writer + tests rewrite. Done before any Core consumer migration has begun, so blast radius is contained to Rkt module + its tests. | Same scope, just touching different code paths. |
+| Hack? | No, but the design choice no longer matches the stated goal. Keeping it would be inertia. | No. |
+
+**Counter-argument for A.** Keeping the split preserves cleaner
+testing of the parser independent of the analyzer (CST tests, AST
+tests separately). Real but small benefit; the parser is small enough
+that parser-level tests can target the AST output directly without
+losing diagnostic value.
+
+**Chosen.** **B.** Collapse the split. Comments move to first-class
+AST fields. CST disappears as a public concept; its Sexp-shaped data
+may remain as a parser-internal scaffold inside `Reader.fs`, but it
+is no longer exposed in `Types.fs` or referenced by tests / writer.
+
+**Where comments attach.** Each major form gets a `Comments: string
+list` field. "Major form" means anything that can have a comment line
+preceding it in source:
+
+- `Document.HeaderComments` — comments before `(layout ...)`.
+- `Cell.Comments`, `Net.Comments`, `Import.Comments` — comments
+  preceding the form within `(layout ...)`.
+- Each element record (`Poly`, `Path`, `Rect`, `Port`, `Label`,
+  `SRef`, `ARef`, plus the `PropsEl` wrapper) — comments preceding
+  the element within its parent cell.
+
+Comments inside an element form (between sub-forms like `(layer ...)`
+and `(points ...)`) are dropped at v1. They're rare; supporting them
+would require a per-subfield comments field on every element record,
+which is not worth the LoC for the case it covers. If real-world
+authoring produces interior comments often, revisit.
+
+**Comment storage format.** Each comment is stored without the
+leading `;` and without the trailing newline. Multi-line comment
+blocks become multiple entries in the list, one per `;` line. The
+writer emits each entry as `; <text>` on its own line.
+
+**Implications for previous decisions.**
+- D1 (distinct types) is superseded — annotation added at its head.
+- D2 (leading-only trivia) is superseded — annotation added at its head.
+- D3 (two-pass import resolution) stands; the resolver doesn't care
+  about the CST/AST split.
+- D4 (in-place evolution staged) stands; the per-stage targets just
+  use the simpler model.
+
+**Files affected (this stage).**
+- `tools/viz/src/Rekolektion.Viz.Core/Rkt/Types.fs` — add `Comments`
+  to Document/Cell/Net/Import + every element record.
+- `tools/viz/src/Rekolektion.Viz.Core/Rkt/Reader.fs` — drop the
+  public CST surface; merge Cst's Sexp into Reader as a private
+  scaffold; analyze populates Comments by extracting `;` lines from
+  the preceding trivia run.
+- `tools/viz/src/Rekolektion.Viz.Core/Rkt/Writer.fs` — drop
+  `renderCst`. `write` synthesises canonical formatting and emits
+  comments inline.
+- `tools/viz/src/Rekolektion.Viz.Core/Rkt/Cst.fs` — removed from
+  fsproj (file may stay on disk as a no-op until cleanup).
+- `tools/viz/tests/Rekolektion.Viz.Core.Tests/RktTests.fs` — replace
+  byte-exact whitespace tests with comment-preservation tests; keep
+  AST and import tests.
 
 ---

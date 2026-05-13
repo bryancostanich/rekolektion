@@ -15,6 +15,7 @@ module Rekolektion.Viz.Core.Rkt.OfGds
 /// - Port flags / direction.
 /// - Top-level nets block.
 /// - Imports.
+/// - Comments (GDS has no comment surface).
 ///
 /// Round-trip plan: `Library -> Document` followed by `Document ->
 /// Library` (via `Rkt.ToGds`) is lossless for geometry + cell
@@ -40,6 +41,7 @@ let fromBoundary (b: Gds.Types.Boundary) : Element =
         Points = b.Points |> List.map pointFromGds
         Net = None
         Props = []
+        Comments = []
     }
 
 let fromPath (p: Gds.Types.Path) : Element =
@@ -50,6 +52,7 @@ let fromPath (p: Gds.Types.Path) : Element =
         Net = None
         Cap = None
         Props = []
+        Comments = []
     }
 
 let fromSRef (s: Gds.Types.SRef) : Element =
@@ -60,6 +63,7 @@ let fromSRef (s: Gds.Types.SRef) : Element =
         Mag = s.Mag
         Reflect = s.Reflected
         Props = []
+        Comments = []
     }
 
 let fromARef (a: Gds.Types.ARef) : Element =
@@ -74,6 +78,7 @@ let fromARef (a: Gds.Types.ARef) : Element =
         Mag = a.Mag
         Reflect = a.Reflected
         Props = []
+        Comments = []
     }
 
 let fromText (t: Gds.Types.TextLabel) : Element =
@@ -83,6 +88,7 @@ let fromText (t: Gds.Types.TextLabel) : Element =
         Origin = pointFromGds t.Origin
         Class = None
         Props = []
+        Comments = []
     }
 
 let fromElement (e: Gds.Types.Element) : Element =
@@ -95,13 +101,11 @@ let fromElement (e: Gds.Types.Element) : Element =
 
 let fromStructure (s: Gds.Types.Structure) : Cell =
     { Name = s.Name
-      Elements = s.Elements |> List.map fromElement }
+      Elements = s.Elements |> List.map fromElement
+      Comments = [] }
 
 let fromLibrary (lib: Gds.Types.Library) : Document =
     let units : Units =
-        // SKY130 convention: DbUnitsInMeters = 1e-9 means 1 nm per
-        // DBU, so dbu_nm = 1. Fall back to 1 if the field is unset
-        // (legacy GDS readers default to this anyway).
         let dbuNm =
             let nm = lib.DbUnitsInMeters * 1.0e9
             if nm <= 0.0 then 1
@@ -117,4 +121,5 @@ let fromLibrary (lib: Gds.Types.Library) : Document =
       Imports = []
       Nets = []
       Cells = lib.Structures |> List.map fromStructure
-      TopCell = topCell }
+      TopCell = topCell
+      HeaderComments = [] }

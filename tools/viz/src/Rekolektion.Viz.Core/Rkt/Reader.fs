@@ -16,6 +16,33 @@ type ReaderError = {
 let private err (path: string option) (pos: SourcePos option) (msg: string) : ReaderError =
     { Path = path; Pos = pos; Message = msg }
 
+/// Extract `;`-prefixed comment lines from a leading-trivia run.
+///
+/// Whitespace between comments is dropped. Each `;` line lands in the
+/// result as its body text — leading semicolons stripped, one optional
+/// space after the `;` stripped (so `; foo` and `;foo` both yield
+/// `foo`), trailing CR stripped. The writer puts them back on
+/// synthesis with a single leading `; ` and a trailing newline.
+let private extractComments (leading: string) : string list =
+    if String.IsNullOrEmpty leading then []
+    else
+        let lines = leading.Split('\n')
+        [ for raw in lines do
+            let line =
+                if raw.Length > 0 && raw.[raw.Length - 1] = '\r'
+                then raw.Substring(0, raw.Length - 1)
+                else raw
+            let trimmed = line.TrimStart()
+            if trimmed.StartsWith ";" then
+                let body = trimmed.Substring 1
+                let body =
+                    if body.StartsWith " " then body.Substring 1 else body
+                yield body ]
+
+/// Comments preceding a CST node, extracted from its leading trivia.
+let private commentsOf (s: Sexp) : string list =
+    extractComments (Cst.leadingOf s)
+
 // ─── Lexer ───────────────────────────────────────────────────────────────
 
 /// Mutable cursor through the source string. Held by a `ParseState`
@@ -545,6 +572,7 @@ let private analyzePoly
                                     Points = pts
                                     Net = findNet children
                                     Props = props
+                                    Comments = commentsOf s
                                 })
             | _ -> Error (err path (Some (Cst.posOf layerForm)) "(layer X) takes one argument")
 
@@ -579,6 +607,7 @@ let private analyzePath
                                 Net = findNet children
                                 Cap = cap
                                 Props = props
+                                Comments = commentsOf s
                             })
                 | Error e, _ -> Error e
                 | _, None -> Error (err path (Some (Cst.posOf widthForm)) "(width ...) needs an integer")
@@ -623,6 +652,7 @@ let private analyzeRect
                                     X1 = x1; Y1 = y1; X2 = x2; Y2 = y2
                                     Net = findNet children
                                     Props = props
+                                    Comments = commentsOf s
                                 })
                         | _ -> Error (err path (Some (Cst.posOf s)) "rect coords must be integers")
                     | _ ->
@@ -672,6 +702,7 @@ let private analyzePort
                                     Shape = ps
                                     Net = findNet children
                                     Props = props
+                                    Comments = commentsOf s
                                 })
                 | None, _ -> Error (err path (Some (Cst.posOf nf)) "(name ...) requires a symbol or string")
                 | _, None -> Error (err path (Some (Cst.posOf df)) "(dir ...) must be input|output|inout|unspecified")
@@ -714,6 +745,7 @@ let private analyzeLabel
                                 Origin = { X = x; Y = y }
                                 Class = cls
                                 Props = props
+                                Comments = commentsOf s
                             })
                     | _ ->
                         Error (err path (Some (Cst.posOf s)) "(label ...) requires text + integer (origin X Y)")
@@ -763,6 +795,7 @@ let private analyzeSRef
                             Mag = magV
                             Reflect = reflect
                             Props = props
+                            Comments = commentsOf s
                         })
                 | _ ->
                     Error (err path (Some (Cst.posOf s)) "(sref ...) cell name and origin must parse")
@@ -828,6 +861,7 @@ let private analyzeARef
                             Mag = magV
                             Reflect = reflect
                             Props = props
+                            Comments = commentsOf s
                         })
                 | _ ->
                     Error (err path (Some (Cst.posOf s)) "(aref ...) integer fields didn't parse")
@@ -852,7 +886,7 @@ let private analyzeElement
     | Some "props" ->
         match analyzeProps path s with
         | Error e -> Error e
-        | Ok p -> Ok (Some (PropsEl p))
+        | Ok p -> Ok (Some (PropsEl { Items = p; Comments = commentsOf s }))
     | _ ->
         // Unknown forms inside a cell are not errors — the format is
         // additive. Caller can decide whether to warn.
@@ -881,7 +915,7 @@ let private analyzeCell
                         | Ok None -> walk acc more
                 match walk [] rest with
                 | Error e -> Error e
-                | Ok els -> Ok { Name = name; Elements = els }
+                | Ok els -> Ok { Name = name; Elements = els; Comments = commentsOf s }
         | [] ->
             Error (err path (Some (Cst.posOf s)) "(cell ...) needs a name")
 
@@ -934,7 +968,8 @@ let private analyzeNet
                      Domain = domain
                      Voltage = voltage
                      NetClass = cls
-                     Props = List.rev ps }
+                     Props = List.rev ps
+                     Comments = commentsOf s }
     | Some [] ->
         Error (err path (Some (Cst.posOf s)) "(net ...) requires a name")
 
@@ -1017,7 +1052,8 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
                 match childrenAfterHead f with
                 | Some [ a ] ->
                     stringText a
-                    |> Option.map (fun p -> { Path = p } : Import)
+                    |> Option.map (fun p ->
+                        { Path = p; Comments = commentsOf f } : Import)
                 | _ -> None)
 
         let netsResult =
@@ -1044,7 +1080,8 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
                      Imports = imports
                      Nets = nets
                      Cells = cells
-                     TopCell = topCell }
+                     TopCell = topCell
+                     HeaderComments = commentsOf layout }
 
 // ─── Public file API + library / import resolver ─────────────────────────
 

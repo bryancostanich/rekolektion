@@ -52,15 +52,16 @@ let private extOf (path: string) : string =
 let saveTo (mc: LoadedMacro) (targetPath: string) : string =
     let srcExt = extOf mc.OriginalPath
     let dstExt = extOf targetPath
-    // Cross-format save (.mag → .gds or vice versa) isn't
-    // supported — the two writers consume different intermediate
-    // states. Reject early so the user gets a clear message
-    // instead of a silently bogus output.
-    if srcExt <> dstExt then
+    // Cross-format save between .gds and .mag isn't supported — the
+    // two writers consume different intermediate states. `.rkt` is
+    // the exception: it's always available as an export target since
+    // the in-memory `Library` converts cleanly to the canonical
+    // model (`Rkt.OfGds.fromLibrary`).
+    if srcExt <> dstExt && dstExt <> ".rkt" then
         failwithf
             "Save format mismatch: source %s → target %s. The viz \
              editor writes each format back in place; cross-format \
-             export isn't supported."
+             export to anything other than .rkt isn't supported."
             srcExt dstExt
     match dstExt with
     | ".gds" | ".gds2" ->
@@ -70,6 +71,17 @@ let saveTo (mc: LoadedMacro) (targetPath: string) : string =
         // reproduced. Sufficient for the editor's
         // save-and-reopen loop.
         Gds.Writer.writeGds targetPath mc.Library
+    | ".rkt" ->
+        // Convert the legacy in-memory `Library` to the canonical
+        // `Rkt.Document` and emit canonical text. Layer numbers
+        // resolve to named layers; unknown pairs land as
+        // `Unknown(n, d)`. Comments are not preserved on this path
+        // because the App's model still holds a `Library` (which
+        // doesn't carry them); once the model is migrated to
+        // `Rkt.Document` natively, edits propagate comments through.
+        let doc = Rkt.OfGds.fromLibrary mc.Library
+        let text = Rkt.Writer.write doc
+        File.WriteAllText(targetPath, text)
     | _ ->
         let readPath =
             if File.Exists mc.Path then mc.Path

@@ -26,6 +26,24 @@ let load (path: string) : Document * string list =
         Gds.Reader.readGds path, []
     | ".mag" ->
         MagToLayout.load path []
+    | ".rkt" ->
+        // Single-file load — imports are not resolved at v1; if the
+        // file references cells from `(import "...")` siblings, the
+        // viz tool will see unresolved SRef targets. Warn so the
+        // user knows; full multi-file load resolution is future
+        // work.
+        match Rkt.Reader.readFile path with
+        | Ok (_, doc) ->
+            let warnings =
+                if doc.Imports |> List.isEmpty then []
+                else
+                    [ sprintf "rkt file has %d (import ...) form(s); imports are not resolved at v1"
+                        doc.Imports.Length ]
+            doc, warnings
+        | Error e ->
+            failwithf "rkt load failed: %s%s"
+                (match e.Path with Some p -> p + ": " | None -> "")
+                e.Message
     | _ ->
         // Be forgiving: try the GDS reader first (handles a few
         // legacy extensions like .stream), surface a clearer error

@@ -72,3 +72,81 @@ let ``LayoutLoader.load returns a Rkt.Document for a .gds path`` () =
 let ``LayoutLoader.loadAsLibrary still produces the legacy shape`` () =
     let lib, _ = Layout.LayoutLoader.loadAsLibrary (fixturePath "bitcell_lr.gds")
     lib.Structures |> List.isEmpty |> should equal false
+
+// ─── .rkt save + reopen round-trip (Step 4) ──────────────────────────
+
+[<Fact>]
+let ``LayoutLoader.load handles a .rkt path`` () =
+    // Write a minimal .rkt to a temp file, load it back through
+    // LayoutLoader, verify the AST contents.
+    let tmp = Path.Combine(Path.GetTempPath(),
+                           "rkt-load-" + System.Guid.NewGuid().ToString("N") + ".rkt")
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (poly (layer sky130:met1) (points (0 0) (10 0) (10 10) (0 10)))))\n"
+    File.WriteAllText(tmp, src)
+    try
+        let doc, warnings = Layout.LayoutLoader.load tmp
+        warnings |> should be Empty
+        doc.Cells |> List.length |> should equal 1
+        let cell = List.head doc.Cells
+        cell.Name |> should equal "c"
+    finally
+        try File.Delete tmp with _ -> ()
+
+[<Fact>]
+let ``LayoutLoader.load warns when a .rkt has unresolved imports`` () =
+    let tmp = Path.Combine(Path.GetTempPath(),
+                           "rkt-imp-" + System.Guid.NewGuid().ToString("N") + ".rkt")
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (import \"sibling.rkt\")\n"
+        + "  (cell c))\n"
+    File.WriteAllText(tmp, src)
+    try
+        let _, warnings = Layout.LayoutLoader.load tmp
+        warnings |> List.length |> should equal 1
+        warnings.[0] |> should haveSubstring "import"
+    finally
+        try File.Delete tmp with _ -> ()
+
+[<Fact>]
+let ``Library -> rkt text -> document round-trip preserves geometry`` () =
+    // Mirrors what `App.Services.EditSession.saveTo` does on a
+    // `.rkt` target, then re-reads via the LayoutLoader.
+    let lib : Gds.Types.Library = {
+        Name = "rt"
+        UserUnitsPerDbUnit = 0.001
+        DbUnitsInMeters = 1.0e-9
+        Structures = [
+            { Name = "c"
+              Elements = [
+                  Gds.Types.Boundary {
+                      Layer = 68; DataType = 20
+                      Points = [
+                          { X = 0L; Y = 0L }
+                          { X = 100L; Y = 0L }
+                          { X = 100L; Y = 50L }
+                          { X = 0L; Y = 50L }
+                          { X = 0L; Y = 0L }
+                      ]
+                  }
+              ] }
+        ]
+    }
+    let tmp = Path.Combine(Path.GetTempPath(),
+                           "rkt-save-" + System.Guid.NewGuid().ToString("N") + ".rkt")
+    try
+        let doc = Rkt.OfGds.fromLibrary lib
+        File.WriteAllText(tmp, Rkt.Writer.write doc)
+        let reloaded, _ = Layout.LayoutLoader.load tmp
+        reloaded.Cells |> List.length |> should equal 1
+        let cell = List.head reloaded.Cells
+        match cell.Elements with
+        | [ PolyEl p ] ->
+            p.Layer |> should equal (Named ("sky130", "met1"))
+            p.Points |> List.length |> should equal 5
+        | _ -> failwithf "unexpected elements: %A" cell.Elements
+    finally
+        try File.Delete tmp with _ -> ()

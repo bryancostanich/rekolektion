@@ -149,14 +149,19 @@ let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
                 TextBlock.text "Inspector"
                 TextBlock.fontWeight FontWeight.Bold
             ] :> IView
-            match model.Selection with
-            | None ->
+            if model.Selection.IsEmpty then
                 yield TextBlock.create [
                     TextBlock.text "(nothing selected)"
                     TextBlock.foreground "#888"
                 ] :> IView
-            | Some (struc, idx) ->
+            elif model.Selection.Count = 1 then
+                let struc, idx = model.Selection.MinimumElement
                 yield! polyDetails model struc idx
+            else
+                yield TextBlock.create [
+                    TextBlock.text (sprintf "%d polygons selected" model.Selection.Count)
+                    TextBlock.foreground "#CCC"
+                ] :> IView
         ]
 
     StackPanel.create [

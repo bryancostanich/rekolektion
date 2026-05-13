@@ -144,6 +144,15 @@ type StackCanvasControl() =
     let mutable rulerVao : uint32 = 0u
     let mutable rulerVbo : uint32 = 0u
     let mutable rulerVertexCount : int = 0
+    // Ratlines: re-use rulerProgram (it's just MVP-transformed
+    // (x,y,z, r,g,b) Lines). Vertex buffer is rebuilt every
+    // frame when the overlay is enabled — handful of nets, a
+    // few dozen vertices, cheap. Drawn at a fixed Z above the
+    // metal stack so the lines float over the cell instead of
+    // intersecting geometry.
+    let mutable ratlineVao : uint32 = 0u
+    let mutable ratlineVbo : uint32 = 0u
+    let mutable ratlineVertexCount : int = 0
     let mutable rulerXMin : float32 = 0.0f
     let mutable rulerXMax : float32 = 0.0f
     let mutable rulerYMin : float32 = 0.0f
@@ -242,6 +251,9 @@ type StackCanvasControl() =
     static member val PolygonPickedHandlerProperty : StyledProperty<Action<string, int>> =
         AvaloniaProperty.Register<StackCanvasControl, Action<string, int>>("PolygonPickedHandler", null)
         with get
+    static member val ShowRatlinesProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<StackCanvasControl, bool>("ShowRatlines", false)
+        with get
 
     member this.Library
         with get() : Library option = this.GetValue(StackCanvasControl.LibraryProperty)
@@ -258,6 +270,10 @@ type StackCanvasControl() =
     member this.PolygonPickedHandler
         with get() : Action<string, int> = this.GetValue(StackCanvasControl.PolygonPickedHandlerProperty)
         and set(v: Action<string, int>) = this.SetValue(StackCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
+
+    member this.ShowRatlines
+        with get() : bool = this.GetValue(StackCanvasControl.ShowRatlinesProperty)
+        and set(v: bool) = this.SetValue(StackCanvasControl.ShowRatlinesProperty, v) |> ignore
 
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
         yawDeg <- yaw
@@ -707,6 +723,10 @@ type StackCanvasControl() =
         rulerVao <- g.GenVertexArray()
         rulerVbo <- g.GenBuffer()
         rulerDirty <- true
+        // Shared with the ruler program; ratlines are just
+        // (x,y,z, r,g,b) Lines, same vertex layout.
+        ratlineVao <- g.GenVertexArray()
+        ratlineVbo <- g.GenBuffer()
 
         // ---- Bitmap font ----
         let textVsSrc = "
@@ -1284,6 +1304,67 @@ type StackCanvasControl() =
                 g.UniformMatrix4(rulerLoc, 1u, false, ReadOnlySpan<float32>(mvpArr2))
                 g.LineWidth 1.5f
                 g.DrawArrays(GLEnum.Lines, 0, uint32 rulerVertexCount)
+
+            // Ratlines — rebuild + draw at a fixed Z above the
+            // metal stack so they float over the geometry. Only
+            // when a net is highlighted OR the global toggle is
+            // on; a tab without nets in either state pays no
+            // cost.
+            let highlightNet = this.Toggle.HighlightNet
+            let showAllRat = this.ShowRatlines
+            ratlineVertexCount <- 0
+            if (showAllRat || highlightNet.IsSome) && rulerProgram <> 0u then
+                match this.Library with
+                | Some lib ->
+                    let routes = Net.Ratlines.compute lib
+                    let filtered =
+                        match highlightNet with
+                        | Some n -> routes |> Array.filter (fun r -> r.Name = n)
+                        | None -> routes
+                    // World-space DBU → user µm divisor.
+                    let umPer = lib.UserUnitsPerDbUnit
+                    // Ratline Z: 0.5 µm above the highest tracked
+                    // layer (met5 sits around 3.77 + 0.50 = 4.27);
+                    // any flat constant above the stack works.
+                    let z = 5.0f
+                    // amber, matches 2D ratline overlay color
+                    let r = 1.0f
+                    let g_ = 0.78f
+                    let b = 0.25f
+                    let verts = System.Collections.Generic.List<float32>()
+                    for route in filtered do
+                        let pins = route.Pins
+                        for i in 0 .. pins.Length - 1 do
+                            for j in i + 1 .. pins.Length - 1 do
+                                let pi = pins.[i].Position
+                                let pj = pins.[j].Position
+                                let xi = float32 (float pi.X * umPer)
+                                let yi = float32 (float pi.Y * umPer)
+                                let xj = float32 (float pj.X * umPer)
+                                let yj = float32 (float pj.Y * umPer)
+                                verts.AddRange([| xi; yi; z; r; g_; b |])
+                                verts.AddRange([| xj; yj; z; r; g_; b |])
+                    if verts.Count > 0 then
+                        let arr = verts.ToArray()
+                        g.BindVertexArray ratlineVao
+                        g.BindBuffer(GLEnum.ArrayBuffer, ratlineVbo)
+                        g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
+                        ratlineVertexCount <- verts.Count / 6
+                | None -> ()
+            if ratlineVertexCount > 0 then
+                g.UseProgram rulerProgram
+                g.BindVertexArray ratlineVao
+                g.BindBuffer(GLEnum.ArrayBuffer, ratlineVbo)
+                let stride = uint32 (6 * sizeof<float32>)
+                g.EnableVertexAttribArray 0u
+                g.VertexAttribPointer(0u, 3, GLEnum.Float, false, stride, nativeint 0)
+                g.EnableVertexAttribArray 1u
+                g.VertexAttribPointer(1u, 3, GLEnum.Float, false, stride, nativeint (3 * sizeof<float32>))
+                let loc = g.GetUniformLocation(rulerProgram, "uMVP")
+                let mvpArr = Matrix4x4Helpers.toFloatArray mvp
+                g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+                g.LineWidth 2.0f
+                g.DrawArrays(GLEnum.Lines, 0, uint32 ratlineVertexCount)
             if textVertexCount > 0 && textProgram <> 0u && fontTex <> 0u then
                 g.UseProgram textProgram
                 g.BindVertexArray textVao

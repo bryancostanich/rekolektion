@@ -210,6 +210,88 @@ let flattenLabels (lib: Library) : FlatLabel array =
     walk top identityXform
     result.ToArray()
 
+/// Same as `flattenLabels`, but each label is tagged with the
+/// index of the top-cell element it descends from (None for
+/// labels authored directly in the top cell). Lets the ratline
+/// renderer group labels by top-instance so per-net pin
+/// centroids can be computed per cell.
+let flattenLabelsTagged (lib: Library) : (int option * FlatLabel) array =
+    let byName =
+        lib.Structures
+        |> List.map (fun s -> s.Name, s)
+        |> Map.ofList
+    let top = findTop lib
+    let result = System.Collections.Generic.List<int option * FlatLabel>()
+    let rec walk (topIdx: int option) (struc: Structure) (xform: Affine) =
+        for el in struc.Elements do
+            match el with
+            | Text t ->
+                let fl : FlatLabel = {
+                    Layer = t.Layer
+                    TextType = t.TextType
+                    Origin = apply xform t.Origin
+                    Text = t.Text }
+                result.Add((topIdx, fl))
+            | SRef sr ->
+                match Map.tryFind sr.StructureName byName with
+                | None -> ()
+                | Some child ->
+                    walk topIdx child (compose xform (fromSref sr))
+            | ARef ar ->
+                match Map.tryFind ar.StructureName byName with
+                | None -> ()
+                | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                    let baseXform = fromArefBase ar
+                    let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                    let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                    let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                    let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                    for r in 0 .. ar.Rows - 1 do
+                        for c in 0 .. ar.Cols - 1 do
+                            let instXform =
+                                { baseXform with
+                                    Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                    Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                            walk topIdx child (compose xform instXform)
+                | _ -> ()
+            | _ -> ()
+    // At the top cell, tag each child element with its own index
+    // BEFORE descending. Sub-recursive walks inherit that tag.
+    top.Elements
+    |> List.iteri (fun idx el ->
+        match el with
+        | Text t ->
+            let fl : FlatLabel = {
+                Layer = t.Layer
+                TextType = t.TextType
+                Origin = t.Origin
+                Text = t.Text }
+            result.Add((None, fl))
+        | SRef sr ->
+            match Map.tryFind sr.StructureName byName with
+            | None -> ()
+            | Some child ->
+                walk (Some idx) child (fromSref sr)
+        | ARef ar ->
+            match Map.tryFind ar.StructureName byName with
+            | None -> ()
+            | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                let baseXform = fromArefBase ar
+                let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                for r in 0 .. ar.Rows - 1 do
+                    for c in 0 .. ar.Cols - 1 do
+                        let instXform =
+                            { baseXform with
+                                Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                        walk (Some idx) child (compose identityXform instXform)
+            | _ -> ()
+        | _ -> ())
+    result.ToArray()
+
 /// Flatten just one top-level SRef's subtree. The returned polygons
 /// are in world coordinates with the SRef's own transform composed
 /// in, identical to what `flatten` produces for that branch — the

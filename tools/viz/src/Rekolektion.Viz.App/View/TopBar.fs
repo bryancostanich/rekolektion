@@ -46,6 +46,20 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ToggleDrc)
         ] :> IView
+    let ratBg = if model.ShowRatlines then "#8a6b1c" else "#262626"
+    let ratFg = if model.ShowRatlines then "#ffffff" else "#bbbbbb"
+    let ratlinesToggle : IView =
+        Button.create [
+            Button.content "Ratlines (W)"
+            Button.background ratBg
+            Button.foreground ratFg
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.onClick (fun _ -> dispatch Msg.ToggleRatlines)
+        ] :> IView
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -62,7 +76,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                         Border.child (
                             StackPanel.create [
                                 StackPanel.orientation Orientation.Horizontal
-                                StackPanel.children [ drcToggle; dimensionsToggle ]
+                                StackPanel.children [ ratlinesToggle; drcToggle; dimensionsToggle ]
                             ]
                         )
                     ] :> IView

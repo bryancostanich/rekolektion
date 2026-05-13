@@ -52,6 +52,10 @@ type Msg =
     | IsolateBlock     of block: string option
     | SetTab           of Model.Tab
     | PolygonPicked    of structure: string * index: int
+    /// Replace the polygon Selection with `sel` (empty = nothing
+    /// selected). Canvas dispatches this when shift-click extends
+    /// or marquee picks polygons in bulk.
+    | SetPolygonSelection of sel: Set<string * int>
     | ClearSelection
     /// Replace the current top-instance selection with `indices`
     /// (empty set = nothing selected). The canvas hit-test path
@@ -63,10 +67,22 @@ type Msg =
     /// The canvas snaps the delta to the mfg grid before dispatch
     /// (see Layout.Snap), so Update can apply it verbatim.
     | MoveSelectionDbu of dxDbu: int64 * dyDbu: int64
+    /// Translate a single top-cell polygon (Boundary or Path)
+    /// by (dxDbu, dyDbu). `structure` + `index` identify the
+    /// element in `Library.Structures.[structure].Elements`.
+    /// Snapped before dispatch.
+    | MovePolygonDbu of structure: string * index: int * dxDbu: int64 * dyDbu: int64
+    /// Translate every polygon in `sel` by (dxDbu, dyDbu) in one
+    /// undo step. Used by polygon multi-drag.
+    | MovePolygonsDbu of sel: Set<string * int> * dxDbu: int64 * dyDbu: int64
     /// Flip the dimension overlay on/off.
     | ToggleDimensions
     /// Flip the in-process DRC overlay on/off.
     | ToggleDrc
+    /// Flip the show-all-ratlines overlay on/off. Per-net
+    /// ratlines from a single-net highlight are independent of
+    /// this toggle.
+    | ToggleRatlines
     /// Duplicate every currently-selected top-level SRef. Each
     /// clone is appended to the top cell's Elements with a small
     /// rightward offset (one selection-bbox width, snapped to the
@@ -83,12 +99,15 @@ type Msg =
     /// Mirror the selection about the Y axis through the
     /// bbox-of-bboxes centroid (flips X).
     | MirrorSelectionY
-    /// Collapse the selection toward its nearest non-selected
-    /// neighbor in whichever cardinal direction has the smallest
-    /// positive DRC slack — the "most binding" gap. Moves by
-    /// that slack so the closest cross-cell pair lands exactly
-    /// at the rule's min-spacing.
-    | TightenSelection
+    /// Toggle Tighten mode. When entering, the canvas overlays
+    /// the cardinal-direction tighten candidates (numbered) for
+    /// the current selection. When exiting, the candidates clear
+    /// without committing.
+    | ToggleTightenMode
+    /// Commit the i-th candidate (1-based) from the live
+    /// Tighten-mode overlay, then exit mode. No-op if the index
+    /// is out of range or mode is off.
+    | CommitTighten of index: int
     /// Pop the active macro's undo stack and restore the
     /// previous library. No-op when the stack is empty.
     | UndoActiveMacro

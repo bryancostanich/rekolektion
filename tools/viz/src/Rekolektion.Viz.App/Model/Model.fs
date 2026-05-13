@@ -57,7 +57,7 @@ type Model = {
     OpenMacros      : LoadedMacro list
     ActiveMacroPath : string option
     Toggle          : Visibility.ToggleState
-    Selection       : (string * int) option   // (structure, element index)
+    Selection       : Set<string * int>        // top-cell polys: (structure, element index)
     /// Selected top-level SRef instances by their stable Index in
     /// the active macro's top structure. Empty set = nothing
     /// selected. Switching tabs / loading a new file clears this.
@@ -74,6 +74,19 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Show ratlines for every net (not just the highlighted
+    /// one). Off by default — fanout-heavy nets like VDD/VSS
+    /// clutter the canvas if drawn unconditionally. Toggle via
+    /// TopBar / W key. Highlighting a single net always draws
+    /// its ratlines regardless of this flag.
+    ShowRatlines : bool
+    /// Tighten mode: when active, the canvas overlays the
+    /// candidate cardinal-direction tighten arrows (numbered)
+    /// instead of moving anything. Click a number → that single
+    /// tighten commits + mode exits. T or Esc exits without
+    /// committing. Computed from the active macro + selection
+    /// each render.
+    TightenMode : bool
     /// Path of the tab currently in inline-rename mode (file-tab
     /// title swapped for a TextBox). None when no tab is being
     /// renamed. Cleared on Esc, on commit, or when the user
@@ -100,10 +113,12 @@ let empty : Model = {
     OpenMacros = []
     ActiveMacroPath = None
     Toggle = Visibility.empty
-    Selection = None
+    Selection = Set.empty
     InstanceSelection = Set.empty
     ShowDimensions = false
     ShowDrc = false
+    ShowRatlines = false
+    TightenMode = false
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }

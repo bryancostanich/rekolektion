@@ -76,7 +76,14 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
                 dispatch (Msg.MoveSelectionDbu (dx, dy)))
             "{\"ok\":true}"
         | "/tighten" ->
-            Dispatcher.UIThread.Post(fun () -> dispatch Msg.TightenSelection)
+            // Toggle Tighten mode for the agent test loop. To
+            // commit a specific candidate, follow with
+            // /tighten/commit { "index": N }.
+            Dispatcher.UIThread.Post(fun () -> dispatch Msg.ToggleTightenMode)
+            "{\"ok\":true}"
+        | "/tighten/commit" ->
+            let i = root.GetProperty("index").GetInt32()
+            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.CommitTighten i))
             "{\"ok\":true}"
         | "/dimensions" ->
             Dispatcher.UIThread.Post(fun () -> dispatch Msg.ToggleDimensions)

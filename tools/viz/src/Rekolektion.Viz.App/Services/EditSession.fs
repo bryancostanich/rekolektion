@@ -46,11 +46,35 @@ let suggestEditedPath (originalPath: string) : string =
 /// renames an unsaved edit — `mc.Path` will be the new name
 /// they typed, but no file with that name exists yet, and the
 /// only round-trip-safe source is the original file.
+let private extOf (path: string) : string =
+    (Path.GetExtension path).ToLowerInvariant()
+
 let saveTo (mc: LoadedMacro) (targetPath: string) : string =
-    let readPath =
-        if File.Exists mc.Path then mc.Path
-        else mc.OriginalPath
-    Mag.Writer.writeUpdated readPath mc.Library targetPath
+    let srcExt = extOf mc.OriginalPath
+    let dstExt = extOf targetPath
+    // Cross-format save (.mag → .gds or vice versa) isn't
+    // supported — the two writers consume different intermediate
+    // states. Reject early so the user gets a clear message
+    // instead of a silently bogus output.
+    if srcExt <> dstExt then
+        failwithf
+            "Save format mismatch: source %s → target %s. The viz \
+             editor writes each format back in place; cross-format \
+             export isn't supported."
+            srcExt dstExt
+    match dstExt with
+    | ".gds" | ".gds2" ->
+        // Full regeneration from the in-memory Library — the
+        // writer doesn't round-trip the source byte-for-byte
+        // but every structure, element, and transform is
+        // reproduced. Sufficient for the editor's
+        // save-and-reopen loop.
+        Gds.Writer.writeGds targetPath mc.Library
+    | _ ->
+        let readPath =
+            if File.Exists mc.Path then mc.Path
+            else mc.OriginalPath
+        Mag.Writer.writeUpdated readPath mc.Library targetPath
     targetPath
 
 /// Mark a macro as dirty (called by every editing transition in

@@ -96,18 +96,43 @@ let ``LayoutLoader.load handles a .rkt path`` () =
         try File.Delete tmp with _ -> ()
 
 [<Fact>]
-let ``LayoutLoader.load warns when a .rkt has unresolved imports`` () =
+let ``LayoutLoader.load resolves rkt imports into a flat doc`` () =
+    let dir =
+        Path.Combine(Path.GetTempPath(),
+                     "rkt-imp-" + System.Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+    try
+        let primPath = Path.Combine(dir, "primitives.rkt")
+        let topPath = Path.Combine(dir, "macro.rkt")
+        File.WriteAllText(primPath,
+            "(layout (version 1) (pdk sky130)\n"
+            + "  (cell bit (poly (layer sky130:met1) (points (0 0) (1 0) (1 1)))))\n")
+        File.WriteAllText(topPath,
+            "(layout (version 1) (pdk sky130)\n"
+            + "  (import \"primitives.rkt\")\n"
+            + "  (cell macro (sref (cell bit) (origin 0 0))))\n")
+        let doc, warnings = Layout.LayoutLoader.load topPath
+        warnings |> should be Empty
+        // Both the root macro and the imported `bit` end up in Cells.
+        doc.Cells
+        |> List.map (fun c -> c.Name)
+        |> set
+        |> should equal (set [ "macro"; "bit" ])
+    finally
+        try Directory.Delete(dir, true) with _ -> ()
+
+[<Fact>]
+let ``LayoutLoader.load fails when an import target is missing`` () =
     let tmp = Path.Combine(Path.GetTempPath(),
-                           "rkt-imp-" + System.Guid.NewGuid().ToString("N") + ".rkt")
+                           "rkt-imp-miss-" + System.Guid.NewGuid().ToString("N") + ".rkt")
     let src =
         "(layout (version 1) (pdk sky130)\n"
-        + "  (import \"sibling.rkt\")\n"
+        + "  (import \"nope.rkt\")\n"
         + "  (cell c))\n"
     File.WriteAllText(tmp, src)
     try
-        let _, warnings = Layout.LayoutLoader.load tmp
-        warnings |> List.length |> should equal 1
-        warnings.[0] |> should haveSubstring "import"
+        (fun () -> Layout.LayoutLoader.load tmp |> ignore)
+        |> should throw typeof<System.Exception>
     finally
         try File.Delete tmp with _ -> ()
 

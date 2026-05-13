@@ -891,7 +891,7 @@ type GdsCanvasControl() =
                         Instances.translateSelection
                             lib this.InstanceSelection dxSnap dySnap
                     dragLiveLib <- Some lib'
-                    dragLiveFlat <- Layout.Flatten.flatten lib
+                    dragLiveFlat <- Layout.Flatten.flatten lib'
                 | None ->
                     dragLiveLib <- None
                     dragLiveFlat <- [||]
@@ -1202,8 +1202,18 @@ type GdsCanvasControl() =
                         selectedPolys otherPolys
                 else
                     [||]
+            // Cell-bbox outlines track the live render library, not the
+            // resting model. During a SelectionDrag the speculative
+            // `renderLib` has the moved SRefs; re-enumerating against
+            // it keeps the dotted cell outlines glued to the geometry
+            // instead of lagging at the pre-drag positions.
+            let overlayInstances =
+                if dragging && dragKind = SelectionDrag then
+                    Instances.enumerate renderLib
+                else
+                    this.Instances
             let overlay : SelectionOverlay =
-                { Instances = this.Instances
+                { Instances = overlayInstances
                   Selected  = this.InstanceSelection
                   Dragging  = dragging
                   ShowDimensions = this.ShowDimensions

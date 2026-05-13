@@ -36,3 +36,60 @@ let resolve (cellName: string) (searchPath: string list) : string option =
     |> List.tryPick (fun dir ->
         let candidate = Path.Combine(dir, fname)
         if File.Exists candidate then Some candidate else None)
+
+/// Env-var override. `REKOLEKTION_MAG_PATH` is colon-separated on
+/// Unix (and Windows-style `;`-separated as a fallback). Empty
+/// list when the var is unset or empty.
+let fromEnv () : string list =
+    let raw = System.Environment.GetEnvironmentVariable "REKOLEKTION_MAG_PATH"
+    if System.String.IsNullOrEmpty raw then []
+    else
+        let sep =
+            if raw.Contains ':' then [| ':' |]
+            elif raw.Contains ';' then [| ';' |]
+            else [| ':' |]
+        raw.Split(sep, System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.toList
+        |> List.map (fun s -> s.Trim())
+        |> List.filter (fun s -> s <> "")
+
+/// Project-aware search-path guess for the rekolektion / khalkulo
+/// repo layout. Walks up from `loadedFile` looking for an ancestor
+/// directory named `cell_designs`. If found, adds:
+///   - `<cell_designs>/<each-child>/`
+///   - `<cell_designs>/<each-child>/layout/`
+///
+/// The rekolektion convention puts primitive cells flat under
+/// `cell_designs/primitives/` and per-cell projects under
+/// `cell_designs/<group>/layout/`. Walking those at load time
+/// resolves cross-directory `use` references without the user
+/// having to set `REKOLEKTION_MAG_PATH` for files inside the
+/// project tree.
+///
+/// Returns an empty list when no `cell_designs` ancestor exists —
+/// files outside the project layout still only get the
+/// caller-supplied search path.
+let inferProjectPaths (loadedFile: string) : string list =
+    let fullPath =
+        try Path.GetFullPath loadedFile with _ -> loadedFile
+    let rec findCellDesigns (dir: string) : string option =
+        if System.String.IsNullOrEmpty dir then None
+        else
+            let here = Path.Combine(dir, "cell_designs")
+            if Directory.Exists here then Some here
+            else
+                let parent = Path.GetDirectoryName dir
+                if parent = dir || System.String.IsNullOrEmpty parent then None
+                else findCellDesigns parent
+    let startDir =
+        try Path.GetDirectoryName fullPath with _ -> ""
+    match findCellDesigns startDir with
+    | None -> []
+    | Some root ->
+        try
+            Directory.EnumerateDirectories root
+            |> Seq.collect (fun d ->
+                let layout = Path.Combine(d, "layout")
+                if Directory.Exists layout then [ d; layout ] else [ d ])
+            |> Seq.toList
+        with _ -> []

@@ -23,25 +23,65 @@ let load (path: string) : Document * string list =
     | ".gds" | ".gds2" ->
         Gds.Reader.readGds path, []
     | ".mag" ->
-        MagToLayout.load path []
+        // Magic `use` references resolve via a search path. Default
+        // build:
+        //   1. `$REKOLEKTION_MAG_PATH` (colon-separated dirs).
+        //   2. Project-aware: walk up to a `cell_designs/` ancestor
+        //      and add every immediate child + each child's `layout/`
+        //      subdir. Matches the rekolektion / khalkulo convention.
+        // Order is "env first" so user override beats heuristic.
+        let extras =
+            Mag.SearchPath.fromEnv ()
+            @ Mag.SearchPath.inferProjectPaths path
+            |> List.distinct
+        MagToLayout.load path extras
     | ".rkt" ->
-        // Single-file load — imports are not resolved at v1; if the
-        // file references cells from `(import "...")` siblings, the
-        // viz tool will see unresolved SRef targets. Warn so the
-        // user knows; full multi-file load resolution is future
-        // work.
-        match Rkt.Reader.readFile path with
-        | Ok (_, doc) ->
-            let warnings =
-                if doc.Imports |> List.isEmpty then []
-                else
-                    [ sprintf "rkt file has %d (import ...) form(s); imports are not resolved at v1"
-                        doc.Imports.Length ]
-            doc, warnings
+        // Multi-file load with `(import ...)` resolution. The reader
+        // walks the import graph (cycle-detected), and we merge every
+        // loaded file's cells into the root document so SRef lookups
+        // by name find imported cells. Per-cell source path is
+        // discarded at this layer — Save still routes per-file once
+        // the App tracks each cell's origin (future stage).
+        match Rkt.Reader.loadSingle path with
         | Error e ->
             failwithf "rkt load failed: %s%s"
                 (match e.Path with Some p -> p + ": " | None -> "")
                 e.Message
+        | Ok library ->
+            let rootPath = System.IO.Path.GetFullPath path
+            let rootDoc =
+                match Map.tryFind rootPath library.Documents with
+                | Some ld -> ld.Ast
+                | None -> Rkt.Types.emptyDocument
+            // Merge cells from every loaded document, preferring the
+            // first occurrence of any duplicate name. Stable across
+            // import graph shapes because Map iteration is ordered
+            // by key (path).
+            let seen = System.Collections.Generic.HashSet<string>()
+            let mergedCells =
+                let acc = System.Collections.Generic.List<Cell>()
+                // Root first so root-defined cells take precedence
+                // when an imported file shadows a name.
+                for c in rootDoc.Cells do
+                    if seen.Add c.Name then acc.Add c
+                for kv in library.Documents do
+                    if kv.Key <> rootPath then
+                        for c in kv.Value.Ast.Cells do
+                            if seen.Add c.Name then acc.Add c
+                List.ofSeq acc
+            let warnings =
+                let duplicates =
+                    library.Documents
+                    |> Seq.collect (fun kv -> kv.Value.Ast.Cells)
+                    |> Seq.countBy (fun c -> c.Name)
+                    |> Seq.filter (fun (_, n) -> n > 1)
+                    |> Seq.toList
+                if List.isEmpty duplicates then []
+                else
+                    duplicates
+                    |> List.map (fun (name, n) ->
+                        sprintf "cell '%s' defined %d times across imported files; first occurrence wins" name n)
+            { rootDoc with Cells = mergedCells }, warnings
     | _ ->
         // Be forgiving: try the GDS reader first (handles a few
         // legacy extensions like .stream), surface a clearer error

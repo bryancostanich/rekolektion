@@ -133,22 +133,38 @@ let loadFileToLibrary
     let allCells = ResizeArray<MagCell>([| top |])
     let extraWarn = ResizeArray<string>()
 
+    // Wrapper that surfaces IO failures (e.g. Magic holding an
+    // exclusive lock on a file we want to read) as warnings rather
+    // than aborting the whole load. The user sees the cell as
+    // missing geometry plus a warning — better than no canvas.
+    let tryReadSubcell (p: string) (cellName: string) : MagCell option =
+        try Some (Mag.Reader.read p)
+        with ex ->
+            extraWarn.Add(
+                sprintf "subcell '%s' (%s) could not be read: %s"
+                    cellName p ex.Message)
+            None
+
+    let enqueueResolved (cellName: string) =
+        match Mag.SearchPath.resolve cellName searchPath with
+        | None ->
+            extraWarn.Add(
+                sprintf "subcell '%s' not found in search path" cellName)
+        | Some p ->
+            match tryReadSubcell p cellName with
+            | Some cell -> queue.Enqueue cell
+            | None -> ()
+
     for inst in top.Instances do
         if visited.Add inst.CellName then
-            match Mag.SearchPath.resolve inst.CellName searchPath with
-            | Some p -> queue.Enqueue(Mag.Reader.read p)
-            | None ->
-                extraWarn.Add(sprintf "subcell '%s' not found in search path" inst.CellName)
+            enqueueResolved inst.CellName
 
     while queue.Count > 0 do
         let cell = queue.Dequeue()
         allCells.Add cell
         for inst in cell.Instances do
             if visited.Add inst.CellName then
-                match Mag.SearchPath.resolve inst.CellName searchPath with
-                | Some p -> queue.Enqueue(Mag.Reader.read p)
-                | None ->
-                    extraWarn.Add(sprintf "subcell '%s' not found in search path" inst.CellName)
+                enqueueResolved inst.CellName
 
     let lib, ws = buildLibrary top (List.ofSeq allCells)
     lib, (List.ofSeq extraWarn) @ ws

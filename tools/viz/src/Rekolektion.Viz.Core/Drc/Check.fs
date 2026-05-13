@@ -1,7 +1,12 @@
 module Rekolektion.Viz.Core.Drc.Check
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout.Flatten
+
+/// µm per DBU, derived from the document's `Units.DbuNm` (nm/DBU).
+/// 1 µm = 1000 nm, so 1 nm/DBU = 0.001 µm/DBU.
+let private umPerDbuOf (units: Units) : float =
+    float units.DbuNm * 1.0e-3
 
 /// One DRC violation. `Rule` is "<layer>.<rule>", e.g. "met1.spacing".
 /// `BboxA` / `BboxB` are world-DBU axis-aligned bboxes — for a
@@ -64,8 +69,8 @@ let private umToDbu (umPerDbu: float) (um: float) : int64 =
 /// `lib.flat`. Quadratic per layer in the polygon count, so the
 /// caller is responsible for restricting the input to the edited
 /// neighborhood when working at production-scale macros.
-let check (lib: Library) (flat: FlatPolygon array) : Violation array =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+let check (units: Units) (flat: FlatPolygon array) : Violation array =
+    let umPerDbu = umPerDbuOf units
     let result = System.Collections.Generic.List<Violation>()
 
     // Group polygons by (layer, datatype) so per-layer rules only
@@ -143,13 +148,13 @@ let check (lib: Library) (flat: FlatPolygon array) : Violation array =
 /// not on `(dirX, dirY)`-side of the other bbox (e.g. asking
 /// for +X tighten when nothing is to the selected's right).
 let maxOrthoSlackDbu
-        (lib: Library)
+        (units: Units)
         (selectedPolys: FlatPolygon array)
         (otherPolys:    FlatPolygon array)
         (dirX: int)
         (dirY: int)
         : int64 option =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+    let umPerDbu = umPerDbuOf units
     let physical (p: FlatPolygon) =
         not (Rekolektion.Viz.Core.Layout.Layer.isNonPhysical p.Layer p.DataType)
     let selPhys = selectedPolys |> Array.filter physical
@@ -253,11 +258,11 @@ type TightenCandidate = {
 /// `selectedPolys` and `otherPolys` are world-DBU flat polys;
 /// the caller has already filtered selection vs. neighbor.
 let tightenCandidates
-        (lib: Library)
+        (units: Units)
         (selectedPolys: FlatPolygon array)
         (otherPolys:    FlatPolygon array)
         : TightenCandidate array =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+    let umPerDbu = umPerDbuOf units
     let physical (p: FlatPolygon) =
         not (Rekolektion.Viz.Core.Layout.Layer.isNonPhysical p.Layer p.DataType)
     let selPhys = selectedPolys |> Array.filter physical
@@ -373,10 +378,10 @@ let private classifySide
 /// in world coords; the caller produces it via
 /// `Layout.Flatten.flattenInstance`.
 let checkInterInstance
-        (lib: Library)
+        (units: Units)
         (instancePolys: Map<int, FlatPolygon array>)
         : Violation array =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+    let umPerDbu = umPerDbuOf units
     let result = System.Collections.Generic.List<Violation>()
 
     // Precompute per-instance per-(layer, datatype) bbox arrays —

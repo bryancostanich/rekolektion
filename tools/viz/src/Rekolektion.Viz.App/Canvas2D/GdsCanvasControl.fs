@@ -1145,7 +1145,8 @@ type GdsCanvasControl() =
                             inst.Index,
                             Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) inst.Index)
                         |> Map.ofArray
-                    Drc.Check.checkInterInstance renderLib perInstance
+                    Drc.Check.checkInterInstance
+                        (Layout.Snap.unitsOfLibrary renderLib) perInstance
                 else
                     [||]
             let marquee =
@@ -1179,7 +1180,9 @@ type GdsCanvasControl() =
                         |> Array.filter (fun i -> not (this.InstanceSelection.Contains i.Index))
                         |> Array.collect (fun i ->
                             Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) i.Index)
-                    Drc.Check.tightenCandidates renderLib selectedPolys otherPolys
+                    Drc.Check.tightenCandidates
+                        (Layout.Snap.unitsOfLibrary renderLib)
+                        selectedPolys otherPolys
                 else
                     [||]
             let overlay : SelectionOverlay =

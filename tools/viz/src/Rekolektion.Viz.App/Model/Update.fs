@@ -218,7 +218,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                     Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary mc.Library) i.Index)
                             let candidates =
                                 Drc.Check.tightenCandidates
-                                    mc.Library selectedPolys otherPolys
+                                    (Layout.Snap.unitsOfLibrary mc.Library)
+                                    selectedPolys otherPolys
                             // index is 1-based per the user-
                             // visible numbered labels.
                             let i0 = index - 1

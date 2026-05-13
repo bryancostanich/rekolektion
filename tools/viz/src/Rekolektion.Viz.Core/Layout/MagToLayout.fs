@@ -16,6 +16,10 @@ open Rekolektion.Viz.Core.Mag.Types
 /// `magscaleNum` / `magscaleDenom` come from the top cell's
 /// magscale directive — Magic guarantees all cells in one design
 /// share the same scale, so the top is authoritative.
+/// Low-level converter: a `MagCell` graph to a `Gds.Types.Library`.
+/// Kept public for callers that still need the legacy in-memory
+/// model. The new canonical entry is `buildRkt`, which wraps this
+/// and emits a `Rkt.Types.Document`.
 let buildLibrary
         (top: MagCell)
         (allCells: MagCell list)
@@ -111,7 +115,11 @@ let buildLibrary
 /// a warning rather than failing — same defensive posture the
 /// brief asks for. Returns the assembled Library plus the
 /// flattened warning list.
-let loadFile
+///
+/// Low-level entry — preserved for tests that compare against the
+/// legacy `Gds.Types.Library`. New code should call `load`, which
+/// returns a canonical `Rkt.Types.Document`.
+let loadFileToLibrary
         (path: string)
         (extraSearchDirs: string list)
         : Library * string list =
@@ -144,3 +152,15 @@ let loadFile
 
     let lib, ws = buildLibrary top (List.ofSeq allCells)
     lib, (List.ofSeq extraWarn) @ ws
+
+/// Top-level Mag load: assemble cells through the file's search path
+/// and produce a canonical `Rkt.Document`. The layer table covers the
+/// SKY130 + legacy ReRAM pairs; anything outside that lands as
+/// `Unknown(n, d)` and stays visible.
+let load
+        (path: string)
+        (extraSearchDirs: string list)
+        : Rekolektion.Viz.Core.Rkt.Types.Document * string list =
+    let lib, warnings = loadFileToLibrary path extraSearchDirs
+    let doc = Rekolektion.Viz.Core.Rkt.OfGds.fromLibrary lib
+    doc, warnings

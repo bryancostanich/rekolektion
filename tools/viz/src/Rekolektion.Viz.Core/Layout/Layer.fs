@@ -78,5 +78,34 @@ let isNonPhysical (layerNumber: int) (_dataType: int) : bool =
 let private byKey =
     allDrawing |> List.map (fun l -> (l.Number, l.DataType), l) |> Map.ofList
 
+/// Legacy `(number, datatype)` pairs that the SKY130 stream map
+/// doesn't list but that appear in foundry-shipped cells (chiefly
+/// the `sky130_fd_pr_reram` library). Magic translates them at
+/// gds-read time via cifinput rules; we mirror the translation
+/// here so the same `Rkt.Document` lands regardless of which
+/// number the source file used.
+///
+/// Each entry points at the canonical `(number, datatype)` in
+/// `byKey`. The reverse map (used by `Rkt.ToGds`) intentionally
+/// ignores this table, so a load-then-export round-trip rewrites
+/// legacy pairs to their canonical sky130 equivalents.
+let private legacyAliases : ((int * int) * (int * int)) list = [
+    (6, 0),    (65, 20)    // diff.drawing
+    (6, 251),  (65, 20)    // diff.pin (merged into drawing)
+    (7, 0),    (66, 44)    // licon (poly contact)
+    (8, 0),    (68, 20)    // met1.drawing
+    (8, 251),  (68, 20)    // met1.pin (merged into drawing)
+    (40, 0),   (201, 20)   // reram body
+]
+
+let private aliasMap : Map<int * int, Layer> =
+    legacyAliases
+    |> List.choose (fun (alias, canonical) ->
+        Map.tryFind canonical byKey
+        |> Option.map (fun layer -> alias, layer))
+    |> Map.ofList
+
 let bySky130Number (number: int) (dataType: int) : Layer option =
-    Map.tryFind (number, dataType) byKey
+    match Map.tryFind (number, dataType) byKey with
+    | Some l -> Some l
+    | None -> Map.tryFind (number, dataType) aliasMap

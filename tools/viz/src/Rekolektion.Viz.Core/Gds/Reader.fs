@@ -129,8 +129,11 @@ let private parseXY (data: byte[]) : Point list =
         let y = readInt32BE data (i * 8 + 4)
         { X = int64 x; Y = int64 y } ]
 
-/// Parse a GDS II binary file into a Library.
-let readGds (path: string) : Library =
+/// Low-level decoder: GDS II bytes to a `Gds.Types.Library`. Kept
+/// public for the format-faithful round-trip tests and the writer
+/// path. Most callers should use `readGds`, which returns the
+/// canonical `Rkt.Document` model with named layers.
+let readGdsLibrary (path: string) : Library =
     use stream = File.OpenRead(path)
     let records = readRecords stream
 
@@ -328,3 +331,12 @@ let readGds (path: string) : Library =
         DbUnitsInMeters = dbUnitsMeters
         Structures = structures |> Seq.toList
     }
+
+/// Read a GDS II binary file into the canonical `Rkt.Document`
+/// model. Layer-number/datatype pairs resolve to named layers via
+/// `Layout.Layer.bySky130Number` (which now also handles the legacy
+/// ReRAM aliases — `6/0`, `8/0`, `40/0`, …). Pairs without any entry
+/// land as `Unknown(n, d)` and stay visible in the viz tool.
+let readGds (path: string) : Rekolektion.Viz.Core.Rkt.Types.Document =
+    readGdsLibrary path
+    |> Rekolektion.Viz.Core.Rkt.OfGds.fromLibrary

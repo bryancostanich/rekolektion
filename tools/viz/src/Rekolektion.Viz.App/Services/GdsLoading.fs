@@ -24,7 +24,12 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
         // (with subcell search rooted at the file's directory);
         // .gds uses the existing GDS reader. Both produce the same
         // Library shape so the rest of the pipeline is unchanged.
-        let lib, magWarnings = Layout.LayoutLoader.load path
+        // Transitional: LayoutLoader.load now returns Rkt.Document.
+        // The App's downstream code (Hierarchy/Flatten/Instances)
+        // still operates on Gds.Library, so we use loadAsLibrary as
+        // a shim until those consumers migrate. Each consumer
+        // migration will let us drop this shim further upstream.
+        let lib, magWarnings = Layout.LayoutLoader.loadAsLibrary path
         for w in magWarnings do
             eprintfn "[viz] %s" w
         let sidecarPath = Path.ChangeExtension(path, ".nets.json")

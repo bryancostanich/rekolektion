@@ -7,8 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Gds/Types.fs" />
-    <Compile Include="Gds/Reader.fs" />
-    <Compile Include="Gds/Writer.fs" />
     <Compile Include="Mag/Types.fs" />
     <Compile Include="Mag/LayerMap.fs" />
     <Compile Include="Mag/Transform.fs" />
@@ -22,6 +20,8 @@
     <Compile Include="Rkt/Writer.fs" />
     <Compile Include="Rkt/OfGds.fs" />
     <Compile Include="Rkt/ToGds.fs" />
+    <Compile Include="Gds/Reader.fs" />
+    <Compile Include="Gds/Writer.fs" />
     <Compile Include="Layout/Hierarchy.fs" />
     <Compile Include="Layout/Picking.fs" />
     <Compile Include="Layout/Marquee.fs" />

@@ -33,8 +33,12 @@ let cmdRead (args: string list) : int =
     | [path] ->
         // Dispatch on extension: .mag → Magic parser, .gds → GDS.
         // Both produce the same Library shape downstream.
+        // Transitional: LayoutLoader.load now returns Rkt.Document;
+        // this `read` command still reports against Gds.Library, so
+        // we use loadAsLibrary (shim) until the report rewrites
+        // against the Rkt model.
         let lib, warnings =
-            Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+            Rekolektion.Viz.Core.Layout.LayoutLoader.loadAsLibrary path
         for w in warnings do
             eprintfn "[viz] %s" w
         printfn "Library: %s" lib.Name

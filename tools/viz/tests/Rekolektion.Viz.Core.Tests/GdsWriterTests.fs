@@ -38,7 +38,7 @@ let ``write then read recovers a single-rect library`` () =
     }
     withTmp (fun path ->
         Gds.Writer.writeGds path lib
-        let roundTrip = Gds.Reader.readGds path
+        let roundTrip = Gds.Reader.readGdsLibrary path
         roundTrip.Name |> should equal "test"
         roundTrip.Structures.Length |> should equal 1
         let s = roundTrip.Structures.[0]
@@ -74,7 +74,7 @@ let ``write then read recovers a library with SRef`` () =
     }
     withTmp (fun path ->
         Gds.Writer.writeGds path lib
-        let rt = Gds.Reader.readGds path
+        let rt = Gds.Reader.readGdsLibrary path
         rt.Structures.Length |> should equal 2
         let top = rt.Structures |> List.find (fun s -> s.Name = "top")
         match top.Elements.[0] with
@@ -108,7 +108,7 @@ let ``write then read preserves rotated mirrored SRef`` () =
     }
     withTmp (fun path ->
         Gds.Writer.writeGds path lib
-        let rt = Gds.Reader.readGds path
+        let rt = Gds.Reader.readGdsLibrary path
         let top = rt.Structures |> List.find (fun s -> s.Name = "top")
         match top.Elements.[0] with
         | SRef sr ->
@@ -128,7 +128,7 @@ let ``write then read preserves UNITS reals`` () =
     }
     withTmp (fun path ->
         Gds.Writer.writeGds path lib
-        let rt = Gds.Reader.readGds path
+        let rt = Gds.Reader.readGdsLibrary path
         rt.UserUnitsPerDbUnit |> should (equalWithin 1e-9) 0.001
         rt.DbUnitsInMeters |> should (equalWithin 1e-15) 1e-9)
 
@@ -138,10 +138,10 @@ let ``round-trip preserves the live lshift fixture if present`` () =
         "/Users/bryancostanich/git_repos/bryan_costanich/khalkulo/source/cell_designs/reram_drv/lshift_1v8_to_3v3_optC.gds"
     if not (System.IO.File.Exists fixture) then ()
     else
-        let orig = Gds.Reader.readGds fixture
+        let orig = Gds.Reader.readGdsLibrary fixture
         withTmp (fun path ->
             Gds.Writer.writeGds path orig
-            let rt = Gds.Reader.readGds path
+            let rt = Gds.Reader.readGdsLibrary path
             rt.Name |> should equal orig.Name
             rt.Structures.Length |> should equal orig.Structures.Length
             // Sanity-check the first structure's element count

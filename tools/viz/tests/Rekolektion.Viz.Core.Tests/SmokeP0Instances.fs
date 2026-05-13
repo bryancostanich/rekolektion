@@ -12,7 +12,7 @@ let private fixturePath =
 let ``cim_reram_4t2r_wip enumerates two top-level SRef instances`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _warns = Layout.LayoutLoader.load fixturePath
+        let lib, _warns = Layout.LayoutLoader.loadAsLibrary fixturePath
         let inst = Instances.enumerate lib
         inst.Length |> should equal 2
         for i in inst do
@@ -24,7 +24,7 @@ let ``cim_reram_4t2r_wip enumerates two top-level SRef instances`` () =
 let ``snap delta to 5 nm grid for mag library is 1 DBU step`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         // magscale 1 2 + 10 nm internal → 5 nm/DBU → grid step = 1 DBU
         let step = Snap.gridDbu lib Snap.sky130MfgGridNm
         step |> should equal 1L
@@ -36,7 +36,7 @@ let ``snap delta to 5 nm grid for mag library is 1 DBU step`` () =
 let ``translateSelection moves only selected indices`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let before = Instances.enumerate lib
         before.Length |> should equal 2
         let pickIdx = before.[0].Index
@@ -75,7 +75,7 @@ let ``layerBboxesOf groups polygons by layer + datatype`` () =
 let ``flattenInstance returns only one instance's polygons`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let allPolys = Layout.Flatten.flatten lib
         let instances = Layout.Instances.enumerate lib
         instances.Length |> should equal 2
@@ -92,7 +92,7 @@ let ``flattenInstance returns only one instance's polygons`` () =
 let ``cim fixture has a shared physical layer with a positive per-poly gap`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let map = Layout.Instances.layerPolyBboxesByInstance lib
         let instances = Layout.Instances.enumerate lib
         instances.Length |> should equal 2
@@ -146,7 +146,7 @@ let ``physical bboxes overlap in cim fixture (transistor abutment)`` () =
         // correctly classifies them as "no orthogonal adjacency"
         // and draws no arrows. To exercise the live overlay,
         // drag one cell clear of the other and arrows appear.
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let map = Layout.Instances.physicalBboxesByInstance lib
         let bbs = map |> Map.toList |> List.map snd
         bbs.Length |> should equal 2
@@ -160,7 +160,7 @@ let ``physical bboxes overlap in cim fixture (transistor abutment)`` () =
 let ``rotate90 around origin sends (10,0) to (0,10) at fixture instance`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let instances = Layout.Instances.enumerate lib
         instances.Length |> should equal 2
         // Move the first instance's origin to (10, 0) so we can
@@ -184,7 +184,7 @@ let ``rotate90 around origin sends (10,0) to (0,10) at fixture instance`` () =
 let ``mirrorX flips Y origin around pivot`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let instances = Layout.Instances.enumerate lib
         let pickIdx = instances.[0].Index
         let lib0 = Layout.Instances.translateSelection

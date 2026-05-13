@@ -19,7 +19,7 @@ let private withTmp (f: string -> unit) =
 let ``round-trip cim_reram_4t2r_wip with no edits is byte-identical`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         withTmp (fun tmpPath ->
             Mag.Writer.writeUpdated fixturePath lib tmpPath
             let original = File.ReadAllText fixturePath
@@ -30,7 +30,7 @@ let ``round-trip cim_reram_4t2r_wip with no edits is byte-identical`` () =
 let ``writer rewrites the transform line for a moved instance`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let instances = Layout.Instances.enumerate lib
         instances.Length |> should equal 2
         let pickIdx = instances.[0].Index
@@ -43,7 +43,7 @@ let ``writer rewrites the transform line for a moved instance`` () =
             Mag.Writer.writeUpdated fixturePath lib' tmpPath
             // Re-load the written file and confirm the move
             // persisted into the transform's translation tokens.
-            let lib2, _ = Layout.LayoutLoader.load tmpPath
+            let lib2, _ = Layout.LayoutLoader.loadAsLibrary tmpPath
             let inst2 = Layout.Instances.enumerate lib2
             let moved =
                 inst2 |> Array.find (fun i -> i.Index = pickIdx)
@@ -54,7 +54,7 @@ let ``writer rewrites the transform line for a moved instance`` () =
 let ``writer leaves comments, timestamps, and box lines verbatim`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         let instances = Layout.Instances.enumerate lib
         let pickIdx = instances.[0].Index
         let lib' =

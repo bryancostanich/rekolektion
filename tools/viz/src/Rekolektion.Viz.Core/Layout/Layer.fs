@@ -48,6 +48,12 @@ let allDrawing : Layer list = [
     // met1 (post-li1 contact, pre-via). Distinctive purple keeps
     // it visually separate from li1 and met1 colors.
     { Number = 201; DataType = 20; Name = "reram";   Color = rgba 0xc8 0x40 0xff 0xff; StackZ =  0.55; Thickness = 0.30 }
+    // Source/drain implant markers — non-physical (process-flag
+    // layers), but they're drawn in real .mag/.gds and were
+    // silently dropped by the renderer when not in the catalog.
+    // Translucent so they don't overpower the silicon underneath.
+    { Number =  93; DataType = 44; Name = "psdm";    Color = rgba 0xff 0x80 0x80 0x40; StackZ =  4.10; Thickness = 0.05 }
+    { Number =  94; DataType = 20; Name = "nsdm";    Color = rgba 0x80 0xc0 0xff 0x40; StackZ =  4.15; Thickness = 0.05 }
     // Marker (areaid.sc) — non-physical, drawn flat as a thin overlay.
     { Number =  81; DataType =  2; Name = "areaid.sc"; Color = rgba 0xff 0x00 0xff 0x40; StackZ =  4.30; Thickness = 0.05 }
     // Magic-internal marker layers. Not silicon; Magic uses these

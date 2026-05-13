@@ -3,6 +3,11 @@ module Rekolektion.Viz.Render.Skia.LayerPainter
 open SkiaSharp
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+// `Rkt.Types` opened after Gds.Types so `Point` in this module
+// resolves to the Rkt-flavored point — the one `Layout.Flatten`
+// now emits. `Library` stays Gds.Library (Rkt has no Library type)
+// so the public `paintIn` / `paintAutoFit` signatures don't churn.
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout.Flatten
 open Rekolektion.Viz.Render.Color
 
@@ -69,7 +74,9 @@ let highlightedPolyKeys
     // (0,0) in sky130_fd_pr_reram__reram_cell shows up at its real
     // on-screen position, not the sub-cell's local origin.
     let origins = ResizeArray<int64 * int64>()
-    for l in Layout.Flatten.flattenLabels lib do
+    // Flatten now takes Rkt.Document; convert at the call site until
+    // the renderer migrates.
+    for l in Layout.Flatten.flattenLabels (Rkt.OfGds.fromLibrary lib) do
         if l.Text = netName then
             origins.Add(l.Origin.X, l.Origin.Y)
     if origins.Count = 0 then result

@@ -58,7 +58,7 @@ let ``layerBboxesOf groups polygons by layer + datatype`` () =
     let pts (xs: (int64 * int64) list) =
         xs
         |> List.map (fun (x, y) ->
-            ({ X = x; Y = y } : Rekolektion.Viz.Core.Gds.Types.Point))
+            ({ X = x; Y = y } : Rekolektion.Viz.Core.Rkt.Types.Point))
         |> List.toArray
     let polys : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array = [|
         { Layer = 67; DataType = 20; SourceStructure = "x"; SourceIndex = 0
@@ -77,11 +77,11 @@ let ``flattenInstance returns only one instance's polygons`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
         let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
-        let allPolys = Layout.Flatten.flatten lib
+        let allPolys = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
         let instances = Layout.Instances.enumerate lib
         instances.Length |> should equal 2
-        let polys0 = Layout.Flatten.flattenInstance lib instances.[0].Index
-        let polys1 = Layout.Flatten.flattenInstance lib instances.[1].Index
+        let polys0 = Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary lib) instances.[0].Index
+        let polys1 = Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary lib) instances.[1].Index
         // Each per-instance flatten is non-empty and strictly
         // smaller than the full flatten (we drop top-level polys
         // and the OTHER instance's subtree).

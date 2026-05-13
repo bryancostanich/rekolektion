@@ -6,6 +6,9 @@ open Avalonia.Controls
 open Avalonia.Media
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+// `Rkt.Types` opened after Gds.Types so `Point` resolves to the
+// Rkt-flavored point Flatten now emits.
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.App.Model
 
 /// Inspector text rows use `SelectableTextBlock` rather than the

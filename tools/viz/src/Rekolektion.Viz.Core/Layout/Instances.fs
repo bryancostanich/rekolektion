@@ -277,12 +277,15 @@ let layerPolyBboxesOf (polys: System.Collections.Generic.IEnumerable<Rekolektion
 let layerPolyBboxesByInstance (lib: Rekolektion.Viz.Core.Gds.Types.Library)
                               : Map<int, Map<int * int, (int64 * int64 * int64 * int64) array>> =
     let top = findTop lib
+    // Flatten now consumes Rkt.Document; convert at the call site
+    // until Instances itself migrates.
+    let doc = Rekolektion.Viz.Core.Rkt.OfGds.fromLibrary lib
     top.Elements
     |> List.indexed
     |> List.choose (fun (idx, el) ->
         match el with
         | Rekolektion.Viz.Core.Gds.Types.SRef _ ->
-            let polys = Rekolektion.Viz.Core.Layout.Flatten.flattenInstance lib idx
+            let polys = Rekolektion.Viz.Core.Layout.Flatten.flattenInstance doc idx
             Some (idx, layerPolyBboxesOf polys)
         | _ -> None)
     |> Map.ofList

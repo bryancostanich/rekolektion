@@ -1,6 +1,5 @@
 module Rekolektion.Viz.Core.Net.Ratlines
 
-open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Core.Rkt.Types
 
 /// One pin of a net on a specific top-level instance — the
@@ -30,14 +29,8 @@ type NetRoute = {
 /// same top-instance are collapsed into one centroid; same-net
 /// labels in DIFFERENT top-instances yield separate pins, which
 /// are what we draw lines between.
-///
-/// Public API takes a `Rkt.Document`. The label-flattening helper
-/// still operates on `Gds.Types.Library`, so we convert at the
-/// boundary via `Rkt.ToGds.toLibrary`. The shim disappears when
-/// `Layout.Flatten` migrates to the Rkt model.
 let compute (doc: Document) : NetRoute array =
-    let lib = Rekolektion.Viz.Core.Rkt.ToGds.toLibrary doc
-    let tagged = Rekolektion.Viz.Core.Layout.Flatten.flattenLabelsTagged lib
+    let tagged = Rekolektion.Viz.Core.Layout.Flatten.flattenLabelsTagged doc
     // (net, instance) -> running sum (sumX, sumY, count)
     let acc =
         System.Collections.Generic.Dictionary<string * int option, int64 * int64 * int>()

@@ -17,7 +17,7 @@ let ``Extruder.extrude produces 8 vertices per rectangular layer`` () =
               Name = "top"
               Elements = [ Boundary { Layer = 68; DataType = 20; Points = rect 0L 0L 1000L 1000L } ]
           }] }
-    let flat = Layout.Flatten.flatten lib
+    let flat = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
     let mesh = Extruder.extrude lib.UserUnitsPerDbUnit flat
     // 4 unique vertices in the rect (closing point stripped) x 2 (top + bottom) = 8.
     mesh.Vertices.Length |> should equal 8

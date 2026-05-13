@@ -879,7 +879,7 @@ type GdsCanvasControl() =
                         Instances.translateSelection
                             lib this.InstanceSelection dxSnap dySnap
                     dragLiveLib <- Some lib'
-                    dragLiveFlat <- Layout.Flatten.flatten lib'
+                    dragLiveFlat <- Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
                 | None ->
                     dragLiveLib <- None
                     dragLiveFlat <- [||]
@@ -1143,7 +1143,7 @@ type GdsCanvasControl() =
                         this.Instances
                         |> Array.map (fun inst ->
                             inst.Index,
-                            Layout.Flatten.flattenInstance renderLib inst.Index)
+                            Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) inst.Index)
                         |> Map.ofArray
                     Drc.Check.checkInterInstance renderLib perInstance
                 else
@@ -1173,12 +1173,12 @@ type GdsCanvasControl() =
                         this.Instances
                         |> Array.filter (fun i -> this.InstanceSelection.Contains i.Index)
                         |> Array.collect (fun i ->
-                            Layout.Flatten.flattenInstance renderLib i.Index)
+                            Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) i.Index)
                     let otherPolys =
                         this.Instances
                         |> Array.filter (fun i -> not (this.InstanceSelection.Contains i.Index))
                         |> Array.collect (fun i ->
-                            Layout.Flatten.flattenInstance renderLib i.Index)
+                            Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary renderLib) i.Index)
                     Drc.Check.tightenCandidates renderLib selectedPolys otherPolys
                 else
                     [||]

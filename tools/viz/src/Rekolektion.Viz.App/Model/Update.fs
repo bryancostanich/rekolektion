@@ -210,12 +210,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 mc.TopInstances
                                 |> Array.filter (fun i -> model.InstanceSelection.Contains i.Index)
                                 |> Array.collect (fun i ->
-                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                                    Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary mc.Library) i.Index)
                             let otherPolys =
                                 mc.TopInstances
                                 |> Array.filter (fun i -> not (model.InstanceSelection.Contains i.Index))
                                 |> Array.collect (fun i ->
-                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                                    Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary mc.Library) i.Index)
                             let candidates =
                                 Drc.Check.tightenCandidates
                                     mc.Library selectedPolys otherPolys
@@ -230,7 +230,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 let lib' =
                                     Layout.Instances.translateSelection
                                         mc.Library model.InstanceSelection dxDbu dyDbu
-                                let flat' = Layout.Flatten.flatten lib'
+                                let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
                                     EditSession.pushUndoSnapshot mc
@@ -279,7 +279,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                     | _ ->
                                         Layout.Instances.mirrorYSelection
                                             mc.Library model.InstanceSelection pivot
-                                let flat' = Layout.Flatten.flatten lib'
+                                let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
                                     EditSession.pushUndoSnapshot mc
@@ -334,7 +334,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             let lib', clones =
                                 Layout.Instances.duplicateSelection
                                     mc.Library model.InstanceSelection dx dy
-                            let flat' = Layout.Flatten.flatten lib'
+                            let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
                             let inst' = Layout.Instances.enumerate lib'
                             nextSelection <- clones
                             let mc' =
@@ -373,7 +373,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             let lib' =
                                 Layout.Instances.translateSelection
                                     mc.Library model.InstanceSelection dxDbu dyDbu
-                            let flat' = Layout.Flatten.flatten lib'
+                            let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
                             let inst' = Layout.Instances.enumerate lib'
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
@@ -437,7 +437,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         if mc.Path <> path then mc
                         else
                             let lib' = updateLib mc.Library
-                            let flat' = Layout.Flatten.flatten lib'
+                            let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib')
                             let inst' = Layout.Instances.enumerate lib'
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
@@ -492,7 +492,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             match mc.UndoStack with
             | [] -> model, Cmd.none
             | prevLib :: rest ->
-                let flat' = Layout.Flatten.flatten prevLib
+                let flat' = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary prevLib)
                 let inst' = Layout.Instances.enumerate prevLib
                 let stillDirty = not (List.isEmpty rest)
                 // When the stack drains we're back at the load

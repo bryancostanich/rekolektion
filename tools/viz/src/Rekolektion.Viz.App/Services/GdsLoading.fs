@@ -47,7 +47,7 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
         // For a 64×64 SRAM macro this expands ~5k structure-level
         // polygons to ~400k flat polygons. The cost is paid once at
         // load time so per-frame rendering doesn't pay it.
-        let flat = Layout.Flatten.flatten lib
+        let flat = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
         let instances = Layout.Instances.enumerate lib
         return Ok {
             Path = path

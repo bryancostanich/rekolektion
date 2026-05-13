@@ -1,6 +1,9 @@
 module Rekolektion.Viz.Render.Mesh.Extruder
 
 open Rekolektion.Viz.Core.Gds.Types
+// `Rkt.Types` opened after Gds.Types so `Point` resolves to the
+// Rkt-flavored point Flatten now emits.
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 open Rekolektion.Viz.Core.Layout.Flatten
 

@@ -1,17 +1,17 @@
 module Rekolektion.Viz.Core.Layout.Flatten
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 
-/// One polygon after the GDS hierarchy has been walked and all
-/// SRef / ARef transforms applied. World coordinates are in DBU,
-/// same units as the original polygon points.
+/// One polygon after the hierarchy has been walked and all SRef /
+/// ARef transforms applied. World coordinates are in DBU, same units
+/// as the original polygon points.
 ///
 /// `SourceStructure` + `SourceIndex` point at the polygon in its
 /// ORIGINAL cell (not the top), so sidecar lookups keyed by
-/// (structure, index) still work for instances whose source cell
-/// has a sidecar entry. For instanced polygons the same source
-/// indices repeat — each bitcell instance reports the same source
-/// cell and index, just at a different transformed position.
+/// (cell, index) still work for instances whose source cell has a
+/// sidecar entry. Layer / DataType land as the canonical GDS pair so
+/// the renderer's existing layer-z lookup keeps working without
+/// change; resolution goes through `Rkt.ToGds.layerToGds`.
 type FlatPolygon = {
     Layer: int
     DataType: int
@@ -20,10 +20,10 @@ type FlatPolygon = {
     SourceIndex: int
 }
 
-/// One label after the GDS hierarchy has been walked and all SRef /
-/// ARef transforms applied. `Origin` is in flat (top-cell) DBU
-/// coordinates, so spatial tests against `FlatPolygon.Points` are
-/// in the same frame regardless of which sub-cell defined the label.
+/// One label after the hierarchy has been walked. `Origin` is in
+/// flat (top-cell) DBU coordinates so spatial tests against
+/// `FlatPolygon.Points` are in the same frame regardless of which
+/// sub-cell defined the label.
 type FlatLabel = {
     Layer: int
     TextType: int
@@ -62,17 +62,13 @@ let private compose (outer: Affine) (inner: Affine) : Affine =
 
 /// Build the affine for an SRef. GDS convention: apply reflection
 /// about X axis FIRST (if Reflected), then uniform scale by Mag,
-/// then rotate Angle (CCW), then translate by Origin.
+/// then rotate Rot (CCW), then translate by Origin.
 let private fromSref (s: SRef) : Affine =
-    let rad = s.Angle * System.Math.PI / 180.0
+    let rad = s.Rot * System.Math.PI / 180.0
     let cosA = System.Math.Cos rad
     let sinA = System.Math.Sin rad
     let mag = s.Mag
-    // Without reflect: [mag*cosA, -mag*sinA; mag*sinA, mag*cosA]
-    // With reflect (about X):
-    //   F_X = [1 0; 0 -1]  then S * F_X = [mag 0; 0 -mag]
-    //   R * S * F_X = [mag*cosA, mag*sinA; mag*sinA, -mag*cosA]
-    if s.Reflected then
+    if s.Reflect then
         { A = mag * cosA;  B = mag * sinA
           C = mag * sinA;  D = -mag * cosA
           Tx = float s.Origin.X; Ty = float s.Origin.Y }
@@ -84,11 +80,11 @@ let private fromSref (s: SRef) : Affine =
 /// Base affine for an ARef instance (i=0, j=0). Per-instance offset
 /// is added to (Tx, Ty) at expansion time.
 let private fromArefBase (a: ARef) : Affine =
-    let rad = a.Angle * System.Math.PI / 180.0
+    let rad = a.Rot * System.Math.PI / 180.0
     let cosA = System.Math.Cos rad
     let sinA = System.Math.Sin rad
     let mag = a.Mag
-    if a.Reflected then
+    if a.Reflect then
         { A = mag * cosA;  B = mag * sinA
           C = mag * sinA;  D = -mag * cosA
           Tx = float a.Origin.X; Ty = float a.Origin.Y }
@@ -97,148 +93,207 @@ let private fromArefBase (a: ARef) : Affine =
           C = mag * sinA;  D = mag * cosA
           Tx = float a.Origin.X; Ty = float a.Origin.Y }
 
-/// Detect the "top" structure: one that no other structure
-/// references via SRef/ARef. If multiple candidates (or none),
-/// fall back to the first structure in the file.
-let private findTop (lib: Library) : Structure =
+let private layerPair (layer: Layer) : int * int =
+    Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer
+
+/// Detect the "top" cell: one that no other cell references via
+/// SRef/ARef. If multiple candidates (or none), fall back to the
+/// first cell in the document.
+let private findTop (doc: Document) : Cell =
     let referenced = System.Collections.Generic.HashSet<string>()
-    for s in lib.Structures do
-        for el in s.Elements do
+    for c in doc.Cells do
+        for el in c.Elements do
             match el with
-            | SRef sr -> referenced.Add sr.StructureName |> ignore
-            | ARef ar -> referenced.Add ar.StructureName |> ignore
+            | SRefEl s -> referenced.Add s.Cell |> ignore
+            | ARefEl a -> referenced.Add a.Cell |> ignore
             | _ -> ()
-    lib.Structures
-    |> List.tryFind (fun s -> not (referenced.Contains s.Name))
-    |> Option.defaultWith (fun () -> List.head lib.Structures)
+    doc.Cells
+    |> List.tryFind (fun c -> not (referenced.Contains c.Name))
+    |> Option.defaultWith (fun () -> List.head doc.Cells)
 
-/// Walk the GDS hierarchy starting from the top cell and produce a
-/// flat list of polygons with all SRef / ARef transforms applied.
-/// O(N) in the total number of polygons after expansion (which can
-/// be 100s of thousands for a production SRAM macro).
-let flatten (lib: Library) : FlatPolygon array =
-    let byName =
-        lib.Structures
-        |> List.map (fun s -> s.Name, s)
-        |> Map.ofList
-    let top = findTop lib
-    let result = System.Collections.Generic.List<FlatPolygon>()
-    let rec walk (struc: Structure) (xform: Affine) =
-        struc.Elements
-        |> List.iteri (fun idx el ->
-            match el with
-            | Boundary b ->
-                let pts =
-                    b.Points
-                    |> List.map (apply xform)
-                    |> List.toArray
-                result.Add {
-                    Layer = b.Layer
-                    DataType = b.DataType
-                    Points = pts
-                    SourceStructure = struc.Name
-                    SourceIndex = idx }
-            | SRef sr ->
-                match Map.tryFind sr.StructureName byName with
-                | None -> ()
-                | Some child ->
-                    walk child (compose xform (fromSref sr))
-            | ARef ar ->
-                match Map.tryFind ar.StructureName byName with
-                | None -> ()
-                | Some child when ar.Cols > 0 && ar.Rows > 0 ->
-                    let baseXform = fromArefBase ar
-                    let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
-                    let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
-                    let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
-                    let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
-                    for r in 0 .. ar.Rows - 1 do
-                        for c in 0 .. ar.Cols - 1 do
-                            let instXform =
-                                { baseXform with
-                                    Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
-                                    Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
-                            walk child (compose xform instXform)
-                | _ -> ()
-            | _ -> ())
-    walk top identityXform
-    result.ToArray()
+let private rectPoints
+    (x1: int64) (y1: int64) (x2: int64) (y2: int64) : Point list =
+    [ { X = x1; Y = y1 }
+      { X = x2; Y = y1 }
+      { X = x2; Y = y2 }
+      { X = x1; Y = y2 }
+      { X = x1; Y = y1 } ]
 
-/// Same hierarchy walk as `flatten`, but emits Text labels with
+/// Walk the hierarchy starting from the top cell and produce a flat
+/// list of polygons with all SRef / ARef transforms applied. O(N) in
+/// the total number of polygons after expansion (which can be
+/// 100s of thousands for a production SRAM macro).
+let flatten (doc: Document) : FlatPolygon array =
+    if List.isEmpty doc.Cells then [||]
+    else
+        let byName = doc.Cells |> List.map (fun c -> c.Name, c) |> Map.ofList
+        let top = findTop doc
+        let result = System.Collections.Generic.List<FlatPolygon>()
+        let rec walk (cell: Cell) (xform: Affine) =
+            cell.Elements
+            |> List.iteri (fun idx el ->
+                match el with
+                | PolyEl p ->
+                    let pts =
+                        p.Points
+                        |> List.map (apply xform)
+                        |> List.toArray
+                    let n, d = layerPair p.Layer
+                    result.Add {
+                        Layer = n
+                        DataType = d
+                        Points = pts
+                        SourceStructure = cell.Name
+                        SourceIndex = idx }
+                | RectEl r ->
+                    let pts =
+                        rectPoints r.X1 r.Y1 r.X2 r.Y2
+                        |> List.map (apply xform)
+                        |> List.toArray
+                    let n, d = layerPair r.Layer
+                    result.Add {
+                        Layer = n
+                        DataType = d
+                        Points = pts
+                        SourceStructure = cell.Name
+                        SourceIndex = idx }
+                | SRefEl sr ->
+                    match Map.tryFind sr.Cell byName with
+                    | None -> ()
+                    | Some child ->
+                        walk child (compose xform (fromSref sr))
+                | ARefEl ar ->
+                    match Map.tryFind ar.Cell byName with
+                    | None -> ()
+                    | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                        let baseXform = fromArefBase ar
+                        let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                        let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                        let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                        let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                        for r in 0 .. ar.Rows - 1 do
+                            for c in 0 .. ar.Cols - 1 do
+                                let instXform =
+                                    { baseXform with
+                                        Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                        Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                                walk child (compose xform instXform)
+                    | _ -> ()
+                | _ -> ())
+        walk top identityXform
+        result.ToArray()
+
+/// Same hierarchy walk as `flatten`, but emits Label elements with
 /// origins transformed into the top-cell coordinate frame. Used by
 /// net highlighting so a label authored in a sub-cell still matches
 /// flat polygons by spatial position.
-let flattenLabels (lib: Library) : FlatLabel array =
-    let byName =
-        lib.Structures
-        |> List.map (fun s -> s.Name, s)
-        |> Map.ofList
-    let top = findTop lib
-    let result = System.Collections.Generic.List<FlatLabel>()
-    let rec walk (struc: Structure) (xform: Affine) =
-        for el in struc.Elements do
-            match el with
-            | Text t ->
-                result.Add {
-                    Layer = t.Layer
-                    TextType = t.TextType
-                    Origin = apply xform t.Origin
-                    Text = t.Text }
-            | SRef sr ->
-                match Map.tryFind sr.StructureName byName with
-                | None -> ()
-                | Some child ->
-                    walk child (compose xform (fromSref sr))
-            | ARef ar ->
-                match Map.tryFind ar.StructureName byName with
-                | None -> ()
-                | Some child when ar.Cols > 0 && ar.Rows > 0 ->
-                    let baseXform = fromArefBase ar
-                    let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
-                    let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
-                    let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
-                    let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
-                    for r in 0 .. ar.Rows - 1 do
-                        for c in 0 .. ar.Cols - 1 do
-                            let instXform =
-                                { baseXform with
-                                    Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
-                                    Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
-                            walk child (compose xform instXform)
+let flattenLabels (doc: Document) : FlatLabel array =
+    if List.isEmpty doc.Cells then [||]
+    else
+        let byName = doc.Cells |> List.map (fun c -> c.Name, c) |> Map.ofList
+        let top = findTop doc
+        let result = System.Collections.Generic.List<FlatLabel>()
+        let rec walk (cell: Cell) (xform: Affine) =
+            for el in cell.Elements do
+                match el with
+                | LabelEl l ->
+                    let n, d = layerPair l.Layer
+                    result.Add {
+                        Layer = n
+                        TextType = d
+                        Origin = apply xform l.Origin
+                        Text = l.Text }
+                | SRefEl sr ->
+                    match Map.tryFind sr.Cell byName with
+                    | None -> ()
+                    | Some child ->
+                        walk child (compose xform (fromSref sr))
+                | ARefEl ar ->
+                    match Map.tryFind ar.Cell byName with
+                    | None -> ()
+                    | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                        let baseXform = fromArefBase ar
+                        let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                        let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                        let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                        let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                        for r in 0 .. ar.Rows - 1 do
+                            for c in 0 .. ar.Cols - 1 do
+                                let instXform =
+                                    { baseXform with
+                                        Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                        Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                                walk child (compose xform instXform)
+                    | _ -> ()
                 | _ -> ()
-            | _ -> ()
-    walk top identityXform
-    result.ToArray()
+        walk top identityXform
+        result.ToArray()
 
-/// Same as `flattenLabels`, but each label is tagged with the
-/// index of the top-cell element it descends from (None for
-/// labels authored directly in the top cell). Lets the ratline
-/// renderer group labels by top-instance so per-net pin
-/// centroids can be computed per cell.
-let flattenLabelsTagged (lib: Library) : (int option * FlatLabel) array =
-    let byName =
-        lib.Structures
-        |> List.map (fun s -> s.Name, s)
-        |> Map.ofList
-    let top = findTop lib
-    let result = System.Collections.Generic.List<int option * FlatLabel>()
-    let rec walk (topIdx: int option) (struc: Structure) (xform: Affine) =
-        for el in struc.Elements do
+/// Same as `flattenLabels`, but each label is tagged with the index
+/// of the top-cell element it descends from (None for labels
+/// authored directly in the top cell). Lets the ratline renderer
+/// group labels by top-instance so per-net pin centroids can be
+/// computed per cell.
+let flattenLabelsTagged (doc: Document) : (int option * FlatLabel) array =
+    if List.isEmpty doc.Cells then [||]
+    else
+        let byName = doc.Cells |> List.map (fun c -> c.Name, c) |> Map.ofList
+        let top = findTop doc
+        let result = System.Collections.Generic.List<int option * FlatLabel>()
+        let rec walk (topIdx: int option) (cell: Cell) (xform: Affine) =
+            for el in cell.Elements do
+                match el with
+                | LabelEl l ->
+                    let n, d = layerPair l.Layer
+                    let fl : FlatLabel = {
+                        Layer = n
+                        TextType = d
+                        Origin = apply xform l.Origin
+                        Text = l.Text }
+                    result.Add((topIdx, fl))
+                | SRefEl sr ->
+                    match Map.tryFind sr.Cell byName with
+                    | None -> ()
+                    | Some child ->
+                        walk topIdx child (compose xform (fromSref sr))
+                | ARefEl ar ->
+                    match Map.tryFind ar.Cell byName with
+                    | None -> ()
+                    | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                        let baseXform = fromArefBase ar
+                        let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                        let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                        let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                        let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                        for r in 0 .. ar.Rows - 1 do
+                            for c in 0 .. ar.Cols - 1 do
+                                let instXform =
+                                    { baseXform with
+                                        Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                        Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                                walk topIdx child (compose xform instXform)
+                    | _ -> ()
+                | _ -> ()
+        // At the top cell, tag each child element with its own index
+        // BEFORE descending. Sub-recursive walks inherit that tag.
+        top.Elements
+        |> List.iteri (fun idx el ->
             match el with
-            | Text t ->
+            | LabelEl l ->
+                let n, d = layerPair l.Layer
                 let fl : FlatLabel = {
-                    Layer = t.Layer
-                    TextType = t.TextType
-                    Origin = apply xform t.Origin
-                    Text = t.Text }
-                result.Add((topIdx, fl))
-            | SRef sr ->
-                match Map.tryFind sr.StructureName byName with
+                    Layer = n
+                    TextType = d
+                    Origin = l.Origin
+                    Text = l.Text }
+                result.Add((None, fl))
+            | SRefEl sr ->
+                match Map.tryFind sr.Cell byName with
                 | None -> ()
                 | Some child ->
-                    walk topIdx child (compose xform (fromSref sr))
-            | ARef ar ->
-                match Map.tryFind ar.StructureName byName with
+                    walk (Some idx) child (fromSref sr)
+            | ARefEl ar ->
+                match Map.tryFind ar.Cell byName with
                 | None -> ()
                 | Some child when ar.Cols > 0 && ar.Rows > 0 ->
                     let baseXform = fromArefBase ar
@@ -252,45 +307,10 @@ let flattenLabelsTagged (lib: Library) : (int option * FlatLabel) array =
                                 { baseXform with
                                     Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
                                     Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
-                            walk topIdx child (compose xform instXform)
+                            walk (Some idx) child (compose identityXform instXform)
                 | _ -> ()
-            | _ -> ()
-    // At the top cell, tag each child element with its own index
-    // BEFORE descending. Sub-recursive walks inherit that tag.
-    top.Elements
-    |> List.iteri (fun idx el ->
-        match el with
-        | Text t ->
-            let fl : FlatLabel = {
-                Layer = t.Layer
-                TextType = t.TextType
-                Origin = t.Origin
-                Text = t.Text }
-            result.Add((None, fl))
-        | SRef sr ->
-            match Map.tryFind sr.StructureName byName with
-            | None -> ()
-            | Some child ->
-                walk (Some idx) child (fromSref sr)
-        | ARef ar ->
-            match Map.tryFind ar.StructureName byName with
-            | None -> ()
-            | Some child when ar.Cols > 0 && ar.Rows > 0 ->
-                let baseXform = fromArefBase ar
-                let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
-                let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
-                let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
-                let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
-                for r in 0 .. ar.Rows - 1 do
-                    for c in 0 .. ar.Cols - 1 do
-                        let instXform =
-                            { baseXform with
-                                Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
-                                Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
-                        walk (Some idx) child (compose identityXform instXform)
-            | _ -> ()
-        | _ -> ())
-    result.ToArray()
+            | _ -> ())
+        result.ToArray()
 
 /// Flatten just one top-level SRef's subtree. The returned polygons
 /// are in world coordinates with the SRef's own transform composed
@@ -299,65 +319,77 @@ let flattenLabelsTagged (lib: Library) : (int option * FlatLabel) array =
 /// overlay / DRC can compare instances pairwise without re-walking
 /// the whole hierarchy. Returns an empty array if `topInstanceIdx`
 /// doesn't point to a top-level SRef whose target cell is present.
-let flattenInstance (lib: Library) (topInstanceIdx: int) : FlatPolygon array =
-    let byName =
-        lib.Structures
-        |> List.map (fun s -> s.Name, s)
-        |> Map.ofList
-    let top = findTop lib
-    let topSref =
-        top.Elements
-        |> List.indexed
-        |> List.tryPick (fun (idx, el) ->
-            if idx = topInstanceIdx then
-                match el with
-                | SRef sr -> Some sr
-                | _ -> None
-            else None)
-    match topSref with
-    | None -> [||]
-    | Some sr ->
-        match Map.tryFind sr.StructureName byName with
-        | None -> [||]
-        | Some childCell ->
-            let result = System.Collections.Generic.List<FlatPolygon>()
-            let rec walk (struc: Structure) (xform: Affine) =
-                struc.Elements
-                |> List.iteri (fun idx el ->
+let flattenInstance (doc: Document) (topInstanceIdx: int) : FlatPolygon array =
+    if List.isEmpty doc.Cells then [||]
+    else
+        let byName = doc.Cells |> List.map (fun c -> c.Name, c) |> Map.ofList
+        let top = findTop doc
+        let topSref =
+            top.Elements
+            |> List.indexed
+            |> List.tryPick (fun (idx, el) ->
+                if idx = topInstanceIdx then
                     match el with
-                    | Boundary b ->
-                        let pts =
-                            b.Points
-                            |> List.map (apply xform)
-                            |> List.toArray
-                        result.Add {
-                            Layer = b.Layer
-                            DataType = b.DataType
-                            Points = pts
-                            SourceStructure = struc.Name
-                            SourceIndex = idx }
-                    | SRef sr2 ->
-                        match Map.tryFind sr2.StructureName byName with
-                        | None -> ()
-                        | Some child ->
-                            walk child (compose xform (fromSref sr2))
-                    | ARef ar ->
-                        match Map.tryFind ar.StructureName byName with
-                        | None -> ()
-                        | Some child when ar.Cols > 0 && ar.Rows > 0 ->
-                            let baseXform = fromArefBase ar
-                            let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
-                            let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
-                            let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
-                            let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
-                            for r in 0 .. ar.Rows - 1 do
-                                for c in 0 .. ar.Cols - 1 do
-                                    let instXform =
-                                        { baseXform with
-                                            Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
-                                            Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
-                                    walk child (compose xform instXform)
-                        | _ -> ()
-                    | _ -> ())
-            walk childCell (fromSref sr)
-            result.ToArray()
+                    | SRefEl sr -> Some sr
+                    | _ -> None
+                else None)
+        match topSref with
+        | None -> [||]
+        | Some sr ->
+            match Map.tryFind sr.Cell byName with
+            | None -> [||]
+            | Some childCell ->
+                let result = System.Collections.Generic.List<FlatPolygon>()
+                let rec walk (cell: Cell) (xform: Affine) =
+                    cell.Elements
+                    |> List.iteri (fun idx el ->
+                        match el with
+                        | PolyEl p ->
+                            let pts =
+                                p.Points
+                                |> List.map (apply xform)
+                                |> List.toArray
+                            let n, d = layerPair p.Layer
+                            result.Add {
+                                Layer = n
+                                DataType = d
+                                Points = pts
+                                SourceStructure = cell.Name
+                                SourceIndex = idx }
+                        | RectEl r ->
+                            let pts =
+                                rectPoints r.X1 r.Y1 r.X2 r.Y2
+                                |> List.map (apply xform)
+                                |> List.toArray
+                            let n, d = layerPair r.Layer
+                            result.Add {
+                                Layer = n
+                                DataType = d
+                                Points = pts
+                                SourceStructure = cell.Name
+                                SourceIndex = idx }
+                        | SRefEl sr2 ->
+                            match Map.tryFind sr2.Cell byName with
+                            | None -> ()
+                            | Some child ->
+                                walk child (compose xform (fromSref sr2))
+                        | ARefEl ar ->
+                            match Map.tryFind ar.Cell byName with
+                            | None -> ()
+                            | Some child when ar.Cols > 0 && ar.Rows > 0 ->
+                                let baseXform = fromArefBase ar
+                                let colStepX = (float ar.ColPitch.X - float ar.Origin.X) / float ar.Cols
+                                let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
+                                let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
+                                let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                                for r in 0 .. ar.Rows - 1 do
+                                    for c in 0 .. ar.Cols - 1 do
+                                        let instXform =
+                                            { baseXform with
+                                                Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
+                                                Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
+                                        walk child (compose xform instXform)
+                            | _ -> ()
+                        | _ -> ())
+                walk childCell (fromSref sr)
+                result.ToArray()

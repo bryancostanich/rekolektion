@@ -24,7 +24,7 @@ let ``Paint a single met2 polygon and check non-empty pixels`` () =
     use surface = SKSurface.Create(SKImageInfo(200, 200))
     let canvas = surface.Canvas
     canvas.Clear(SKColors.Black)
-    let flat = Layout.Flatten.flatten lib
+    let flat = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
     LayerPainter.paint canvas (200, 200) flat Visibility.empty
     use img = surface.Snapshot()
     use pix = img.PeekPixels()
@@ -38,7 +38,7 @@ let ``Paint with met2 hidden produces black canvas`` () =
     use surface = SKSurface.Create(SKImageInfo(50, 50))
     let canvas = surface.Canvas
     canvas.Clear(SKColors.Black)
-    let flat = Layout.Flatten.flatten lib
+    let flat = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
     LayerPainter.paint canvas (50, 50) flat hidden
     use img = surface.Snapshot()
     use pix = img.PeekPixels()

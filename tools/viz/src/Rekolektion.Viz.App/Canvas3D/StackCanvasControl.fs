@@ -9,6 +9,10 @@ open Avalonia.OpenGL.Controls
 open Silk.NET.OpenGL
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+// `Rkt.Types` opened after Gds.Types so `Point` resolves to the
+// Rkt-flavored point Flatten now emits. `Library` stays
+// Gds-flavored (Rkt has no Library type).
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Render.Mesh
 open Rekolektion.Viz.Render.Skia
 

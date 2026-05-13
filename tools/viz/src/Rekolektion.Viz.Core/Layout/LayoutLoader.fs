@@ -14,9 +14,7 @@ open Rekolektion.Viz.Core.Rkt.Types
 ///
 /// Legacy ReRAM layer numbers (6/0, 8/0, 40/0, …) resolve inside
 /// `Layout.Layer.bySky130Number` via the alias table — no separate
-/// normalization pass is needed. `Layout.LayerAlias` is retained for
-/// the legacy `Gds.Types.Library` path but is no longer in this
-/// chain.
+/// normalization pass is needed.
 let load (path: string) : Document * string list =
     let ext =
         try (Path.GetExtension path).ToLowerInvariant()

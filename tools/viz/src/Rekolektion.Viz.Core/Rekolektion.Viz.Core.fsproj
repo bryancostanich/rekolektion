@@ -28,7 +28,6 @@
     <Compile Include="Layout/Flatten.fs" />
     <Compile Include="Layout/Snap.fs" />
     <Compile Include="Layout/Instances.fs" />
-    <Compile Include="Layout/LayerAlias.fs" />
     <Compile Include="Layout/MagToLayout.fs" />
     <Compile Include="Layout/LayoutLoader.fs" />
     <Compile Include="Sidecar/Types.fs" />

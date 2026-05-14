@@ -48,8 +48,8 @@ let ``layer alias 6 0 resolves to diff`` () =
     Rkt.OfGds.layerFromGds 6 0 |> should equal (Named ("sky130", "diff"))
 
 [<Fact>]
-let ``layer alias 7 0 resolves to licon`` () =
-    Rkt.OfGds.layerFromGds 7 0 |> should equal (Named ("sky130", "licon"))
+let ``layer alias 7 0 resolves to licon1`` () =
+    Rkt.OfGds.layerFromGds 7 0 |> should equal (Named ("sky130", "licon1"))
 
 [<Fact>]
 let ``layer alias 40 0 resolves to reram`` () =

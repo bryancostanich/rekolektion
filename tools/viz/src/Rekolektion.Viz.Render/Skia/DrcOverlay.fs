@@ -118,7 +118,8 @@ let render
         // Label sits above the first bbox.
         let measuredUm = float v.MeasuredDbu * umPerDbu
         let limitUm = float v.LimitDbu * umPerDbu
-        let label = sprintf "%s: %.3f<%.3f µm" v.Rule measuredUm limitUm
+        // ASCII "um" — Skia default typeface lacks U+00B5.
+        let label = sprintf "%s: %.3f<%.3f um" v.Rule measuredUm limitUm
         let mutable bounds = SKRect()
         text.MeasureText(label, &bounds) |> ignore
         let padX = 4.0f

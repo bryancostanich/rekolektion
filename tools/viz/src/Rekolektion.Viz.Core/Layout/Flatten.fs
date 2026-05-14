@@ -393,3 +393,45 @@ let flattenInstance (doc: Document) (topInstanceIdx: int) : FlatPolygon array =
                         | _ -> ())
                 walk childCell (fromSref sr)
                 result.ToArray()
+
+/// Top-cell-direct paint only — every PolyEl/RectEl/PathEl
+/// authored at the top of the doc, without walking SRefs/ARefs.
+/// Returned in flat (top-cell) DBU coords (no transform applied
+/// since these elements ARE the top frame). Used by Tighten so
+/// non-instance geometry like power straps participates as a
+/// neighbor for tighten-toward.
+let flattenTopCellDirect (doc: Document) : FlatPolygon array =
+    if List.isEmpty doc.Cells then [||]
+    else
+        let top = findTop doc
+        let result = System.Collections.Generic.List<FlatPolygon>()
+        top.Elements
+        |> List.iteri (fun idx el ->
+            match el with
+            | PolyEl p ->
+                let n, d = layerPair p.Layer
+                result.Add {
+                    Layer = n
+                    DataType = d
+                    Points = p.Points |> List.toArray
+                    SourceStructure = top.Name
+                    SourceIndex = idx }
+            | RectEl r ->
+                let n, d = layerPair r.Layer
+                let pts = rectPoints r.X1 r.Y1 r.X2 r.Y2 |> List.toArray
+                result.Add {
+                    Layer = n
+                    DataType = d
+                    Points = pts
+                    SourceStructure = top.Name
+                    SourceIndex = idx }
+            | PathEl p ->
+                let n, d = layerPair p.Layer
+                result.Add {
+                    Layer = n
+                    DataType = d
+                    Points = p.Points |> List.toArray
+                    SourceStructure = top.Name
+                    SourceIndex = idx }
+            | _ -> ())
+        result.ToArray()

@@ -1198,11 +1198,23 @@ type GdsCanvasControl() =
                         |> Array.filter (fun i -> this.InstanceSelection.Contains i.Index)
                         |> Array.collect (fun i ->
                             Layout.Flatten.flattenInstance (renderLib) i.Index)
-                    let otherPolys =
+                    // Other-instance polys + top-cell direct paint
+                    // (rectangles / polygons authored at the top
+                    // level, not inside an SRef — power straps and
+                    // hand-routed wires). Without the top-cell pass
+                    // the user could only Tighten a cell against
+                    // other cells, never against a parent-painted
+                    // strap, which is the common case for
+                    // hand-laid analog blocks.
+                    let otherInstancePolys =
                         this.Instances
                         |> Array.filter (fun i -> not (this.InstanceSelection.Contains i.Index))
                         |> Array.collect (fun i ->
                             Layout.Flatten.flattenInstance (renderLib) i.Index)
+                    let topCellDirectPolys =
+                        Layout.Flatten.flattenTopCellDirect renderLib
+                    let otherPolys =
+                        Array.append otherInstancePolys topCellDirectPolys
                     Drc.Check.tightenCandidates
                         renderLib.Units
                         selectedPolys otherPolys

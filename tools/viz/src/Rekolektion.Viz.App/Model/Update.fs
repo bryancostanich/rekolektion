@@ -221,26 +221,44 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
+                            // MUST mirror the render-side
+                            // computation in GdsCanvasControl
+                            // exactly: same selected polys, same
+                            // other polys (other-instance flatten
+                            // + top-cell direct paint). If the two
+                            // sides disagree on what's a neighbor,
+                            // the candidate list re-derived here
+                            // has different ordering than what the
+                            // user saw — so the index they clicked
+                            // points at the wrong candidate and
+                            // the commit translates in the wrong
+                            // direction.
                             let selectedPolys =
                                 mc.TopInstances
                                 |> Array.filter (fun i -> model.InstanceSelection.Contains i.Index)
                                 |> Array.collect (fun i ->
                                     Layout.Flatten.flattenInstance mc.Document i.Index)
-                            let otherPolys =
+                            let otherInstancePolys =
                                 mc.TopInstances
                                 |> Array.filter (fun i -> not (model.InstanceSelection.Contains i.Index))
                                 |> Array.collect (fun i ->
                                     Layout.Flatten.flattenInstance mc.Document i.Index)
+                            let topCellDirectPolys =
+                                Layout.Flatten.flattenTopCellDirect mc.Document
+                            let otherPolys =
+                                Array.append otherInstancePolys topCellDirectPolys
                             let candidates =
                                 Drc.Check.tightenCandidates
                                     mc.Document.Units
                                     selectedPolys otherPolys
-                            // index is 1-based per the user-
-                            // visible numbered labels.
-                            let i0 = index - 1
-                            if i0 < 0 || i0 >= candidates.Length then mc
-                            else
-                                let cand = candidates.[i0]
+                            // `index` is the user-visible Slot
+                            // (stable per direction: 1=R, 2=L,
+                            // 3=D, 4=U), not an array position.
+                            // Find the candidate with matching
+                            // slot; absent direction = no-op.
+                            match candidates |> Array.tryFind (fun c -> c.Slot = index) with
+                            | None -> mc
+                            | Some cand ->
                                 let dxDbu = int64 cand.DirX * cand.SlackDbu
                                 let dyDbu = int64 cand.DirY * cand.SlackDbu
                                 let lib' =

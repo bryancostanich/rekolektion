@@ -241,6 +241,13 @@ let maxOrthoSlackDbu
 type TightenCandidate = {
     DirX        : int   // -1, 0, 1
     DirY        : int
+    /// Stable 1-based slot tied to direction so the user can
+    /// memorize "3 = down". Mapping: 1 = right (+X), 2 = left
+    /// (-X), 3 = down (-Y), 4 = up (+Y). Renderer + hit-test +
+    /// commit all use this slot, NOT array position, so absent
+    /// directions leave gaps in the visible numbering instead of
+    /// renaming the surviving directions.
+    Slot        : int
     LayerName   : string
     LimitDbu    : int64
     GapDbu      : int64
@@ -248,6 +255,15 @@ type TightenCandidate = {
     SelBb       : int64 * int64 * int64 * int64
     OthBb       : int64 * int64 * int64 * int64
 }
+
+/// Map a cardinal (DirX, DirY) to its stable slot number.
+/// (1, 0) -> 1, (-1, 0) -> 2, (0, -1) -> 3, (0, 1) -> 4.
+let slotOfDir (dirX: int) (dirY: int) : int =
+    if   dirX = 1  && dirY = 0  then 1
+    elif dirX = -1 && dirY = 0  then 2
+    elif dirX = 0  && dirY = -1 then 3
+    elif dirX = 0  && dirY = 1  then 4
+    else 0  // unreachable for valid candidates
 
 /// Compute the binding-pair Tighten candidate for each cardinal
 /// direction. Returns at most 4 entries (one per side that has
@@ -328,6 +344,7 @@ let tightenCandidates
                                             let cand = {
                                                 DirX = dirX
                                                 DirY = dirY
+                                                Slot = slotOfDir dirX dirY
                                                 LayerName = rule.Layer
                                                 LimitDbu = limit
                                                 GapDbu = g
@@ -343,10 +360,12 @@ let tightenCandidates
                                     | None -> ()
             best)
         |> List.toArray
-        // Order tightest-slack first so the user can see which
-        // one is the binding constraint at a glance. The label
-        // numbering uses this order.
-        |> Array.sortBy (fun c -> c.SlackDbu)
+        // Order by stable slot (right, left, down, up) so the
+        // user can memorize "3 = down" and have it hold across
+        // files. Renderer + hit-test key on `Slot`, so the array
+        // order here only affects iteration; the visible labels
+        // are stable regardless.
+        |> Array.sortBy (fun c -> c.Slot)
 
 // Side classification reused by `checkInterInstance`. Returns Some
 // for an orthogonally-facing pair (perpendicular projections

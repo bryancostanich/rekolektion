@@ -83,7 +83,9 @@ let private worldToScreen (vb: LayerPainter.ViewBox) (x: float) (y: float) : SKP
     SKPoint(float32 sx, float32 sy)
 
 let private formatUm (umPerDbu: float) (dbu: int64) : string =
-    sprintf "%.3f µm" (float dbu * umPerDbu)
+    // ASCII "um" rather than "µm" — Skia's default SKPaint typeface
+    // doesn't carry the MICRO SIGN (U+00B5) glyph and renders tofu.
+    sprintf "%.3f um" (float dbu * umPerDbu)
 
 let private layerLabelOf (layer: int) (dt: int) : string =
     match Layout.Layer.bySky130Number layer dt with

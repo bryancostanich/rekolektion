@@ -42,7 +42,9 @@ let private orthEndpoints
         (xMid, sy1), (xMid, oy2)
 
 let private formatUm (umPerDbu: float) (dbu: int64) : string =
-    sprintf "%.3f µm" (float dbu * umPerDbu)
+    // ASCII "um" — Skia's default SKPaint typeface doesn't carry
+    // the MICRO SIGN (U+00B5) glyph and renders tofu.
+    sprintf "%.3f um" (float dbu * umPerDbu)
 
 /// Draw the numbered candidate dim arrows for Tighten mode.
 /// Returns the click-hit-test rects so the canvas can map a
@@ -142,41 +144,54 @@ let render
             let radius = 11.0f
             canvas.DrawCircle(mid.X, mid.Y, radius, paintNumberBg)
             canvas.DrawCircle(mid.X, mid.Y, radius, paintNumberStroke)
-            let label = string (idx0 + 1)
+            let label = string c.Slot
             // Number is centered on the circle; +4.5 baseline
             // adjustment because Skia text origin is the
             // baseline, not the center.
             canvas.DrawText(label, mid.X, mid.Y + 4.5f, paintNumber)
             hits.Add {
-                Index = idx0 + 1
+                Index = c.Slot
                 Rect = SKRect(mid.X - radius, mid.Y - radius,
                               mid.X + radius, mid.Y + radius)
             }
-            // Caption: "<n>: <layer> · gap → limit µm"
+            // Caption: "<slot>: <layer>  gap -> limit um".
+            // ASCII "->" rather than "→" for the same Skia
+            // glyph-availability reason as "um" vs "µm".
             let caption =
-                sprintf "%d: %s  %s → %s"
-                    (idx0 + 1) c.LayerName
+                sprintf "%d: %s  %s -> %s"
+                    c.Slot c.LayerName
                     (formatUm umPerDbu c.GapDbu)
                     (formatUm umPerDbu c.LimitDbu)
             let mutable bounds = SKRect()
             paintGapLabel.MeasureText(caption, &bounds) |> ignore
             // Place caption offset from the click target so it
             // doesn't sit underneath. Pick a side based on arrow
-            // axis: horizontal arrow → caption above; vertical →
-            // caption to the right.
+            // axis: horizontal arrow → caption above (centered on
+            // the circle); vertical arrow → caption to the right
+            // (left-aligned just past the circle). `txtX, txtY` is
+            // always the caption's TOP-LEFT in screen pixels;
+            // bg + DrawText derive from there so wide captions
+            // don't slide back over the circle.
             let padX = 4.0f
             let padY = 2.0f
-            let cx, cy =
+            let txtX, txtY =
                 if c.DirX <> 0 then
-                    mid.X, mid.Y - radius - padY * 2.0f - bounds.Height
+                    // Horizontal arrow: caption sits above the
+                    // circle, centered on its X.
+                    mid.X - bounds.Width * 0.5f,
+                    mid.Y - radius - padY * 2.0f - bounds.Height
                 else
-                    mid.X + radius + padX * 2.0f, mid.Y - bounds.Height * 0.5f
+                    // Vertical arrow: caption sits to the right of
+                    // the circle, baseline aligned with the circle
+                    // center.
+                    mid.X + radius + padX * 2.0f,
+                    mid.Y - bounds.Height * 0.5f
             let bg =
                 SKRect(
-                    cx - bounds.Width * 0.5f - padX,
-                    cy - padY,
-                    cx + bounds.Width * 0.5f + padX,
-                    cy + bounds.Height + padY)
+                    txtX - padX,
+                    txtY - padY,
+                    txtX + bounds.Width + padX,
+                    txtY + bounds.Height + padY)
             canvas.DrawRect(bg, paintGapBg)
-            canvas.DrawText(caption, cx - bounds.Width * 0.5f, cy + bounds.Height - 1.0f, paintGapLabel)
+            canvas.DrawText(caption, txtX, txtY + bounds.Height - 1.0f, paintGapLabel)
     hits.ToArray()

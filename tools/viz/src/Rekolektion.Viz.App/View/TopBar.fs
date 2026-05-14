@@ -63,6 +63,27 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ToggleRatlines)
         ] :> IView
+    // Grid / Ruler / Snap mirror the keyboard hotkeys G / U / S.
+    // Cyan accent when active so they pop alongside the existing
+    // overlays without colliding with the amber ratlines or red
+    // DRC color slots.
+    let mkToggle (label: string) (active: bool) (activeBg: string) (msg: Msg.Msg) : IView =
+        let bg = if active then activeBg else "#262626"
+        let fg = if active then "#ffffff" else "#bbbbbb"
+        Button.create [
+            Button.content label
+            Button.background bg
+            Button.foreground fg
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.onClick (fun _ -> dispatch msg)
+        ] :> IView
+    let gridToggle  = mkToggle "Grid (G)"   model.ShowGrid    "#2c4b6f" Msg.ToggleGrid
+    let rulerToggle = mkToggle "Ruler (U)"  model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
+    let snapToggle  = mkToggle "Snap (S)"   model.SnapEnabled "#2c4b6f" Msg.ToggleSnap
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -79,7 +100,14 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                         Border.child (
                             StackPanel.create [
                                 StackPanel.orientation Orientation.Horizontal
-                                StackPanel.children [ ratlinesToggle; drcToggle; dimensionsToggle ]
+                                StackPanel.children [
+                                    snapToggle
+                                    rulerToggle
+                                    gridToggle
+                                    ratlinesToggle
+                                    drcToggle
+                                    dimensionsToggle
+                                ]
                             ]
                         )
                     ] :> IView

@@ -98,6 +98,14 @@ type Msg =
     | ToggleDimensions
     /// Flip the in-process DRC overlay on/off.
     | ToggleDrc
+    /// Toggle the major/minor grid dot overlay (G key).
+    | ToggleGrid
+    /// Toggle the origin-anchored ruler overlay (U key).
+    | ToggleRuler
+    /// Toggle drag-snap (S key). When on, move + resize land on
+    /// the user grid (Config.SnapDefaultUm, or Config.SnapAltUm
+    /// with Alt held). When off, drags go raw.
+    | ToggleSnap
     /// Master "all ratlines on/off" — the W hotkey + the TopBar
     /// button. Implemented as: if VisibleRatlines is non-empty,
     /// clear it; otherwise fill it with every known net.

@@ -74,6 +74,13 @@ type private SelectionOverlay = {
     /// drag is in flight that isn't ResizeDrag, or for multi-poly
     /// selection (resize is single-poly only at v1).
     ResizeBbox : (int64 * int64 * int64 * int64) option
+    /// Grid dot overlay on/off. When true, the renderer draws
+    /// major + minor dots at Config.GridMajorUm / GridMinorUm
+    /// spacing, aligned to the doc's bbox bottom-left.
+    ShowGrid : bool
+    /// Ruler overlay on/off. Independent from ShowGrid. Anchored
+    /// at the doc's bbox bottom-left; ticks point outward.
+    ShowRuler : bool
 }
 
 /// One of eight resize handles around a single selected polygon's
@@ -126,6 +133,106 @@ type private SkiaDraw(bounds: Rect,
                 canvas.ClipRect(clipRect, SKClipOperation.Intersect)
                 use bg = new SKPaint(Style = SKPaintStyle.Fill, Color = SKColors.Black)
                 canvas.DrawRect(clipRect, bg)
+
+                // Compute the flat-geometry bbox once — both the
+                // grid (dots align to this corner) and the ruler
+                // (axes anchored at this corner) need it. When the
+                // doc has no geometry, the grid still draws but
+                // falls back to world (0,0) alignment.
+                let mutable bxMinFlat = System.Int64.MaxValue
+                let mutable byMinFlat = System.Int64.MaxValue
+                let mutable bxMaxFlat = System.Int64.MinValue
+                let mutable byMaxFlat = System.Int64.MinValue
+                for fp in flat do
+                    for pt in fp.Points do
+                        if pt.X < bxMinFlat then bxMinFlat <- pt.X
+                        if pt.X > bxMaxFlat then bxMaxFlat <- pt.X
+                        if pt.Y < byMinFlat then byMinFlat <- pt.Y
+                        if pt.Y > byMaxFlat then byMaxFlat <- pt.Y
+                let hasFlat = bxMaxFlat > bxMinFlat && byMaxFlat > byMinFlat
+                let originXDbu = if hasFlat then bxMinFlat else 0L
+                let originYDbu = if hasFlat then byMinFlat else 0L
+
+                // Grid dots: drawn between the bg fill and the
+                // geometry so they sit behind everything but on top
+                // of black. Aligned to the ruler origin (bbox
+                // bottom-left) so dots fall exactly on the ruler
+                // tick positions.
+                if overlay.ShowGrid then
+                    let gsX =
+                        if vb.MaxX = vb.MinX then 1.0
+                        else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                    let gsY =
+                        if vb.MaxY = vb.MinY then 1.0
+                        else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                    // World µm per DBU from the document.
+                    let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                    let majorDbu =
+                        max 1L (int64 (Rekolektion.Viz.App.Services.Config.current.GridMajorUm / umPerDbu))
+                    let minorDbu =
+                        max 1L (int64 (Rekolektion.Viz.App.Services.Config.current.GridMinorUm / umPerDbu))
+                    // Dot screen-pixel spacing — skip the pass when
+                    // dots would crowd to < 3 px apart, which is
+                    // mush at high zoom-out.
+                    let minorPx = float minorDbu * gsX
+                    let drawMinor = minorPx >= 3.0
+                    let majorPx = float majorDbu * gsX
+                    let drawMajor = majorPx >= 3.0
+                    let wxToScr (wx: int64) =
+                        (float wx - float vb.MinX) * gsX |> float32
+                    let wyToScr (wy: int64) =
+                        float vb.PixelH - (float wy - float vb.MinY) * gsY |> float32
+                    // First grid coordinate at-or-after `lo`, aligned
+                    // to `origin + k*step` for integer k. Lets the
+                    // dot lattice land on origin instead of world 0.
+                    let firstAlignedAtOrAbove (lo: int64) (origin: int64) (step: int64) =
+                        let d = lo - origin
+                        let k =
+                            if d <= 0L then -((-d) / step)
+                            else (d + step - 1L) / step
+                        origin + k * step
+                    if drawMinor then
+                        use minorPaint =
+                            new SKPaint(
+                                Style = SKPaintStyle.Fill,
+                                Color = SKColor(0x90uy, 0x90uy, 0x90uy, 0xE0uy),
+                                IsAntialias = true)
+                        let xStart = firstAlignedAtOrAbove vb.MinX originXDbu minorDbu
+                        let yStart = firstAlignedAtOrAbove vb.MinY originYDbu minorDbu
+                        let mutable wx = xStart
+                        while wx <= vb.MaxX do
+                            let sx = wxToScr wx
+                            let mutable wy = yStart
+                            while wy <= vb.MaxY do
+                                // Skip minors that coincide with a
+                                // major — the major pass draws over
+                                // them and keeps the visual clean.
+                                // Major alignment is also relative
+                                // to origin.
+                                if ((wx - originXDbu) % majorDbu <> 0L)
+                                   || ((wy - originYDbu) % majorDbu <> 0L) then
+                                    let sy = wyToScr wy
+                                    canvas.DrawCircle(sx, sy, 1.0f, minorPaint)
+                                wy <- wy + minorDbu
+                            wx <- wx + minorDbu
+                    if drawMajor then
+                        use majorPaint =
+                            new SKPaint(
+                                Style = SKPaintStyle.Fill,
+                                Color = SKColor(0xE0uy, 0xE0uy, 0xE0uy, 0xFFuy),
+                                IsAntialias = true)
+                        let xStart = firstAlignedAtOrAbove vb.MinX originXDbu majorDbu
+                        let yStart = firstAlignedAtOrAbove vb.MinY originYDbu majorDbu
+                        let mutable wx = xStart
+                        while wx <= vb.MaxX do
+                            let sx = wxToScr wx
+                            let mutable wy = yStart
+                            while wy <= vb.MaxY do
+                                let sy = wyToScr wy
+                                canvas.DrawCircle(sx, sy, 1.6f, majorPaint)
+                                wy <- wy + majorDbu
+                            wx <- wx + majorDbu
+
                 LayerPainter.paintIn canvas vb lib flat toggle
                 LabelPainter.paintIn canvas vb lib toggle
 
@@ -387,6 +494,157 @@ type private SkiaDraw(bounds: Rect,
                     canvas.DrawRect(r, mFill)
                     canvas.DrawRect(r, mStroke)
                 | None -> ()
+
+                // Origin ruler: axes anchored at the FLAT bbox's
+                // bottom-left corner (not world 0,0). Matches the
+                // 3D canvas — the user reads tick values as offsets
+                // from the cell's lower-left, which is what they
+                // care about for cell-level dimensions. Ticks
+                // extend OUTWARD ONLY (down from the X axis, left
+                // from the Y axis) so the axes don't visually
+                // pollute the cell interior. Tick hierarchy in
+                // µm offsets from origin:
+                //   sub-tick : every 0.1 in 0..10  (shortest)
+                //   minor    : every 1   in 0..10  (medium)
+                //   major    : every 5   for the rest (longest)
+                if overlay.ShowRuler && hasFlat then
+                    let bxMin, byMin = bxMinFlat, byMinFlat
+                    let bxMax, byMax = bxMaxFlat, byMaxFlat
+                    do
+                        let gsX =
+                            if vb.MaxX = vb.MinX then 1.0
+                            else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                        let gsY =
+                            if vb.MaxY = vb.MinY then 1.0
+                            else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                        let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                        let wxToScr (wx: int64) =
+                            (float wx - float vb.MinX) * gsX |> float32
+                        let wyToScr (wy: int64) =
+                            float vb.PixelH - (float wy - float vb.MinY) * gsY |> float32
+                        // Origin = bbox bottom-left in world DBU.
+                        let origSx = wxToScr bxMin
+                        let origSy = wyToScr byMin
+                        let xEndSx = wxToScr bxMax
+                        let yEndSy = wyToScr byMax
+                        let xColor = SKColor(0xFFuy, 0x80uy, 0x80uy, 0xE0uy)
+                        let yColor = SKColor(0x80uy, 0xFFuy, 0x80uy, 0xE0uy)
+                        use axisX =
+                            new SKPaint(
+                                Style = SKPaintStyle.Stroke,
+                                Color = xColor,
+                                StrokeWidth = 1.0f,
+                                IsAntialias = true)
+                        use axisY =
+                            new SKPaint(
+                                Style = SKPaintStyle.Stroke,
+                                Color = yColor,
+                                StrokeWidth = 1.0f,
+                                IsAntialias = true)
+                        use tickPaint =
+                            new SKPaint(
+                                Style = SKPaintStyle.Stroke,
+                                Color = SKColor(0xE0uy, 0xE0uy, 0xE0uy, 0xE0uy),
+                                StrokeWidth = 1.0f,
+                                IsAntialias = true)
+                        use labelPaint =
+                            new SKPaint(
+                                Style = SKPaintStyle.Fill,
+                                Color = SKColors.White,
+                                IsAntialias = true,
+                                TextSize = 10.0f)
+                        // X spine along bbox bottom edge.
+                        canvas.DrawLine(
+                            SKPoint(origSx, origSy),
+                            SKPoint(xEndSx, origSy),
+                            axisX)
+                        // Y spine along bbox left edge.
+                        canvas.DrawLine(
+                            SKPoint(origSx, origSy),
+                            SKPoint(origSx, yEndSy),
+                            axisY)
+                        // Tick µm positions ALONG an axis, expressed
+                        // as offsets from the bbox corner (i.e. 0
+                        // µm at the corner, growing toward the
+                        // opposite edge). Minor every 1 µm in
+                        // 0..10, major every 5 µm thereafter.
+                        // Sub-ticks: every 0.1 µm in the 0..10 µm
+                        // range. Skip integer-µm positions (those
+                        // are the next-bigger tick rank).
+                        let subTickUmsAlong (extentDbu: int64) : float seq =
+                            seq {
+                                let extentUm = float extentDbu * umPerDbu
+                                let cap = min extentUm 10.0
+                                // Integer step 1..99 in 0.1 µm units
+                                // dodges floating-point drift that
+                                // breaks the "skip integers" test
+                                // when we go straight to floats.
+                                let mutable i = 1
+                                let upper = int (cap * 10.0 + 1e-6)
+                                while i <= upper do
+                                    if i % 10 <> 0 then
+                                        yield float i * 0.1
+                                    i <- i + 1
+                            }
+                        // Whole-µm ticks + labels along the full
+                        // extent. Sub-ticks (0.1 µm) still only
+                        // appear in 0..10 µm because they'd be
+                        // visually crowded across a large bbox; the
+                        // 1-µm ticks scale fine even at hundreds of
+                        // micrometers.
+                        let tickUmsAlong (extentDbu: int64) : float seq =
+                            seq {
+                                let extentUm = float extentDbu * umPerDbu
+                                let mutable t = 0.0
+                                while t <= extentUm + 1e-6 do
+                                    yield t
+                                    t <- t + 1.0
+                            }
+                        let tickLen = 10.0f
+                        let subTickLen = 5.0f
+                        let xExtent = bxMax - bxMin
+                        let yExtent = byMax - byMin
+                        // X-axis sub-ticks first so the larger
+                        // minor/major lines draw over them where
+                        // they coincide (clean visual).
+                        for um in subTickUmsAlong xExtent do
+                            let wx = bxMin + int64 (um / umPerDbu)
+                            let sx = wxToScr wx
+                            canvas.DrawLine(
+                                SKPoint(sx, origSy),
+                                SKPoint(sx, origSy + subTickLen),
+                                tickPaint)
+                        // X-axis minor + major ticks + labels.
+                        for um in tickUmsAlong xExtent do
+                            let wx = bxMin + int64 (um / umPerDbu)
+                            let sx = wxToScr wx
+                            canvas.DrawLine(
+                                SKPoint(sx, origSy),
+                                SKPoint(sx, origSy + tickLen),
+                                tickPaint)
+                            if um > 1e-6 then
+                                let label = sprintf "%.0f" um
+                                canvas.DrawText(label, sx + 2.0f, origSy + tickLen + 11.0f, labelPaint)
+                        // Y-axis sub-ticks.
+                        for um in subTickUmsAlong yExtent do
+                            let wy = byMin + int64 (um / umPerDbu)
+                            let sy = wyToScr wy
+                            canvas.DrawLine(
+                                SKPoint(origSx - subTickLen, sy),
+                                SKPoint(origSx, sy),
+                                tickPaint)
+                        // Y-axis minor + major ticks + labels.
+                        for um in tickUmsAlong yExtent do
+                            let wy = byMin + int64 (um / umPerDbu)
+                            let sy = wyToScr wy
+                            canvas.DrawLine(
+                                SKPoint(origSx - tickLen, sy),
+                                SKPoint(origSx, sy),
+                                tickPaint)
+                            if um > 1e-6 then
+                                let label = sprintf "%.0f" um
+                                canvas.DrawText(label, origSx - tickLen - 18.0f, sy + 4.0f, labelPaint)
+
                 canvas.RestoreToCount saved
 
 type private DragKind =
@@ -418,6 +676,13 @@ type GdsCanvasControl() =
     // edit through the model on every mouse-move tick.
     let mutable dragKind : DragKind = NoDrag
     let mutable lastPos : Avalonia.Point = Avalonia.Point()
+    // Resting centroid of the selection at the moment a drag
+    // armed. Used so move snaps the SELECTION'S CENTROID to the
+    // user grid — not the cursor delta. A user grabbing a cell
+    // by its corner expects the cell's center to land on grid
+    // intersections, not "wherever the cursor lands plus rounding."
+    let mutable dragStartCentroidX : int64 = 0L
+    let mutable dragStartCentroidY : int64 = 0L
     let mutable dragStartWorldX : float = 0.0
     let mutable dragStartWorldY : float = 0.0
     let mutable dragLiveDeltaDbu : int64 * int64 = 0L, 0L
@@ -508,6 +773,15 @@ type GdsCanvasControl() =
     static member val ToggleDimensionsHandlerProperty : StyledProperty<Action> =
         AvaloniaProperty.Register<GdsCanvasControl, Action>(
             "ToggleDimensionsHandler", null)
+        with get
+    static member val ShowGridProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowGrid", false)
+        with get
+    static member val ShowRulerProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowRuler", false)
+        with get
+    static member val SnapEnabledProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("SnapEnabled", false)
         with get
     static member val ShowDrcProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
@@ -629,6 +903,18 @@ type GdsCanvasControl() =
     member this.ShowDrc
         with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
+
+    member this.ShowGrid
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowGridProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowGridProperty, v) |> ignore
+
+    member this.ShowRuler
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowRulerProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowRulerProperty, v) |> ignore
+
+    member this.SnapEnabled
+        with get() : bool = this.GetValue(GdsCanvasControl.SnapEnabledProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.SnapEnabledProperty, v) |> ignore
 
     member this.VisibleRatlines
         with get() : Set<string> = this.GetValue(GdsCanvasControl.VisibleRatlinesProperty)
@@ -756,7 +1042,10 @@ type GdsCanvasControl() =
              || e.Property = GdsCanvasControl.ShowDrcProperty
              || e.Property = GdsCanvasControl.VisibleRatlinesProperty
              || e.Property = GdsCanvasControl.TightenModeProperty
-             || e.Property = GdsCanvasControl.SelectedPolygonsProperty then
+             || e.Property = GdsCanvasControl.SelectedPolygonsProperty
+             || e.Property = GdsCanvasControl.ShowGridProperty
+             || e.Property = GdsCanvasControl.ShowRulerProperty
+             || e.Property = GdsCanvasControl.SnapEnabledProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
             // (Tighten, drag, rotate, mirror) don't snap the
@@ -901,6 +1190,17 @@ type GdsCanvasControl() =
                 dragStartWorldX <- wx
                 dragStartWorldY <- wy
                 dragLiveDeltaDbu <- 0L, 0L
+                // Resting centroid of the selection's bbox union;
+                // centroid-snap rebuilds the snapped delta against
+                // this on every move so the cell center lands on
+                // grid.
+                let bboxes =
+                    this.Instances
+                    |> Array.filter (fun i -> next.Contains i.Index)
+                    |> Array.map (fun i -> i.BBox)
+                let cx, cy = this.CentroidOfBboxes bboxes
+                dragStartCentroidX <- cx
+                dragStartCentroidY <- cy
                 dragKind <- if next.IsEmpty then PanDrag else SelectionDrag
             else
                 // No instance hit → fall back to top-cell
@@ -953,6 +1253,45 @@ type GdsCanvasControl() =
                     dragStartWorldX <- wx
                     dragStartWorldY <- wy
                     dragLiveDeltaDbu <- 0L, 0L
+                    // Capture the new selection's centroid for
+                    // centroid-snap. We compute against `next`
+                    // rather than the bound SelectedPolygons
+                    // because the dispatch above hasn't propagated
+                    // through the model yet.
+                    let cx, cy =
+                        match this.Library with
+                        | Some lib ->
+                            // Inline computation against `next` so
+                            // the stale SelectedPolygons isn't
+                            // consulted.
+                            let bboxes = ResizeArray<int64 * int64 * int64 * int64>()
+                            for c in lib.Cells do
+                                c.Elements
+                                |> List.iteri (fun i el ->
+                                    if next.Contains (c.Name, i) then
+                                        match el with
+                                        | PolyEl pp when not pp.Points.IsEmpty ->
+                                            let mutable xMin = System.Int64.MaxValue
+                                            let mutable yMin = System.Int64.MaxValue
+                                            let mutable xMax = System.Int64.MinValue
+                                            let mutable yMax = System.Int64.MinValue
+                                            for pt in pp.Points do
+                                                if pt.X < xMin then xMin <- pt.X
+                                                if pt.X > xMax then xMax <- pt.X
+                                                if pt.Y < yMin then yMin <- pt.Y
+                                                if pt.Y > yMax then yMax <- pt.Y
+                                            bboxes.Add (xMin, yMin, xMax, yMax)
+                                        | RectEl r ->
+                                            let xMin, xMax =
+                                                if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+                                            let yMin, yMax =
+                                                if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+                                            bboxes.Add (xMin, yMin, xMax, yMax)
+                                        | _ -> ())
+                            this.CentroidOfBboxes (bboxes :> seq<_>)
+                        | None -> 0L, 0L
+                    dragStartCentroidX <- cx
+                    dragStartCentroidY <- cy
                     dragKind <- if next.IsEmpty then PanDrag else PolygonDrag
                 | None ->
                     // Empty space → start a marquee. Shift extends
@@ -966,6 +1305,108 @@ type GdsCanvasControl() =
                     marqueeWorldStart <- mxi, myi
                     marqueeWorldEnd   <- mxi, myi
                     dragKind <- MarqueeDrag
+
+    /// Pick the snap step (DBU) for the current snap state. When
+    /// SnapEnabled is on, returns the user grid (Config default or
+    /// alt). When off, returns 0 so the caller skips snapping
+    /// (effectively raw 1-DBU resolution). The legacy SKY130 5 nm
+    /// mfg-grid path is gone — the user explicitly asked for
+    /// "replaces sky snap".
+    member private this.SnapStepDbu (lib: Document) (altHeld: bool) : int64 =
+        if not this.SnapEnabled then 0L
+        else
+            let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+            let stepUm =
+                if altHeld then Rekolektion.Viz.App.Services.Config.current.SnapAltUm
+                else Rekolektion.Viz.App.Services.Config.current.SnapDefaultUm
+            max 0L (int64 (stepUm / umPerDbu))
+
+    /// Snap (dx, dy) DBU delta to the current grid step. No-op when
+    /// SnapEnabled is off.
+    member private this.SnapDelta (lib: Document) (altHeld: bool) (dx: int64) (dy: int64)
+            : int64 * int64 =
+        let step = this.SnapStepDbu lib altHeld
+        if step <= 1L then dx, dy
+        else
+            let snapCoord (v: int64) =
+                let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
+                q * step
+            snapCoord dx, snapCoord dy
+
+    /// Snap an absolute world-DBU point to the current grid step.
+    /// Used by resize where the cursor's coord IS the new bbox edge.
+    member private this.SnapPoint (lib: Document) (altHeld: bool) (x: int64) (y: int64)
+            : int64 * int64 =
+        this.SnapDelta lib altHeld x y
+
+    /// Centroid-relative delta snap. The selection's start
+    /// centroid is `(cx0, cy0)`; the raw cursor delta is
+    /// `(dx, dy)`. We project the new centroid `(cx0+dx, cy0+dy)`
+    /// onto the grid, then back out the delta that gets us there.
+    /// Result: every commit lands the selection's centroid on a
+    /// grid intersection. No-op when SnapEnabled is off.
+    member private this.SnapDeltaCentroid
+            (lib: Document) (altHeld: bool)
+            (cx0: int64) (cy0: int64)
+            (dx: int64) (dy: int64) : int64 * int64 =
+        let step = this.SnapStepDbu lib altHeld
+        if step <= 1L then dx, dy
+        else
+            let snapCoord (v: int64) =
+                let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
+                q * step
+            let snappedCx = snapCoord (cx0 + dx)
+            let snappedCy = snapCoord (cy0 + dy)
+            snappedCx - cx0, snappedCy - cy0
+
+    /// Bbox-center centroid of a set of `(int64*int64*int64*int64)`
+    /// bboxes. Returns (0, 0) for an empty seq.
+    member private _.CentroidOfBboxes (boxes: (int64 * int64 * int64 * int64) seq) : int64 * int64 =
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        let mutable any = false
+        for (a, b, c, d) in boxes do
+            any <- true
+            if a < xMin then xMin <- a
+            if b < yMin then yMin <- b
+            if c > xMax then xMax <- c
+            if d > yMax then yMax <- d
+        if any then (xMin + xMax) / 2L, (yMin + yMax) / 2L
+        else 0L, 0L
+
+    /// Centroid of selected polygons in the active library — used
+    /// at PolygonDrag press time to seed the centroid-snap math.
+    member private this.SelectedPolyCentroid (doc: Document) : int64 * int64 =
+        let sel = this.SelectedPolygons
+        if sel.IsEmpty then 0L, 0L
+        else
+            let bboxes = ResizeArray<int64 * int64 * int64 * int64>()
+            for c in doc.Cells do
+                c.Elements
+                |> List.iteri (fun i el ->
+                    if sel.Contains (c.Name, i) then
+                        match el with
+                        | PolyEl p when not p.Points.IsEmpty ->
+                            let mutable xMin = System.Int64.MaxValue
+                            let mutable yMin = System.Int64.MaxValue
+                            let mutable xMax = System.Int64.MinValue
+                            let mutable yMax = System.Int64.MinValue
+                            for pt in p.Points do
+                                if pt.X < xMin then xMin <- pt.X
+                                if pt.X > xMax then xMax <- pt.X
+                                if pt.Y < yMin then yMin <- pt.Y
+                                if pt.Y > yMax then yMax <- pt.Y
+                            bboxes.Add (xMin, yMin, xMax, yMax)
+                        | RectEl r ->
+                            let xMin, xMax =
+                                if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+                            let yMin, yMax =
+                                if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+                            bboxes.Add (xMin, yMin, xMax, yMax)
+                        | _ -> ())
+            this.CentroidOfBboxes (bboxes :> seq<_>)
 
     /// Live-translate every polygon in `sel` by (dx, dy) in DBU.
     /// Returns a new Document with those polygons shifted — used by
@@ -1039,21 +1480,18 @@ type GdsCanvasControl() =
             // direction; the moment they release Shift, free
             // motion resumes.
             let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            let alt = e.KeyModifiers.HasFlag KeyModifiers.Alt
             let dxRaw, dyRaw =
                 if shift then
                     if abs dxRaw >= abs dyRaw then dxRaw, 0L
                     else 0L, dyRaw
                 else dxRaw, dyRaw
-            // Snap the Δ to the SKY130 5 nm grid using the active
-            // library's DBU scale. Without snapping the drag preview
-            // (and final commit) drift fractionally as the cursor
-            // moves below the per-pixel-DBU resolution.
+            // User-grid snap when SnapEnabled is on (Config
+            // default; Alt picks the finer step). Off → raw delta.
             let dxSnap, dySnap =
                 match this.Library with
-                | Some lib ->
-                    Snap.snapDeltaDbu lib.Units Snap.sky130MfgGridNm dxRaw dyRaw
-                | None ->
-                    dxRaw, dyRaw
+                | Some lib -> this.SnapDeltaCentroid lib alt dragStartCentroidX dragStartCentroidY dxRaw dyRaw
+                | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap
                 // Re-flatten on every visible Δ change so the moved
@@ -1080,6 +1518,7 @@ type GdsCanvasControl() =
             let dxRaw = int64 (System.Math.Round (wx - dragStartWorldX))
             let dyRaw = int64 (System.Math.Round (wy - dragStartWorldY))
             let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            let alt = e.KeyModifiers.HasFlag KeyModifiers.Alt
             let dxRaw, dyRaw =
                 if shift then
                     if abs dxRaw >= abs dyRaw then dxRaw, 0L
@@ -1087,8 +1526,7 @@ type GdsCanvasControl() =
                 else dxRaw, dyRaw
             let dxSnap, dySnap =
                 match this.Library with
-                | Some lib ->
-                    Snap.snapDeltaDbu lib.Units Snap.sky130MfgGridNm dxRaw dyRaw
+                | Some lib -> this.SnapDeltaCentroid lib alt dragStartCentroidX dragStartCentroidY dxRaw dyRaw
                 | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap
@@ -1125,21 +1563,16 @@ type GdsCanvasControl() =
             let p = e.GetPosition this
             let wx, wy = this.ScreenToWorld p
             let (sxMin0, syMin0, sxMax0, syMax0) = resizeStartBbox
-            // Snap the cursor's world coords to the mfg grid so the
-            // resulting bbox edges land on grid. Resize is a point
-            // snap (the new edge IS the cursor), not a delta snap.
+            // Snap the cursor's world coord to the user grid (Alt
+            // = finer step). When SnapEnabled is off the cursor
+            // lands at raw DBU.
+            let alt = e.KeyModifiers.HasFlag KeyModifiers.Alt
             let (cx, cy) =
+                let rx = int64 (System.Math.Round wx)
+                let ry = int64 (System.Math.Round wy)
                 match this.Library with
-                | Some lib ->
-                    let snapped =
-                        Snap.snapPointDbu
-                            lib.Units
-                            Snap.sky130MfgGridNm
-                            { X = int64 (System.Math.Round wx)
-                              Y = int64 (System.Math.Round wy) }
-                    snapped.X, snapped.Y
-                | None ->
-                    int64 (System.Math.Round wx), int64 (System.Math.Round wy)
+                | Some lib -> this.SnapPoint lib alt rx ry
+                | None -> rx, ry
             // Compute the new bbox per handle: corner handles
             // anchor at the opposite corner; edge handles anchor
             // at the opposite edge (the unaffected axis keeps the
@@ -1616,7 +2049,9 @@ type GdsCanvasControl() =
                   VisibleRatlines = visibleRatlines
                   TightenCandidates = tightenCands
                   SelectedPolygons = this.SelectedPolygons
-                  ResizeBbox = resizeBbox }
+                  ResizeBbox = resizeBbox
+                  ShowGrid = this.ShowGrid
+                  ShowRuler = this.ShowRuler }
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits))
         | None ->
             // Closing the active tab leaves None for Library; without

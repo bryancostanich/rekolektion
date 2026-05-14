@@ -188,6 +188,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
     | Msg.ToggleDrc ->
         { model with ShowDrc = not model.ShowDrc }, Cmd.none
+    | Msg.ToggleGrid ->
+        { model with ShowGrid = not model.ShowGrid }, Cmd.none
+    | Msg.ToggleRuler ->
+        { model with ShowRuler = not model.ShowRuler }, Cmd.none
+    | Msg.ToggleSnap ->
+        { model with SnapEnabled = not model.SnapEnabled }, Cmd.none
     | Msg.ToggleRatlines ->
         // Master toggle: if any ratline is on, clear all; otherwise
         // turn on ratlines for every known net in the active macro.

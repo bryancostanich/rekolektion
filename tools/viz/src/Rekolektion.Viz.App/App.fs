@@ -102,6 +102,10 @@ type MainWindow() as this =
                 with ex -> return Error ex.Message }
         }
 
+        // Settings load once at startup. Services.Config.current is
+        // a mutable singleton the canvas + snap helpers read from;
+        // future settings dialog can rewrite the file + reassign.
+        Services.Config.current <- Services.Config.load ()
         let init () =
             { Model.empty with RecentFiles = Services.Recents.load () }, Cmd.none
         let update = Update.update backend
@@ -128,6 +132,15 @@ type MainWindow() as this =
                 e.Handled <- true
             | Key.W, KeyModifiers.None ->
                 AppDispatch.send Msg.ToggleRatlines
+                e.Handled <- true
+            | Key.G, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleGrid
+                e.Handled <- true
+            | Key.U, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleRuler
+                e.Handled <- true
+            | Key.S, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleSnap
                 e.Handled <- true
             | Key.D, KeyModifiers.Meta ->
                 // Cmd+D — duplicate the current instance selection.

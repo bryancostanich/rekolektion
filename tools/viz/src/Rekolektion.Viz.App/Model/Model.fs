@@ -74,6 +74,19 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Grid overlay: major + minor dots. Toggled by G. Per-µm
+    /// spacing comes from Services.Config.current. Persists
+    /// across tab switches. Independent from ShowRuler.
+    ShowGrid : bool
+    /// Origin-anchored ruler with tick marks and µm labels.
+    /// Toggled by U. Independent from ShowGrid so the user can
+    /// pick the visual they want.
+    ShowRuler : bool
+    /// Snap mode: when true, move/resize drags snap to the user
+    /// grid (Config.SnapDefaultUm normally, Config.SnapAltUm
+    /// when Alt is held). When false, drags go raw (1 DBU = 1 nm
+    /// resolution, no grid snap). Toggled by S.
+    SnapEnabled : bool
     /// Tighten mode: when active, the canvas overlays the
     /// candidate cardinal-direction tighten arrows (numbered)
     /// instead of moving anything. Click a number → that single
@@ -111,6 +124,9 @@ let empty : Model = {
     InstanceSelection = Set.empty
     ShowDimensions = false
     ShowDrc = false
+    ShowGrid = false
+    ShowRuler = false
+    SnapEnabled = false
     TightenMode = false
     RenamingPath = None
     ActiveTab = View2D

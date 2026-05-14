@@ -68,6 +68,18 @@ let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowDrcProperty, v, ValueNone)
 
+let private gds2DShowGridAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowGridProperty, v, ValueNone)
+
+let private gds2DShowRulerAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowRulerProperty, v, ValueNone)
+
+let private gds2DSnapEnabledAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.SnapEnabledProperty, v, ValueNone)
+
 let private gds2DVisibleRatlinesAttr (v: Set<string>) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string>>(
         GdsCanvasControl.VisibleRatlinesProperty, v, ValueNone)
@@ -171,6 +183,9 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DShowDimensionsAttr model.ShowDimensions
               gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
               gds2DShowDrcAttr model.ShowDrc
+              gds2DShowGridAttr model.ShowGrid
+              gds2DShowRulerAttr model.ShowRuler
+              gds2DSnapEnabledAttr model.SnapEnabled
               gds2DVisibleRatlinesAttr model.Toggle.VisibleRatlines
               gds2DTightenModeAttr model.TightenMode
               gds2DCommitTightenHandlerAttr

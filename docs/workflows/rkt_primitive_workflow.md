@@ -67,8 +67,28 @@ pfet = gen_pfet_hv(w_um=2.4, l_um=1.0, guard=False)
 
 | Function | What it makes | Notes |
 | -------- | ------------- | ----- |
-| `gen_nfet_hv(w_um, l_um, nf=1, m=1, guard=False)` | sky130 5 V HV nfet | `guard=True` adds a substrate guard ring; default is `_core` (shared-guard variant) |
-| `gen_pfet_hv(w_um, l_um, nf=1, m=1, guard=False)` | sky130 5 V HV pfet | same params |
+| `gen_nfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV nfet | see below |
+| `gen_pfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV pfet | same params |
+
+**Two topology axes that matter for routing:**
+
+- `guard`: `True` adds a per-cell substrate guard ring (a standalone FET). Default `False` gives a `_core` variant designed to abut or sit in a tub.
+- `topc` / `botc`: which side(s) carry a gate contact. **Default is `True/True`** (gate contacts on both top and bottom), which is right for hand-routed analog where the gate may be tapped from either direction.
+
+| Gate-contact choice | Suffix | When to use |
+| ------------------- | ------ | ----------- |
+| `topc=True, botc=True` (default) | none | Gate may be tapped from any side; hand-routed analog |
+| `topc=True, botc=False` | `_topgate` | FET sits *above* a rail. S/D li1 has clear vertical egress *down* to the rail — required for `pin_to_rail` to produce a DRC-clean route |
+| `topc=False, botc=True` | `_botgate` | FET sits *below* a rail. S/D li1 has clear egress *up* to the rail |
+
+**For std-cell-row blocks** (nfets over VSS, pfets under VDD):
+
+```python
+nfet = gen_nfet_hv(w_um=1.0, l_um=0.5, botc=False)   # _topgate
+pfet = gen_pfet_hv(w_um=1.0, l_um=0.5, topc=False)   # _botgate
+```
+
+Why it matters: with default `botc=True`, the bottom gate contact is at `x=(-250, 250)` and the S/D li1 strips are at `x=(310, 480)` / `x=(-480, -310)`. Spacing between them is 60 nm — fine when the S/D li1 stays inside the FET footprint (different y), but if `pin_to_rail` extends S/D li1 *past* the FET's bottom edge, it now lives at the same y as the gate stub and the 60 nm gap violates `li.3`. Using `botc=False` removes the conflicting stub entirely.
 
 > **`_core` means "designed to abut or live in a parent tub."** It is
 > *not* a "smaller" or "lighter" primitive — it's a primitive that has
@@ -216,10 +236,35 @@ periodic-tap (latch-up) rule and you need interspersed tap rows.
 | pfets in a `place_tub` nwell | `'nwell'` | **Inside the nwell tub**. The nwell is what the taps contact; if they sit outside the tub, they have no well to contact |
 
 When in doubt, place tap bands such that their `tap` rectangle is
-**inside** the well rectangle they're tapping. `place_tub` paints
-its nwell large enough that the surround-style tap bands at the top
-and bottom of the pfet array still fall inside it (the tub's default
-margin is 0.4 µm; tap band's default clearance is 0.3 µm).
+**inside** the well rectangle they're tapping. The nwell tub must
+extend past the tap bands' implant rectangle — not just past the
+FET bbox.
+
+**Sizing the tub margin when taps go inside.** `place_tub`'s default
+`margin_um=0.4` extends the tub 0.4 µm past the union FET bbox.
+That's enough when the tub holds primitives ALONE, but `place_taps_around`
+puts its tap band at `FET_bbox + clearance_um (0.3) + tap_width (0.42) ≈ 0.72 µm`
+outside the FET bbox — *outside* the default 0.4 µm tub. DRC fails
+on `nwell.1` / `diff/tap.10` because the n-tap isn't enclosed by
+nwell.
+
+**Use `margin_um ≥ 1.0`** (or roughly `clearance + tap_width + nwell.tap_encl ≈ 1.05 µm`)
+whenever you'll add tap bands inside the same tub:
+
+```python
+# Pfet tub with room for nwell taps inside:
+tub = place_tub(
+    [(pfet, (0, 0)), (pfet, (3000, 0))],
+    margin_um=1.2,                        # large enough for taps
+)
+# Now the nwell tap bands fit comfortably inside.
+nwell_taps = place_taps_around(pfet_bbox, "nwell", sides=("top", "bottom"))
+```
+
+`place_tub`'s default stays small because tubs without inside-taps
+(typical for "just a small parameterized pmos cluster") shouldn't
+pay area cost they don't need. If you find yourself getting nwell-
+enclosure DRC errors after adding taps, bump the tub margin.
 
 **Tying tap straps to VSS / VDD rails — use `place_rail`.** The tap
 helper stops at the li1 strap because the via stack up to met1
@@ -435,6 +480,191 @@ so it doesn't matter which side authored which lines.
 
 ---
 
+## Routing signals — direction conventions and helpers
+
+Once primitives are placed and tap/rail geometry is in, you wire the
+signal nets that aren't rails. The two traps here are picking the
+wrong layer (everything on met1 → instant hairball + DRC failures
+where wires cross) and skipping the parent met1 patch that every
+cell pin needs before via1 can land on it.
+
+### Preferred routing direction
+
+SKY130 follows the standard CMOS HVH-VHV alternation. Each metal
+layer has a *preferred* axis along which DRC width/spacing is
+tightest. Routing against the preferred axis is legal but costs
+area and routing resources.
+
+| Layer  | Preferred axis | Routing pitch | Typical use |
+| ------ | -------------- | ------------- | ----------- |
+| `li1`  | vertical / free | 0.46 µm      | Intra-cell only |
+| `met1` | **horizontal** | 0.34 µm       | Std-cell rails + pin stubs + supply rails |
+| `met2` | **vertical**   | 0.46 µm       | Cross-row signal routes |
+| `met3` | **horizontal** | 0.68 µm       | |
+| `met4` | **vertical**   | 0.92 µm       | |
+| `met5` | **horizontal** | 1.60 µm       | Global power straps |
+
+The mapping is encoded in `tech/sky130.py` as `ROUTING_DIRECTION`
+(an `Axis` enum lookup) and `ROUTING_PITCH_UM`. Helpers consult it;
+agents should too when picking layers for a route.
+
+**Rule of thumb for analog blocks:** met1 horizontal for short pin
+stubs and supply rails, met2 vertical for any cross-row signal
+(connecting an nfet's drain to a pfet's gate, etc.). Use met3+
+only when met2 routing channels are full.
+
+### Three routing helpers
+
+```python
+from rekolektion.layout import pin_patch, place_wire, place_via
+```
+
+**`pin_patch(sref, terminal)` → `PinPatch`** — closes the
+electrical gap at a cell pin **for cross-row signal routing**.
+`_core` primitives end at `li1`; routing onward through `met2`
+needs a parent-painted met1 patch wide enough for via1's
+asymmetric enclosure. The helper finds the labeled pin position
+(`"D"` / `"G"` / `"S"` / `"B"`), paints the met1 patch, adds the
+mcon contact to the underlying li1, and returns the patch
+geometry plus the pin center in parent coords.
+
+**Use `pin_patch` only for endpoints that need a via1 stack.** For
+FET-to-rail connections, use `pin_to_rail` (next) — the std-cell
+idiom there is li1 vertical, not met1 + via1.
+
+```python
+m5_d = pin_patch(srefs["M5"], "D")
+m4_g = pin_patch(srefs["M4"], "G")
+elements.extend(m5_d.elements)
+elements.extend(m4_g.elements)
+```
+
+**`pin_to_rail(sref, terminal, dest)` → `list[Element]`** — ties a
+FET S/D **directly to a power destination** with an li1 strap.
+This is the std-cell idiom for VDD / VSS connections: contact
+the FET pin through li1 vertically. Saves area and avoids the
+via1 stack entirely.
+
+`dest` selects the mode by its layer:
+
+- **`li1` rect (preferred):** an existing tap strap. The helper
+  paints an li1 extension that merges with it. **No new mcons**
+  — the strap is assumed to have its own mcon stitch already
+  (from `place_rail.stitch_li1_straps`).
+- **`met1` rect:** a rail directly, no intermediate strap. The
+  helper paints li1 + an mcon array in the overlap. Use only
+  when there's no tap strap in the path — otherwise the extra
+  mcons collide with the rail's existing tap stitch.
+
+> **Requires a `_topgate` or `_botgate` primitive variant.**
+> The default `topc=True, botc=True` primitives have gate contacts
+> on both sides; the S/D li1 extension `pin_to_rail` paints will
+> sit 60 nm from the opposite-side gate contact and fail `li.3`.
+> Mint with `botc=False` (FET above rail) or `topc=False` (FET
+> below rail) before connecting to a rail.
+
+```python
+# Preferred path: pin_to_rail to the tap band's li1 strap (no new
+# mcons — the strap's existing rail stitch handles the rest).
+elements.extend(
+    pin_to_rail(srefs["M_NA"], "S", pwell_taps.li1_straps_by_side["bottom"][0])
+)
+elements.extend(
+    pin_to_rail(srefs["M_PA"], "S", nwell_taps.li1_straps_by_side["top"][0])
+)
+```
+
+`rail` accepts either an `rkt.Rect` (the rail's met1 rect, as
+returned by `place_rail`) or a `(x1, y1, x2, y2)` bbox tuple. The
+helper figures out whether the pin is north or south of the rail
+and extends the li1 strap accordingly.
+
+**Decision: when to use which.**
+
+| Pin destination | Helper | Why |
+| --------------- | ------ | --- |
+| VDD or VSS rail (directly above/below the pin) | `pin_to_rail` | li1 vertical to rail, no met1 patch needed |
+| Another cell pin (cross-row, cross-column) | `pin_patch` + `place_wire(met2)` + `place_via` | needs via1 stack for met2 routing |
+| Another cell pin (same column, same well type) | `pin_to_rail` to a shared li1 strap, OR `pin_patch` if going through met2 | depends on routing channel availability |
+
+If you find yourself using `pin_patch` for a pin whose only
+destination is the VSS/VDD rail two µm away, stop — that's
+`pin_to_rail`'s job. **And** make sure the FET on the other side
+of that pin was minted with the right gate-contact topology
+(`botc=False` for "FET over rail," `topc=False` for "FET under
+rail") — otherwise `pin_to_rail` will fail `li.3`.
+
+**`place_wire(start, end, layer, ...)` → `list[Element]`** —
+paints a Manhattan wire (straight rect or L-shape) on `layer`.
+Warns when the wire's direction conflicts with the layer's
+preferred axis. Optional `via_to="met2"` adds a via stack at the
+end point. Width defaults to the layer's minimum.
+
+```python
+# Horizontal met1 stub on the preferred axis — quiet.
+elements += place_wire(m5_d.center, (m5_d.center[0] + 2000, m5_d.center[1]),
+                       layer="met1", via_to="met2")
+# Vertical met2 segment for cross-row.
+elements += place_wire(
+    (corner_x, m5_d.center[1]),
+    (corner_x, m4_g.center[1]),
+    layer="met2",
+)
+# Horizontal met1 landing onto m4_g.
+elements += place_wire(
+    (corner_x, m4_g.center[1]),
+    m4_g.center,
+    layer="met1",
+    via_to=None,                # already on met1 patch
+)
+```
+
+**`place_via(point, from_layer, to_layer, cuts=(1, 1))` → `list[Element]`** —
+paints a single via stack between two adjacent metal layers, with
+the upper-layer enclosure rect. `cuts` controls the contact array
+size (use larger arrays for power-strap stitches).
+
+### Cross-row pattern (the common case)
+
+The typical "connect an nfet pin to a pfet pin one row up" pattern:
+
+```python
+# 1. Patch both pin ends.
+nfet_pin = pin_patch(srefs["M_NA"], "D")
+pfet_pin = pin_patch(srefs["M_PA"], "G")
+
+# 2. Route: short met1 stub out of nfet_pin, hop up to met2
+#    (vertical preferred) for the cross-row span, hop back down to
+#    met1 at the pfet end. place_wire's L-shape handles the corner.
+elements.extend(nfet_pin.elements)
+elements.extend(pfet_pin.elements)
+elements.extend(
+    place_wire(nfet_pin.center, pfet_pin.center, layer="met2")
+)
+# Add via1 stacks at both endpoints to bridge the met2 wire down to
+# the met1 patches.
+elements.extend(place_via(nfet_pin.center, "met1", "met2"))
+elements.extend(place_via(pfet_pin.center, "met1", "met2"))
+```
+
+For a route that's purely on one axis (no row crossing), a single
+`place_wire` on the appropriate-direction layer suffices — no via
+stack needed.
+
+### NOT a valid pattern
+
+**Routing everything on met1.** Every wire on one layer collides
+with every other wire on that layer. The agent that did this in
+the comparator block hit a ~12-net pileup that no amount of jog
+geometry could fix. Use the layer alternation — it's the entire
+reason multi-metal stacks exist.
+
+**Skipping the met1 patch on cell pins.** `_core` primitives' S/D
+li1 stubs are 230 nm wide; via1's enclosure rule demands ≥260 nm
+along one axis and ≥320 nm along the other. Dropping a via1
+directly onto an unpatched cell pin fails `via.1` / `met1.enclosure`
+on every such pin. Always pin_patch first.
+
 ## Naming nets — DON'T skip this step
 
 A `.rkt` block that has SRefs and parent-paint geometry but **no
@@ -565,12 +795,25 @@ before declaring the block done.
 
 ## Verifying your block
 
-The viz CLI exposes five verbs; the two you'll use most are `read`
+Verification is a **two-step gate** — a block is not done until
+both pass:
+
+1. **Geometric / structural** (`viz read`, `viz app`): "is the
+   geometry where I think it is, do the cells load, are the bboxes
+   reasonable?" Fast, no PDK needed.
+2. **DRC** (`verify_drc`): "does Magic agree this is manufacturable
+   silicon?" Slow (~30 s per block), needs PDK + Magic installed.
+   **Required before committing a new block.**
+
+### Step 1 — geometric (`viz read` / `viz app`)
+
+The viz CLI exposes six verbs; the two you'll use most are `read`
 (fast summary, no GUI) and `app` (interactive GUI):
 
 | Verb         | What it does                                                   |
 | ------------ | -------------------------------------------------------------- |
 | `read`       | Text summary: cell count, poly/path/sref totals, per-cell bbox |
+| `to-gds`     | Export to canonical sky130 GDS (used by `verify_drc`)          |
 | `app`        | Launch interactive 2D + 3D Avalonia viewer                     |
 | `render`     | Per-layer PNG export (legacy; GDS input only)                  |
 | `mesh`       | STL + GLB 3D model export                                      |
@@ -600,6 +843,48 @@ strap will show a bbox the size of that strap, regardless of how
 big the SRef'd primitives underneath it are. To see the flattened
 composed extent, open it in the GUI or use `viz-render`.
 
+### Step 2 — DRC (`verify_drc`)
+
+```python
+from rekolektion.verify import verify_drc
+
+result = verify_drc("cell_designs/my_group/my_block.rkt")
+print(result.summary())
+if not result.clean:
+    for err in result.real_errors:
+        print(" ", err)
+```
+
+`verify_drc` converts the block to GDS via the viz CLI's `to-gds`
+verb, loads it into Magic, runs `drc check` against the
+`sky130B.tech` deck, parses the violation report, and returns a
+`DRCResult`. **A block that `viz read` accepts but `verify_drc`
+fails is NOT done.** Common failure modes that `viz read` never
+sees but DRC catches:
+
+- `nwell.2a` (no-man's-land between adjacent same-type wells)
+- `via.1` / `met1.enclosure_of_via1` (cell pin not patched before via)
+- `tap.5` (well floating from supply — missing taps or unstitched rail)
+- `psdm/nsdm.2a` (implant spacing)
+- `met1.1` / `met1.2` (wire width / spacing on the routing layers)
+
+**Iterate until clean.** If `result.real_errors` is non-empty, fix
+the helper call that produced the bad geometry — don't patch the
+output. Every real DRC violation traces back to one of:
+
+- Picked a placement gap that's in the abut-or-tub no-man's-land
+  → use `place_row` or `place_tub` instead of hand origins.
+- Routed onto an unpatched pin → call `pin_patch` first.
+- Routed against a layer's preferred direction at length → switch
+  layers.
+- Skipped well taps or the rail stitch → use `place_taps_around` +
+  `place_rail`.
+
+DRC is slow (~30 s per block), so don't gate every edit on it — but
+**always run it before committing.** The agent-loop pattern that
+works is: build with helpers → `viz read` for sanity → `verify_drc`
+once at the end → fix + re-verify.
+
 ---
 
 ## Where files live
@@ -610,6 +895,9 @@ composed extent, open it in the GUI or use `viz-render`.
 | `src/rekolektion/layout/placement.py` | `place_row`, `place_tub` helpers |
 | `src/rekolektion/layout/taps.py` | `place_taps_around` |
 | `src/rekolektion/layout/rail.py` | `place_rail` (rail + auto-stitch) |
+| `src/rekolektion/layout/routing.py` | `pin_patch`, `place_wire`, `place_via` |
+| `src/rekolektion/tech/sky130.py` | `ROUTING_DIRECTION`, `ROUTING_PITCH_UM`, `Axis` |
+| `src/rekolektion/verify/rkt_drc.py` | `verify_drc(rkt_path)` — Magic DRC integration |
 | `src/rekolektion/io/rkt.py` | Python writer for `.rkt` |
 | `cell_designs/primitives/` | PDK-minted primitive cells (auto-generated on first generator call, **commit to git**) |
 | `cell_designs/<group>/<block>.rkt` | Hand-/Python-authored blocks |
@@ -676,6 +964,23 @@ params → same digest → same content), but committing them means:
    Without taps the block fails `tap.5` and is latch-up vulnerable;
    without the stitch the well floats from the supply and LVS
    sees split nets.
+
+9. **Never route everything on one metal layer, and never via
+   directly onto an unpatched cell pin.** Use `pin_patch` at every
+   cell-pin endpoint, `place_wire` on the preferred-direction
+   layer (`met1` horizontal, `met2` vertical, `met3` horizontal),
+   and `place_via` for layer transitions. Picking the wrong layer
+   produces hairballs and crossing failures; skipping pin_patch
+   fails via1 enclosure on every cell pin.
+
+10. **Never declare a block "done" without running `verify_drc`.**
+    `viz read` confirms the geometry exists; it does NOT confirm
+    the geometry is manufacturable. Run `verify_drc(rkt_path)`
+    before committing — every error it surfaces traces back to a
+    fixable helper-call choice (wrong layer, missing pin patch,
+    bad placement gap, missing taps). DRC is slow (~30 s), so
+    iterate during construction with `viz read` and gate the final
+    commit on `verify_drc`.
 
 ---
 

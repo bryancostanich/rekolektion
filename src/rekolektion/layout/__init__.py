@@ -20,17 +20,32 @@ from rekolektion.layout.placement import (
     inspect_primitive,
     place_row,
     place_tub,
+    place_tub_row,
 )
-from rekolektion.layout.rail import place_rail
+from rekolektion.layout.rail import place_rail, place_rail_from_strap
+from rekolektion.layout.routing import (
+    PinPatch,
+    pin_patch,
+    pin_to_rail,
+    place_via,
+    place_wire,
+)
 from rekolektion.layout.taps import TapBandResult, place_taps_around
 
 __all__ = [
     "PrimitiveInfo",
-    "TubResult",
+    "PinPatch",
     "TapBandResult",
+    "TubResult",
     "inspect_primitive",
+    "pin_patch",
+    "pin_to_rail",
     "place_rail",
+    "place_rail_from_strap",
     "place_row",
-    "place_tub",
     "place_taps_around",
+    "place_tub",
+    "place_tub_row",
+    "place_via",
+    "place_wire",
 ]

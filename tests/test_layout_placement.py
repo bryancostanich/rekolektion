@@ -18,6 +18,7 @@ from rekolektion.layout import (
     inspect_primitive,
     place_row,
     place_tub,
+    place_tub_row,
 )
 from rekolektion.primitives.sky130 import gen_nfet_hv, gen_pfet_hv
 
@@ -234,3 +235,41 @@ def test_place_tub_elements_property_orders_well_first(
         i for i, e in enumerate(elements) if isinstance(e, rkt.SRef)
     )
     assert last_rect_idx < first_sref_idx
+
+
+# ─── place_tub_row ─────────────────────────────────────────────────────
+
+
+def test_place_tub_row_abuts_and_tubs(primitives_dir: Path) -> None:
+    pfet = gen_pfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    result = place_tub_row(
+        [pfet, pfet, pfet],
+        origin=(0, 5000),
+        primitives_dir=primitives_dir,
+    )
+    info = inspect_primitive(pfet, primitives_dir=primitives_dir)
+
+    # Same number of SRefs as the row, each abutting.
+    assert len(result.srefs) == 3
+    width = info.width
+    expected = [
+        (-info.bbox[0], 5000),
+        (width - info.bbox[0], 5000),
+        (2 * width - info.bbox[0], 5000),
+    ]
+    actual = [s.origin for s in result.srefs]
+    assert actual == expected
+
+    # And a tub painted around them.
+    well_layers = {r.layer.name for r in result.well_rects}
+    assert "nwell" in well_layers
+    assert "hvi" in well_layers   # HV auto-add
+
+
+def test_place_tub_row_rejects_mixed_well_types(
+    primitives_dir: Path,
+) -> None:
+    nfet = gen_nfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    pfet = gen_pfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    with pytest.raises(ValueError, match="nmos and pmos"):
+        place_tub_row([nfet, pfet], primitives_dir=primitives_dir)

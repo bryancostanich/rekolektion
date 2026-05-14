@@ -13,6 +13,7 @@ the actual PDK DRC deck before tapeout.
 """
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 
@@ -132,6 +133,63 @@ class SKY130Layers:
 
 
 LAYERS = SKY130Layers()
+
+
+# ---------------------------------------------------------------------------
+# Routing-direction conventions
+# ---------------------------------------------------------------------------
+# SKY130 follows the standard digital-CMOS HVH-VHV alternation for routing:
+# each metal layer has a *preferred* axis along which DRC width/spacing
+# is tightest. Routing against the preferred axis is legal but consumes
+# more area and routing resources. The convention matches OpenROAD's
+# default sky130 routing config.
+#
+# For agent-driven layout these rules are advisory: routing on the
+# wrong-direction layer still passes DRC, but produces denser hairballs
+# and worse blockage. Stick to the convention unless you have a reason.
+
+
+class Axis(Enum):
+    """Preferred routing direction for a metal layer."""
+
+    HORIZONTAL = "horizontal"
+    VERTICAL = "vertical"
+    FREE = "free"  # no strong preference (li1, marker layers, taps)
+
+
+# Per-layer preferred direction. Keys are the human-readable layer
+# names used in `Rkt.Layer.named("sky130", <name>)` and in
+# `cell_designs/primitives/*.rkt`. Layers not listed default to
+# `Axis.FREE`; consumers should treat missing entries as "no
+# preference declared."
+ROUTING_DIRECTION: dict[str, Axis] = {
+    "li1":  Axis.VERTICAL,    # intra-cell only, vertical pref (loose)
+    "met1": Axis.HORIZONTAL,  # std-cell rails + pin stubs
+    "met2": Axis.VERTICAL,    # first above-cell routing layer
+    "met3": Axis.HORIZONTAL,
+    "met4": Axis.VERTICAL,
+    "met5": Axis.HORIZONTAL,  # global power straps
+}
+
+
+# Per-layer routing pitch — the design-rule-minimum center-to-center
+# spacing for a track on that layer (width + min-spacing). Used by
+# routing helpers to align wires onto a track grid when needed, and
+# documented here so agents have one place to look.
+ROUTING_PITCH_UM: dict[str, float] = {
+    "li1":  0.46,
+    "met1": 0.34,
+    "met2": 0.46,
+    "met3": 0.68,
+    "met4": 0.92,
+    "met5": 1.60,
+}
+
+
+def preferred_axis(layer_name: str) -> Axis:
+    """Lookup helper. Returns `Axis.FREE` for unknown layers."""
+
+    return ROUTING_DIRECTION.get(layer_name, Axis.FREE)
 
 
 # ---------------------------------------------------------------------------

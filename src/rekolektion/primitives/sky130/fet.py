@@ -51,6 +51,8 @@ def _fet_cell_name(
     nf: int,
     m: int,
     guard: bool,
+    topc: bool,
+    botc: bool,
 ) -> str:
     parts = [prefix, f"W{_fmt_um(w_um)}", f"L{_fmt_um(l_um)}"]
     if nf != 1:
@@ -59,6 +61,13 @@ def _fet_cell_name(
         parts.append(f"m{m}")
     if not guard:
         parts.append("core")
+    # Topology suffix — encodes which gate contacts are present.
+    # Default (top + bottom both) carries no suffix to preserve
+    # backwards-compatible names for already-minted primitives.
+    if topc and not botc:
+        parts.append("topgate")    # gate accessed from above only
+    elif botc and not topc:
+        parts.append("botgate")    # gate accessed from below only
     return "_".join(parts)
 
 
@@ -72,15 +81,26 @@ def _build_fet(
     nf: int,
     m: int,
     guard: bool,
+    topc: bool,
+    botc: bool,
     primitives_dir: Path | None,
 ) -> str:
-    name = _fet_cell_name(prefix, w_um, l_um, nf, m, guard)
+    if not (topc or botc):
+        raise ValueError(
+            "at least one of topc / botc must be True — the FET needs "
+            "a gate contact somewhere"
+        )
+    name = _fet_cell_name(
+        prefix, w_um, l_um, nf, m, guard, topc, botc
+    )
     params = [
         rkt.Property("w", float(w_um)),
         rkt.Property("l", float(l_um)),
         rkt.Property("nf", int(nf)),
         rkt.Property("m", int(m)),
         rkt.Property("guard", rkt.Symbol("true" if guard else "false")),
+        rkt.Property("topc", rkt.Symbol("true" if topc else "false")),
+        rkt.Property("botc", rkt.Symbol("true" if botc else "false")),
     ]
     generator = f"sky130/{prefix}"
     digest = compute_digest(generator, params)
@@ -98,7 +118,9 @@ def _build_fet(
         f'load "{name}"\n'
         f"set defaults [{defaults_proc}]\n"
         f"set override [dict create w {w_um} l {l_um} nf {nf} m {m} "
-        f"guard {1 if guard else 0}]\n"
+        f"guard {1 if guard else 0} "
+        f"topc {1 if topc else 0} "
+        f"botc {1 if botc else 0}]\n"
         "set drawdict [dict merge $defaults $override]\n"
         f"{draw_proc} $drawdict\n"
     )
@@ -147,6 +169,8 @@ def gen_nfet_hv(
     nf: int = 1,
     m: int = 1,
     guard: bool = False,
+    topc: bool = True,
+    botc: bool = True,
     primitives_dir: Path | None = None,
 ) -> str:
     """Mint (or fetch cached) a 5 V HV nfet primitive `.rkt`.
@@ -154,6 +178,23 @@ def gen_nfet_hv(
     Returns the cell name. The file lives at
     `cell_designs/primitives/<name>.rkt` (or under `primitives_dir`
     when explicitly provided).
+
+    `topc` / `botc` control which gate contacts the primitive carries:
+
+      - `topc=True, botc=True` (default) — gate contacts on both
+        sides. Right for hand-routed analog where you might tap
+        the gate from either direction. Suffix: none.
+      - `topc=True, botc=False` (suffix `_topgate`) — gate accessed
+        from above only. Source/drain li1 has clear vertical egress
+        to a rail BELOW the FET; use this when the FET sits *above*
+        a VSS/VDD rail and you want a clean `pin_to_rail` stitch.
+      - `topc=False, botc=True` (suffix `_botgate`) — gate accessed
+        from below only. Mirror case: FET sits *below* a rail.
+
+    Pick the topology that matches your block's rail placement. For
+    a typical std-cell-row arrangement (nfet over VSS, pfet under
+    VDD), use `topc=True, botc=False` for the nfet and
+    `topc=False, botc=True` for the pfet.
     """
 
     return _build_fet(
@@ -165,6 +206,8 @@ def gen_nfet_hv(
         nf=nf,
         m=m,
         guard=guard,
+        topc=topc,
+        botc=botc,
         primitives_dir=primitives_dir,
     )
 
@@ -176,6 +219,8 @@ def gen_pfet_hv(
     nf: int = 1,
     m: int = 1,
     guard: bool = False,
+    topc: bool = True,
+    botc: bool = True,
     primitives_dir: Path | None = None,
 ) -> str:
     """Mint (or fetch cached) a 5 V HV pfet primitive `.rkt`.
@@ -183,6 +228,9 @@ def gen_pfet_hv(
     Returns the cell name. The file lives at
     `cell_designs/primitives/<name>.rkt` (or under `primitives_dir`
     when explicitly provided).
+
+    See `gen_nfet_hv` for the `topc` / `botc` semantics — same
+    rules for picking topology.
     """
 
     return _build_fet(
@@ -194,5 +242,7 @@ def gen_pfet_hv(
         nf=nf,
         m=m,
         guard=guard,
+        topc=topc,
+        botc=botc,
         primitives_dir=primitives_dir,
     )

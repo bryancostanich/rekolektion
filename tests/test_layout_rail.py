@@ -7,7 +7,11 @@ import warnings
 import pytest
 
 from rekolektion.io import rkt
-from rekolektion.layout import place_rail, place_taps_around
+from rekolektion.layout import (
+    place_rail,
+    place_rail_from_strap,
+    place_taps_around,
+)
 
 
 RAIL_BBOX = (0, -2200, 8000, -1700)
@@ -148,3 +152,41 @@ def test_tap_band_li1_straps_property_returns_all() -> None:
         (0, 0, 5000, 3000), "pwell", sides=("top", "bottom")
     )
     assert len(tap.li1_straps) == 2
+
+
+# ─── place_rail_from_strap ───────────────────────────────────────────
+
+
+def test_place_rail_from_strap_covering_default() -> None:
+    tap = _make_tap_band()
+    strap = tap.li1_straps[0]
+    elements = place_rail_from_strap(strap, label="VSS")
+    rail_rects = _layer_rects(elements, "met1")
+    assert len(rail_rects) == 1
+    rail = rail_rects[0]
+    # Covering: rail x-extent == strap x-extent; rail y-extent
+    # encloses strap plus 0.5 µm = 500 DBU on each side.
+    assert rail.x1 == strap.x1
+    assert rail.x2 == strap.x2
+    assert rail.y1 == strap.y1 - 500
+    assert rail.y2 == strap.y2 + 500
+    # mcons get auto-placed because rail overlaps strap.
+    assert len(_layer_rects(elements, "mcon")) > 0
+    # Label landed.
+    assert any(isinstance(e, rkt.Label) for e in elements)
+
+
+def test_place_rail_from_strap_custom_extend() -> None:
+    tap = _make_tap_band()
+    strap = tap.li1_straps[0]
+    elements = place_rail_from_strap(strap, label="VSS", extend_um=1.0)
+    rail = _layer_rects(elements, "met1")[0]
+    assert rail.y1 == strap.y1 - 1000
+    assert rail.y2 == strap.y2 + 1000
+
+
+def test_place_rail_from_strap_rejects_invalid_side() -> None:
+    tap = _make_tap_band()
+    strap = tap.li1_straps[0]
+    with pytest.raises(ValueError, match="side must be"):
+        place_rail_from_strap(strap, label="VSS", side="sideways")  # type: ignore[arg-type]

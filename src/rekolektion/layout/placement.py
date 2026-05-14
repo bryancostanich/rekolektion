@@ -32,7 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rekolektion.io import rkt
-from rekolektion.layout._rkt_bbox import RktPrimitiveSummary, read_primitive
+from rekolektion.layout._rkt_bbox import (
+    PinLabel,
+    RktPrimitiveSummary,
+    read_primitive,
+)
 
 
 # ─── Inspection ──────────────────────────────────────────────────────
@@ -45,6 +49,7 @@ class PrimitiveInfo:
     name: str
     generator: str | None
     bbox: tuple[int, int, int, int]  # (x_min, y_min, x_max, y_max) in DBU
+    pins: tuple[PinLabel, ...] = ()
 
     @property
     def width(self) -> int:
@@ -68,6 +73,21 @@ class PrimitiveInfo:
         return self.generator is not None and self.generator.startswith(
             "sky130/pfet"
         )
+
+    def pin(self, terminal: str) -> PinLabel | None:
+        """Lookup the first pin label whose text matches `terminal`.
+
+        For single-finger FETs there's exactly one `D`/`G`/`S`/`B`
+        each. For multi-finger primitives that emit `D1`/`D2`/… you
+        get the first match — caller filters `self.pins` for the
+        full list. Returns None when no matching label exists, since
+        not every primitive carries every terminal (e.g. `B` is
+        absent when `guard=False`)."""
+
+        for p in self.pins:
+            if p.terminal == terminal:
+                return p
+        return None
 
 
 def _default_primitives_dir() -> Path:
@@ -103,6 +123,7 @@ def inspect_primitive(
         name=summary.name,
         generator=summary.generator,
         bbox=summary.bbox,
+        pins=summary.pins,
     )
 
 
@@ -235,6 +256,48 @@ class TubResult:
         spread this directly into `rkt.Cell(elements=...)`."""
 
         return [*self.well_rects, *self.srefs]
+
+
+def place_tub_row(
+    primitive_names: list[str],
+    *,
+    axis: str = "x",
+    origin: tuple[int, int] = (0, 0),
+    well_layer: str | None = None,
+    extra_layers: list[str] | None = None,
+    margin_um: float = 0.4,
+    primitives_dir: Path | None = None,
+    dbu_nm: int = 1,
+) -> TubResult:
+    """Compose `place_row` + `place_tub` in one call: primitives are
+    abutted (Pattern A pitch) AND wrapped in a parent-painted well
+    (Pattern B tub). The common case for a same-well-type FET array
+    sitting above or below another row.
+
+    The row-abut math (origin = bbox-derived) lives inside
+    `place_row`; this helper just feeds its srefs into `place_tub`'s
+    explicit-origin form. Saves the caller from writing
+    `pfet_x0 = -bbox.x_min` by hand.
+
+    Same well-type constraint as `place_row` and `place_tub`. All
+    primitives must be the same family; mixing nfet and pfet raises.
+    """
+
+    srefs = place_row(
+        primitive_names,
+        axis=axis,
+        origin=origin,
+        primitives_dir=primitives_dir,
+    )
+    placed = [(s.cell, s.origin) for s in srefs]
+    return place_tub(
+        placed,
+        well_layer=well_layer,
+        extra_layers=extra_layers,
+        margin_um=margin_um,
+        primitives_dir=primitives_dir,
+        dbu_nm=dbu_nm,
+    )
 
 
 def place_tub(

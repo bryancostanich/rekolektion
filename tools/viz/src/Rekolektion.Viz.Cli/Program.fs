@@ -15,6 +15,7 @@ let private printUsage () =
     printfn ""
     printfn "Commands:"
     printfn "  read   <file.gds>                       GDS summary"
+    printfn "  to-gds <input.rkt|.mag> <out.gds>       Export to canonical GDS"
     printfn "  render <file.gds> <out_dir/>            Per-layer PNGs"
     printfn "  mesh   <file.gds> <out_dir/>            STL + GLB 3D models"
     printfn "  app    [<file.gds>]                     Launch GUI"
@@ -95,6 +96,28 @@ let cmdRead (args: string list) : int =
                     (heightNm / 1000.0)
         0
     | _ -> printUsage(); 1
+
+/// `to-gds <input.rkt|.mag|.gds> <output.gds>` — export any
+/// LayoutLoader-supported file as canonical sky130 GDS. Used by
+/// the Python DRC integration (`rekolektion.verify.run_drc`) to
+/// hand a block to Magic for checking. Goes through the same
+/// `Rkt.ToGds.toLibrary` + `Gds.Writer.writeGds` pipeline as the
+/// rest of the toolchain — same layer-map fixes, same coordinate
+/// scaling, no second source of truth.
+let cmdToGds (args: string list) : int =
+    match args with
+    | [input; output] ->
+        let doc, warnings =
+            Rekolektion.Viz.Core.Layout.LayoutLoader.load input
+        for w in warnings do
+            eprintfn "[viz] %s" w
+        let lib = Rekolektion.Viz.Core.Rkt.ToGds.toLibrary doc
+        Rekolektion.Viz.Core.Gds.Writer.writeGds output lib
+        printfn "wrote %s (%d cells)" output lib.Structures.Length
+        0
+    | _ ->
+        printfn "usage: to-gds <input.rkt|.mag|.gds> <output.gds>"
+        1
 
 /// `render <file.gds> <out_dir/>` — STUB. The legacy
 /// `Viz.Render.LayerRenderer` has not been ported into
@@ -328,6 +351,7 @@ let cmdInteractProbe (args: string list) : int =
 let main argv =
     match argv |> Array.toList with
     | "read" :: rest        -> cmdRead rest
+    | "to-gds" :: rest      -> cmdToGds rest
     | "render" :: rest      -> cmdRender rest
     | "mesh" :: rest        -> cmdMesh rest
     | "app" :: rest         -> cmdApp rest

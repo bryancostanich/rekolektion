@@ -98,6 +98,64 @@ def _mcon_array_in_overlap(
     return contacts
 
 
+def place_rail_from_strap(
+    strap: rkt.Rect,
+    *,
+    label: str | None = None,
+    layer: str = "met1",
+    extend_um: float = 0.5,
+    side: Literal["away", "covering"] = "covering",
+    dbu_nm: int = 1,
+) -> list[rkt.Element]:
+    """Convenience factory: build a rail bbox from a tap strap's li1
+    rect, then call `place_rail` with the strap auto-stitched.
+
+    `side` controls where the rail extends relative to the strap:
+      - `"covering"` (default): rail fully covers the strap and
+        extends `extend_um` above and below it. The mcon stitch
+        fills the full overlap. Use when the rail can occupy the
+        same vertical band as the tap.
+      - `"away"`: rail sits *next to* the strap (below it for a
+        bottom-side strap, above for a top-side strap), with their
+        rects sharing exactly one edge plus `extend_um` of overlap
+        toward the active region's interior. Use when the rail
+        should clear the active area entirely.
+
+    Removes the "what y-extent should the rail have?" guesswork
+    that callers hit with raw `place_rail`. For most blocks, the
+    `"covering"` default is what you want.
+    """
+
+    sx1, sy1, sx2, sy2 = strap.x1, strap.y1, strap.x2, strap.y2
+    extend_dbu = int(round(extend_um * 1000 / dbu_nm))
+
+    if side == "covering":
+        # Rail bbox grows by extend_um on top and bottom of the strap.
+        rail_bbox = (sx1, sy1 - extend_dbu, sx2, sy2 + extend_dbu)
+    elif side == "away":
+        # Rail sits adjacent: pick the longer of the strap's two
+        # halves' distance from y=0 to decide which side is "outer."
+        # Simple heuristic: if strap is below y=0 it's a bottom band,
+        # rail goes further below (extend down). Otherwise it goes
+        # further up.
+        if (sy1 + sy2) < 0:
+            rail_bbox = (sx1, sy1 - extend_dbu, sx2, sy1 + extend_dbu)
+        else:
+            rail_bbox = (sx1, sy2 - extend_dbu, sx2, sy2 + extend_dbu)
+    else:
+        raise ValueError(
+            f"side must be 'covering' or 'away', got {side!r}"
+        )
+
+    return place_rail(
+        rail_bbox,
+        layer=layer,
+        label=label,
+        stitch_li1_straps=[strap],
+        dbu_nm=dbu_nm,
+    )
+
+
 def place_rail(
     rail_bbox: tuple[int, int, int, int],
     *,

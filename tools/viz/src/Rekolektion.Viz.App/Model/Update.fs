@@ -493,6 +493,76 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 { model with
                     OpenMacros = openMacros'
                     ActiveMacroPath = Some activePath' }, Cmd.none
+    | Msg.ResizePolygonBbox (sname, idx, nxMin, nyMin, nxMax, nyMax) ->
+        if nxMax <= nxMin || nyMax <= nyMin then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let updateDoc (doc: Rekolektion.Viz.Core.Rkt.Types.Document) =
+                    let updatedCells =
+                        doc.Cells
+                        |> List.map (fun c ->
+                            if c.Name <> sname then c
+                            else
+                                let elems' =
+                                    c.Elements
+                                    |> List.mapi (fun i el ->
+                                        if i <> idx then el
+                                        else
+                                            match el with
+                                            | Rekolektion.Viz.Core.Rkt.Types.PolyEl p when not p.Points.IsEmpty ->
+                                                let mutable xMin = System.Int64.MaxValue
+                                                let mutable yMin = System.Int64.MaxValue
+                                                let mutable xMax = System.Int64.MinValue
+                                                let mutable yMax = System.Int64.MinValue
+                                                for pt in p.Points do
+                                                    if pt.X < xMin then xMin <- pt.X
+                                                    if pt.X > xMax then xMax <- pt.X
+                                                    if pt.Y < yMin then yMin <- pt.Y
+                                                    if pt.Y > yMax then yMax <- pt.Y
+                                                let oldW = max 1L (xMax - xMin)
+                                                let oldH = max 1L (yMax - yMin)
+                                                let newW = nxMax - nxMin
+                                                let newH = nyMax - nyMin
+                                                let pts' =
+                                                    p.Points
+                                                    |> List.map (fun (pt: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                                                        ({ X = nxMin + (pt.X - xMin) * newW / oldW
+                                                           Y = nyMin + (pt.Y - yMin) * newH / oldH }
+                                                         : Rekolektion.Viz.Core.Rkt.Types.Point))
+                                                Rekolektion.Viz.Core.Rkt.Types.PolyEl
+                                                    { p with Points = pts' }
+                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                                Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                                    { r with
+                                                        X1 = nxMin; Y1 = nyMin
+                                                        X2 = nxMax; Y2 = nyMax }
+                                            | other -> other)
+                                { c with Elements = elems' })
+                    { doc with Cells = updatedCells }
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let lib' = updateDoc mc.Document
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Document = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.Pan2D (dx, dy) ->
         let v = model.View2D
         { model with View2D = { v with OffsetX = v.OffsetX + dx; OffsetY = v.OffsetY + dy } }, Cmd.none

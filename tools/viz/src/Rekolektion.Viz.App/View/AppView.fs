@@ -96,6 +96,10 @@ let private gds2DMovePolygonsHandlerAttr (h: System.Action<Set<string * int>, in
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<string * int>, int64, int64>>(
         GdsCanvasControl.MovePolygonsHandlerProperty, h, ValueNone)
 
+let private gds2DResizePolygonHandlerAttr (h: System.Action<string, int, int64, int64, int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<string, int, int64, int64, int64, int64>>(
+        GdsCanvasControl.ResizePolygonHandlerProperty, h, ValueNone)
+
 let private gds2DClearPolygonSelectionHandlerAttr (h: System.Action) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
         GdsCanvasControl.ClearPolygonSelectionHandlerProperty, h, ValueNone)
@@ -180,6 +184,9 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DMovePolygonsHandlerAttr
                   (System.Action<Set<string * int>, int64, int64>(fun sel dx dy ->
                       dispatch (Msg.MovePolygonsDbu (sel, dx, dy))))
+              gds2DResizePolygonHandlerAttr
+                  (System.Action<string, int, int64, int64, int64, int64>(fun s i xMin yMin xMax yMax ->
+                      dispatch (Msg.ResizePolygonBbox (s, i, xMin, yMin, xMax, yMax))))
               gds2DClearPolygonSelectionHandlerAttr
                   (System.Action(fun () -> dispatch Msg.ClearSelection)) ]
 

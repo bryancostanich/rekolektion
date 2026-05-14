@@ -67,6 +67,30 @@ type private SelectionOverlay = {
     /// Drawn outlined in cyan so the user sees what they
     /// selected. None when nothing is picked.
     SelectedPolygons : Set<string * int>
+    /// World-DBU bbox of the single selected polygon (or the
+    /// live-resized bbox during a ResizeDrag). When set AND no
+    /// drag is happening, the renderer draws 8 resize handles
+    /// around it. None when no single poly is selected, when a
+    /// drag is in flight that isn't ResizeDrag, or for multi-poly
+    /// selection (resize is single-poly only at v1).
+    ResizeBbox : (int64 * int64 * int64 * int64) option
+}
+
+/// One of eight resize handles around a single selected polygon's
+/// bbox. Corners drive both axes; edges drive one. The "anchor" is
+/// the corner of the original bbox opposite the dragged handle —
+/// it stays fixed during the resize so the rest of the bbox lerps
+/// relative to it.
+type private ResizeHandle =
+    | HNW | HN | HNE
+    | HW       | HE
+    | HSW | HS | HSE
+
+/// Captured screen-pixel hit-test rect for one resize handle.
+/// SkiaDraw publishes these each render; PointerPressed reads them.
+type private ResizeHandleHit = {
+    Handle : ResizeHandle
+    Rect   : SKRect
 }
 
 /// Skia draw operation that takes an explicit ViewBox so the canvas
@@ -80,7 +104,8 @@ type private SkiaDraw(bounds: Rect,
                       vb: LayerPainter.ViewBox,
                       toggle: Visibility.ToggleState,
                       overlay: SelectionOverlay,
-                      tightenHitsOut: TightenOverlay.LabelHit array ref) =
+                      tightenHitsOut: TightenOverlay.LabelHit array ref,
+                      resizeHitsOut: ResizeHandleHit array ref) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -261,6 +286,66 @@ type private SkiaDraw(bounds: Rect,
                 else
                     tightenHitsOut := [||]
 
+                // Resize handles: 8 squares around the single
+                // selected polygon's bbox (4 corners + 4 edge
+                // midpoints). Drawn after the selection outline so
+                // they sit on top. Hidden during any drag because
+                // the bbox would be stale relative to the live
+                // geometry — except for the ResizeDrag itself,
+                // where `overlay.ResizeBbox` already reflects the
+                // in-flight bbox. Publishes per-handle hit-test
+                // rects for the canvas's PointerPressed.
+                match overlay.ResizeBbox with
+                | Some (rxMin, ryMin, rxMax, ryMax) ->
+                    let sX =
+                        if vb.MaxX = vb.MinX then 1.0
+                        else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                    let sY =
+                        if vb.MaxY = vb.MinY then 1.0
+                        else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                    let wxToScr (wx: int64) =
+                        (float wx - float vb.MinX) * sX |> float32
+                    let wyToScr (wy: int64) =
+                        float vb.PixelH - (float wy - float vb.MinY) * sY |> float32
+                    // Screen-pixel bbox. World Y grows upward, screen
+                    // Y grows downward — world ymax maps to screen
+                    // ymin and vice versa.
+                    let sxMin = wxToScr rxMin
+                    let sxMax = wxToScr rxMax
+                    let syMin = wyToScr ryMax
+                    let syMax = wyToScr ryMin
+                    let midX = (sxMin + sxMax) * 0.5f
+                    let midY = (syMin + syMax) * 0.5f
+                    let half = 4.0f
+                    use fill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            Color = SKColors.White,
+                            IsAntialias = true)
+                    use stroke =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xFFuy),
+                            StrokeWidth = 1.5f,
+                            IsAntialias = true)
+                    let hits = System.Collections.Generic.List<ResizeHandleHit>()
+                    let drawHandle (handle: ResizeHandle) (cx: float32) (cy: float32) =
+                        let r = SKRect(cx - half, cy - half, cx + half, cy + half)
+                        canvas.DrawRect(r, fill)
+                        canvas.DrawRect(r, stroke)
+                        hits.Add { Handle = handle; Rect = r }
+                    drawHandle HNW  sxMin syMin
+                    drawHandle HN   midX  syMin
+                    drawHandle HNE  sxMax syMin
+                    drawHandle HW   sxMin midY
+                    drawHandle HE   sxMax midY
+                    drawHandle HSW  sxMin syMax
+                    drawHandle HS   midX  syMax
+                    drawHandle HSE  sxMax syMax
+                    resizeHitsOut := hits.ToArray()
+                | None ->
+                    resizeHitsOut := [||]
+
                 match overlay.MarqueeWorld with
                 | Some (mx1, my1, mx2, my2) ->
                     let scaleX =
@@ -310,6 +395,7 @@ type private DragKind =
     | SelectionDrag
     | MarqueeDrag
     | PolygonDrag
+    | ResizeDrag of handle: ResizeHandle * structure: string * index: int
 
 type GdsCanvasControl() =
     inherit Control()
@@ -358,6 +444,17 @@ type GdsCanvasControl() =
     let mutable marqueeWorldStart : (int64 * int64) = 0L, 0L
     let mutable marqueeWorldEnd   : (int64 * int64) = 0L, 0L
     let mutable marqueeAdditive   : bool = false
+
+    // Resize state. `resizeStartBbox` is the selected poly's bbox
+    // at the moment ResizeDrag armed; `resizeLiveBbox` is the
+    // snapped current bbox during the drag. The renderer reads
+    // `resizeLiveBbox` to draw moved handles and dragLiveFlat to
+    // draw the in-flight scaled polygon. `resizeHandleHits` is
+    // overwritten each render by SkiaDraw with the screen-pixel
+    // rects so PointerPressed can map a click to a handle.
+    let mutable resizeStartBbox : int64 * int64 * int64 * int64 = 0L, 0L, 0L, 0L
+    let mutable resizeLiveBbox  : int64 * int64 * int64 * int64 = 0L, 0L, 0L, 0L
+    let resizeHandleHits : ResizeHandleHit array ref = ref [||]
 
     // Make the control focusable so ESC (clear selection) lands
     // here. Setting Focusable from the instance ctor triggers
@@ -456,6 +553,15 @@ type GdsCanvasControl() =
             "SetPolygonSelectionHandler", null)
         with get
     /// Translate the entire polygon selection by Δ DBU.
+    /// Dispatched when a resize handle commit lands. Args:
+    /// (structure, elementIndex, newXMin, newYMin, newXMax, newYMax).
+    /// Update applies the bbox-scale to the element's points
+    /// (PolyEl) or replaces its coords (RectEl); see Update.fs.
+    static member val ResizePolygonHandlerProperty
+            : StyledProperty<Action<string, int, int64, int64, int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<string, int, int64, int64, int64, int64>>(
+            "ResizePolygonHandler", null)
+        with get
     static member val MovePolygonsHandlerProperty
             : StyledProperty<Action<Set<string * int>, int64, int64>> =
         AvaloniaProperty.Register<GdsCanvasControl, Action<Set<string * int>, int64, int64>>(
@@ -555,6 +661,12 @@ type GdsCanvasControl() =
             this.GetValue(GdsCanvasControl.SetPolygonSelectionHandlerProperty)
         and set(v: Action<Set<string * int>>) =
             this.SetValue(GdsCanvasControl.SetPolygonSelectionHandlerProperty, v) |> ignore
+
+    member this.ResizePolygonHandler
+        with get() : Action<string, int, int64, int64, int64, int64> =
+            this.GetValue(GdsCanvasControl.ResizePolygonHandlerProperty)
+        and set(v: Action<string, int, int64, int64, int64, int64>) =
+            this.SetValue(GdsCanvasControl.ResizePolygonHandlerProperty, v) |> ignore
 
     member this.MovePolygonsHandler
         with get() : Action<Set<string * int>, int64, int64> =
@@ -685,6 +797,65 @@ type GdsCanvasControl() =
         elif props.IsMiddleButtonPressed || props.IsRightButtonPressed then
             // Middle / right → pan, regardless of geometry beneath.
             dragKind <- PanDrag
+        elif props.IsLeftButtonPressed
+             && this.SelectedPolygons.Count = 1
+             && (let handles = !resizeHandleHits
+                 let pxF, pyF = float32 p.X, float32 p.Y
+                 handles
+                 |> Array.tryFind (fun h ->
+                     pxF >= h.Rect.Left && pxF <= h.Rect.Right
+                     && pyF >= h.Rect.Top && pyF <= h.Rect.Bottom)).IsSome then
+            // Click on a resize handle for the single selected
+            // polygon. Hit-test takes priority over instance /
+            // polygon selection so handles sitting over geometry
+            // still grab the drag.
+            let handles = !resizeHandleHits
+            let pxF, pyF = float32 p.X, float32 p.Y
+            let hit =
+                handles
+                |> Array.find (fun h ->
+                    pxF >= h.Rect.Left && pxF <= h.Rect.Right
+                    && pyF >= h.Rect.Top && pyF <= h.Rect.Bottom)
+            let (sname, idx) = this.SelectedPolygons.MinimumElement
+            // Snapshot the resting bbox so the move handler can
+            // compute the in-flight bbox from cursor + anchor.
+            let startBbox =
+                match this.Library with
+                | Some lib ->
+                    lib.Cells
+                    |> List.tryFind (fun c -> c.Name = sname)
+                    |> Option.bind (fun c ->
+                        if idx < 0 || idx >= c.Elements.Length then None
+                        else
+                            match c.Elements.[idx] with
+                            | PolyEl pp when not pp.Points.IsEmpty ->
+                                let mutable xMin = System.Int64.MaxValue
+                                let mutable yMin = System.Int64.MaxValue
+                                let mutable xMax = System.Int64.MinValue
+                                let mutable yMax = System.Int64.MinValue
+                                for pt in pp.Points do
+                                    if pt.X < xMin then xMin <- pt.X
+                                    if pt.X > xMax then xMax <- pt.X
+                                    if pt.Y < yMin then yMin <- pt.Y
+                                    if pt.Y > yMax then yMax <- pt.Y
+                                Some (xMin, yMin, xMax, yMax)
+                            | RectEl r ->
+                                let xMin, xMax =
+                                    if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+                                let yMin, yMax =
+                                    if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+                                Some (xMin, yMin, xMax, yMax)
+                            | _ -> None)
+                | None -> None
+            match startBbox with
+            | Some bb ->
+                resizeStartBbox <- bb
+                resizeLiveBbox <- bb
+                dragKind <- ResizeDrag (hit.Handle, sname, idx)
+            | None ->
+                // Resize-able element vanished between render and
+                // press — treat as no-op, fall through to nothing.
+                ()
         elif props.IsLeftButtonPressed then
             // Left button: hit-test the selectable instances. If we
             // hit something, start (or extend) selection + prep a
@@ -950,15 +1121,159 @@ type GdsCanvasControl() =
                     dragLiveFlat <- [||]
                 this.InvalidateVisual()
             lastPos <- p
+        | ResizeDrag (handle, sname, idx) ->
+            let p = e.GetPosition this
+            let wx, wy = this.ScreenToWorld p
+            let (sxMin0, syMin0, sxMax0, syMax0) = resizeStartBbox
+            // Snap the cursor's world coords to the mfg grid so the
+            // resulting bbox edges land on grid. Resize is a point
+            // snap (the new edge IS the cursor), not a delta snap.
+            let (cx, cy) =
+                match this.Library with
+                | Some lib ->
+                    let snapped =
+                        Snap.snapPointDbu
+                            lib.Units
+                            Snap.sky130MfgGridNm
+                            { X = int64 (System.Math.Round wx)
+                              Y = int64 (System.Math.Round wy) }
+                    snapped.X, snapped.Y
+                | None ->
+                    int64 (System.Math.Round wx), int64 (System.Math.Round wy)
+            // Compute the new bbox per handle: corner handles
+            // anchor at the opposite corner; edge handles anchor
+            // at the opposite edge (the unaffected axis keeps the
+            // original extents).
+            // Per-handle bbox mutation. World Y grows upward — "N"
+            // = high Y (yMax), "S" = low Y (yMin). Each handle
+            // changes one or two of the four bbox edges; the
+            // others stay at their start values (= anchor).
+            let newBboxUnclamped =
+                match handle with
+                | HNW -> (cx,     syMin0, sxMax0, cy)        // NW corner: xMin + yMax
+                | HN  -> (sxMin0, syMin0, sxMax0, cy)        // top edge: yMax
+                | HNE -> (sxMin0, syMin0, cx,     cy)        // NE corner: xMax + yMax
+                | HW  -> (cx,     syMin0, sxMax0, syMax0)    // left edge: xMin
+                | HE  -> (sxMin0, syMin0, cx,     syMax0)    // right edge: xMax
+                | HSW -> (cx,     cy,     sxMax0, syMax0)    // SW corner: xMin + yMin
+                | HS  -> (sxMin0, cy,     sxMax0, syMax0)    // bottom edge: yMin
+                | HSE -> (sxMin0, cy,     cx,     syMax0)    // SE corner: xMax + yMin
+            // Normalize so xMin <= xMax, yMin <= yMax (allow user
+            // to drag past the opposite edge — flipping a bbox is
+            // valid; we just present its sorted form).
+            let nxMin, nxMax =
+                let a, b =
+                    let (x0, _, x1, _) = newBboxUnclamped
+                    x0, x1
+                min a b, max a b
+            let nyMin, nyMax =
+                let a, b =
+                    let (_, y0, _, y1) = newBboxUnclamped
+                    y0, y1
+                min a b, max a b
+            // Aspect-ratio lock: Shift + corner handle. Pick the
+            // axis with the smaller proportional change, scale the
+            // other to match the original aspect.
+            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            let isCorner =
+                match handle with HNW | HNE | HSW | HSE -> true | _ -> false
+            let (finalXMin, finalYMin, finalXMax, finalYMax) =
+                if shift && isCorner then
+                    let oldW = sxMax0 - sxMin0
+                    let oldH = syMax0 - syMin0
+                    if oldW <= 0L || oldH <= 0L then nxMin, nyMin, nxMax, nyMax
+                    else
+                        let newW = nxMax - nxMin
+                        let newH = nyMax - nyMin
+                        // Compare W/H to oldW/oldH; clamp the
+                        // larger so newW * oldH = newH * oldW.
+                        if int64 newW * int64 oldH > int64 newH * int64 oldW then
+                            // Width is wider than aspect-preserved
+                            // value; trim width toward the anchor.
+                            let targetW = newH * oldW / oldH
+                            match handle with
+                            | HNW | HSW -> nxMax - targetW, nyMin, nxMax, nyMax
+                            | HNE | HSE -> nxMin, nyMin, nxMin + targetW, nyMax
+                            | _ -> nxMin, nyMin, nxMax, nyMax
+                        else
+                            // Trim height toward the anchor edge.
+                            // N-handles (HNW/HNE) anchor at yMin
+                            // (south); height grows up from yMin.
+                            // S-handles anchor at yMax; height
+                            // grows down from yMax.
+                            let targetH = newW * oldH / oldW
+                            match handle with
+                            | HNW | HNE -> nxMin, nyMin, nxMax, nyMin + targetH
+                            | HSW | HSE -> nxMin, nyMax - targetH, nxMax, nyMax
+                            | _ -> nxMin, nyMin, nxMax, nyMax
+                else
+                    nxMin, nyMin, nxMax, nyMax
+            let newBbox = (finalXMin, finalYMin, finalXMax, finalYMax)
+            if newBbox <> resizeLiveBbox then
+                resizeLiveBbox <- newBbox
+                // Build the live geometry by scaling the original
+                // element's points / coords from start-bbox to
+                // new-bbox. The renderer reads dragLiveLib /
+                // dragLiveFlat.
+                match this.Library with
+                | Some lib ->
+                    let oldW = max 1L (sxMax0 - sxMin0)
+                    let oldH = max 1L (syMax0 - syMin0)
+                    let newW = finalXMax - finalXMin
+                    let newH = finalYMax - finalYMin
+                    let lerpX (x: int64) =
+                        finalXMin + (x - sxMin0) * newW / oldW
+                    let lerpY (y: int64) =
+                        finalYMin + (y - syMin0) * newH / oldH
+                    let updatedCells =
+                        lib.Cells
+                        |> List.map (fun c ->
+                            if c.Name <> sname then c
+                            else
+                                let elems' =
+                                    c.Elements
+                                    |> List.mapi (fun i el ->
+                                        if i <> idx then el
+                                        else
+                                            match el with
+                                            | PolyEl pp ->
+                                                let pts =
+                                                    pp.Points
+                                                    |> List.map (fun pt ->
+                                                        { X = lerpX pt.X; Y = lerpY pt.Y })
+                                                PolyEl { pp with Points = pts }
+                                            | RectEl r ->
+                                                RectEl
+                                                    { r with
+                                                        X1 = finalXMin; Y1 = finalYMin
+                                                        X2 = finalXMax; Y2 = finalYMax }
+                                            | other -> other)
+                                { c with Elements = elems' })
+                    let lib' = { lib with Cells = updatedCells }
+                    dragLiveLib <- Some lib'
+                    dragLiveFlat <- Layout.Flatten.flatten lib'
+                | None ->
+                    dragLiveLib <- None
+                    dragLiveFlat <- [||]
+                this.InvalidateVisual()
+            lastPos <- p
 
     override this.OnPointerReleased e =
         base.OnPointerReleased e
         let kind = dragKind
         let dx, dy = dragLiveDeltaDbu
+        // Capture resize state before resetting; the commit branch
+        // below reads them via the locals so the reset can happen
+        // unconditionally.
+        let startBb = resizeStartBbox
+        let liveBb  = resizeLiveBbox
+        let zero = 0L, 0L, 0L, 0L
         dragKind <- NoDrag
         dragLiveDeltaDbu <- 0L, 0L
         dragLiveLib <- None
         dragLiveFlat <- [||]
+        resizeStartBbox <- zero
+        resizeLiveBbox <- zero
         e.Pointer.Capture null
         match kind with
         | SelectionDrag when dx <> 0L || dy <> 0L ->
@@ -975,6 +1290,17 @@ type GdsCanvasControl() =
             let sel = this.SelectedPolygons
             if not (isNull h) && not sel.IsEmpty then
                 h.Invoke(sel, dx, dy)
+            this.InvalidateVisual()
+        | ResizeDrag (_, sname, idx) when liveBb <> startBb ->
+            let (rxMin, ryMin, rxMax, ryMax) = liveBb
+            // Refuse a degenerate result — if the user dragged
+            // through the opposite edge and the new bbox collapsed,
+            // the resize is a no-op (we don't want to wipe the
+            // poly off the layout).
+            if rxMax > rxMin && ryMax > ryMin then
+                let h = this.ResizePolygonHandler
+                if not (isNull h) then
+                    h.Invoke(sname, idx, rxMin, ryMin, rxMax, ryMax)
             this.InvalidateVisual()
         | MarqueeDrag ->
             let (x1, y1) = marqueeWorldStart
@@ -1133,7 +1459,10 @@ type GdsCanvasControl() =
             if not hasFitted then this.AutoFit ()
             let vb = this.MakeViewBox ()
             let dragging =
-                dragKind = SelectionDrag || dragKind = PolygonDrag
+                match dragKind with
+                | SelectionDrag | PolygonDrag -> true
+                | ResizeDrag _ -> true
+                | _ -> false
             // While a drag is in flight, render the speculatively
             // translated Library + FlatPolygons so the moved
             // geometry tracks the cursor. The bound props haven't
@@ -1230,6 +1559,51 @@ type GdsCanvasControl() =
                     Instances.enumerate renderLib
                 else
                     this.Instances
+            // Resize handles render only for a single-poly
+            // selection. Bbox is either the live in-flight bbox
+            // (during ResizeDrag) or the resting bbox computed
+            // from the selected element's points. Other drag
+            // kinds suppress the handles because their geometry is
+            // mid-translate and the handles would lag.
+            let resizeBbox =
+                let canResize =
+                    not this.TightenMode
+                    && this.SelectedPolygons.Count = 1
+                    && (not dragging || (match dragKind with ResizeDrag _ -> true | _ -> false))
+                if not canResize then None
+                else
+                    match dragKind with
+                    | ResizeDrag _ -> Some resizeLiveBbox
+                    | _ ->
+                        let (sname, idx) = this.SelectedPolygons.MinimumElement
+                        renderLib.Cells
+                        |> List.tryFind (fun c -> c.Name = sname)
+                        |> Option.bind (fun c ->
+                            if idx < 0 || idx >= c.Elements.Length then None
+                            else
+                                match c.Elements.[idx] with
+                                | PolyEl p when not p.Points.IsEmpty ->
+                                    let mutable xMin = System.Int64.MaxValue
+                                    let mutable yMin = System.Int64.MaxValue
+                                    let mutable xMax = System.Int64.MinValue
+                                    let mutable yMax = System.Int64.MinValue
+                                    for pt in p.Points do
+                                        if pt.X < xMin then xMin <- pt.X
+                                        if pt.X > xMax then xMax <- pt.X
+                                        if pt.Y < yMin then yMin <- pt.Y
+                                        if pt.Y > yMax then yMax <- pt.Y
+                                    if xMax > xMin && yMax > yMin then
+                                        Some (xMin, yMin, xMax, yMax)
+                                    else None
+                                | RectEl r ->
+                                    let xMin, xMax =
+                                        if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+                                    let yMin, yMax =
+                                        if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+                                    if xMax > xMin && yMax > yMin then
+                                        Some (xMin, yMin, xMax, yMax)
+                                    else None
+                                | _ -> None)
             let overlay : SelectionOverlay =
                 { Instances = overlayInstances
                   Selected  = this.InstanceSelection
@@ -1241,8 +1615,9 @@ type GdsCanvasControl() =
                   Routes = routes
                   VisibleRatlines = visibleRatlines
                   TightenCandidates = tightenCands
-                  SelectedPolygons = this.SelectedPolygons }
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits))
+                  SelectedPolygons = this.SelectedPolygons
+                  ResizeBbox = resizeBbox }
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

@@ -82,6 +82,18 @@ type Msg =
     /// Translate every polygon in `sel` by (dxDbu, dyDbu) in one
     /// undo step. Used by polygon multi-drag.
     | MovePolygonsDbu of sel: Set<string * int> * dxDbu: int64 * dyDbu: int64
+    /// Resize a single top-cell polygon (or rect) so its bbox
+    /// becomes `(xMin, yMin, xMax, yMax)`. For a `PolyEl`, every
+    /// point lerps from the element's current bbox to the new
+    /// one. For a `RectEl`, the coords are replaced directly.
+    /// Paths and other element kinds are no-ops at v1.
+    | ResizePolygonBbox of
+            structure: string
+            * index: int
+            * xMin: int64
+            * yMin: int64
+            * xMax: int64
+            * yMax: int64
     /// Flip the dimension overlay on/off.
     | ToggleDimensions
     /// Flip the in-process DRC overlay on/off.

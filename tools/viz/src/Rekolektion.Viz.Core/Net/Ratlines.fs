@@ -122,12 +122,18 @@ let isLikelyPowerNet (name: string) : bool =
         && upper.Length > p.Length
         && (let c = upper.[p.Length] in c = '_' || c = ':' || c = '/'))
 
-/// Per-flat-poly bbox + layer-Z. Computed once and indexed by
-/// layer-number so per-label lookup walks only same-layer-number
-/// candidates instead of every flat poly. The label/poly datatypes
-/// usually differ in SKY130 (e.g. met1 polys = 68/20, met1 labels
-/// = 68/5), so the index key is layer NUMBER only.
+/// Per-flat-poly bbox + layer-Z + identity. Computed once and
+/// indexed by layer-number so per-label lookup walks only
+/// same-layer-number candidates instead of every flat poly. The
+/// label/poly datatypes usually differ in SKY130 (e.g. met1 polys
+/// = 68/20, met1 labels = 68/5), so the index key is layer NUMBER
+/// only.
+///
+/// `PolyId` is the (SourceStructure, SourceIndex) pair of the
+/// originating poly — used downstream as the per-anchor pin
+/// discriminator so two labels on the same physical poly collapse.
 type private FlatPolyAnchor = {
+    PolyId : string * int
     XMin   : int64
     YMin   : int64
     XMax   : int64
@@ -156,7 +162,8 @@ let private buildPolyIndex
                 if p.Y < yMin then yMin <- p.Y
                 if p.Y > yMax then yMax <- p.Y
             let anchor =
-                { XMin = xMin; YMin = yMin
+                { PolyId = (poly.SourceStructure, poly.SourceIndex)
+                  XMin = xMin; YMin = yMin
                   XMax = xMax; YMax = yMax
                   TopZUm = topZ }
             match dict.TryGetValue poly.Layer with
@@ -191,47 +198,82 @@ let private anchorForLabel
         | ValueNone -> None
         | ValueSome a -> Some a
 
-/// Compute per-net per-instance pin centroids from the labels
-/// reachable through the hierarchy. Each label is anchored to the
-/// smallest same-layer polygon that contains its origin: the pin
-/// X/Y is the bbox center of that polygon, the pin Z is the top of
-/// that polygon's layer in micrometers. Labels with no containing
-/// poly fall back to the label's own origin and a Z of 0
-/// (substrate plane — visually obvious "no anchor found"). Pins for
-/// the same net on the same top-instance are collapsed by averaging
-/// every contributing anchor; labels in DIFFERENT top-instances
-/// yield separate pins, which are what we draw lines between.
+/// Pin grouping discriminator. Labels inside an SRef collapse
+/// per-instance — the SRef is a black box from the parent's
+/// perspective, so multiple internal labels on the same net share
+/// one outside-the-box pin. Labels that live directly in the top
+/// cell collapse per anchoring polygon — the polygon IS the
+/// physical connection point, and two labels on the same poly are
+/// the same connection. Top-cell labels with no containing poly
+/// fall back to per-label uniqueness (so each unanchored label
+/// shows up as its own pin) via a synthetic ID.
+type private PinKey =
+    | InInstance of int
+    | OnPoly     of (string * int)
+    | Unanchored of int     // monotonic counter
+
+/// Compute per-net per-pin centroids from the labels reachable
+/// through the hierarchy. Each label is anchored to the smallest
+/// same-layer polygon that contains its origin: the pin X/Y is the
+/// bbox center of that polygon, the pin Z is the top of that
+/// polygon's layer in micrometers. Labels with no containing poly
+/// fall back to the label's own origin and a Z of 0 (substrate
+/// plane — visually obvious "no anchor found").
+///
+/// Grouping: per `PinKey` (see comment above). One pin per
+/// (net, instance) for SRef-internal labels; one pin per
+/// (net, anchor-poly) for top-cell labels. Result: a hand-laid
+/// top-cell with multiple labeled stripes of the same net gets one
+/// pin per stripe and ratlines between them — the case that
+/// previously collapsed every parent-paint label to a single pin
+/// and rendered nothing.
 let compute
         (doc: Document)
         (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
         : NetRoute array =
     let tagged = Rekolektion.Viz.Core.Layout.Flatten.flattenLabelsTagged doc
     let polyIdx = buildPolyIndex flat
-    // (net, instance) -> running sum (sumX, sumY, sumZ, count)
+    // (net, pinKey) -> running sum (sumX, sumY, sumZ, count, topInstance)
+    // topInstance is preserved for the final Pin record but doesn't
+    // participate in grouping for top-cell labels (they all share
+    // None there).
     let acc =
-        System.Collections.Generic.Dictionary<string * int option, int64 * int64 * float * int>()
+        System.Collections.Generic.Dictionary<
+            string * PinKey,
+            int64 * int64 * float * int * int option>()
+    let mutable unanchoredCounter = 0
     for (topIdx, label) in tagged do
         if label.Text <> "" then
-            let (anchorX, anchorY, anchorZ) =
+            let (anchorX, anchorY, anchorZ, polyId) =
                 match anchorForLabel polyIdx label with
                 | Some a ->
                     let cx = (a.XMin + a.XMax) / 2L
                     let cy = (a.YMin + a.YMax) / 2L
-                    cx, cy, a.TopZUm
+                    cx, cy, a.TopZUm, Some a.PolyId
                 | None ->
-                    label.Origin.X, label.Origin.Y, 0.0
-            let key = (label.Text, topIdx)
+                    label.Origin.X, label.Origin.Y, 0.0, None
+            let pinKey =
+                match topIdx with
+                | Some k -> InInstance k
+                | None ->
+                    match polyId with
+                    | Some id -> OnPoly id
+                    | None ->
+                        let n = unanchoredCounter
+                        unanchoredCounter <- n + 1
+                        Unanchored n
+            let key = (label.Text, pinKey)
             match acc.TryGetValue key with
-            | true, (sx, sy, sz, n) ->
-                acc.[key] <- (sx + anchorX, sy + anchorY, sz + anchorZ, n + 1)
+            | true, (sx, sy, sz, n, ti) ->
+                acc.[key] <- (sx + anchorX, sy + anchorY, sz + anchorZ, n + 1, ti)
             | _ ->
-                acc.[key] <- (anchorX, anchorY, anchorZ, 1)
+                acc.[key] <- (anchorX, anchorY, anchorZ, 1, topIdx)
     acc
     |> Seq.map (fun kv ->
-        let (name, topIdx) = kv.Key
-        let (sx, sy, sz, n) = kv.Value
+        let (name, _) = kv.Key
+        let (sx, sy, sz, n, ti) = kv.Value
         let pin : Pin = {
-            TopInstanceIndex = topIdx
+            TopInstanceIndex = ti
             Position = { X = sx / int64 n; Y = sy / int64 n }
             ZUm = sz / float n
             LabelCount = n

@@ -25,14 +25,40 @@ module Rekolektion.Viz.Core.Rkt.ToGds
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Rkt.Types
 
-/// Reverse layer table: `(pdk, name) -> (number, datatype)`. Built
-/// once from `Layout.Layer.allDrawing`. Only entries with PDK
-/// `"sky130"` participate; other PDKs degrade to `(0, 0)` and warn —
-/// out-of-scope at v1.
+/// Reverse layer table: `name -> (number, datatype)`. Built once
+/// from `Layout.Layer.allDrawing`, then augmented with the SKY130
+/// auxiliary purposes (label / pin / net) for every drawing layer.
+///
+/// SKY130 publishes four datatypes per routing layer:
+///   - drawing: 20  (already in allDrawing)
+///   - pin:     16
+///   - label:    5
+///   - net:     23
+///
+/// Hand-authored .rkt blocks reference the auxiliary purposes by
+/// the suffix forms (`met1_label`, `met1_pin`, …). Without these
+/// entries the lookup misses, the layer lands at `(0, 0)`, and
+/// downstream consumers (LabelFlood especially) silently drop the
+/// element. Adding them to the lookup keeps `Layout.Layer.allDrawing`
+/// (which drives the layer-panel UI) free of label-only noise.
 let private sky130NameTable : Map<string, int * int> =
-    Layout.Layer.allDrawing
-    |> List.map (fun l -> l.Name, (l.Number, l.DataType))
-    |> Map.ofList
+    let drawing =
+        Layout.Layer.allDrawing
+        |> List.map (fun l -> l.Name, (l.Number, l.DataType))
+    let aux =
+        Layout.Layer.allDrawing
+        |> List.collect (fun l ->
+            // Only emit aux purposes for routing-style layers.
+            // Marker layers (Magic-internal 255/*, areaid.sc 81/2)
+            // have no label/pin counterpart in the SKY130 stream
+            // and would just clutter the table; skip them.
+            if l.Number = 255 || l.Number = 81 then [] else
+            [
+                sprintf "%s_label" l.Name, (l.Number, 5)
+                sprintf "%s_pin"   l.Name, (l.Number, 16)
+                sprintf "%s_net"   l.Name, (l.Number, 23)
+            ])
+    drawing @ aux |> Map.ofList
 
 /// Resolve a Rkt `Layer` back to a GDS `(number, datatype)` pair.
 /// `Unknown(n, d)` returns `(n, d)` verbatim. `Named("sky130", name)`

@@ -63,28 +63,103 @@ let private layerRow
         )
     ] :> IView
 
+// -- Net rows: two checkboxes per net (highlight | ratline) +
+// a name. Tri-state master checkboxes in the section header
+// toggle every net at once.
+let private netIndicator
+        (on: bool)
+        (color: string)
+        : IView =
+    Border.create [
+        Border.width 11.0
+        Border.height 11.0
+        Border.background (if on then color else "#202020")
+        Border.borderThickness 1.0
+        Border.borderBrush "#888"
+        Border.cornerRadius 1.0
+        Border.verticalAlignment VerticalAlignment.Center
+    ] :> IView
+
+let private clickable
+        (onClick: unit -> unit)
+        (child: IView)
+        : IView =
+    Border.create [
+        Border.background "Transparent"
+        Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
+        Border.onPointerPressed (fun e ->
+            e.Handled <- true
+            onClick ())
+        Border.child child
+    ] :> IView
+
+let private netRow
+        (toggle: Visibility.ToggleState)
+        (dispatch: Msg.Msg -> unit)
+        (name: string)
+        : IView =
+    let highlighted = Visibility.isNetHighlighted toggle name
+    let ratlineOn = Visibility.isRatlineVisible toggle name
+    StackPanel.create [
+        StackPanel.orientation Orientation.Horizontal
+        StackPanel.spacing 6.0
+        StackPanel.verticalAlignment VerticalAlignment.Center
+        StackPanel.children [
+            // H column — polygon highlight (cyan/blue)
+            clickable
+                (fun () -> dispatch (Msg.ToggleNetHighlight name))
+                (netIndicator highlighted "#4090ff")
+            // R column — ratline (amber, matches the overlay color)
+            clickable
+                (fun () -> dispatch (Msg.ToggleNetRatline name))
+                (netIndicator ratlineOn "#ffc840")
+            TextBlock.create [
+                TextBlock.text name
+                TextBlock.fontSize 11.0
+                TextBlock.verticalAlignment VerticalAlignment.Center
+            ]
+        ]
+    ] :> IView
+
 let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
-    let netButtons : IView list =
+    let allNets : string list =
         match Model.activeMacro model with
         | None -> []
-        | Some m ->
-            m.Nets
-            |> Map.toList
-            |> List.sortBy fst
-            |> List.map (fun (name, _) ->
-                let isActive = (model.Toggle.HighlightNet = Some name)
-                Button.create [
-                    Button.content name
-                    Button.fontSize 11.0
-                    Button.padding (Avalonia.Thickness(6.0, 2.0))
-                    // Active net: bright background. Click toggles —
-                    // re-clicking the active net clears highlight.
-                    Button.background (if isActive then "#4090ff" else "Transparent")
-                    Button.foreground (if isActive then "#000" else "#ddd")
-                    Button.onClick (fun _ ->
-                        if isActive then dispatch (Msg.HighlightNet None)
-                        else dispatch (Msg.HighlightNet (Some name)))
-                ] :> IView)
+        | Some m -> m.Nets |> Map.toList |> List.map fst |> List.sort
+
+    let netRows : IView list =
+        allNets |> List.map (netRow model.Toggle dispatch)
+
+    // Header has a "H" / "R" mini-label row + master select-all
+    // affordances. The master button next to each glyph flips the
+    // whole set: empty -> full, non-empty -> empty.
+    let allNetsSet = Set.ofList allNets
+    let highlightAllOn =
+        not allNetsSet.IsEmpty
+        && model.Toggle.HighlightedNets = allNetsSet
+    let highlightSomeOn = not model.Toggle.HighlightedNets.IsEmpty
+    let ratlineAllOn =
+        not allNetsSet.IsEmpty
+        && model.Toggle.VisibleRatlines = allNetsSet
+    let ratlineSomeOn = not model.Toggle.VisibleRatlines.IsEmpty
+
+    let masterIndicator (allOn: bool) (someOn: bool) (color: string) : IView =
+        // Tri-state visual: full = all checked, dim = mixed,
+        // empty = none.
+        let bg =
+            if allOn then color
+            elif someOn then "#555555"
+            else "#202020"
+        Border.create [
+            Border.width 11.0
+            Border.height 11.0
+            Border.background bg
+            Border.borderThickness 1.0
+            Border.borderBrush "#888"
+            Border.cornerRadius 1.0
+            Border.verticalAlignment VerticalAlignment.Center
+        ] :> IView
+
     let netsHeader : IView =
         DockPanel.create [
             DockPanel.lastChildFill false
@@ -95,13 +170,48 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                     TextBlock.verticalAlignment VerticalAlignment.Center
                     DockPanel.dock Dock.Left
                 ] :> IView
-                Button.create [
-                    Button.content "Clear"
-                    Button.fontSize 10.0
-                    Button.padding (Avalonia.Thickness(6.0, 1.0))
-                    Button.isEnabled (model.Toggle.HighlightNet.IsSome)
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing 6.0
                     DockPanel.dock Dock.Right
-                    Button.onClick (fun _ -> dispatch (Msg.HighlightNet None))
+                    StackPanel.children [
+                        // Master highlight toggle: blue square label
+                        // + "H" letter for column legend.
+                        clickable
+                            (fun () ->
+                                let next = if highlightSomeOn then Set.empty else allNetsSet
+                                dispatch (Msg.SetHighlightedNets next))
+                            (StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 3.0
+                                StackPanel.children [
+                                    masterIndicator highlightAllOn highlightSomeOn "#4090ff"
+                                    TextBlock.create [
+                                        TextBlock.text "H"
+                                        TextBlock.fontSize 10.0
+                                        TextBlock.foreground "#bbb"
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                    ] :> IView
+                                ]
+                            ] :> IView)
+                        clickable
+                            (fun () ->
+                                let next = if ratlineSomeOn then Set.empty else allNetsSet
+                                dispatch (Msg.SetVisibleRatlines next))
+                            (StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 3.0
+                                StackPanel.children [
+                                    masterIndicator ratlineAllOn ratlineSomeOn "#ffc840"
+                                    TextBlock.create [
+                                        TextBlock.text "R"
+                                        TextBlock.fontSize 10.0
+                                        TextBlock.foreground "#bbb"
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                    ] :> IView
+                                ]
+                            ] :> IView)
+                    ]
                 ] :> IView
             ]
         ] :> IView
@@ -199,7 +309,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             yield layersBlock
             yield Separator.create [] :> IView
             yield netsHeader
-            yield! netButtons
+            yield! netRows
             yield Separator.create [] :> IView
             yield blocksHeader
             yield! blockButtons

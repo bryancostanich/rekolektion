@@ -127,10 +127,11 @@ type StackCanvasControl() =
     let mutable vao : uint32 = 0u
     let mutable program : uint32 = 0u
     let mutable indexCount : int = 0
-    // Net highlight state. `lastHighlightNet` is the value the GPU
-    // is currently configured for; differs from this.Toggle.
-    // HighlightNet → re-upload netVbo on next render.
-    let mutable lastHighlightNet : string option = None
+    // Net highlight state. `lastHighlightedNets` mirrors the value
+    // the GPU is currently configured for; when it differs from
+    // `this.Toggle.HighlightedNets` we re-upload netVbo on the next
+    // render. The set lets multiple nets light at once.
+    let mutable lastHighlightedNets : Set<string> = Set.empty
     // Block isolation state. Mirror of the net flag pattern: per-
     // vertex 1.0 if the source polygon's structure is inside the
     // isolated block's transitive closure, else 0.0. Shader
@@ -255,8 +256,12 @@ type StackCanvasControl() =
     static member val PolygonPickedHandlerProperty : StyledProperty<Action<string, int>> =
         AvaloniaProperty.Register<StackCanvasControl, Action<string, int>>("PolygonPickedHandler", null)
         with get
-    static member val ShowRatlinesProperty : StyledProperty<bool> =
-        AvaloniaProperty.Register<StackCanvasControl, bool>("ShowRatlines", false)
+    /// Set of net names whose ratlines render on the 3D canvas.
+    /// Mirrors GdsCanvasControl.VisibleRatlinesProperty so 2D and
+    /// 3D agree on which nets are showing.
+    static member val VisibleRatlinesProperty : StyledProperty<Set<string>> =
+        AvaloniaProperty.Register<StackCanvasControl, Set<string>>(
+            "VisibleRatlines", Set.empty)
         with get
 
     member this.Library
@@ -275,9 +280,9 @@ type StackCanvasControl() =
         with get() : Action<string, int> = this.GetValue(StackCanvasControl.PolygonPickedHandlerProperty)
         and set(v: Action<string, int>) = this.SetValue(StackCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
 
-    member this.ShowRatlines
-        with get() : bool = this.GetValue(StackCanvasControl.ShowRatlinesProperty)
-        and set(v: bool) = this.SetValue(StackCanvasControl.ShowRatlinesProperty, v) |> ignore
+    member this.VisibleRatlines
+        with get() : Set<string> = this.GetValue(StackCanvasControl.VisibleRatlinesProperty)
+        and set(v: Set<string>) = this.SetValue(StackCanvasControl.VisibleRatlinesProperty, v) |> ignore
 
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
         yawDeg <- yaw
@@ -595,8 +600,10 @@ type StackCanvasControl() =
         meshDirty <- true
         hasUploadedAny <- false
         layerSlotMap.Clear()
-        // Force a net-flag re-upload after re-init too.
-        lastHighlightNet <- Some "<<force-mismatch-on-reinit>>"
+        // Force a net-flag re-upload after re-init too. The
+        // sentinel ensures the next render's `<>` test fires; any
+        // non-empty value the user can't actually pick works.
+        lastHighlightedNets <- Set.singleton "<<force-mismatch-on-reinit>>"
         lastIsolatedBlock <- Some "<<force-mismatch-on-reinit>>"
         depthRbo <- 0u
         depthRboW <- 0
@@ -895,20 +902,19 @@ type StackCanvasControl() =
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(zeros), GLEnum.DynamicDraw)
                 hasUploadedAny <- true
                 // Force per-vertex flag refresh on first draw.
-                lastHighlightNet <- Some "<<force-mismatch-after-upload>>"
+                lastHighlightedNets <- Set.singleton "<<force-mismatch-after-upload>>"
                 lastIsolatedBlock <- Some "<<force-mismatch-after-upload>>"
             | _ -> ()
             // Re-upload the net-flag attribute when the highlighted
-            // net changes (or after a fresh mesh upload). Cheap —
+            // set changes (or after a fresh mesh upload). Cheap —
             // one float per vertex; for a 400k-poly macro that's
             // ~12MB but only runs on net click, not every frame.
             match cachedMesh with
-            | Some mesh when hasUploadedAny && lastHighlightNet <> toggle.HighlightNet ->
+            | Some mesh when hasUploadedAny && lastHighlightedNets <> toggle.HighlightedNets ->
                 let n = mesh.Vertices.Length
                 let flags = Array.zeroCreate<float32> n
-                match toggle.HighlightNet with
-                | Some name ->
-                    let hits = LayerPainter.highlightedPolyKeys lib flat name
+                if not toggle.HighlightedNets.IsEmpty then
+                    let hits = LayerPainter.highlightedPolyKeys lib flat toggle.HighlightedNets
                     if hits.Count > 0 then
                         for i in 0 .. n - 1 do
                             let polyIdx = mesh.VertexPolyIndex.[i]
@@ -916,10 +922,9 @@ type StackCanvasControl() =
                                 let p = flat.[polyIdx]
                                 if hits.Contains((p.SourceStructure, p.SourceIndex)) then
                                     flags.[i] <- 1.0f
-                | None -> ()
                 g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(flags), GLEnum.DynamicDraw)
-                lastHighlightNet <- toggle.HighlightNet
+                lastHighlightedNets <- toggle.HighlightedNets
             | _ -> ()
             // Same dance for the block-isolation flag. Recomputed
             // when IsolatedBlock changes; one float per vertex.
@@ -1021,7 +1026,7 @@ type StackCanvasControl() =
             let lightLoc = g.GetUniformLocation(program, "uLightDir")
             g.Uniform3(lightLoc, camForward)
             let highlightLoc = g.GetUniformLocation(program, "uHighlightActive")
-            g.Uniform1(highlightLoc, if toggle.HighlightNet.IsSome then 1.0f else 0.0f)
+            g.Uniform1(highlightLoc, if not toggle.HighlightedNets.IsEmpty then 1.0f else 0.0f)
             let isolateLoc = g.GetUniformLocation(program, "uIsolateActive")
             g.Uniform1(isolateLoc, if toggle.IsolatedBlock.IsSome then 1.0f else 0.0f)
             // Upload per-layer visibility as a uniform array. Cheap
@@ -1314,22 +1319,17 @@ type StackCanvasControl() =
 
             // Ratlines — rebuild + draw at a fixed Z above the
             // metal stack so they float over the geometry. Only
-            // when a net is highlighted OR the global toggle is
-            // on; a tab without nets in either state pays no
-            // cost.
-            let highlightNet = this.Toggle.HighlightNet
-            let showAllRat = this.ShowRatlines
+            // when at least one net's ratline is on (visibility is
+            // explicit per-net now). A tab with empty
+            // VisibleRatlines pays no cost.
+            let visibleRatlines = this.VisibleRatlines
             ratlineVertexCount <- 0
-            if (showAllRat || highlightNet.IsSome) && rulerProgram <> 0u then
+            if not visibleRatlines.IsEmpty && rulerProgram <> 0u then
                 match this.Library with
                 | Some lib ->
-                    let routes =
-                        // Convert Library -> Rkt.Document at the call site.
-                        Net.Ratlines.compute (lib)
+                    let routes = Net.Ratlines.compute (lib)
                     let filtered =
-                        match highlightNet with
-                        | Some n -> routes |> Array.filter (fun r -> r.Name = n)
-                        | None -> routes
+                        routes |> Array.filter (fun r -> visibleRatlines.Contains r.Name)
                     // World-space DBU → user µm divisor.
                     let umPer = (float lib.Units.DbuNm * 1.0e-3)
                     // Ratline Z: 0.5 µm above the highest tracked

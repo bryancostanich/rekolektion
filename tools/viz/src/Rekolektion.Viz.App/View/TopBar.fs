@@ -46,8 +46,11 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ToggleDrc)
         ] :> IView
-    let ratBg = if model.ShowRatlines then "#8a6b1c" else "#262626"
-    let ratFg = if model.ShowRatlines then "#ffffff" else "#bbbbbb"
+    // "On" = at least one net's ratline is visible. Master toggle
+    // (W key / button) flips between all-on and all-off in Update.
+    let ratlinesActive = not model.Toggle.VisibleRatlines.IsEmpty
+    let ratBg = if ratlinesActive then "#8a6b1c" else "#262626"
+    let ratFg = if ratlinesActive then "#ffffff" else "#bbbbbb"
     let ratlinesToggle : IView =
         Button.create [
             Button.content "Ratlines (W)"

@@ -152,7 +152,9 @@ let cmdVizRender (args: string list) : int =
                         ((l.Number, l.DataType), visible)))
         let highlightMsgs =
             match parsed.Highlight with
-            | Some n -> [ Rekolektion.Viz.App.Model.Msg.Msg.HighlightNet (Some n) ]
+            | Some n ->
+                [ Rekolektion.Viz.App.Model.Msg.Msg.SetHighlightedNets
+                    (Set.singleton n) ]
             | None   -> []
         let tabMsgs =
             match parsed.Tab with

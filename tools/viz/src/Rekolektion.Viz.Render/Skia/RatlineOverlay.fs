@@ -58,23 +58,19 @@ let private drawRoute
         canvas.DrawRect(bg, paintTextBg)
         canvas.DrawText(route.Name, lx, ly, paintText)
 
-/// `highlight = Some net` draws only that net's ratlines. Pass
-/// None + showAll = true to draw every net; None + showAll =
-/// false to draw nothing. `lib.UserUnitsPerDbUnit` isn't needed
-/// here (we render in pixel/world space directly).
+/// `visibleNets` is the explicit set of net names whose ratlines
+/// should render. The renderer no longer cares about poly-highlight
+/// state — ratline visibility is decoupled from it. Empty set =
+/// nothing drawn (early return). `lib.UserUnitsPerDbUnit` isn't
+/// needed here (we render in pixel/world space directly).
 let render
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
         (routes: Ratlines.NetRoute array)
-        (highlight: string option)
-        (showAll: bool) =
-    if routes.Length = 0 then () else
+        (visibleNets: Set<string>) =
+    if routes.Length = 0 || visibleNets.IsEmpty then () else
     let visible =
-        match highlight with
-        | Some n ->
-            routes |> Array.filter (fun r -> r.Name = n)
-        | None ->
-            if showAll then routes else [||]
+        routes |> Array.filter (fun r -> visibleNets.Contains r.Name)
     if visible.Length = 0 then () else
     use paintLine =
         new SKPaint(

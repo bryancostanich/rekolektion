@@ -44,11 +44,25 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
             Dispatcher.UIThread.Post(fun () -> dispatch (Msg.ToggleNet (name, visible)))
             "{\"ok\":true}"
         | "/highlight/net" ->
-            let net =
+            // Backward-compat shape: {"name": "BL"} replaces the
+            // highlighted-set with a single net; {"name": null} or
+            // missing clears it. Multi-net callers should use
+            // /highlight/nets with an array.
+            let next =
                 match root.TryGetProperty "name" with
-                | true, n when n.ValueKind = JsonValueKind.String -> Some (n.GetString())
-                | _ -> None
-            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.HighlightNet net))
+                | true, n when n.ValueKind = JsonValueKind.String ->
+                    Set.singleton (n.GetString())
+                | _ -> Set.empty
+            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.SetHighlightedNets next))
+            "{\"ok\":true}"
+        | "/highlight/nets" ->
+            // {"names": ["BL", "WL"]} — replace the highlighted-set
+            // wholesale. Empty array clears it.
+            let arr = root.GetProperty("names")
+            let mutable acc = Set.empty
+            for i in 0 .. arr.GetArrayLength() - 1 do
+                acc <- acc.Add (arr.[i].GetString())
+            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.SetHighlightedNets acc))
             "{\"ok\":true}"
         | "/tab" ->
             let tab =

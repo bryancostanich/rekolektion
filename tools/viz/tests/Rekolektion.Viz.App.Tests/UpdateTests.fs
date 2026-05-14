@@ -19,9 +19,40 @@ let ``ToggleLayer updates Model.Toggle.Layers`` () =
     Visibility.isLayerVisible next.Toggle (68, 20) |> should equal false
 
 [<Fact>]
-let ``HighlightNet sets Model.Toggle.HighlightNet`` () =
-    let next, _ = Update.update stubBackend (Msg.HighlightNet (Some "BL")) Model.empty
-    next.Toggle.HighlightNet |> should equal (Some "BL")
+let ``ToggleNetHighlight flips a net's membership in HighlightedNets`` () =
+    let next, _ = Update.update stubBackend (Msg.ToggleNetHighlight "BL") Model.empty
+    next.Toggle.HighlightedNets |> should equal (Set.singleton "BL")
+    let next2, _ = Update.update stubBackend (Msg.ToggleNetHighlight "BL") next
+    next2.Toggle.HighlightedNets |> should equal (Set.empty : Set<string>)
+
+[<Fact>]
+let ``SetHighlightedNets replaces the set wholesale`` () =
+    let seeded =
+        let next, _ = Update.update stubBackend (Msg.ToggleNetHighlight "stale") Model.empty
+        next
+    let next, _ =
+        Update.update stubBackend
+            (Msg.SetHighlightedNets (Set.ofList ["BL"; "WL"])) seeded
+    next.Toggle.HighlightedNets |> should equal (Set.ofList ["BL"; "WL"])
+
+[<Fact>]
+let ``ToggleNetRatline flips a net's ratline visibility independently`` () =
+    let next, _ = Update.update stubBackend (Msg.ToggleNetRatline "CLK") Model.empty
+    next.Toggle.VisibleRatlines |> should equal (Set.singleton "CLK")
+    next.Toggle.HighlightedNets |> should equal (Set.empty : Set<string>)
+
+[<Fact>]
+let ``ToggleRatlines master: empty set -> all nets, non-empty -> clear`` () =
+    // Empty -> all nets in active macro. With no active macro, the
+    // expected fallback is empty (no nets to enable).
+    let next1, _ = Update.update stubBackend Msg.ToggleRatlines Model.empty
+    next1.Toggle.VisibleRatlines |> should equal (Set.empty : Set<string>)
+    // Non-empty -> clear regardless of active-macro state.
+    let seeded =
+        let m, _ = Update.update stubBackend (Msg.ToggleNetRatline "X") Model.empty
+        m
+    let next2, _ = Update.update stubBackend Msg.ToggleRatlines seeded
+    next2.Toggle.VisibleRatlines |> should equal (Set.empty : Set<string>)
 
 [<Fact>]
 let ``SetTab changes ActiveTab`` () =

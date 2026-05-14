@@ -51,11 +51,13 @@ type private SelectionOverlay = {
     /// rect translucent so the user sees what they're about to
     /// pick up.
     MarqueeWorld : (int64 * int64 * int64 * int64) option
-    /// Net routes for the ratline overlay. Empty when neither
-    /// `ShowRatlines` is on nor a highlight is active.
-    Routes        : Net.Ratlines.NetRoute array
-    HighlightNet  : string option
-    ShowRatlines  : bool
+    /// Net routes for the ratline overlay. Empty when no ratlines
+    /// are turned on (the per-net set is empty).
+    Routes          : Net.Ratlines.NetRoute array
+    /// Set of net names to draw ratlines for. Decoupled from
+    /// HighlightedNets — the user can light a net's polygons
+    /// without showing its ratline and vice versa.
+    VisibleRatlines : Set<string>
     /// Tighten mode candidates. Empty when mode is off. The
     /// renderer uses these to draw numbered candidate dim
     /// arrows + click targets; it returns the per-label hit
@@ -243,7 +245,7 @@ type private SkiaDraw(bounds: Rect,
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
-                        overlay.Routes overlay.HighlightNet overlay.ShowRatlines
+                        overlay.Routes overlay.VisibleRatlines
 
                 // Tighten mode: numbered candidate dim arrows
                 // sit on top of all the other overlays. Capture
@@ -413,8 +415,12 @@ type GdsCanvasControl() =
     static member val ShowDrcProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
         with get
-    static member val ShowRatlinesProperty : StyledProperty<bool> =
-        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowRatlines", false)
+    /// Set of net names whose ratlines are drawn. Replaces the old
+    /// boolean ShowRatlines — the master "all on/off" toggle now
+    /// flips this set between full and empty in the Update layer.
+    static member val VisibleRatlinesProperty : StyledProperty<Set<string>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Set<string>>(
+            "VisibleRatlines", Set.empty)
         with get
     static member val TightenModeProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("TightenMode", false)
@@ -518,9 +524,9 @@ type GdsCanvasControl() =
         with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
 
-    member this.ShowRatlines
-        with get() : bool = this.GetValue(GdsCanvasControl.ShowRatlinesProperty)
-        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowRatlinesProperty, v) |> ignore
+    member this.VisibleRatlines
+        with get() : Set<string> = this.GetValue(GdsCanvasControl.VisibleRatlinesProperty)
+        and set(v: Set<string>) = this.SetValue(GdsCanvasControl.VisibleRatlinesProperty, v) |> ignore
 
     member this.TightenMode
         with get() : bool = this.GetValue(GdsCanvasControl.TightenModeProperty)
@@ -636,7 +642,7 @@ type GdsCanvasControl() =
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
              || e.Property = GdsCanvasControl.ShowDimensionsProperty
              || e.Property = GdsCanvasControl.ShowDrcProperty
-             || e.Property = GdsCanvasControl.ShowRatlinesProperty
+             || e.Property = GdsCanvasControl.VisibleRatlinesProperty
              || e.Property = GdsCanvasControl.TightenModeProperty
              || e.Property = GdsCanvasControl.SelectedPolygonsProperty then
             // Geometry / overlay state changed — re-render but
@@ -1173,13 +1179,13 @@ type GdsCanvasControl() =
                     Some (min x1 x2, min y1 y2, max x1 x2, max y1 y2)
                 else None
             // Ratlines: skip the (potentially expensive) per-net
-            // label walk unless either ShowRatlines or a net
-            // highlight is active. A single highlighted net always
-            // gets its own ratline regardless of the global toggle.
-            let highlightNet = this.Toggle.HighlightNet
+            // label walk unless at least one net's ratline is on.
+            // The visible-ratline set is fully decoupled from the
+            // polygon highlight set — turning on a highlight no
+            // longer auto-shows ratlines.
+            let visibleRatlines = this.VisibleRatlines
             let routes =
-                if this.ShowRatlines || highlightNet.IsSome then
-                    // Ratlines now takes Rkt.Document; convert at boundary.
+                if not visibleRatlines.IsEmpty then
                     Net.Ratlines.compute (renderLib)
                 else [||]
             // Tighten-mode candidates: per-cardinal binding pair
@@ -1221,8 +1227,7 @@ type GdsCanvasControl() =
                   Violations = violations
                   MarqueeWorld = marquee
                   Routes = routes
-                  HighlightNet = highlightNet
-                  ShowRatlines = this.ShowRatlines
+                  VisibleRatlines = visibleRatlines
                   TightenCandidates = tightenCands
                   SelectedPolygons = this.SelectedPolygons }
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits))

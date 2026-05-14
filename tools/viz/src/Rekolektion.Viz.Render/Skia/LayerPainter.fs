@@ -52,25 +52,30 @@ let private project (vb: ViewBox) (p: Point) : SKPoint =
 /// Build the set of (SourceStructure, SourceIndex) flat-polygon
 /// keys that 'belong to' the highlighted net — defined as: a label
 /// with the highlighted text exists in the same Structure and its
-/// Origin lies inside the polygon's bbox. Empty when no net is
+/// Origin lies inside the polygon's bbox. Empty when no nets are
 /// highlighted; computation is skipped on the fast path.
 /// Public so the 3D canvas can reuse the same set when shading
 /// the GL mesh — keeps 2D and 3D agreement on which polygons
 /// belong to a net.
+///
+/// `netNames` is a set; a polygon is included if ANY of the named
+/// nets has a label whose origin lands inside the polygon's bbox.
+/// Multi-net highlight (the new model state) flows in through this
+/// set; single-net highlight is just `Set.singleton`.
 let highlightedPolyKeys
         (doc: Document)
         (flat: FlatPolygon array)
-        (netName: string)
+        (netNames: Set<string>)
         : System.Collections.Generic.HashSet<string * int> =
     let result = System.Collections.Generic.HashSet<string * int>()
-    // Collect every label of this net in flat (top-cell) coords.
-    // Labels authored inside a sub-cell get their origin transformed
-    // through the SRef/ARef chain, so a label like "BE" defined at
-    // (0,0) in sky130_fd_pr_reram__reram_cell shows up at its real
-    // on-screen position, not the sub-cell's local origin.
+    if netNames.IsEmpty then result
+    else
+    // Collect every label whose text is in the highlighted set,
+    // in flat (top-cell) coords. Labels authored inside a sub-cell
+    // get their origin transformed through the SRef/ARef chain.
     let origins = ResizeArray<int64 * int64>()
     for l in Layout.Flatten.flattenLabels doc do
-        if l.Text = netName then
+        if netNames.Contains l.Text then
             origins.Add(l.Origin.X, l.Origin.Y)
     if origins.Count = 0 then result
     else
@@ -120,14 +125,15 @@ let paintIn
         |> Option.defaultValue 100.0
     let ordered = byLayer |> Array.sortBy (fun (k, _) -> zOf k)
 
-    // When a net is highlighted, polygons not in the matching set
-    // are dimmed so the highlighted run pops. Empty set on the
-    // fast path costs no measurable extra time.
+    // When one or more nets are highlighted, polygons not in any
+    // of the matching sets are dimmed so the highlighted runs pop.
+    // Empty set on the fast path costs no measurable extra time.
     let highlightSet =
-        match toggle.HighlightNet with
-        | Some name -> highlightedPolyKeys doc flat name
-        | None -> System.Collections.Generic.HashSet()
-    let isHighlightActive = toggle.HighlightNet.IsSome
+        if toggle.HighlightedNets.IsEmpty then
+            System.Collections.Generic.HashSet()
+        else
+            highlightedPolyKeys doc flat toggle.HighlightedNets
+    let isHighlightActive = not toggle.HighlightedNets.IsEmpty
 
     // When a block is isolated, only render polygons whose source
     // cell is inside the block's transitive closure (the block

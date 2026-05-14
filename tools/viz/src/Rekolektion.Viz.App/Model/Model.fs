@@ -74,12 +74,6 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
-    /// Show ratlines for every net (not just the highlighted
-    /// one). Off by default — fanout-heavy nets like VDD/VSS
-    /// clutter the canvas if drawn unconditionally. Toggle via
-    /// TopBar / W key. Highlighting a single net always draws
-    /// its ratlines regardless of this flag.
-    ShowRatlines : bool
     /// Tighten mode: when active, the canvas overlays the
     /// candidate cardinal-direction tighten arrows (numbered)
     /// instead of moving anything. Click a number → that single
@@ -117,7 +111,6 @@ let empty : Model = {
     InstanceSelection = Set.empty
     ShowDimensions = false
     ShowDrc = false
-    ShowRatlines = false
     TightenMode = false
     RenamingPath = None
     ActiveTab = View2D

@@ -164,8 +164,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with Toggle = Visibility.toggleNet name vis model.Toggle }, Cmd.none
     | Msg.ToggleBlock (name, vis) ->
         { model with Toggle = Visibility.toggleBlock name vis model.Toggle }, Cmd.none
-    | Msg.HighlightNet net ->
-        { model with Toggle = Visibility.highlightNet net model.Toggle }, Cmd.none
+    | Msg.ToggleNetHighlight name ->
+        { model with Toggle = Visibility.toggleNetHighlight name model.Toggle }, Cmd.none
+    | Msg.SetHighlightedNets nets ->
+        { model with Toggle = Visibility.setHighlightedNets nets model.Toggle }, Cmd.none
+    | Msg.ToggleNetRatline name ->
+        { model with Toggle = Visibility.toggleNetRatline name model.Toggle }, Cmd.none
+    | Msg.SetVisibleRatlines nets ->
+        { model with Toggle = Visibility.setVisibleRatlines nets model.Toggle }, Cmd.none
     | Msg.IsolateBlock blk ->
         { model with Toggle = Visibility.isolateBlock blk model.Toggle }, Cmd.none
     | Msg.SetTab tab -> { model with ActiveTab = tab }, Cmd.none
@@ -183,7 +189,16 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ToggleDrc ->
         { model with ShowDrc = not model.ShowDrc }, Cmd.none
     | Msg.ToggleRatlines ->
-        { model with ShowRatlines = not model.ShowRatlines }, Cmd.none
+        // Master toggle: if any ratline is on, clear all; otherwise
+        // turn on ratlines for every known net in the active macro.
+        // Mirrors the layer panel "All / None" pattern.
+        let nextSet =
+            if not model.Toggle.VisibleRatlines.IsEmpty then Set.empty
+            else
+                match Model.activeMacro model with
+                | None -> Set.empty
+                | Some m -> m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+        { model with Toggle = Visibility.setVisibleRatlines nextSet model.Toggle }, Cmd.none
     | Msg.ToggleTightenMode ->
         // Toggle on / off. Entering with an empty selection is
         // a no-op (nothing to compute candidates against).

@@ -68,9 +68,9 @@ let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowDrcProperty, v, ValueNone)
 
-let private gds2DShowRatlinesAttr (v: bool) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
-        GdsCanvasControl.ShowRatlinesProperty, v, ValueNone)
+let private gds2DVisibleRatlinesAttr (v: Set<string>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string>>(
+        GdsCanvasControl.VisibleRatlinesProperty, v, ValueNone)
 
 let private gds2DTightenModeAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
@@ -116,9 +116,9 @@ let private stack3DPickedAttr (handler: System.Action<string, int>) : IAttr<Stac
     AttrBuilder<StackCanvasControl>.CreateProperty<System.Action<string, int>>(
         StackCanvasControl.PolygonPickedHandlerProperty, handler, ValueNone)
 
-let private stack3DShowRatlinesAttr (v: bool) : IAttr<StackCanvasControl> =
-    AttrBuilder<StackCanvasControl>.CreateProperty<bool>(
-        StackCanvasControl.ShowRatlinesProperty, v, ValueNone)
+let private stack3DVisibleRatlinesAttr (v: Set<string>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Set<string>>(
+        StackCanvasControl.VisibleRatlinesProperty, v, ValueNone)
 
 /// Render the canvas (tab control wrapping the 2D + 3D views).
 /// Reads the active macro via Model.activeMacro so opening another
@@ -167,7 +167,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DShowDimensionsAttr model.ShowDimensions
               gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
               gds2DShowDrcAttr model.ShowDrc
-              gds2DShowRatlinesAttr model.ShowRatlines
+              gds2DVisibleRatlinesAttr model.Toggle.VisibleRatlines
               gds2DTightenModeAttr model.TightenMode
               gds2DCommitTightenHandlerAttr
                   (System.Action<int>(fun i -> dispatch (Msg.CommitTighten i)))
@@ -193,7 +193,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               stack3DFlatAttr    flat
               stack3DToggleAttr   model.Toggle
               stack3DPickedAttr  pickedHandler
-              stack3DShowRatlinesAttr model.ShowRatlines ]
+              stack3DVisibleRatlinesAttr model.Toggle.VisibleRatlines ]
 
     let activeIndex =
         match model.ActiveTab with

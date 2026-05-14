@@ -54,10 +54,9 @@ let paintIn
                     let x = float (l.Origin.X - vb.MinX) / dx * float vb.PixelW
                     let y = float vb.PixelH - (float (l.Origin.Y - vb.MinY) / dy * float vb.PixelH)
                     let p =
-                        match toggle.HighlightNet with
-                        | Some name when name = l.Text -> highlight
-                        | Some _ -> dimmed
-                        | None -> normal
+                        if toggle.HighlightedNets.IsEmpty then normal
+                        elif toggle.HighlightedNets.Contains l.Text then highlight
+                        else dimmed
                     canvas.DrawText(l.Text, float32 x, float32 y, p)
             | _ -> ()
 

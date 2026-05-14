@@ -48,7 +48,14 @@ type Msg =
     | SetAllLayers     of visible: bool
     | ToggleNet        of name: string * visible: bool
     | ToggleBlock      of name: string * visible: bool
-    | HighlightNet     of net: string option
+    /// Flip the membership of `net` in HighlightedNets (multi-select).
+    | ToggleNetHighlight of net: string
+    /// Replace HighlightedNets wholesale (master "all/none" affordance).
+    | SetHighlightedNets of nets: Set<string>
+    /// Flip the membership of `net` in VisibleRatlines.
+    | ToggleNetRatline of net: string
+    /// Replace VisibleRatlines wholesale (master + W hotkey).
+    | SetVisibleRatlines of nets: Set<string>
     | IsolateBlock     of block: string option
     | SetTab           of Model.Tab
     | PolygonPicked    of structure: string * index: int
@@ -79,9 +86,9 @@ type Msg =
     | ToggleDimensions
     /// Flip the in-process DRC overlay on/off.
     | ToggleDrc
-    /// Flip the show-all-ratlines overlay on/off. Per-net
-    /// ratlines from a single-net highlight are independent of
-    /// this toggle.
+    /// Master "all ratlines on/off" — the W hotkey + the TopBar
+    /// button. Implemented as: if VisibleRatlines is non-empty,
+    /// clear it; otherwise fill it with every known net.
     | ToggleRatlines
     /// Duplicate every currently-selected top-level SRef. Each
     /// clone is appended to the top cell's Elements with a small

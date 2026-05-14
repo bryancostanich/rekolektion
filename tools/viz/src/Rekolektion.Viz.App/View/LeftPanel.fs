@@ -49,23 +49,25 @@ let private layerRow
             // adjacent rows so the entered handler can paint them.
             e.Pointer.Capture null
             // First press in a drag-paint sequence: arm the drag
-            // with the OPPOSITE of this row's current state as the
-            // target. Subsequent rows the cursor enters get
-            // painted to the same target (sticky — entering a
-            // row already at target = no-op). Use explicit
-            // ToggleLayer (key, target) instead of FlipLayer so
-            // every row in the drag agrees on direction even when
-            // the closure's `visible` value is stale relative to
-            // mid-drag dispatches.
-            let target = not visible
+            // with the OPPOSITE of this row's CURRENT state as the
+            // target. We must NOT use the closure-captured
+            // `visible` here — FuncUI reuses Border instances
+            // across renders and doesn't rebind the lambda even
+            // when the row's prop dependencies change, so
+            // `visible` goes stale after the first dispatch and
+            // every subsequent press computes target off the
+            // outdated value. Read live via
+            // `Services.AppDispatch.currentModel` instead.
+            let liveVisible =
+                match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+                | Some (m: Model.Model) -> Visibility.isLayerVisible m.Toggle key
+                | None -> visible
+            let target = not liveVisible
             dragActive <- true
             dragTarget <- target
             dragVisited <- Set.singleton key
             dispatch (Msg.ToggleLayer (key, target)))
         Border.onPointerEntered (fun e ->
-            // Drag-paint: while a drag is in flight AND the left
-            // button is still held, painting any unvisited row
-            // sets it to the drag's target state.
             if dragActive
                && not (dragVisited.Contains key)
                && e.GetCurrentPoint(null).Properties.IsLeftButtonPressed then

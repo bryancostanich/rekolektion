@@ -11,6 +11,7 @@ open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.App.Canvas2D.GdsCanvasControl
 open Rekolektion.Viz.App.Canvas3D.StackCanvasControl
 open Rekolektion.Viz.App.Model
@@ -19,8 +20,8 @@ open Rekolektion.Viz.App.Model
 // Moroder DieCanvasView pattern: each AvaloniaProperty is exposed via
 // a typed CreateProperty<TValue>(prop, value, ValueNone) attr.
 
-let private gds2DLibraryAttr (v: Library option) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<Library option>(
+let private gds2DLibraryAttr (v: Document option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Document option>(
         GdsCanvasControl.LibraryProperty, v, ValueNone)
 
 let private gds2DMacroPathAttr (v: string option) : IAttr<GdsCanvasControl> =
@@ -67,8 +68,40 @@ let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowDrcProperty, v, ValueNone)
 
-let private stack3DLibraryAttr (v: Library option) : IAttr<StackCanvasControl> =
-    AttrBuilder<StackCanvasControl>.CreateProperty<Library option>(
+let private gds2DVisibleRatlinesAttr (v: Set<string>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string>>(
+        GdsCanvasControl.VisibleRatlinesProperty, v, ValueNone)
+
+let private gds2DTightenModeAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.TightenModeProperty, v, ValueNone)
+
+let private gds2DCommitTightenHandlerAttr (h: System.Action<int>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int>>(
+        GdsCanvasControl.CommitTightenHandlerProperty, h, ValueNone)
+
+let private gds2DPolygonPickedHandlerAttr (h: System.Action<string, int>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<string, int>>(
+        GdsCanvasControl.PolygonPickedHandlerProperty, h, ValueNone)
+
+let private gds2DSelectedPolygonsAttr (v: Set<string * int>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string * int>>(
+        GdsCanvasControl.SelectedPolygonsProperty, v, ValueNone)
+
+let private gds2DSetPolygonSelectionHandlerAttr (h: System.Action<Set<string * int>>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<string * int>>>(
+        GdsCanvasControl.SetPolygonSelectionHandlerProperty, h, ValueNone)
+
+let private gds2DMovePolygonsHandlerAttr (h: System.Action<Set<string * int>, int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<string * int>, int64, int64>>(
+        GdsCanvasControl.MovePolygonsHandlerProperty, h, ValueNone)
+
+let private gds2DClearPolygonSelectionHandlerAttr (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.ClearPolygonSelectionHandlerProperty, h, ValueNone)
+
+let private stack3DLibraryAttr (v: Document option) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Document option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
 
 let private stack3DFlatAttr (v: Layout.Flatten.FlatPolygon array) : IAttr<StackCanvasControl> =
@@ -83,13 +116,17 @@ let private stack3DPickedAttr (handler: System.Action<string, int>) : IAttr<Stac
     AttrBuilder<StackCanvasControl>.CreateProperty<System.Action<string, int>>(
         StackCanvasControl.PolygonPickedHandlerProperty, handler, ValueNone)
 
+let private stack3DVisibleRatlinesAttr (v: Set<string>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Set<string>>(
+        StackCanvasControl.VisibleRatlinesProperty, v, ValueNone)
+
 /// Render the canvas (tab control wrapping the 2D + 3D views).
 /// Reads the active macro via Model.activeMacro so opening another
 /// tab swaps the canvas contents without touching the canvas
 /// instance itself.
 let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     let active = Model.activeMacro model
-    let lib = active |> Option.map (fun m -> m.Library)
+    let lib = active |> Option.map (fun m -> m.Document)
     let flat =
         active
         |> Option.map (fun m -> m.FlatPolygons)
@@ -129,7 +166,22 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DMoveSelectionHandlerAttr moveSelectionHandler
               gds2DShowDimensionsAttr model.ShowDimensions
               gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
-              gds2DShowDrcAttr model.ShowDrc ]
+              gds2DShowDrcAttr model.ShowDrc
+              gds2DVisibleRatlinesAttr model.Toggle.VisibleRatlines
+              gds2DTightenModeAttr model.TightenMode
+              gds2DCommitTightenHandlerAttr
+                  (System.Action<int>(fun i -> dispatch (Msg.CommitTighten i)))
+              gds2DSelectedPolygonsAttr model.Selection
+              gds2DPolygonPickedHandlerAttr
+                  (System.Action<string, int>(fun s i -> dispatch (Msg.PolygonPicked (s, i))))
+              gds2DSetPolygonSelectionHandlerAttr
+                  (System.Action<Set<string * int>>(fun sel ->
+                      dispatch (Msg.SetPolygonSelection sel)))
+              gds2DMovePolygonsHandlerAttr
+                  (System.Action<Set<string * int>, int64, int64>(fun sel dx dy ->
+                      dispatch (Msg.MovePolygonsDbu (sel, dx, dy))))
+              gds2DClearPolygonSelectionHandlerAttr
+                  (System.Action(fun () -> dispatch Msg.ClearSelection)) ]
 
     let pickedHandler =
         System.Action<string, int>(fun s i ->
@@ -140,7 +192,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             [ stack3DLibraryAttr lib
               stack3DFlatAttr    flat
               stack3DToggleAttr   model.Toggle
-              stack3DPickedAttr  pickedHandler ]
+              stack3DPickedAttr  pickedHandler
+              stack3DVisibleRatlinesAttr model.Toggle.VisibleRatlines ]
 
     let activeIndex =
         match model.ActiveTab with
@@ -340,8 +393,13 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
             let renaming = (model.RenamingPath = Some m.Path)
             fileTab active m.Dirty renaming m.Path dispatch)
     let children = phantom :: tabs
+    // Bumped from 28 → 38 to reserve room for the horizontal
+    // scrollbar that the FluentTheme overlays on hover. With the
+    // tabs at 28 px there's no margin under them and the scroll
+    // bar covers the lower third of the tab labels when the tab
+    // count exceeds the strip width.
     Border.create [
-        Border.height 28.0
+        Border.height 38.0
         Border.background "#141414"
         Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
         Border.borderBrush "#2a2a2a"
@@ -352,6 +410,11 @@ let private fileTabStrip (model: Model.Model) (dispatch: Msg.Msg -> unit) : IVie
                 ScrollViewer.content (
                     StackPanel.create [
                         StackPanel.orientation Orientation.Horizontal
+                        // VerticalAlignment.Top pins the tabs to
+                        // the top edge of the strip; the spare
+                        // space beneath them is where the
+                        // scrollbar lives without overlapping.
+                        StackPanel.verticalAlignment VerticalAlignment.Top
                         StackPanel.children children
                     ]
                 )
@@ -365,6 +428,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     // right starting folder. See `AppDispatch.currentActivePath`.
     Rekolektion.Viz.App.Services.AppDispatch.currentActivePath <- model.ActiveMacroPath
     Rekolektion.Viz.App.Services.AppDispatch.currentModel <- Some model
+    Rekolektion.Viz.App.Services.Recents.publish model.RecentFiles
     // Cmd+O / Ctrl+O hotkeys live on the NativeMenuItem ("Open...")
     // attached to the window in App.fs — Avalonia auto-routes the
     // gesture through the native menu so we don't need an explicit

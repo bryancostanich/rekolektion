@@ -31,52 +31,62 @@ let private printUsage () =
 let cmdRead (args: string list) : int =
     match args with
     | [path] ->
-        // Dispatch on extension: .mag → Magic parser, .gds → GDS.
-        // Both produce the same Library shape downstream.
-        let lib, warnings =
+        // Dispatch on extension: .mag → Magic parser, .gds → GDS,
+        // .rkt → Rkt reader. All produce a canonical `Rkt.Document`.
+        let doc, warnings =
             Rekolektion.Viz.Core.Layout.LayoutLoader.load path
         for w in warnings do
             eprintfn "[viz] %s" w
-        printfn "Library: %s" lib.Name
-        printfn "User units/DB unit: %g" lib.UserUnitsPerDbUnit
-        printfn "DB units in meters: %g" lib.DbUnitsInMeters
-        printfn "Structures: %d" lib.Structures.Length
-        for s in lib.Structures do
-            let boundaries =
-                s.Elements
-                |> List.filter (function Types.Boundary _ -> true | _ -> false)
+        let nmPerDbu = float doc.Units.DbuNm
+        printfn "Document: pdk %s, version %d" doc.Pdk doc.Version
+        printfn "Units: %g nm/DBU (uu_um %d)" nmPerDbu doc.Units.UuUm
+        printfn "Cells: %d" doc.Cells.Length
+        for c in doc.Cells do
+            let polys =
+                c.Elements
+                |> List.filter (function
+                    | Rekolektion.Viz.Core.Rkt.Types.PolyEl _ -> true
+                    | Rekolektion.Viz.Core.Rkt.Types.RectEl _ -> true
+                    | _ -> false)
                 |> List.length
             let paths =
-                s.Elements
-                |> List.filter (function Types.Path _ -> true | _ -> false)
+                c.Elements
+                |> List.filter (function
+                    | Rekolektion.Viz.Core.Rkt.Types.PathEl _ -> true
+                    | _ -> false)
                 |> List.length
             let srefs =
-                s.Elements
-                |> List.filter (function Types.SRef _ -> true | _ -> false)
+                c.Elements
+                |> List.filter (function
+                    | Rekolektion.Viz.Core.Rkt.Types.SRefEl _ -> true
+                    | _ -> false)
                 |> List.length
             let arefs =
-                s.Elements
-                |> List.filter (function Types.ARef _ -> true | _ -> false)
+                c.Elements
+                |> List.filter (function
+                    | Rekolektion.Viz.Core.Rkt.Types.ARefEl _ -> true
+                    | _ -> false)
                 |> List.length
-            printfn "  %s: %d boundaries, %d paths, %d srefs, %d arefs"
-                s.Name boundaries paths srefs arefs
+            printfn "  %s: %d polys, %d paths, %d srefs, %d arefs"
+                c.Name polys paths srefs arefs
 
             let allPoints =
-                s.Elements
+                c.Elements
                 |> List.collect (fun e ->
                     match e with
-                    | Types.Boundary b -> b.Points
-                    | Types.Path p     -> p.Points
+                    | Rekolektion.Viz.Core.Rkt.Types.PolyEl p -> p.Points
+                    | Rekolektion.Viz.Core.Rkt.Types.PathEl p -> p.Points
+                    | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                        [ { Rekolektion.Viz.Core.Rkt.Types.X = r.X1
+                            Rekolektion.Viz.Core.Rkt.Types.Y = r.Y1 }
+                          { Rekolektion.Viz.Core.Rkt.Types.X = r.X2
+                            Rekolektion.Viz.Core.Rkt.Types.Y = r.Y2 } ]
                     | _ -> [])
             if not allPoints.IsEmpty then
                 let minX = allPoints |> List.map (fun p -> p.X) |> List.min
                 let maxX = allPoints |> List.map (fun p -> p.X) |> List.max
                 let minY = allPoints |> List.map (fun p -> p.Y) |> List.min
                 let maxY = allPoints |> List.map (fun p -> p.Y) |> List.max
-                // DBU → nm scale: DbUnitsInMeters * 1e9 nm/m. For
-                // SKY130 GDS this is 1.0 nm/DBU, matching the legacy
-                // report's "(maxX-minX) nm" assumption.
-                let nmPerDbu = lib.DbUnitsInMeters * 1.0e9
                 let widthNm  = float (maxX - minX) * nmPerDbu
                 let heightNm = float (maxY - minY) * nmPerDbu
                 printfn "    BBox: (%d, %d) to (%d, %d) DBU — %.3f x %.3f um"
@@ -142,7 +152,9 @@ let cmdVizRender (args: string list) : int =
                         ((l.Number, l.DataType), visible)))
         let highlightMsgs =
             match parsed.Highlight with
-            | Some n -> [ Rekolektion.Viz.App.Model.Msg.Msg.HighlightNet (Some n) ]
+            | Some n ->
+                [ Rekolektion.Viz.App.Model.Msg.Msg.SetHighlightedNets
+                    (Set.singleton n) ]
             | None   -> []
         let tabMsgs =
             match parsed.Tab with

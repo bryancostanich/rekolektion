@@ -10,7 +10,12 @@ open Avalonia.Rendering.SceneGraph
 open Avalonia.Skia
 open SkiaSharp
 open Rekolektion.Viz.Core
+// Open Rkt.Types last so `Document`, `Point`, `Cell`, `Element`,
+// and the variant cases (`PolyEl`, `RectEl`, …) all resolve to the
+// canonical model. `Gds.Types` still stays open for the few places
+// that name `Library` (the legacy on-disk type) explicitly.
 open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 open Rekolektion.Viz.Core.Layout.Flatten
 open Rekolektion.Viz.Render.Skia
@@ -46,16 +51,36 @@ type private SelectionOverlay = {
     /// rect translucent so the user sees what they're about to
     /// pick up.
     MarqueeWorld : (int64 * int64 * int64 * int64) option
+    /// Net routes for the ratline overlay. Empty when no ratlines
+    /// are turned on (the per-net set is empty).
+    Routes          : Net.Ratlines.NetRoute array
+    /// Set of net names to draw ratlines for. Decoupled from
+    /// HighlightedNets — the user can light a net's polygons
+    /// without showing its ratline and vice versa.
+    VisibleRatlines : Set<string>
+    /// Tighten mode candidates. Empty when mode is off. The
+    /// renderer uses these to draw numbered candidate dim
+    /// arrows + click targets; it returns the per-label hit
+    /// rects so OnPointerPressed can map a click to an index.
+    TightenCandidates : Drc.Check.TightenCandidate array
+    /// Picked top-cell polygon (struct name, element index).
+    /// Drawn outlined in cyan so the user sees what they
+    /// selected. None when nothing is picked.
+    SelectedPolygons : Set<string * int>
 }
 
 /// Skia draw operation that takes an explicit ViewBox so the canvas
-/// can drive pan/zoom externally.
+/// can drive pan/zoom externally. `tightenHitsOut` is published
+/// each render with the per-label click target rects (in screen
+/// pixels) so the canvas's pointer handler can map a click to a
+/// Tighten candidate index. Empty when not in Tighten mode.
 type private SkiaDraw(bounds: Rect,
-                      lib: Library,
+                      lib: Document,
                       flat: FlatPolygon array,
                       vb: LayerPainter.ViewBox,
                       toggle: Visibility.ToggleState,
-                      overlay: SelectionOverlay) =
+                      overlay: SelectionOverlay,
+                      tightenHitsOut: TightenOverlay.LabelHit array ref) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -79,6 +104,59 @@ type private SkiaDraw(bounds: Rect,
                 LayerPainter.paintIn canvas vb lib flat toggle
                 LabelPainter.paintIn canvas vb lib toggle
 
+                let scaleX =
+                    if vb.MaxX = vb.MinX then 1.0
+                    else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                let scaleY =
+                    if vb.MaxY = vb.MinY then 1.0
+                    else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                let bboxRect (x1, y1, x2, y2) =
+                    let sx1 = (float x1 - float vb.MinX) * scaleX |> float32
+                    let sx2 = (float x2 - float vb.MinX) * scaleX |> float32
+                    let sy1 = float vb.PixelH - (float y1 - float vb.MinY) * scaleY |> float32
+                    let sy2 = float vb.PixelH - (float y2 - float vb.MinY) * scaleY |> float32
+                    SKRect(min sx1 sx2, min sy1 sy2, max sx1 sx2, max sy1 sy2)
+
+                // Cell bbox outlines (dotted) — every top-level
+                // instance gets a faint dotted rectangle so cells are
+                // visible at a glance even when their own polys are
+                // hidden by layer toggles.
+                if overlay.Instances.Length > 0 then
+                    use cellStroke =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            Color = SKColor(0xC0uy, 0xC0uy, 0xC0uy, 0xA0uy),
+                            StrokeWidth = 1.0f,
+                            IsAntialias = true,
+                            PathEffect = SKPathEffect.CreateDash([| 1.5f; 3.0f |], 0.0f))
+                    for inst in overlay.Instances do
+                        canvas.DrawRect(bboxRect inst.BBox, cellStroke)
+
+                // Top-cell (whole-GDS) bbox — union of every flat
+                // polygon. Drawn dashed yellow so the die outline is
+                // visible even when zoomed out and instance bboxes
+                // crowd the view.
+                if flat.Length > 0 then
+                    let mutable xMin = System.Int64.MaxValue
+                    let mutable yMin = System.Int64.MaxValue
+                    let mutable xMax = System.Int64.MinValue
+                    let mutable yMax = System.Int64.MinValue
+                    for fp in flat do
+                        for p in fp.Points do
+                            if p.X < xMin then xMin <- p.X
+                            if p.X > xMax then xMax <- p.X
+                            if p.Y < yMin then yMin <- p.Y
+                            if p.Y > yMax then yMax <- p.Y
+                    if xMax >= xMin && yMax >= yMin then
+                        use topStroke =
+                            new SKPaint(
+                                Style = SKPaintStyle.Stroke,
+                                Color = SKColor(0xFFuy, 0xD0uy, 0x40uy, 0xE0uy),
+                                StrokeWidth = 1.5f,
+                                IsAntialias = true,
+                                PathEffect = SKPathEffect.CreateDash([| 6.0f; 4.0f |], 0.0f))
+                        canvas.DrawRect(bboxRect (xMin, yMin, xMax, yMax), topStroke)
+
                 // Resting selection: thin cyan outline around each
                 // selected instance's bbox so the user can see what's
                 // picked. Suppressed during drag — the polygons
@@ -87,12 +165,6 @@ type private SkiaDraw(bounds: Rect,
                 if not overlay.Dragging
                    && overlay.Selected.Count > 0
                    && overlay.Instances.Length > 0 then
-                    let scaleX =
-                        if vb.MaxX = vb.MinX then 1.0
-                        else float vb.PixelW / float (vb.MaxX - vb.MinX)
-                    let scaleY =
-                        if vb.MaxY = vb.MinY then 1.0
-                        else float vb.PixelH / float (vb.MaxY - vb.MinY)
                     use stroke = new SKPaint(
                                     Style = SKPaintStyle.Stroke,
                                     Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xFFuy),
@@ -100,13 +172,7 @@ type private SkiaDraw(bounds: Rect,
                                     IsAntialias = true)
                     for inst in overlay.Instances do
                         if overlay.Selected.Contains inst.Index then
-                            let (x1, y1, x2, y2) = inst.BBox
-                            let sx1 = (float x1 - float vb.MinX) * scaleX |> float32
-                            let sx2 = (float x2 - float vb.MinX) * scaleX |> float32
-                            let sy1 = float vb.PixelH - (float y1 - float vb.MinY) * scaleY |> float32
-                            let sy2 = float vb.PixelH - (float y2 - float vb.MinY) * scaleY |> float32
-                            let r = SKRect(min sx1 sx2, min sy1 sy2, max sx1 sx2, max sy1 sy2)
-                            canvas.DrawRect(r, stroke)
+                            canvas.DrawRect(bboxRect inst.BBox, stroke)
 
                 if overlay.ShowDimensions
                    && overlay.Selected.Count > 0
@@ -116,8 +182,84 @@ type private SkiaDraw(bounds: Rect,
                         overlay.Instances overlay.Selected
                         overlay.InstancePolyBboxes
                         DimensionOverlay.defaultSettings
+                // Polygon selection outlines. Cyan stroke tracing
+                // each picked element's edges so the user sees what
+                // the click(s) landed on. Suppressed during drag —
+                // the outlines would stick at pre-drag positions
+                // (the source-of-truth Library hasn't been mutated
+                // yet) while the live FlatPolygons preview shows
+                // the moved geometry, so the two don't agree.
+                if not overlay.SelectedPolygons.IsEmpty
+                   && not overlay.Dragging then
+                    let scaleX =
+                        if vb.MaxX = vb.MinX then 1.0
+                        else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                    let scaleY =
+                        if vb.MaxY = vb.MinY then 1.0
+                        else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                    use pSel =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xFFuy),
+                            StrokeWidth = 2.0f,
+                            IsAntialias = true)
+                    let toScreen (pt: Point) =
+                        let sx = (float pt.X - float vb.MinX) * scaleX |> float32
+                        let sy = float vb.PixelH - (float pt.Y - float vb.MinY) * scaleY |> float32
+                        SKPoint(sx, sy)
+                    let structByName =
+                        lib.Cells
+                        |> List.map (fun s -> s.Name, s)
+                        |> Map.ofList
+                    for (sname, idx) in overlay.SelectedPolygons do
+                        match Map.tryFind sname structByName with
+                        | Some s when idx >= 0 && idx < s.Elements.Length ->
+                            let pts =
+                                match s.Elements.[idx] with
+                                | PolyEl p -> Some p.Points
+                                | PathEl p -> Some p.Points
+                                | RectEl r ->
+                                    Some [
+                                        { X = r.X1; Y = r.Y1 }
+                                        { X = r.X2; Y = r.Y1 }
+                                        { X = r.X2; Y = r.Y2 }
+                                        { X = r.X1; Y = r.Y2 }
+                                        { X = r.X1; Y = r.Y1 }
+                                    ]
+                                | _ -> None
+                            match pts with
+                            | Some points when points.Length > 0 ->
+                                let path = new SKPath()
+                                let first = toScreen points.[0]
+                                path.MoveTo first
+                                for i in 1 .. points.Length - 1 do
+                                    path.LineTo (toScreen points.[i])
+                                path.Close()
+                                canvas.DrawPath(path, pSel)
+                                path.Dispose()
+                            | _ -> ()
+                        | _ -> ()
+
                 if overlay.Violations.Length > 0 then
-                    DrcOverlay.render canvas vb lib.UserUnitsPerDbUnit overlay.Violations
+                    DrcOverlay.render canvas vb (float lib.Units.DbuNm * 1.0e-3) overlay.Violations
+
+                if overlay.Routes.Length > 0 then
+                    RatlineOverlay.render canvas vb
+                        overlay.Routes overlay.VisibleRatlines
+
+                // Tighten mode: numbered candidate dim arrows
+                // sit on top of all the other overlays. Capture
+                // the per-label hit rects so the canvas's
+                // pointer handler can dispatch CommitTighten on
+                // click.
+                if overlay.TightenCandidates.Length > 0 then
+                    let hits =
+                        TightenOverlay.render
+                            canvas vb (float lib.Units.DbuNm * 1.0e-3)
+                            overlay.TightenCandidates
+                    tightenHitsOut := hits
+                else
+                    tightenHitsOut := [||]
 
                 match overlay.MarqueeWorld with
                 | Some (mx1, my1, mx2, my2) ->
@@ -134,24 +276,40 @@ type private SkiaDraw(bounds: Rect,
                     let (sx1, sy1) = toScreen (mx1, my1)
                     let (sx2, sy2) = toScreen (mx2, my2)
                     let r = SKRect(min sx1 sx2, min sy1 sy2, max sx1 sx2, max sy1 sy2)
+                    // CAD convention: blue solid for left→right
+                    // (enclose-only); green dashed for right→left
+                    // (touch-select).
+                    let enclose = mx2 >= mx1
+                    let fillColor =
+                        if enclose then SKColor(0x40uy, 0x80uy, 0xFFuy, 0x22uy)
+                        else SKColor(0x40uy, 0xFFuy, 0x80uy, 0x22uy)
+                    let strokeColor =
+                        if enclose then SKColor(0x40uy, 0x80uy, 0xFFuy, 0xFFuy)
+                        else SKColor(0x40uy, 0xFFuy, 0x80uy, 0xFFuy)
                     use mFill =
                         new SKPaint(
                             Style = SKPaintStyle.Fill,
-                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0x22uy),
+                            Color = fillColor,
                             IsAntialias = true)
                     use mStroke =
                         new SKPaint(
                             Style = SKPaintStyle.Stroke,
-                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xFFuy),
+                            Color = strokeColor,
                             StrokeWidth = 1.0f,
-                            IsAntialias = true,
-                            PathEffect = SKPathEffect.CreateDash([| 4.0f; 3.0f |], 0.0f))
+                            IsAntialias = true)
+                    if not enclose then
+                        mStroke.PathEffect <- SKPathEffect.CreateDash([| 4.0f; 3.0f |], 0.0f)
                     canvas.DrawRect(r, mFill)
                     canvas.DrawRect(r, mStroke)
                 | None -> ()
                 canvas.RestoreToCount saved
 
-type private DragKind = NoDrag | PanDrag | SelectionDrag | MarqueeDrag
+type private DragKind =
+    | NoDrag
+    | PanDrag
+    | SelectionDrag
+    | MarqueeDrag
+    | PolygonDrag
 
 type GdsCanvasControl() =
     inherit Control()
@@ -183,8 +341,14 @@ type GdsCanvasControl() =
     // The Render path uses these instead of the bound FlatPolygons
     // so the moved geometry — not a ghost outline — tracks the
     // cursor. None when no drag is active.
-    let mutable dragLiveLib : Library option = None
+    let mutable dragLiveLib : Document option = None
     let mutable dragLiveFlat : FlatPolygon array = [||]
+    // Tighten-mode state. `tightenHits` is overwritten by SkiaDraw
+    // each render with the per-label click targets so
+    // OnPointerPressed can map a click to a candidate index. The
+    // commit handler dispatches `CommitTighten i` and the model
+    // exits mode.
+    let tightenHits : TightenOverlay.LabelHit array ref = ref [||]
     // Marquee select state. World-DBU corners, both updated in
     // OnPointerMoved. Render shows a translucent rect; on release
     // we select every instance whose bbox intersects this rect.
@@ -204,8 +368,8 @@ type GdsCanvasControl() =
     static do
         Avalonia.Input.InputElement.FocusableProperty.OverrideDefaultValue<GdsCanvasControl>(true)
 
-    static member val LibraryProperty : StyledProperty<Library option> =
-        AvaloniaProperty.Register<GdsCanvasControl, Library option>("Library", None)
+    static member val LibraryProperty : StyledProperty<Document option> =
+        AvaloniaProperty.Register<GdsCanvasControl, Document option>("Library", None)
         with get
     /// Path of the active macro. Changes ONLY on new-file load
     /// (or rename), not on every edit. The canvas uses this as
@@ -251,10 +415,62 @@ type GdsCanvasControl() =
     static member val ShowDrcProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
         with get
+    /// Set of net names whose ratlines are drawn. Replaces the old
+    /// boolean ShowRatlines — the master "all on/off" toggle now
+    /// flips this set between full and empty in the Update layer.
+    static member val VisibleRatlinesProperty : StyledProperty<Set<string>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Set<string>>(
+            "VisibleRatlines", Set.empty)
+        with get
+    static member val TightenModeProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("TightenMode", false)
+        with get
+    /// Dispatched when the user clicks a numbered Tighten label.
+    /// The Action arg is the 1-based candidate index.
+    static member val CommitTightenHandlerProperty
+            : StyledProperty<Action<int>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int>>(
+            "CommitTightenHandler", null)
+        with get
+    /// Polygon-pick callback. The host wires this to dispatch
+    /// `PolygonPicked (struct, index)`. Action(structure, index).
+    /// Null = no-op listener.
+    static member val PolygonPickedHandlerProperty
+            : StyledProperty<Action<string, int>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<string, int>>(
+            "PolygonPickedHandler", null)
+        with get
+    /// Currently picked top-cell polygons: set of (struct name,
+    /// element index). Drives the highlight outline. Empty when
+    /// nothing is picked. Multi-select supported via shift-click.
+    static member val SelectedPolygonsProperty
+            : StyledProperty<Set<string * int>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Set<string * int>>(
+            "SelectedPolygons", Set.empty)
+        with get
+    /// Replace the polygon selection (used by shift-click extend
+    /// and marquee bulk-pick).
+    static member val SetPolygonSelectionHandlerProperty
+            : StyledProperty<Action<Set<string * int>>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<string * int>>>(
+            "SetPolygonSelectionHandler", null)
+        with get
+    /// Translate the entire polygon selection by Δ DBU.
+    static member val MovePolygonsHandlerProperty
+            : StyledProperty<Action<Set<string * int>, int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<string * int>, int64, int64>>(
+            "MovePolygonsHandler", null)
+        with get
+    /// Clear the polygon Selection (Esc / empty marquee).
+    static member val ClearPolygonSelectionHandlerProperty
+            : StyledProperty<Action> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action>(
+            "ClearPolygonSelectionHandler", null)
+        with get
 
     member this.Library
-        with get() : Library option = this.GetValue(GdsCanvasControl.LibraryProperty)
-        and set(v: Library option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
+        with get() : Document option = this.GetValue(GdsCanvasControl.LibraryProperty)
+        and set(v: Document option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
 
     member this.MacroPath
         with get() : string option = this.GetValue(GdsCanvasControl.MacroPathProperty)
@@ -307,6 +523,50 @@ type GdsCanvasControl() =
     member this.ShowDrc
         with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
+
+    member this.VisibleRatlines
+        with get() : Set<string> = this.GetValue(GdsCanvasControl.VisibleRatlinesProperty)
+        and set(v: Set<string>) = this.SetValue(GdsCanvasControl.VisibleRatlinesProperty, v) |> ignore
+
+    member this.TightenMode
+        with get() : bool = this.GetValue(GdsCanvasControl.TightenModeProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.TightenModeProperty, v) |> ignore
+
+    member this.CommitTightenHandler
+        with get() : Action<int> =
+            this.GetValue(GdsCanvasControl.CommitTightenHandlerProperty)
+        and set(v: Action<int>) =
+            this.SetValue(GdsCanvasControl.CommitTightenHandlerProperty, v) |> ignore
+
+    member this.PolygonPickedHandler
+        with get() : Action<string, int> =
+            this.GetValue(GdsCanvasControl.PolygonPickedHandlerProperty)
+        and set(v: Action<string, int>) =
+            this.SetValue(GdsCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
+
+    member this.SelectedPolygons
+        with get() : Set<string * int> =
+            this.GetValue(GdsCanvasControl.SelectedPolygonsProperty)
+        and set(v: Set<string * int>) =
+            this.SetValue(GdsCanvasControl.SelectedPolygonsProperty, v) |> ignore
+
+    member this.SetPolygonSelectionHandler
+        with get() : Action<Set<string * int>> =
+            this.GetValue(GdsCanvasControl.SetPolygonSelectionHandlerProperty)
+        and set(v: Action<Set<string * int>>) =
+            this.SetValue(GdsCanvasControl.SetPolygonSelectionHandlerProperty, v) |> ignore
+
+    member this.MovePolygonsHandler
+        with get() : Action<Set<string * int>, int64, int64> =
+            this.GetValue(GdsCanvasControl.MovePolygonsHandlerProperty)
+        and set(v: Action<Set<string * int>, int64, int64>) =
+            this.SetValue(GdsCanvasControl.MovePolygonsHandlerProperty, v) |> ignore
+
+    member this.ClearPolygonSelectionHandler
+        with get() : Action =
+            this.GetValue(GdsCanvasControl.ClearPolygonSelectionHandlerProperty)
+        and set(v: Action) =
+            this.SetValue(GdsCanvasControl.ClearPolygonSelectionHandlerProperty, v) |> ignore
 
     override _.MeasureOverride(constraint': Size) : Size =
         let w =
@@ -381,7 +641,10 @@ type GdsCanvasControl() =
              || e.Property = GdsCanvasControl.InstancesProperty
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
              || e.Property = GdsCanvasControl.ShowDimensionsProperty
-             || e.Property = GdsCanvasControl.ShowDrcProperty then
+             || e.Property = GdsCanvasControl.ShowDrcProperty
+             || e.Property = GdsCanvasControl.VisibleRatlinesProperty
+             || e.Property = GdsCanvasControl.TightenModeProperty
+             || e.Property = GdsCanvasControl.SelectedPolygonsProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
             // (Tighten, drag, rotate, mirror) don't snap the
@@ -398,7 +661,28 @@ type GdsCanvasControl() =
         e.Pointer.Capture this
         this.Focus () |> ignore
 
-        if props.IsMiddleButtonPressed || props.IsRightButtonPressed then
+        // Tighten mode: a left click on a numbered label commits
+        // that candidate. Other clicks are swallowed so the user
+        // doesn't accidentally pan, marquee, or change selection
+        // while choosing a tighten direction.
+        if this.TightenMode && props.IsLeftButtonPressed then
+            let hits = !tightenHits
+            let pxF = float32 p.X
+            let pyF = float32 p.Y
+            let pick =
+                hits
+                |> Array.tryFind (fun h ->
+                    pxF >= h.Rect.Left && pxF <= h.Rect.Right
+                    && pyF >= h.Rect.Top && pyF <= h.Rect.Bottom)
+            match pick with
+            | Some h ->
+                let cb = this.CommitTightenHandler
+                if not (isNull cb) then cb.Invoke h.Index
+            | None -> ()
+            // Swallow regardless — left-click in tighten mode
+            // shouldn't initiate pan / marquee / selection.
+            ()
+        elif props.IsMiddleButtonPressed || props.IsRightButtonPressed then
             // Middle / right → pan, regardless of geometry beneath.
             dragKind <- PanDrag
         elif props.IsLeftButtonPressed then
@@ -448,17 +732,109 @@ type GdsCanvasControl() =
                 dragLiveDeltaDbu <- 0L, 0L
                 dragKind <- if next.IsEmpty then PanDrag else SelectionDrag
             else
-                // Empty space → start a marquee. Shift extends
-                // the existing selection; bare click replaces it
-                // (we DON'T clear yet — that happens at release
-                // if the marquee captures nothing). Pan stays on
-                // middle / right button.
-                marqueeAdditive <- shift
-                let mxi = int64 (System.Math.Round wx)
-                let myi = int64 (System.Math.Round wy)
-                marqueeWorldStart <- mxi, myi
-                marqueeWorldEnd   <- mxi, myi
-                dragKind <- MarqueeDrag
+                // No instance hit → fall back to top-cell
+                // polygon pick. Direct met / licon / etc. paint
+                // in the top cell (not inside an SRef) is
+                // selectable here — sets `Selection` so the
+                // inspector shows the polygon's layer and net.
+                let polyPick =
+                    match this.Library with
+                    | Some lib ->
+                        let referenced =
+                            System.Collections.Generic.HashSet<string>()
+                        for c in lib.Cells do
+                            for el in c.Elements do
+                                match el with
+                                | SRefEl sr -> referenced.Add sr.Cell |> ignore
+                                | ARefEl ar -> referenced.Add ar.Cell |> ignore
+                                | _ -> ()
+                        let topOpt =
+                            lib.Cells
+                            |> List.tryFind (fun c -> not (referenced.Contains c.Name))
+                            |> Option.orElseWith (fun () ->
+                                lib.Cells |> List.tryHead)
+                        topOpt
+                        |> Option.bind (fun top ->
+                            let pt : Point =
+                                { X = int64 (System.Math.Round wx)
+                                  Y = int64 (System.Math.Round wy) }
+                            Layout.Picking.pickBoundary pt top.Elements
+                            |> Option.map (fun (idx, _) -> top.Name, idx))
+                    | None -> None
+                match polyPick with
+                | Some (sname, idx) ->
+                    // Compute the new selection set with shift /
+                    // already-selected semantics (same logic as
+                    // instance click above), then dispatch via
+                    // SetPolygonSelection. The drag operates on
+                    // the resulting set.
+                    let prior = this.SelectedPolygons
+                    let target = (sname, idx)
+                    let next =
+                        if shift then
+                            if prior.Contains target then prior.Remove target
+                            else prior.Add target
+                        elif prior.Contains target then prior
+                        else Set.singleton target
+                    if next <> prior then
+                        let h = this.SetPolygonSelectionHandler
+                        if not (isNull h) then h.Invoke next
+                    dragStartWorldX <- wx
+                    dragStartWorldY <- wy
+                    dragLiveDeltaDbu <- 0L, 0L
+                    dragKind <- if next.IsEmpty then PanDrag else PolygonDrag
+                | None ->
+                    // Empty space → start a marquee. Shift extends
+                    // the existing selection; bare click replaces it
+                    // (we DON'T clear yet — that happens at release
+                    // if the marquee captures nothing). Pan stays on
+                    // middle / right button.
+                    marqueeAdditive <- shift
+                    let mxi = int64 (System.Math.Round wx)
+                    let myi = int64 (System.Math.Round wy)
+                    marqueeWorldStart <- mxi, myi
+                    marqueeWorldEnd   <- mxi, myi
+                    dragKind <- MarqueeDrag
+
+    /// Live-translate every polygon in `sel` by (dx, dy) in DBU.
+    /// Returns a new Document with those polygons shifted — used by
+    /// the in-flight PolygonDrag preview so the moved shapes track
+    /// the cursor before the model commit lands.
+    member private _.LibWithPolygonsShifted
+            (doc: Document) (sel: Set<string * int>)
+            (dx: int64) (dy: int64) : Document =
+        let perCell =
+            sel
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        let translatePoly (pts: Point list) =
+            pts |> List.map (fun p -> { X = p.X + dx; Y = p.Y + dy })
+        let updated =
+            doc.Cells
+            |> List.map (fun c ->
+                match Map.tryFind c.Name perCell with
+                | None -> c
+                | Some indices ->
+                    let elems' =
+                        c.Elements
+                        |> List.mapi (fun i el ->
+                            if not (indices.Contains i) then el
+                            else
+                                match el with
+                                | PolyEl p ->
+                                    PolyEl { p with Points = translatePoly p.Points }
+                                | PathEl p ->
+                                    PathEl { p with Points = translatePoly p.Points }
+                                | RectEl r ->
+                                    RectEl
+                                        { r with
+                                            X1 = r.X1 + dx; Y1 = r.Y1 + dy
+                                            X2 = r.X2 + dx; Y2 = r.Y2 + dy }
+                                | other -> other)
+                    { c with Elements = elems' })
+        { doc with Cells = updated }
 
     override this.OnPointerMoved e =
         base.OnPointerMoved e
@@ -504,7 +880,7 @@ type GdsCanvasControl() =
             let dxSnap, dySnap =
                 match this.Library with
                 | Some lib ->
-                    Snap.snapDeltaDbu lib Snap.sky130MfgGridNm dxRaw dyRaw
+                    Snap.snapDeltaDbu lib.Units Snap.sky130MfgGridNm dxRaw dyRaw
                 | None ->
                     dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
@@ -522,6 +898,53 @@ type GdsCanvasControl() =
                             lib this.InstanceSelection dxSnap dySnap
                     dragLiveLib <- Some lib'
                     dragLiveFlat <- Layout.Flatten.flatten lib'
+                | None ->
+                    dragLiveLib <- None
+                    dragLiveFlat <- [||]
+                this.InvalidateVisual()
+            lastPos <- p
+        | PolygonDrag ->
+            let p = e.GetPosition this
+            let wx, wy = this.ScreenToWorld p
+            let dxRaw = int64 (System.Math.Round (wx - dragStartWorldX))
+            let dyRaw = int64 (System.Math.Round (wy - dragStartWorldY))
+            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            let dxRaw, dyRaw =
+                if shift then
+                    if abs dxRaw >= abs dyRaw then dxRaw, 0L
+                    else 0L, dyRaw
+                else dxRaw, dyRaw
+            let dxSnap, dySnap =
+                match this.Library with
+                | Some lib ->
+                    Snap.snapDeltaDbu lib.Units Snap.sky130MfgGridNm dxRaw dyRaw
+                | None -> dxRaw, dyRaw
+            if (dxSnap, dySnap) <> dragLiveDeltaDbu then
+                dragLiveDeltaDbu <- dxSnap, dySnap
+                // Fast path: skip the library rebuild and the
+                // hierarchical re-flatten that the instance-drag
+                // path runs. The selection is top-cell polygons
+                // only — no SRef transforms to recompose — so we
+                // can transform the existing FlatPolygon array
+                // directly. O(N_polys) per move, no allocation
+                // beyond the shifted points.
+                match this.Library with
+                | Some lib ->
+                    let sel = this.SelectedPolygons
+                    let flat0 = this.FlatPolygons
+                    let flat' =
+                        flat0
+                        |> Array.map (fun fp ->
+                            if sel.Contains (fp.SourceStructure, fp.SourceIndex) then
+                                { fp with
+                                    Points =
+                                        fp.Points
+                                        |> Array.map (fun p ->
+                                            { X = p.X + dxSnap
+                                              Y = p.Y + dySnap }) }
+                            else fp)
+                    dragLiveLib <- Some lib
+                    dragLiveFlat <- flat'
                 | None ->
                     dragLiveLib <- None
                     dragLiveFlat <- [||]
@@ -547,6 +970,12 @@ type GdsCanvasControl() =
             let h = this.MoveSelectionHandler
             if not (isNull h) then h.Invoke(dx, dy)
             this.InvalidateVisual()
+        | PolygonDrag when (dx <> 0L || dy <> 0L) ->
+            let h = this.MovePolygonsHandler
+            let sel = this.SelectedPolygons
+            if not (isNull h) && not sel.IsEmpty then
+                h.Invoke(sel, dx, dy)
+            this.InvalidateVisual()
         | MarqueeDrag ->
             let (x1, y1) = marqueeWorldStart
             let (x2, y2) = marqueeWorldEnd
@@ -558,21 +987,23 @@ type GdsCanvasControl() =
             let degenerate =
                 (mxMax - mxMin) < 1L && (myMax - myMin) < 1L
             if degenerate then
-                if not this.InstanceSelection.IsEmpty
-                   && not marqueeAdditive then
-                    let h = this.ClearInstanceSelectionHandler
-                    if not (isNull h) then h.Invoke ()
+                if not marqueeAdditive then
+                    if not this.InstanceSelection.IsEmpty then
+                        let h = this.ClearInstanceSelectionHandler
+                        if not (isNull h) then h.Invoke ()
+                    if not this.SelectedPolygons.IsEmpty then
+                        let h = this.ClearPolygonSelectionHandler
+                        if not (isNull h) then h.Invoke ()
             else
-                // Pick every instance whose bbox INTERSECTS the
-                // marquee. Compromise between "fully enclosed"
-                // (too restrictive when partial drags happen) and
-                // "any touch" (too greedy on small drags).
+                // CAD convention: drag left→right = enclose-only
+                // (bbox must lie fully inside marquee); drag
+                // right→left = touch-select (any intersection).
+                let mode = Marquee.modeOfDirection x1 x2
+                let marqueeRect = (mxMin, myMin, mxMax, myMax)
+                let bboxFits = Marquee.bboxFits mode marqueeRect
                 let hits =
                     this.Instances
-                    |> Array.filter (fun i ->
-                        let (a, b, c, d) = i.BBox
-                        not (c < mxMin || a > mxMax
-                             || d < myMin || b > myMax))
+                    |> Array.filter (fun i -> bboxFits i.BBox)
                     |> Array.map (fun i -> i.Index)
                     |> Set.ofArray
                 let next =
@@ -582,6 +1013,70 @@ type GdsCanvasControl() =
                         hits
                 let h = this.SetInstanceSelectionHandler
                 if not (isNull h) then h.Invoke next
+
+                // Also pick top-cell polygons (Boundary / Path)
+                // whose own bbox passes the same enclose/touch test.
+                // The top cell is the one not referenced by any
+                // SRef/ARef in the library.
+                match this.Library with
+                | Some lib ->
+                    let referenced =
+                        System.Collections.Generic.HashSet<string>()
+                    for c in lib.Cells do
+                        for el in c.Elements do
+                            match el with
+                            | SRefEl sr -> referenced.Add sr.Cell |> ignore
+                            | ARefEl ar -> referenced.Add ar.Cell |> ignore
+                            | _ -> ()
+                    let topOpt =
+                        lib.Cells
+                        |> List.tryFind (fun c -> not (referenced.Contains c.Name))
+                        |> Option.orElseWith (fun () ->
+                            lib.Cells |> List.tryHead)
+                    match topOpt with
+                    | None -> ()
+                    | Some top ->
+                        let polyBbox (pts: Point list) =
+                            let mutable minX = System.Int64.MaxValue
+                            let mutable minY = System.Int64.MaxValue
+                            let mutable maxX = System.Int64.MinValue
+                            let mutable maxY = System.Int64.MinValue
+                            for p in pts do
+                                if p.X < minX then minX <- p.X
+                                if p.X > maxX then maxX <- p.X
+                                if p.Y < minY then minY <- p.Y
+                                if p.Y > maxY then maxY <- p.Y
+                            if minX > maxX then None
+                            else Some (minX, minY, maxX, maxY)
+                        let polyHits =
+                            top.Elements
+                            |> List.mapi (fun i el -> i, el)
+                            |> List.choose (fun (i, el) ->
+                                match el with
+                                | PolyEl p ->
+                                    polyBbox p.Points
+                                    |> Option.bind (fun bb ->
+                                        if bboxFits bb then Some (top.Name, i) else None)
+                                | PathEl p ->
+                                    polyBbox p.Points
+                                    |> Option.bind (fun bb ->
+                                        if bboxFits bb then Some (top.Name, i) else None)
+                                | RectEl r ->
+                                    let bb =
+                                        (min r.X1 r.X2, min r.Y1 r.Y2,
+                                         max r.X1 r.X2, max r.Y1 r.Y2)
+                                    if bboxFits bb then Some (top.Name, i) else None
+                                | _ -> None)
+                            |> Set.ofList
+                        let nextPoly =
+                            if marqueeAdditive then
+                                Set.union this.SelectedPolygons polyHits
+                            else
+                                polyHits
+                        if nextPoly <> this.SelectedPolygons then
+                            let h = this.SetPolygonSelectionHandler
+                            if not (isNull h) then h.Invoke nextPoly
+                | None -> ()
             // Reset the marquee state so the overlay clears.
             marqueeWorldStart <- 0L, 0L
             marqueeWorldEnd <- 0L, 0L
@@ -596,6 +1091,11 @@ type GdsCanvasControl() =
         | Key.Escape ->
             if not this.InstanceSelection.IsEmpty then
                 let h = this.ClearInstanceSelectionHandler
+                if not (isNull h) then
+                    h.Invoke ()
+                    e.Handled <- true
+            if not this.SelectedPolygons.IsEmpty then
+                let h = this.ClearPolygonSelectionHandler
                 if not (isNull h) then
                     h.Invoke ()
                     e.Handled <- true
@@ -632,7 +1132,8 @@ type GdsCanvasControl() =
         | Some lib ->
             if not hasFitted then this.AutoFit ()
             let vb = this.MakeViewBox ()
-            let dragging = (dragKind = SelectionDrag)
+            let dragging =
+                dragKind = SelectionDrag || dragKind = PolygonDrag
             // While a drag is in flight, render the speculatively
             // translated Library + FlatPolygons so the moved
             // geometry tracks the cursor. The bound props haven't
@@ -665,9 +1166,10 @@ type GdsCanvasControl() =
                         this.Instances
                         |> Array.map (fun inst ->
                             inst.Index,
-                            Layout.Flatten.flattenInstance renderLib inst.Index)
+                            Layout.Flatten.flattenInstance (renderLib) inst.Index)
                         |> Map.ofArray
-                    Drc.Check.checkInterInstance renderLib perInstance
+                    Drc.Check.checkInterInstance
+                        renderLib.Units perInstance
                 else
                     [||]
             let marquee =
@@ -676,15 +1178,59 @@ type GdsCanvasControl() =
                     let (x2, y2) = marqueeWorldEnd
                     Some (min x1 x2, min y1 y2, max x1 x2, max y1 y2)
                 else None
+            // Ratlines: skip the (potentially expensive) per-net
+            // label walk unless at least one net's ratline is on.
+            // The visible-ratline set is fully decoupled from the
+            // polygon highlight set — turning on a highlight no
+            // longer auto-shows ratlines.
+            let visibleRatlines = this.VisibleRatlines
+            let routes =
+                if not visibleRatlines.IsEmpty then
+                    Net.Ratlines.compute renderLib renderFlat
+                else [||]
+            // Tighten-mode candidates: per-cardinal binding pair
+            // for the current selection vs. every other top
+            // instance. Empty when not in mode.
+            let tightenCands =
+                if this.TightenMode && not this.InstanceSelection.IsEmpty then
+                    let selectedPolys =
+                        this.Instances
+                        |> Array.filter (fun i -> this.InstanceSelection.Contains i.Index)
+                        |> Array.collect (fun i ->
+                            Layout.Flatten.flattenInstance (renderLib) i.Index)
+                    let otherPolys =
+                        this.Instances
+                        |> Array.filter (fun i -> not (this.InstanceSelection.Contains i.Index))
+                        |> Array.collect (fun i ->
+                            Layout.Flatten.flattenInstance (renderLib) i.Index)
+                    Drc.Check.tightenCandidates
+                        renderLib.Units
+                        selectedPolys otherPolys
+                else
+                    [||]
+            // Cell-bbox outlines track the live render library, not the
+            // resting model. During a SelectionDrag the speculative
+            // `renderLib` has the moved SRefs; re-enumerating against
+            // it keeps the dotted cell outlines glued to the geometry
+            // instead of lagging at the pre-drag positions.
+            let overlayInstances =
+                if dragging && dragKind = SelectionDrag then
+                    Instances.enumerate renderLib
+                else
+                    this.Instances
             let overlay : SelectionOverlay =
-                { Instances = this.Instances
+                { Instances = overlayInstances
                   Selected  = this.InstanceSelection
                   Dragging  = dragging
                   ShowDimensions = this.ShowDimensions
                   InstancePolyBboxes = instPolyBboxes
                   Violations = violations
-                  MarqueeWorld = marquee }
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay))
+                  MarqueeWorld = marquee
+                  Routes = routes
+                  VisibleRatlines = visibleRatlines
+                  TightenCandidates = tightenCands
+                  SelectedPolygons = this.SelectedPolygons }
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

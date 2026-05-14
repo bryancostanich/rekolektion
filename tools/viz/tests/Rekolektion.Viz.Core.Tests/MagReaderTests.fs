@@ -141,7 +141,7 @@ let ``hierarchy depth 2 resolves subcell from same directory`` () =
         "<< end >>"
     ])
     try
-        let lib, warnings = Layout.MagToLayout.loadFile parentPath []
+        let lib, warnings = Layout.MagToLayout.loadFileToLibrary parentPath []
         warnings |> List.filter (fun w -> w.Contains "not found") |> should be Empty
         // Two cells: root + leaf
         lib.Structures.Length |> should equal 2
@@ -174,7 +174,7 @@ let ``missing subcell logs warning, doesn't crash`` () =
         "<< end >>"
     ]
     try
-        let _, warnings = Layout.MagToLayout.loadFile path []
+        let _, warnings = Layout.MagToLayout.loadFileToLibrary path []
         warnings
         |> List.exists (fun w -> w.Contains "not found")
         |> should equal true

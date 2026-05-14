@@ -16,6 +16,10 @@ open Rekolektion.Viz.Core.Mag.Types
 /// `magscaleNum` / `magscaleDenom` come from the top cell's
 /// magscale directive — Magic guarantees all cells in one design
 /// share the same scale, so the top is authoritative.
+/// Low-level converter: a `MagCell` graph to a `Gds.Types.Library`.
+/// Kept public for callers that still need the legacy in-memory
+/// model. The new canonical entry is `buildRkt`, which wraps this
+/// and emits a `Rkt.Types.Document`.
 let buildLibrary
         (top: MagCell)
         (allCells: MagCell list)
@@ -111,7 +115,11 @@ let buildLibrary
 /// a warning rather than failing — same defensive posture the
 /// brief asks for. Returns the assembled Library plus the
 /// flattened warning list.
-let loadFile
+///
+/// Low-level entry — preserved for tests that compare against the
+/// legacy `Gds.Types.Library`. New code should call `load`, which
+/// returns a canonical `Rkt.Types.Document`.
+let loadFileToLibrary
         (path: string)
         (extraSearchDirs: string list)
         : Library * string list =
@@ -125,22 +133,50 @@ let loadFile
     let allCells = ResizeArray<MagCell>([| top |])
     let extraWarn = ResizeArray<string>()
 
+    // Wrapper that surfaces IO failures (e.g. Magic holding an
+    // exclusive lock on a file we want to read) as warnings rather
+    // than aborting the whole load. The user sees the cell as
+    // missing geometry plus a warning — better than no canvas.
+    let tryReadSubcell (p: string) (cellName: string) : MagCell option =
+        try Some (Mag.Reader.read p)
+        with ex ->
+            extraWarn.Add(
+                sprintf "subcell '%s' (%s) could not be read: %s"
+                    cellName p ex.Message)
+            None
+
+    let enqueueResolved (cellName: string) =
+        match Mag.SearchPath.resolve cellName searchPath with
+        | None ->
+            extraWarn.Add(
+                sprintf "subcell '%s' not found in search path" cellName)
+        | Some p ->
+            match tryReadSubcell p cellName with
+            | Some cell -> queue.Enqueue cell
+            | None -> ()
+
     for inst in top.Instances do
         if visited.Add inst.CellName then
-            match Mag.SearchPath.resolve inst.CellName searchPath with
-            | Some p -> queue.Enqueue(Mag.Reader.read p)
-            | None ->
-                extraWarn.Add(sprintf "subcell '%s' not found in search path" inst.CellName)
+            enqueueResolved inst.CellName
 
     while queue.Count > 0 do
         let cell = queue.Dequeue()
         allCells.Add cell
         for inst in cell.Instances do
             if visited.Add inst.CellName then
-                match Mag.SearchPath.resolve inst.CellName searchPath with
-                | Some p -> queue.Enqueue(Mag.Reader.read p)
-                | None ->
-                    extraWarn.Add(sprintf "subcell '%s' not found in search path" inst.CellName)
+                enqueueResolved inst.CellName
 
     let lib, ws = buildLibrary top (List.ofSeq allCells)
     lib, (List.ofSeq extraWarn) @ ws
+
+/// Top-level Mag load: assemble cells through the file's search path
+/// and produce a canonical `Rkt.Document`. The layer table covers the
+/// SKY130 + legacy ReRAM pairs; anything outside that lands as
+/// `Unknown(n, d)` and stays visible.
+let load
+        (path: string)
+        (extraSearchDirs: string list)
+        : Rekolektion.Viz.Core.Rkt.Types.Document * string list =
+    let lib, warnings = loadFileToLibrary path extraSearchDirs
+    let doc = Rekolektion.Viz.Core.Rkt.OfGds.fromLibrary lib
+    doc, warnings

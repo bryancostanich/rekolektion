@@ -9,15 +9,15 @@ let private fixturePath name =
     Path.Combine(System.AppContext.BaseDirectory, "testdata", name)
 
 [<Fact>]
-let ``Reader.readGds parses bitcell_lr fixture`` () =
-    let lib = Reader.readGds (fixturePath "bitcell_lr.gds")
+let ``Reader.readGdsLibrary parses bitcell_lr fixture`` () =
+    let lib = Reader.readGdsLibrary (fixturePath "bitcell_lr.gds")
     lib.Name |> should not' (equal "")
     lib.Structures |> List.isEmpty |> should equal false
     lib.UserUnitsPerDbUnit |> should be (greaterThan 0.0)
 
 [<Fact>]
-let ``Reader.readGds bitcell_lr has at least one boundary`` () =
-    let lib = Reader.readGds (fixturePath "bitcell_lr.gds")
+let ``Reader.readGdsLibrary bitcell_lr has at least one boundary`` () =
+    let lib = Reader.readGdsLibrary (fixturePath "bitcell_lr.gds")
     let total =
         lib.Structures
         |> List.sumBy (fun s ->

@@ -22,12 +22,19 @@
     <Compile Include="HierarchyTests.fs" />
     <Compile Include="VisibilityTests.fs" />
     <Compile Include="PickingTests.fs" />
+    <Compile Include="MarqueeTests.fs" />
     <Compile Include="LabelFloodTests.fs" />
+    <Compile Include="RatlinesTests.fs" />
     <Compile Include="MagReaderTests.fs" />
-    <Compile Include="LayerAliasTests.fs" />
     <Compile Include="SmokeP0Instances.fs" />
     <Compile Include="DrcCheckTests.fs" />
     <Compile Include="MagWriterTests.fs" />
+    <Compile Include="GdsWriterTests.fs" />
+    <Compile Include="RktTests.fs" />
+    <Compile Include="RktOfGdsTests.fs" />
+    <Compile Include="RktToGdsTests.fs" />
+    <Compile Include="RktLoadTests.fs" />
+    <Compile Include="Sky130LayerMapTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

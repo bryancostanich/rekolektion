@@ -11,7 +11,7 @@ type ServiceBackend = {
     OpenGds : string -> Async<Result<Model.LoadedMacro, string>>
     RunMacro: Msg.RunMacroParams -> (string -> unit) -> Async<Result<string, int>>
     // ^ second arg = log-line callback for streaming stderr.
-    DeriveNets: Rekolektion.Viz.Core.Gds.Types.Library
+    DeriveNets: Rekolektion.Viz.Core.Rkt.Types.Document
                   -> Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>>
     /// Round-trip the macro through `Mag.Writer.writeUpdated`,
     /// returning the path that ended up on disk.
@@ -36,8 +36,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         model, cmd
     | Msg.LoadComplete macro ->
         let recents =
-            macro.Path :: (model.RecentFiles |> List.filter (fun p -> p <> macro.Path))
+            macro.OriginalPath :: (model.RecentFiles |> List.filter (fun p -> p <> macro.OriginalPath))
             |> List.truncate 10
+        Rekolektion.Viz.App.Services.Recents.save recents
         // Hide Magic-internal marker layers (255, *) by default —
         // checkpaint / error / feedback geometry on a freshly loaded
         // .mag would otherwise paint a large translucent overlay
@@ -54,13 +55,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // edit, masking one of them under List.map's by-path
         // mutation. Match by OriginalPath so we catch every
         // edited variant of the file we're (re)opening.
+        // Replace IN PLACE: a tab found by Path is swapped with
+        // the new macro at the SAME index so a Cmd+R reload
+        // doesn't reorder the tab strip. New paths (no match)
+        // append to the end.
         let openMacros =
-            let withoutExisting =
+            let matches (m: Model.LoadedMacro) =
+                m.Path = macro.Path || m.OriginalPath = macro.Path
+            if model.OpenMacros |> List.exists matches then
                 model.OpenMacros
-                |> List.filter (fun m ->
-                    m.Path <> macro.Path
-                    && m.OriginalPath <> macro.Path)
-            withoutExisting @ [macro]
+                |> List.map (fun m -> if matches m then macro else m)
+            else
+                model.OpenMacros @ [macro]
         // If nets came from a sidecar, we're done. Otherwise schedule
         // a background LabelFlood — it can take 10+ s for production
         // macros, so we render the layers immediately and fill in
@@ -70,7 +76,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             if macro.NetsFromSidecar then Cmd.none
             else
                 Cmd.OfAsync.either
-                    backend.DeriveNets macro.Library
+                    backend.DeriveNets macro.Document
                     (fun nets -> Msg.NetsLoaded (macro.Path, nets))
                     (fun ex -> Msg.LogLine (sprintf "net derivation failed: %s" ex.Message))
         let model' =
@@ -79,7 +85,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 ActiveMacroPath = Some macro.Path
                 RecentFiles = recents
                 Toggle = toggle'
-                Selection = None
+                Selection = Set.empty
                 InstanceSelection = Set.empty }
         model', cmd
     | Msg.NetsLoaded (path, nets) ->
@@ -104,14 +110,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             if exists then
                 { model with
                     ActiveMacroPath = Some path
-                    Selection = None
+                    Selection = Set.empty
                     InstanceSelection = Set.empty }, Cmd.none
             else model, Cmd.none
     | Msg.CloseAllTabs ->
         { model with
             OpenMacros = []
             ActiveMacroPath = None
-            Selection = None
+            Selection = Set.empty
             InstanceSelection = Set.empty
             RenamingPath = None }, Cmd.none
     | Msg.CloseActiveTab ->
@@ -141,7 +147,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             { model with
                 OpenMacros = remaining
                 ActiveMacroPath = nextActive
-                Selection = None
+                Selection = Set.empty
                 InstanceSelection = Set.empty }
         model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
@@ -158,22 +164,56 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with Toggle = Visibility.toggleNet name vis model.Toggle }, Cmd.none
     | Msg.ToggleBlock (name, vis) ->
         { model with Toggle = Visibility.toggleBlock name vis model.Toggle }, Cmd.none
-    | Msg.HighlightNet net ->
-        { model with Toggle = Visibility.highlightNet net model.Toggle }, Cmd.none
+    | Msg.ToggleNetHighlight name ->
+        { model with Toggle = Visibility.toggleNetHighlight name model.Toggle }, Cmd.none
+    | Msg.SetHighlightedNets nets ->
+        { model with Toggle = Visibility.setHighlightedNets nets model.Toggle }, Cmd.none
+    | Msg.ToggleNetRatline name ->
+        { model with Toggle = Visibility.toggleNetRatline name model.Toggle }, Cmd.none
+    | Msg.SetVisibleRatlines nets ->
+        { model with Toggle = Visibility.setVisibleRatlines nets model.Toggle }, Cmd.none
     | Msg.IsolateBlock blk ->
         { model with Toggle = Visibility.isolateBlock blk model.Toggle }, Cmd.none
     | Msg.SetTab tab -> { model with ActiveTab = tab }, Cmd.none
-    | Msg.PolygonPicked (s, i) -> { model with Selection = Some (s, i) }, Cmd.none
-    | Msg.ClearSelection -> { model with Selection = None }, Cmd.none
+    | Msg.PolygonPicked (s, i) ->
+        // Replace polygon selection with the single picked element.
+        // Shift-click extension goes through SetPolygonSelection so
+        // the canvas can compute the new set with the modifier in
+        // hand.
+        { model with Selection = Set.singleton (s, i) }, Cmd.none
+    | Msg.SetPolygonSelection sel ->
+        { model with Selection = sel }, Cmd.none
+    | Msg.ClearSelection -> { model with Selection = Set.empty }, Cmd.none
     | Msg.ToggleDimensions ->
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
     | Msg.ToggleDrc ->
         { model with ShowDrc = not model.ShowDrc }, Cmd.none
-    | Msg.TightenSelection ->
-        if model.InstanceSelection.IsEmpty then model, Cmd.none
+    | Msg.ToggleRatlines ->
+        // Master toggle: if any ratline is on, clear all; otherwise
+        // turn on ratlines for every known net in the active macro.
+        // Mirrors the layer panel "All / None" pattern.
+        let nextSet =
+            if not model.Toggle.VisibleRatlines.IsEmpty then Set.empty
+            else
+                match Model.activeMacro model with
+                | None -> Set.empty
+                | Some m -> m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+        { model with Toggle = Visibility.setVisibleRatlines nextSet model.Toggle }, Cmd.none
+    | Msg.ToggleTightenMode ->
+        // Toggle on / off. Entering with an empty selection is
+        // a no-op (nothing to compute candidates against).
+        if model.TightenMode then
+            { model with TightenMode = false }, Cmd.none
+        elif model.InstanceSelection.IsEmpty then
+            model, Cmd.none
+        else
+            { model with TightenMode = true }, Cmd.none
+    | Msg.CommitTighten index ->
+        if not model.TightenMode || model.InstanceSelection.IsEmpty then
+            model, Cmd.none
         else
             match model.ActiveMacroPath with
-            | None -> model, Cmd.none
+            | None -> { model with TightenMode = false }, Cmd.none
             | Some path ->
                 let mutable activePath' = path
                 let openMacros' =
@@ -181,61 +221,38 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            // Build per-side polygon sets:
-                            // selected = polys belonging to any
-                            // SRef in InstanceSelection;
-                            // others = polys from every other
-                            // top-level instance.
                             let selectedPolys =
                                 mc.TopInstances
                                 |> Array.filter (fun i -> model.InstanceSelection.Contains i.Index)
                                 |> Array.collect (fun i ->
-                                    Layout.Flatten.flattenInstance mc.Library i.Index)
+                                    Layout.Flatten.flattenInstance mc.Document i.Index)
                             let otherPolys =
                                 mc.TopInstances
                                 |> Array.filter (fun i -> not (model.InstanceSelection.Contains i.Index))
                                 |> Array.collect (fun i ->
-                                    Layout.Flatten.flattenInstance mc.Library i.Index)
-                            // Try all 4 cardinal directions; pick
-                            // the one with the smallest positive
-                            // slack (most binding gap). That's the
-                            // axis along which the cells are
-                            // closest to each other and tightening
-                            // gives the most useful collapse.
+                                    Layout.Flatten.flattenInstance mc.Document i.Index)
                             let candidates =
-                                [ ( 1,  0); (-1,  0); ( 0,  1); ( 0, -1) ]
-                                |> List.choose (fun (dx, dy) ->
-                                    Drc.Check.maxOrthoSlackDbu
-                                        mc.Library selectedPolys otherPolys dx dy
-                                    |> Option.bind (fun s ->
-                                        if s > 0L then Some (dx, dy, s) else None))
-                            // Apply slack from all valid
-                            // directions in one move. X-slack and
-                            // Y-slack are independent (the selected
-                            // cell's X / Y motion don't interact
-                            // with each other under axis-aligned
-                            // bbox math), and opposite directions
-                            // along the same axis are mutually
-                            // exclusive for a two-cell setup
-                            // (selected is on one side of other).
-                            let dxDbu =
-                                candidates
-                                |> List.sumBy (fun (dx, _, s) -> int64 dx * s)
-                            let dyDbu =
-                                candidates
-                                |> List.sumBy (fun (_, dy, s) -> int64 dy * s)
-                            if dxDbu = 0L && dyDbu = 0L then mc
+                                Drc.Check.tightenCandidates
+                                    mc.Document.Units
+                                    selectedPolys otherPolys
+                            // index is 1-based per the user-
+                            // visible numbered labels.
+                            let i0 = index - 1
+                            if i0 < 0 || i0 >= candidates.Length then mc
                             else
+                                let cand = candidates.[i0]
+                                let dxDbu = int64 cand.DirX * cand.SlackDbu
+                                let dyDbu = int64 cand.DirY * cand.SlackDbu
                                 let lib' =
                                     Layout.Instances.translateSelection
-                                        mc.Library model.InstanceSelection dxDbu dyDbu
+                                        mc.Document model.InstanceSelection dxDbu dyDbu
                                 let flat' = Layout.Flatten.flatten lib'
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
                                     EditSession.pushUndoSnapshot mc
                                     |> fun m ->
                                         { m with
-                                            Library = lib'
+                                            Document = lib'
                                             FlatPolygons = flat'
                                             TopInstances = inst' }
                                     |> EditSession.markDirty
@@ -243,7 +260,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 mc')
                 { model with
                     OpenMacros = openMacros'
-                    ActiveMacroPath = Some activePath' }, Cmd.none
+                    ActiveMacroPath = Some activePath'
+                    TightenMode = false }, Cmd.none
     | Msg.RotateSelection90
     | Msg.MirrorSelectionX
     | Msg.MirrorSelectionY ->
@@ -263,27 +281,27 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 |> Array.filter (fun i ->
                                     model.InstanceSelection.Contains i.Index)
                             match Layout.Instances.selectionPivotSnapped
-                                    mc.Library selected with
+                                    mc.Document selected with
                             | None -> mc
                             | Some pivot ->
                                 let lib' =
                                     match msg with
                                     | Msg.RotateSelection90 ->
                                         Layout.Instances.rotate90Selection
-                                            mc.Library model.InstanceSelection pivot
+                                            mc.Document model.InstanceSelection pivot
                                     | Msg.MirrorSelectionX ->
                                         Layout.Instances.mirrorXSelection
-                                            mc.Library model.InstanceSelection pivot
+                                            mc.Document model.InstanceSelection pivot
                                     | _ ->
                                         Layout.Instances.mirrorYSelection
-                                            mc.Library model.InstanceSelection pivot
+                                            mc.Document model.InstanceSelection pivot
                                 let flat' = Layout.Flatten.flatten lib'
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
                                     EditSession.pushUndoSnapshot mc
                                     |> fun m ->
                                         { m with
-                                            Library = lib'
+                                            Document = lib'
                                             FlatPolygons = flat'
                                             TopInstances = inst' }
                                     |> EditSession.markDirty
@@ -326,11 +344,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 | None -> 0L, 0L
                             let dx, dy =
                                 Layout.Snap.snapDeltaDbu
-                                    mc.Library Layout.Snap.sky130MfgGridNm
+                                    mc.Document.Units
+                                    Layout.Snap.sky130MfgGridNm
                                     dxRaw dyRaw
                             let lib', clones =
                                 Layout.Instances.duplicateSelection
-                                    mc.Library model.InstanceSelection dx dy
+                                    mc.Document model.InstanceSelection dx dy
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
                             nextSelection <- clones
@@ -338,7 +357,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Library = lib'
+                                        Document = lib'
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -369,14 +388,85 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         else
                             let lib' =
                                 Layout.Instances.translateSelection
-                                    mc.Library model.InstanceSelection dxDbu dyDbu
+                                    mc.Document model.InstanceSelection dxDbu dyDbu
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Library = lib'
+                                        Document = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath' }, Cmd.none
+    | Msg.MovePolygonDbu (sname, idx, dxDbu, dyDbu) ->
+        model, Cmd.ofMsg (Msg.MovePolygonsDbu (Set.singleton (sname, idx), dxDbu, dyDbu))
+    | Msg.MovePolygonsDbu (sel, dxDbu, dyDbu) ->
+        if (dxDbu = 0L && dyDbu = 0L) || sel.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                // Group target indices by structure so we only walk
+                // each structure's element list once.
+                let perStruct =
+                    sel
+                    |> Set.toList
+                    |> List.groupBy fst
+                    |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+                    |> Map.ofList
+                let translatePoly (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
+                    pts
+                    |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                        ({ X = p.X + dxDbu; Y = p.Y + dyDbu }
+                         : Rekolektion.Viz.Core.Rkt.Types.Point))
+                let updateDoc (doc: Rekolektion.Viz.Core.Rkt.Types.Document) =
+                    let updated =
+                        doc.Cells
+                        |> List.map (fun c ->
+                            match Map.tryFind c.Name perStruct with
+                            | None -> c
+                            | Some indices ->
+                                let elems' =
+                                    c.Elements
+                                    |> List.mapi (fun i el ->
+                                        if not (indices.Contains i) then el
+                                        else
+                                            match el with
+                                            | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
+                                                Rekolektion.Viz.Core.Rkt.Types.PolyEl
+                                                    { p with Points = translatePoly p.Points }
+                                            | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
+                                                Rekolektion.Viz.Core.Rkt.Types.PathEl
+                                                    { p with Points = translatePoly p.Points }
+                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                                // Translate the rect's corners.
+                                                Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                                    { r with
+                                                        X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
+                                                        X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu }
+                                            | other -> other)
+                                { c with Elements = elems' })
+                    { doc with Cells = updated }
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let lib' = updateDoc mc.Document
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Document = lib'
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -448,7 +538,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         if m.Path <> mc.Path then m
                         else
                             { m with
-                                Library = prevLib
+                                Document = prevLib
                                 FlatPolygons = flat'
                                 TopInstances = inst'
                                 UndoStack = rest

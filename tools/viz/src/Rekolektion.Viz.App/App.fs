@@ -102,7 +102,8 @@ type MainWindow() as this =
                 with ex -> return Error ex.Message }
         }
 
-        let init () = Model.empty, Cmd.none
+        let init () =
+            { Model.empty with RecentFiles = Services.Recents.load () }, Cmd.none
         let update = Update.update backend
         let view = AppView.view
 
@@ -125,6 +126,9 @@ type MainWindow() as this =
             | Key.R, KeyModifiers.None ->
                 AppDispatch.send Msg.ToggleDrc
                 e.Handled <- true
+            | Key.W, KeyModifiers.None ->
+                AppDispatch.send Msg.ToggleRatlines
+                e.Handled <- true
             | Key.D, KeyModifiers.Meta ->
                 // Cmd+D — duplicate the current instance selection.
                 AppDispatch.send Msg.DuplicateSelection
@@ -145,11 +149,34 @@ type MainWindow() as this =
                 AppDispatch.send Msg.MirrorSelectionY
                 e.Handled <- true
             | Key.T, KeyModifiers.None ->
-                // Tighten — collapse selection toward its nearest
-                // non-selected neighbor at the most-binding DRC
-                // limit. Single-step; user can repeat T to chain.
-                AppDispatch.send Msg.TightenSelection
+                // Toggle Tighten mode: shows numbered candidate
+                // dim arrows; clicking a number commits that
+                // single tighten and exits mode.
+                AppDispatch.send Msg.ToggleTightenMode
                 e.Handled <- true
+            | Key.Escape, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.TightenMode)
+                    |> Option.defaultValue false) ->
+                // Esc inside Tighten mode just exits the mode;
+                // selection clears (the canvas handler) only when
+                // not in mode.
+                AppDispatch.send Msg.ToggleTightenMode
+                e.Handled <- true
+            | k, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.TightenMode)
+                    |> Option.defaultValue false) ->
+                let n =
+                    match k with
+                    | Key.D1 | Key.NumPad1 -> 1
+                    | Key.D2 | Key.NumPad2 -> 2
+                    | Key.D3 | Key.NumPad3 -> 3
+                    | Key.D4 | Key.NumPad4 -> 4
+                    | _ -> 0
+                if n > 0 then
+                    AppDispatch.send (Msg.CommitTighten n)
+                    e.Handled <- true
             | _ -> ())
 
 type App() =
@@ -183,6 +210,30 @@ type App() =
         openItem.Click.Add(fun _ ->
             FilePickers.dispatchOpen (window :> obj) AppDispatch.send)
         fileSub.Items.Add(openItem)
+
+        // Recent files. The submenu is rebuilt whenever the model's
+        // RecentFiles list changes (Services.Recents publishes from
+        // AppView render). Empty list shows a disabled placeholder.
+        let recentItem = NativeMenuItem("Open Recent")
+        let recentSub = NativeMenu()
+        recentItem.Menu <- recentSub
+        let rebuildRecents (paths: string list) =
+            Avalonia.Threading.Dispatcher.UIThread.Post(fun () ->
+                recentSub.Items.Clear()
+                if List.isEmpty paths then
+                    let empty = NativeMenuItem("(none)")
+                    empty.IsEnabled <- false
+                    recentSub.Items.Add(empty)
+                else
+                    for p in paths do
+                        let label = System.IO.Path.GetFileName p
+                        let mi = NativeMenuItem(label)
+                        mi.ToolTip <- p
+                        mi.Click.Add(fun _ ->
+                            AppDispatch.send (Msg.RecentFileClicked p))
+                        recentSub.Items.Add(mi))
+        Services.Recents.subscribe rebuildRecents
+        fileSub.Items.Add(recentItem)
 
         let runItem = NativeMenuItem("Run macro...")
         runItem.Click.Add(fun _ ->

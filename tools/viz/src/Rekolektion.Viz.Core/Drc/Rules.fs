@@ -46,7 +46,7 @@ let allLayerRules : LayerRule list = [
       MinWidthUm = 1.60; MinSpacingUm = 1.60 }
     // Contact / via cuts also have width + spacing constraints —
     // checked the same way as drawing layers.
-    { Layer = "licon"; Number = 66; DataType = 44
+    { Layer = "licon1"; Number = 66; DataType = 44
       MinWidthUm = 0.17; MinSpacingUm = 0.17 }
     { Layer = "mcon";  Number = 67; DataType = 44
       MinWidthUm = 0.17; MinSpacingUm = 0.19 }

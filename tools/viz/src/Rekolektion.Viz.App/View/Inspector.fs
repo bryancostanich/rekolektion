@@ -6,6 +6,9 @@ open Avalonia.Controls
 open Avalonia.Media
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+// `Rkt.Types` opened after Gds.Types so `Point` resolves to the
+// Rkt-flavored point Flatten now emits.
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.App.Model
 
 /// Inspector text rows use `SelectableTextBlock` rather than the
@@ -43,7 +46,9 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                 Layout.Layer.bySky130Number poly.Layer poly.DataType
                 |> Option.map (fun l -> l.Name)
                 |> Option.defaultValue "(unknown)"
-            let uupdb = m.Library.UserUnitsPerDbUnit
+            // µm per DBU derived from the document's Units.DbuNm
+            // (nm/DBU): 1 nm = 0.001 µm.
+            let uupdb = float m.Document.Units.DbuNm * 1.0e-3
             let mutable xMin = System.Double.MaxValue
             let mutable xMax = System.Double.MinValue
             let mutable yMin = System.Double.MaxValue
@@ -88,47 +93,59 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                         if cross then inside <- not inside
                         j <- i
                     inside
-            let allLabels =
-                m.Library.Structures
-                |> List.tryFind (fun s -> s.Name = struc)
-                |> Option.map (fun s ->
-                    s.Elements
+            // Document.Cells holds Rkt elements; LabelEl is the
+            // Rkt-flavored equivalent of the legacy GDS TextLabel.
+            // Layer comparisons against the polygon's int Layer go
+            // through `Rkt.ToGds.layerToGds` to bridge the typed Rkt
+            // layer back to its (number, datatype) pair.
+            let allLabels : Rekolektion.Viz.Core.Rkt.Types.Label list =
+                m.Document.Cells
+                |> List.tryFind (fun c -> c.Name = struc)
+                |> Option.map (fun c ->
+                    c.Elements
                     |> List.choose (function
-                        | Element.Text t -> Some t
+                        | Rekolektion.Viz.Core.Rkt.Types.LabelEl l -> Some l
                         | _ -> None))
                 |> Option.defaultValue []
-            let labelXY (t: TextLabel) =
-                float t.Origin.X * uupdb, float t.Origin.Y * uupdb
+            let labelXY (l: Rekolektion.Viz.Core.Rkt.Types.Label) =
+                float l.Origin.X * uupdb, float l.Origin.Y * uupdb
+            let labelLayerNumber (l: Rekolektion.Viz.Core.Rkt.Types.Label) =
+                fst (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds l.Layer)
+            let labelLayerDatatype (l: Rekolektion.Viz.Core.Rkt.Types.Label) =
+                snd (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds l.Layer)
             let strictHits =
                 allLabels
-                |> List.filter (fun t ->
-                    let lx, ly = labelXY t
+                |> List.filter (fun l ->
+                    let lx, ly = labelXY l
                     pointInPolyUm lx ly poly.Points
                     || (lx >= xMin - strictTol && lx <= xMax + strictTol
                         && ly >= yMin - strictTol && ly <= yMax + strictTol))
             let familyHits =
                 allLabels
-                |> List.filter (fun t ->
-                    if t.Layer <> poly.Layer then false
+                |> List.filter (fun l ->
+                    if labelLayerNumber l <> poly.Layer then false
                     else
-                        let lx, ly = labelXY t
+                        let lx, ly = labelXY l
                         lx >= xMin - nearbyRadius && lx <= xMax + nearbyRadius
                         && ly >= yMin - nearbyRadius && ly <= yMax + nearbyRadius)
-            // Merge passes, de-dupe by (Layer, TextType, Origin, Text).
+            // Merge passes, de-dupe by (Layer, Origin, Text).
             let matchingLabels =
                 strictHits @ familyHits
-                |> List.distinctBy (fun t ->
-                    (t.Layer, t.TextType, t.Origin.X, t.Origin.Y, t.Text))
+                |> List.distinctBy (fun l ->
+                    (labelLayerNumber l, labelLayerDatatype l,
+                     l.Origin.X, l.Origin.Y, l.Text))
 
             let labelLines : IView list =
                 matchingLabels
-                |> List.map (fun t ->
+                |> List.map (fun l ->
+                    let n = labelLayerNumber l
+                    let dt = labelLayerDatatype l
                     let layerOf =
-                        Layout.Layer.bySky130Number t.Layer t.TextType
-                        |> Option.map (fun l -> l.Name)
-                        |> Option.defaultValue (sprintf "%d/%d" t.Layer t.TextType)
+                        Layout.Layer.bySky130Number n dt
+                        |> Option.map (fun layer -> layer.Name)
+                        |> Option.defaultValue (sprintf "%d/%d" n dt)
                     line
-                        (sprintf "label \"%s\" on %s" t.Text layerOf)
+                        (sprintf "label \"%s\" on %s" l.Text layerOf)
                         [ SelectableTextBlock.foreground "#a0d8ff" ])
 
             [ yield line
@@ -149,14 +166,19 @@ let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
                 TextBlock.text "Inspector"
                 TextBlock.fontWeight FontWeight.Bold
             ] :> IView
-            match model.Selection with
-            | None ->
+            if model.Selection.IsEmpty then
                 yield TextBlock.create [
                     TextBlock.text "(nothing selected)"
                     TextBlock.foreground "#888"
                 ] :> IView
-            | Some (struc, idx) ->
+            elif model.Selection.Count = 1 then
+                let struc, idx = model.Selection.MinimumElement
                 yield! polyDetails model struc idx
+            else
+                yield TextBlock.create [
+                    TextBlock.text (sprintf "%d polygons selected" model.Selection.Count)
+                    TextBlock.foreground "#CCC"
+                ] :> IView
         ]
 
     StackPanel.create [

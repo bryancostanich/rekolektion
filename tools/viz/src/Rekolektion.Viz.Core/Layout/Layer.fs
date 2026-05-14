@@ -23,11 +23,16 @@ let private rgba r g b a = { R = byte r; G = byte g; B = byte b; A = byte a }
 /// than metals). The user's expectation is "match the GLB output";
 /// physical accuracy is a non-goal for visualization.
 let allDrawing : Layer list = [
+    { Number =  64; DataType = 18; Name = "dnwell";  Color = rgba 0x60 0x80 0xa0 0xff; StackZ = -0.25; Thickness = 0.20 }
     { Number =  64; DataType = 20; Name = "nwell";   Color = rgba 0xa0 0xc8 0xff 0xff; StackZ = -0.20; Thickness = 0.20 }
     { Number =  65; DataType = 20; Name = "diff";    Color = rgba 0xff 0xd0 0x80 0xff; StackZ = -0.10; Thickness = 0.15 }
     { Number =  65; DataType = 44; Name = "tap";     Color = rgba 0xff 0xd0 0x80 0xff; StackZ = -0.10; Thickness = 0.15 }
     { Number =  66; DataType = 20; Name = "poly";    Color = rgba 0xff 0x40 0x40 0xff; StackZ =  0.00; Thickness = 0.18 }
-    { Number =  66; DataType = 44; Name = "licon";   Color = rgba 0x80 0x80 0x80 0xff; StackZ =  0.05; Thickness = 0.38 }
+    // licon1 = poly/diff contact down to li1. Name `licon1` matches the
+    // sky130 stream convention and Python `_layer_map.py`; the Magic
+    // `.mag` loader keeps the legacy `licon` name and aliases to this
+    // pair via `Mag/LayerMap.fs`.
+    { Number =  66; DataType = 44; Name = "licon1";  Color = rgba 0x80 0x80 0x80 0xff; StackZ =  0.05; Thickness = 0.38 }
     { Number =  67; DataType = 20; Name = "li1";     Color = rgba 0xc0 0x80 0xff 0xff; StackZ =  0.43; Thickness = 0.10 }
     { Number =  67; DataType = 44; Name = "mcon";    Color = rgba 0x60 0x60 0x60 0xff; StackZ =  0.53; Thickness = 0.36 }
     { Number =  68; DataType = 20; Name = "met1";    Color = rgba 0x40 0x90 0xff 0xff; StackZ =  0.89; Thickness = 0.36 }
@@ -39,17 +44,56 @@ let allDrawing : Layer list = [
     { Number =  71; DataType = 20; Name = "met4";    Color = rgba 0xff 0xff 0x40 0xff; StackZ =  3.05; Thickness = 0.36 }
     { Number =  71; DataType = 44; Name = "via4";    Color = rgba 0x46 0x46 0x46 0xff; StackZ =  3.41; Thickness = 0.36 }
     { Number =  72; DataType = 20; Name = "met5";    Color = rgba 0xbb 0xbb 0x66 0xff; StackZ =  3.77; Thickness = 0.50 }
+    // HV implant + native-threshold markers — required for sky130
+    // `_g5v0d10v5_` device families (HV nfet / pfet).  Magic's DRC
+    // rules switch from LV to HV variants based on these markers.
+    // Without them the writer drops g5v0 device markers and Magic
+    // applies LV rules, producing cascading false-positive DRC
+    // violations.
+    // Sky130 stream names: HVI=75/20, HVTP=78/44, HVNTM=125/20.
+    // We carry the Python `_layer_map.py` names (`hvntm`@78/44,
+    // `nwell_drawing`@125/20) verbatim so existing primitives keep
+    // round-tripping without a rename.  TODO: rename in a follow-up
+    // PR after migrating cell_designs/primitives/.
+    { Number =  75; DataType = 20; Name = "hvi";     Color = rgba 0xa0 0xff 0xc0 0x40; StackZ =  4.05; Thickness = 0.05 }
+    { Number =  78; DataType = 44; Name = "hvntm";   Color = rgba 0xff 0xa0 0xc0 0x40; StackZ =  4.06; Thickness = 0.05 }
+    { Number = 125; DataType = 20; Name = "nwell_drawing"; Color = rgba 0xc0 0xa0 0xff 0x40; StackZ = 4.07; Thickness = 0.05 }
     // MIMCAP — used by CIM cells; sits between met3 and met4 in the
     // legacy stackup. Without this, the cap top plate of CIM cells
     // doesn't render in 3D.
     { Number =  89; DataType = 44; Name = "mimcap";  Color = rgba 0xff 0xc8 0x00 0xff; StackZ =  2.50; Thickness = 0.05 }
+    // NPC (Nitride Poly Cut) — used over HV gate poly to remove
+    // silicidation; otherwise dropped by the GDS writer.
+    { Number =  95; DataType = 20; Name = "npc";     Color = rgba 0xff 0xc0 0x80 0x40; StackZ =  4.02; Thickness = 0.05 }
+    // CFOM (Cu fill region marker) — fill-density hinting layer.
+    // Python `_layer_map.py` calls (122, 16) "cfom_drawing".
+    { Number = 122; DataType = 16; Name = "cfom_drawing"; Color = rgba 0x80 0x80 0xa0 0x30; StackZ = 4.08; Thickness = 0.05 }
     // ReRAM body. The sky130_fd_pr_reram PDK uses 201/20 for the
     // ReRAM cell stack; physical position sits between li1 and
     // met1 (post-li1 contact, pre-via). Distinctive purple keeps
     // it visually separate from li1 and met1 colors.
     { Number = 201; DataType = 20; Name = "reram";   Color = rgba 0xc8 0x40 0xff 0xff; StackZ =  0.55; Thickness = 0.30 }
-    // Marker (areaid.sc) — non-physical, drawn flat as a thin overlay.
-    { Number =  81; DataType =  2; Name = "areaid.sc"; Color = rgba 0xff 0x00 0xff 0x40; StackZ =  4.30; Thickness = 0.05 }
+    // Source/drain implant markers — non-physical (process-flag
+    // layers), but they're drawn in real .mag/.gds and were
+    // silently dropped by the renderer when not in the catalog.
+    // Translucent so they don't overpower the silicon underneath.
+    //
+    // GDS pair-to-name is the sky130 standard ordering (see
+    // `sky130B.tech`: `calma NSDM 93 44`, `calma PSDM 94 20`).  The
+    // previous entries had these SWAPPED — a P0 round-trip bug that
+    // caused every g5v0 FET to write its implant on the *opposite*
+    // mask after `Rkt.ToGds`, triggering implant/well DRC cascades.
+    { Number =  93; DataType = 44; Name = "nsdm";    Color = rgba 0x80 0xc0 0xff 0x40; StackZ =  4.10; Thickness = 0.05 }
+    { Number =  94; DataType = 20; Name = "psdm";    Color = rgba 0xff 0x80 0x80 0x40; StackZ =  4.15; Thickness = 0.05 }
+    // Marker (areaid.core) — non-physical, drawn flat as a thin
+    // overlay.  Name `areaid_core` matches the Python `_layer_map.py`
+    // and the sky130 standard (underscore separator); the Magic
+    // `.mag` loader keeps its legacy `areaid.sc` alias in
+    // `Mag/LayerMap.fs`.
+    { Number =  81; DataType =  2; Name = "areaid_core"; Color = rgba 0xff 0x00 0xff 0x40; StackZ =  4.30; Thickness = 0.05 }
+    { Number =  81; DataType = 53; Name = "areaid_lowtapdensity"; Color = rgba 0xff 0x80 0xff 0x30; StackZ = 4.32; Thickness = 0.05 }
+    // Stream boundary marker — used by some chip-level GDS exporters.
+    { Number = 235; DataType =  4; Name = "boundary"; Color = rgba 0x60 0x60 0x60 0x20; StackZ =  4.38; Thickness = 0.05 }
     // Magic-internal marker layers. Not silicon; Magic uses these
     // for incremental-extract bookkeeping and DRC/extract
     // diagnostics. Distinct key (255, *) so they're toggleable on
@@ -72,5 +116,34 @@ let isNonPhysical (layerNumber: int) (_dataType: int) : bool =
 let private byKey =
     allDrawing |> List.map (fun l -> (l.Number, l.DataType), l) |> Map.ofList
 
+/// Legacy `(number, datatype)` pairs that the SKY130 stream map
+/// doesn't list but that appear in foundry-shipped cells (chiefly
+/// the `sky130_fd_pr_reram` library). Magic translates them at
+/// gds-read time via cifinput rules; we mirror the translation
+/// here so the same `Rkt.Document` lands regardless of which
+/// number the source file used.
+///
+/// Each entry points at the canonical `(number, datatype)` in
+/// `byKey`. The reverse map (used by `Rkt.ToGds`) intentionally
+/// ignores this table, so a load-then-export round-trip rewrites
+/// legacy pairs to their canonical sky130 equivalents.
+let private legacyAliases : ((int * int) * (int * int)) list = [
+    (6, 0),    (65, 20)    // diff.drawing
+    (6, 251),  (65, 20)    // diff.pin (merged into drawing)
+    (7, 0),    (66, 44)    // licon (poly contact)
+    (8, 0),    (68, 20)    // met1.drawing
+    (8, 251),  (68, 20)    // met1.pin (merged into drawing)
+    (40, 0),   (201, 20)   // reram body
+]
+
+let private aliasMap : Map<int * int, Layer> =
+    legacyAliases
+    |> List.choose (fun (alias, canonical) ->
+        Map.tryFind canonical byKey
+        |> Option.map (fun layer -> alias, layer))
+    |> Map.ofList
+
 let bySky130Number (number: int) (dataType: int) : Layer option =
-    Map.tryFind (number, dataType) byKey
+    match Map.tryFind (number, dataType) byKey with
+    | Some l -> Some l
+    | None -> Map.tryFind (number, dataType) aliasMap

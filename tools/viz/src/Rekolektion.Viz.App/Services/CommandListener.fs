@@ -44,11 +44,25 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
             Dispatcher.UIThread.Post(fun () -> dispatch (Msg.ToggleNet (name, visible)))
             "{\"ok\":true}"
         | "/highlight/net" ->
-            let net =
+            // Backward-compat shape: {"name": "BL"} replaces the
+            // highlighted-set with a single net; {"name": null} or
+            // missing clears it. Multi-net callers should use
+            // /highlight/nets with an array.
+            let next =
                 match root.TryGetProperty "name" with
-                | true, n when n.ValueKind = JsonValueKind.String -> Some (n.GetString())
-                | _ -> None
-            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.HighlightNet net))
+                | true, n when n.ValueKind = JsonValueKind.String ->
+                    Set.singleton (n.GetString())
+                | _ -> Set.empty
+            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.SetHighlightedNets next))
+            "{\"ok\":true}"
+        | "/highlight/nets" ->
+            // {"names": ["BL", "WL"]} — replace the highlighted-set
+            // wholesale. Empty array clears it.
+            let arr = root.GetProperty("names")
+            let mutable acc = Set.empty
+            for i in 0 .. arr.GetArrayLength() - 1 do
+                acc <- acc.Add (arr.[i].GetString())
+            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.SetHighlightedNets acc))
             "{\"ok\":true}"
         | "/tab" ->
             let tab =
@@ -76,7 +90,14 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
                 dispatch (Msg.MoveSelectionDbu (dx, dy)))
             "{\"ok\":true}"
         | "/tighten" ->
-            Dispatcher.UIThread.Post(fun () -> dispatch Msg.TightenSelection)
+            // Toggle Tighten mode for the agent test loop. To
+            // commit a specific candidate, follow with
+            // /tighten/commit { "index": N }.
+            Dispatcher.UIThread.Post(fun () -> dispatch Msg.ToggleTightenMode)
+            "{\"ok\":true}"
+        | "/tighten/commit" ->
+            let i = root.GetProperty("index").GetInt32()
+            Dispatcher.UIThread.Post(fun () -> dispatch (Msg.CommitTighten i))
             "{\"ok\":true}"
         | "/dimensions" ->
             Dispatcher.UIThread.Post(fun () -> dispatch Msg.ToggleDimensions)
@@ -119,7 +140,7 @@ let handleQuery (path: string) (_dispatch: Msg.Msg -> unit) : string =
                                 "{\"index\":%d,\"name\":\"%s\",\"cell\":\"%s\",\"originX\":%d,\"originY\":%d,\"bbox\":[%d,%d,%d,%d]}"
                                 i.Index
                                 (i.Name.Replace("\"", "\\\""))
-                                (i.Sref.StructureName.Replace("\"", "\\\""))
+                                (i.Sref.Cell.Replace("\"", "\\\""))
                                 i.Sref.Origin.X
                                 i.Sref.Origin.Y
                                 x1 y1 x2 y2)

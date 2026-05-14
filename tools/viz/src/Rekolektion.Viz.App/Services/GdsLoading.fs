@@ -2,15 +2,14 @@ module Rekolektion.Viz.App.Services.GdsLoading
 
 open System.IO
 open Rekolektion.Viz.Core
-open Rekolektion.Viz.Core.Gds
 open Rekolektion.Viz.Core.Sidecar
 open Rekolektion.Viz.Core.Net
 open Rekolektion.Viz.App.Model.Model
 
-/// Open a GDS file and build a fully-loaded LoadedMacro:
-/// 1. Parse GDS via Core.Gds.Reader
-/// 2. Try to load <path>.nets.json sidecar
-/// 3. Detect hierarchy
+/// Open a GDS / .mag / .rkt file and build a fully-loaded LoadedMacro:
+/// 1. Parse via Core.Layout.LayoutLoader (extension-dispatched).
+/// 2. Try to load <path>.nets.json sidecar.
+/// 3. Detect hierarchy and pre-compute flattened geometry.
 ///
 /// Net derivation via LabelFlood is NOT done here when there's no
 /// sidecar — it's an O(N²) algorithm that takes 10+ seconds for
@@ -20,12 +19,8 @@ open Rekolektion.Viz.App.Model.Model
 /// nets fill in when the background derivation finishes.
 let load (path: string) : Async<Result<LoadedMacro, string>> = async {
     try
-        // Dispatch on file extension. .mag uses the Magic parser
-        // (with subcell search rooted at the file's directory);
-        // .gds uses the existing GDS reader. Both produce the same
-        // Library shape so the rest of the pipeline is unchanged.
-        let lib, magWarnings = Layout.LayoutLoader.load path
-        for w in magWarnings do
+        let doc, warnings = Layout.LayoutLoader.load path
+        for w in warnings do
             eprintfn "[viz] %s" w
         let sidecarPath = Path.ChangeExtension(path, ".nets.json")
         let nets, fromSidecar, sidecarError =
@@ -33,16 +28,16 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             | Ok (Some sc) -> sc.Nets, true, None
             | Ok None      -> Map.empty, false, None
             | Error msg    -> Map.empty, false, Some msg
-        let blocks = Layout.Hierarchy.detect lib
+        let blocks = Layout.Hierarchy.detect doc
         // Walk SRef/ARef to produce flat polygons for the renderers.
-        // For a 64×64 SRAM macro this expands ~5k structure-level
-        // polygons to ~400k flat polygons. The cost is paid once at
-        // load time so per-frame rendering doesn't pay it.
-        let flat = Layout.Flatten.flatten lib
-        let instances = Layout.Instances.enumerate lib
+        // For a 64×64 SRAM macro this expands ~5k cell-level polygons
+        // to ~400k flat polygons. The cost is paid once at load time
+        // so per-frame rendering doesn't pay it.
+        let flat = Layout.Flatten.flatten doc
+        let instances = Layout.Instances.enumerate doc
         return Ok {
             Path = path
-            Library = lib
+            Document = doc
             FlatPolygons = flat
             TopInstances = instances
             Nets = nets
@@ -66,8 +61,8 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
 /// from Update). Without an explicit switch the entire LabelFlood
 /// pass runs on the UI thread and blocks the canvas for 10+ seconds,
 /// defeating the whole point of the deferred derivation.
-let deriveNets (lib: Rekolektion.Viz.Core.Gds.Types.Library)
+let deriveNets (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
         : Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>> = async {
     do! Async.SwitchToThreadPool ()
-    return LabelFlood.derive lib
+    return LabelFlood.derive doc
 }

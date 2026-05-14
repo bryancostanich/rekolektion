@@ -177,8 +177,45 @@ let private cellNameFromPath (path: string) : string =
 /// Read one `.mag` file from disk and return a parsed `MagCell`.
 /// Does NOT recursively load subcell references — see
 /// `loadWithSubcells` for that.
+///
+/// Tries `FileStream` with `FileShare.ReadWrite` first. If that
+/// fails — Magic / `magicdnull` holds files open with `O_EXLOCK`,
+/// which the .NET runtime can't bypass via FileShare flags — falls
+/// back to shelling out to `/bin/cat`, which takes no lock on macOS
+/// and Linux. The writer never goes through this path; it targets
+/// a fresh file via `Mag.Writer.writeUpdated`, so read-side
+/// concurrency is safe.
+let private readLinesShared (path: string) : string[] =
+    try
+        use stream =
+            new FileStream(
+                path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite ||| FileShare.Delete)
+        use reader = new StreamReader(stream)
+        let buf = System.Collections.Generic.List<string>()
+        let mutable line = reader.ReadLine()
+        while not (isNull line) do
+            buf.Add line
+            line <- reader.ReadLine()
+        buf.ToArray()
+    with :? IOException ->
+        let psi =
+            System.Diagnostics.ProcessStartInfo(
+                FileName = "/bin/cat",
+                Arguments = sprintf "\"%s\"" (path.Replace("\"", "\\\"")),
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true)
+        use proc = System.Diagnostics.Process.Start psi
+        let text = proc.StandardOutput.ReadToEnd()
+        proc.WaitForExit()
+        if proc.ExitCode <> 0 then
+            raise (IOException(
+                sprintf "cat fallback failed for %s (exit %d)" path proc.ExitCode))
+        text.Split('\n')
+
 let read (path: string) : MagCell =
-    let lines = File.ReadAllLines path
+    let lines = readLinesShared path
     let st0 = freshState ()
     let st = (st0, lines) ||> Array.fold parseLine
     {

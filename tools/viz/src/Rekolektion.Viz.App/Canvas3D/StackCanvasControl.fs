@@ -9,6 +9,10 @@ open Avalonia.OpenGL.Controls
 open Silk.NET.OpenGL
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
+// `Rkt.Types` opened after Gds.Types so `Point` resolves to the
+// Rkt-flavored point Flatten now emits. `Library` stays
+// Gds-flavored (Rkt has no Library type).
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Render.Mesh
 open Rekolektion.Viz.Render.Skia
 
@@ -123,10 +127,11 @@ type StackCanvasControl() =
     let mutable vao : uint32 = 0u
     let mutable program : uint32 = 0u
     let mutable indexCount : int = 0
-    // Net highlight state. `lastHighlightNet` is the value the GPU
-    // is currently configured for; differs from this.Toggle.
-    // HighlightNet → re-upload netVbo on next render.
-    let mutable lastHighlightNet : string option = None
+    // Net highlight state. `lastHighlightedNets` mirrors the value
+    // the GPU is currently configured for; when it differs from
+    // `this.Toggle.HighlightedNets` we re-upload netVbo on the next
+    // render. The set lets multiple nets light at once.
+    let mutable lastHighlightedNets : Set<string> = Set.empty
     // Block isolation state. Mirror of the net flag pattern: per-
     // vertex 1.0 if the source polygon's structure is inside the
     // isolated block's transitive closure, else 0.0. Shader
@@ -144,6 +149,15 @@ type StackCanvasControl() =
     let mutable rulerVao : uint32 = 0u
     let mutable rulerVbo : uint32 = 0u
     let mutable rulerVertexCount : int = 0
+    // Ratlines: re-use rulerProgram (it's just MVP-transformed
+    // (x,y,z, r,g,b) Lines). Vertex buffer is rebuilt every
+    // frame when the overlay is enabled — handful of nets, a
+    // few dozen vertices, cheap. Drawn at a fixed Z above the
+    // metal stack so the lines float over the cell instead of
+    // intersecting geometry.
+    let mutable ratlineVao : uint32 = 0u
+    let mutable ratlineVbo : uint32 = 0u
+    let mutable ratlineVertexCount : int = 0
     let mutable rulerXMin : float32 = 0.0f
     let mutable rulerXMax : float32 = 0.0f
     let mutable rulerYMin : float32 = 0.0f
@@ -227,8 +241,8 @@ type StackCanvasControl() =
     let mutable pressStart : Avalonia.Point = Avalonia.Point()
     let mutable pressedButton : DragMode = NoDrag
 
-    static member val LibraryProperty : StyledProperty<Library option> =
-        AvaloniaProperty.Register<StackCanvasControl, Library option>("Library", None)
+    static member val LibraryProperty : StyledProperty<Document option> =
+        AvaloniaProperty.Register<StackCanvasControl, Document option>("Library", None)
         with get
     static member val FlatPolygonsProperty : StyledProperty<Layout.Flatten.FlatPolygon array> =
         AvaloniaProperty.Register<StackCanvasControl, Layout.Flatten.FlatPolygon array>("FlatPolygons", [||])
@@ -242,10 +256,17 @@ type StackCanvasControl() =
     static member val PolygonPickedHandlerProperty : StyledProperty<Action<string, int>> =
         AvaloniaProperty.Register<StackCanvasControl, Action<string, int>>("PolygonPickedHandler", null)
         with get
+    /// Set of net names whose ratlines render on the 3D canvas.
+    /// Mirrors GdsCanvasControl.VisibleRatlinesProperty so 2D and
+    /// 3D agree on which nets are showing.
+    static member val VisibleRatlinesProperty : StyledProperty<Set<string>> =
+        AvaloniaProperty.Register<StackCanvasControl, Set<string>>(
+            "VisibleRatlines", Set.empty)
+        with get
 
     member this.Library
-        with get() : Library option = this.GetValue(StackCanvasControl.LibraryProperty)
-        and set(v: Library option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
+        with get() : Document option = this.GetValue(StackCanvasControl.LibraryProperty)
+        and set(v: Document option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
 
     member this.FlatPolygons
         with get() : Layout.Flatten.FlatPolygon array = this.GetValue(StackCanvasControl.FlatPolygonsProperty)
@@ -259,6 +280,10 @@ type StackCanvasControl() =
         with get() : Action<string, int> = this.GetValue(StackCanvasControl.PolygonPickedHandlerProperty)
         and set(v: Action<string, int>) = this.SetValue(StackCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
 
+    member this.VisibleRatlines
+        with get() : Set<string> = this.GetValue(StackCanvasControl.VisibleRatlinesProperty)
+        and set(v: Set<string>) = this.SetValue(StackCanvasControl.VisibleRatlinesProperty, v) |> ignore
+
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
         yawDeg <- yaw
         pitchDeg <- pitch
@@ -270,14 +295,14 @@ type StackCanvasControl() =
     /// `lib`. Called when Library is assigned. Without this, a small
     /// bitcell renders as a single pixel inside the default 80-µm
     /// frustum.
-    member private this.FitCameraTo (lib: Library) (flat: Layout.Flatten.FlatPolygon array) =
+    member private this.FitCameraTo (lib: Document) (flat: Layout.Flatten.FlatPolygon array) =
         let mutable xMin, xMax = System.Single.MaxValue, System.Single.MinValue
         let mutable yMin, yMax = System.Single.MaxValue, System.Single.MinValue
         let mutable zMinPhysical = System.Double.MaxValue
         let mutable zMaxPhysical = System.Double.MinValue
         // Use FlatPolygons (post-hierarchy) so the bbox correctly
         // includes SRef/ARef-instanced content (e.g. an SRAM macro's
-        // bitcell array). With raw lib.Structures the bbox would
+        // bitcell array). With raw lib.Cells the bbox would
         // only cover the top cell's polygons.
         for poly in flat do
             // Skip Magic-internal markers (255, *) so the camera
@@ -287,8 +312,8 @@ type StackCanvasControl() =
             // above met5 doesn't pull the frustum vertically.
             if not (Layout.Layer.isNonPhysical poly.Layer poly.DataType) then
               for p in poly.Points do
-                let x = float32 ((float p.X) * lib.UserUnitsPerDbUnit)
-                let y = float32 ((float p.Y) * lib.UserUnitsPerDbUnit)
+                let x = float32 ((float p.X) * (float lib.Units.DbuNm * 1.0e-3))
+                let y = float32 ((float p.Y) * (float lib.Units.DbuNm * 1.0e-3))
                 if x < xMin then xMin <- x
                 if x > xMax then xMax <- x
                 if y < yMin then yMin <- y
@@ -544,7 +569,7 @@ type StackCanvasControl() =
                                         if s >= 0.0f && s < hitT then
                                             let px = rayO.X + rayD.X * s
                                             let py = rayO.Y + rayD.Y * s
-                                            if pointInPolygon poly.Points px py lib.UserUnitsPerDbUnit then
+                                            if pointInPolygon poly.Points px py (float lib.Units.DbuNm * 1.0e-3) then
                                                 hitT <- s
                                     if hitT < bestT then
                                         bestT <- hitT
@@ -575,8 +600,10 @@ type StackCanvasControl() =
         meshDirty <- true
         hasUploadedAny <- false
         layerSlotMap.Clear()
-        // Force a net-flag re-upload after re-init too.
-        lastHighlightNet <- Some "<<force-mismatch-on-reinit>>"
+        // Force a net-flag re-upload after re-init too. The
+        // sentinel ensures the next render's `<>` test fires; any
+        // non-empty value the user can't actually pick works.
+        lastHighlightedNets <- Set.singleton "<<force-mismatch-on-reinit>>"
         lastIsolatedBlock <- Some "<<force-mismatch-on-reinit>>"
         depthRbo <- 0u
         depthRboW <- 0
@@ -707,6 +734,10 @@ type StackCanvasControl() =
         rulerVao <- g.GenVertexArray()
         rulerVbo <- g.GenBuffer()
         rulerDirty <- true
+        // Shared with the ruler program; ratlines are just
+        // (x,y,z, r,g,b) Lines, same vertex layout.
+        ratlineVao <- g.GenVertexArray()
+        ratlineVbo <- g.GenBuffer()
 
         // ---- Bitmap font ----
         let textVsSrc = "
@@ -819,7 +850,7 @@ type StackCanvasControl() =
             let toggle = this.Toggle
             // (Re-)extrude only when geometry source changed.
             if meshDirty && flat.Length > 0 then
-                cachedMesh <- Some (Extruder.extrude lib.UserUnitsPerDbUnit flat)
+                cachedMesh <- Some (Extruder.extrude (float lib.Units.DbuNm * 1.0e-3) flat)
                 meshDirty <- false
                 hasUploadedAny <- false
                 layerSlotMap.Clear()
@@ -871,20 +902,19 @@ type StackCanvasControl() =
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(zeros), GLEnum.DynamicDraw)
                 hasUploadedAny <- true
                 // Force per-vertex flag refresh on first draw.
-                lastHighlightNet <- Some "<<force-mismatch-after-upload>>"
+                lastHighlightedNets <- Set.singleton "<<force-mismatch-after-upload>>"
                 lastIsolatedBlock <- Some "<<force-mismatch-after-upload>>"
             | _ -> ()
             // Re-upload the net-flag attribute when the highlighted
-            // net changes (or after a fresh mesh upload). Cheap —
+            // set changes (or after a fresh mesh upload). Cheap —
             // one float per vertex; for a 400k-poly macro that's
             // ~12MB but only runs on net click, not every frame.
             match cachedMesh with
-            | Some mesh when hasUploadedAny && lastHighlightNet <> toggle.HighlightNet ->
+            | Some mesh when hasUploadedAny && lastHighlightedNets <> toggle.HighlightedNets ->
                 let n = mesh.Vertices.Length
                 let flags = Array.zeroCreate<float32> n
-                match toggle.HighlightNet with
-                | Some name ->
-                    let hits = LayerPainter.highlightedPolyKeys lib flat name
+                if not toggle.HighlightedNets.IsEmpty then
+                    let hits = LayerPainter.highlightedPolyKeys lib flat toggle.HighlightedNets
                     if hits.Count > 0 then
                         for i in 0 .. n - 1 do
                             let polyIdx = mesh.VertexPolyIndex.[i]
@@ -892,10 +922,9 @@ type StackCanvasControl() =
                                 let p = flat.[polyIdx]
                                 if hits.Contains((p.SourceStructure, p.SourceIndex)) then
                                     flags.[i] <- 1.0f
-                | None -> ()
                 g.BindBuffer(GLEnum.ArrayBuffer, netVbo)
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(flags), GLEnum.DynamicDraw)
-                lastHighlightNet <- toggle.HighlightNet
+                lastHighlightedNets <- toggle.HighlightedNets
             | _ -> ()
             // Same dance for the block-isolation flag. Recomputed
             // when IsolatedBlock changes; one float per vertex.
@@ -905,7 +934,10 @@ type StackCanvasControl() =
                 let flags = Array.zeroCreate<float32> n
                 match toggle.IsolatedBlock with
                 | Some name ->
-                    let closure = Layout.Hierarchy.closure lib name
+                    // Hierarchy.closure now consumes Rkt.Document; convert
+                    // at the call site until the App's model migrates.
+                    let closure =
+                        Layout.Hierarchy.closure (lib) name
                     if not (Set.isEmpty closure) then
                         for i in 0 .. n - 1 do
                             let polyIdx = mesh.VertexPolyIndex.[i]
@@ -994,7 +1026,7 @@ type StackCanvasControl() =
             let lightLoc = g.GetUniformLocation(program, "uLightDir")
             g.Uniform3(lightLoc, camForward)
             let highlightLoc = g.GetUniformLocation(program, "uHighlightActive")
-            g.Uniform1(highlightLoc, if toggle.HighlightNet.IsSome then 1.0f else 0.0f)
+            g.Uniform1(highlightLoc, if not toggle.HighlightedNets.IsEmpty then 1.0f else 0.0f)
             let isolateLoc = g.GetUniformLocation(program, "uIsolateActive")
             g.Uniform1(isolateLoc, if toggle.IsolatedBlock.IsSome then 1.0f else 0.0f)
             // Upload per-layer visibility as a uniform array. Cheap
@@ -1284,6 +1316,76 @@ type StackCanvasControl() =
                 g.UniformMatrix4(rulerLoc, 1u, false, ReadOnlySpan<float32>(mvpArr2))
                 g.LineWidth 1.5f
                 g.DrawArrays(GLEnum.Lines, 0, uint32 rulerVertexCount)
+
+            // Ratlines — rebuild + draw at a fixed Z above the
+            // metal stack so they float over the geometry. Only
+            // when at least one net's ratline is on (visibility is
+            // explicit per-net now). A tab with empty
+            // VisibleRatlines pays no cost.
+            let visibleRatlines = this.VisibleRatlines
+            ratlineVertexCount <- 0
+            if not visibleRatlines.IsEmpty && rulerProgram <> 0u then
+                match this.Library with
+                | Some lib ->
+                    let routes = Net.Ratlines.compute lib (this.FlatPolygons)
+                    let filtered =
+                        routes |> Array.filter (fun r -> visibleRatlines.Contains r.Name)
+                    // World-space DBU → user µm divisor.
+                    let umPer = (float lib.Units.DbuNm * 1.0e-3)
+                    // Ratline Z comes from the pin itself now — each
+                    // endpoint sits at the top of its anchoring
+                    // polygon's layer, with a small lift so it doesn't
+                    // Z-fight the metal. Cross-layer hops slant.
+                    let zLift = 0.10f
+                    // amber, matches 2D ratline overlay color
+                    let r = 1.0f
+                    let g_ = 0.78f
+                    let b = 0.25f
+                    let verts = System.Collections.Generic.List<float32>()
+                    // Walk the pre-computed rectilinear MST instead
+                    // of all pin pairs. Matches the 2D RatlineOverlay
+                    // path; collapses N(N-1)/2 line draws to N-1
+                    // edges per net, which is the difference between
+                    // a hairball and a readable overlay on power
+                    // nets with hundreds of pins.
+                    for route in filtered do
+                        let pins = route.Pins
+                        for edge in route.Mst do
+                            if edge.From >= 0 && edge.From < pins.Length
+                               && edge.To >= 0 && edge.To < pins.Length then
+                                let pinI = pins.[edge.From]
+                                let pinJ = pins.[edge.To]
+                                let pi = pinI.Position
+                                let pj = pinJ.Position
+                                let xi = float32 (float pi.X * umPer)
+                                let yi = float32 (float pi.Y * umPer)
+                                let zi = float32 pinI.ZUm + zLift
+                                let xj = float32 (float pj.X * umPer)
+                                let yj = float32 (float pj.Y * umPer)
+                                let zj = float32 pinJ.ZUm + zLift
+                                verts.AddRange([| xi; yi; zi; r; g_; b |])
+                                verts.AddRange([| xj; yj; zj; r; g_; b |])
+                    if verts.Count > 0 then
+                        let arr = verts.ToArray()
+                        g.BindVertexArray ratlineVao
+                        g.BindBuffer(GLEnum.ArrayBuffer, ratlineVbo)
+                        g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(arr), GLEnum.DynamicDraw)
+                        ratlineVertexCount <- verts.Count / 6
+                | None -> ()
+            if ratlineVertexCount > 0 then
+                g.UseProgram rulerProgram
+                g.BindVertexArray ratlineVao
+                g.BindBuffer(GLEnum.ArrayBuffer, ratlineVbo)
+                let stride = uint32 (6 * sizeof<float32>)
+                g.EnableVertexAttribArray 0u
+                g.VertexAttribPointer(0u, 3, GLEnum.Float, false, stride, nativeint 0)
+                g.EnableVertexAttribArray 1u
+                g.VertexAttribPointer(1u, 3, GLEnum.Float, false, stride, nativeint (3 * sizeof<float32>))
+                let loc = g.GetUniformLocation(rulerProgram, "uMVP")
+                let mvpArr = Matrix4x4Helpers.toFloatArray mvp
+                g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+                g.LineWidth 2.0f
+                g.DrawArrays(GLEnum.Lines, 0, uint32 ratlineVertexCount)
             if textVertexCount > 0 && textProgram <> 0u && fontTex <> 0u then
                 g.UseProgram textProgram
                 g.BindVertexArray textVao

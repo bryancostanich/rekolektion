@@ -15,7 +15,7 @@ let ``GdsLoading.load opens bitcell_lr fixture`` () =
     match result with
     | Error e -> failwithf "expected Ok, got Error %s" e
     | Ok loaded ->
-        loaded.Library.Structures |> List.isEmpty |> should equal false
+        loaded.Document.Cells |> List.isEmpty |> should equal false
         let sidecarExists = File.Exists (Path.ChangeExtension(path, ".nets.json"))
         loaded.NetsFromSidecar |> should equal sidecarExists
         // Valid fixture shouldn't surface a sidecar error.

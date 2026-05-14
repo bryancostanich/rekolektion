@@ -12,8 +12,8 @@ let private fixturePath =
 let ``cim_reram_4t2r_wip enumerates two top-level SRef instances`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _warns = Layout.LayoutLoader.load fixturePath
-        let inst = Instances.enumerate lib
+        let lib, _warns = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let inst = Instances.Library.enumerate lib
         inst.Length |> should equal 2
         for i in inst do
             let (x1, y1, x2, y2) = i.BBox
@@ -24,11 +24,12 @@ let ``cim_reram_4t2r_wip enumerates two top-level SRef instances`` () =
 let ``snap delta to 5 nm grid for mag library is 1 DBU step`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
         // magscale 1 2 + 10 nm internal → 5 nm/DBU → grid step = 1 DBU
-        let step = Snap.gridDbu lib Snap.sky130MfgGridNm
+        let units = Snap.unitsOfLibrary lib
+        let step = Snap.gridDbu units Snap.sky130MfgGridNm
         step |> should equal 1L
-        let (dx, dy) = Snap.snapDeltaDbu lib Snap.sky130MfgGridNm 7L 0L
+        let (dx, dy) = Snap.snapDeltaDbu units Snap.sky130MfgGridNm 7L 0L
         dx |> should equal 7L
         dy |> should equal 0L
 
@@ -36,13 +37,13 @@ let ``snap delta to 5 nm grid for mag library is 1 DBU step`` () =
 let ``translateSelection moves only selected indices`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
-        let before = Instances.enumerate lib
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let before = Instances.Library.enumerate lib
         before.Length |> should equal 2
         let pickIdx = before.[0].Index
         let pickedSet = Set.ofList [pickIdx]
-        let lib' = Instances.translateSelection lib pickedSet 100L 50L
-        let after = Instances.enumerate lib'
+        let lib' = Instances.Library.translateSelection lib pickedSet 100L 50L
+        let after = Instances.Library.enumerate lib'
         after.Length |> should equal 2
         let movedSref = after |> Array.find (fun i -> i.Index = pickIdx)
         let oldOrigin = before.[0].Sref.Origin
@@ -57,7 +58,7 @@ let ``layerBboxesOf groups polygons by layer + datatype`` () =
     let pts (xs: (int64 * int64) list) =
         xs
         |> List.map (fun (x, y) ->
-            ({ X = x; Y = y } : Rekolektion.Viz.Core.Gds.Types.Point))
+            ({ X = x; Y = y } : Rekolektion.Viz.Core.Rkt.Types.Point))
         |> List.toArray
     let polys : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array = [|
         { Layer = 67; DataType = 20; SourceStructure = "x"; SourceIndex = 0
@@ -75,12 +76,12 @@ let ``layerBboxesOf groups polygons by layer + datatype`` () =
 let ``flattenInstance returns only one instance's polygons`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
-        let allPolys = Layout.Flatten.flatten lib
-        let instances = Layout.Instances.enumerate lib
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let allPolys = Layout.Flatten.flatten (Rkt.OfGds.fromLibrary lib)
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
-        let polys0 = Layout.Flatten.flattenInstance lib instances.[0].Index
-        let polys1 = Layout.Flatten.flattenInstance lib instances.[1].Index
+        let polys0 = Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary lib) instances.[0].Index
+        let polys1 = Layout.Flatten.flattenInstance (Rkt.OfGds.fromLibrary lib) instances.[1].Index
         // Each per-instance flatten is non-empty and strictly
         // smaller than the full flatten (we drop top-level polys
         // and the OTHER instance's subtree).
@@ -92,9 +93,9 @@ let ``flattenInstance returns only one instance's polygons`` () =
 let ``cim fixture has a shared physical layer with a positive per-poly gap`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
-        let map = Layout.Instances.layerPolyBboxesByInstance lib
-        let instances = Layout.Instances.enumerate lib
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let map = Layout.Instances.Library.layerPolyBboxesByInstance lib
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
         let i0 = instances.[0].Index
         let i1 = instances.[1].Index
@@ -146,8 +147,8 @@ let ``physical bboxes overlap in cim fixture (transistor abutment)`` () =
         // correctly classifies them as "no orthogonal adjacency"
         // and draws no arrows. To exercise the live overlay,
         // drag one cell clear of the other and arrows appear.
-        let lib, _ = Layout.LayoutLoader.load fixturePath
-        let map = Layout.Instances.physicalBboxesByInstance lib
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let map = Layout.Instances.Library.physicalBboxesByInstance lib
         let bbs = map |> Map.toList |> List.map snd
         bbs.Length |> should equal 2
         match bbs with
@@ -160,21 +161,21 @@ let ``physical bboxes overlap in cim fixture (transistor abutment)`` () =
 let ``rotate90 around origin sends (10,0) to (0,10) at fixture instance`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
-        let instances = Layout.Instances.enumerate lib
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let instances = Layout.Instances.Library.enumerate lib
         instances.Length |> should equal 2
         // Move the first instance's origin to (10, 0) so we can
         // assert what 90° CCW rotation around the world origin does.
         let pickIdx = instances.[0].Index
-        let lib0 = Layout.Instances.translateSelection
+        let lib0 = Layout.Instances.Library.translateSelection
                        lib (Set.singleton pickIdx)
                        (10L - instances.[0].Sref.Origin.X)
                        (0L  - instances.[0].Sref.Origin.Y)
         let after =
-            Layout.Instances.rotate90Selection
+            Layout.Instances.Library.rotate90Selection
                 lib0 (Set.singleton pickIdx) (0L, 0L)
         let updated =
-            Layout.Instances.enumerate after
+            Layout.Instances.Library.enumerate after
             |> Array.find (fun i -> i.Index = pickIdx)
         // (10, 0) → (0, 10) for R = [[0,-1],[1,0]] · (10,0) = (0,10)
         updated.Sref.Origin.X |> should equal 0L
@@ -184,31 +185,26 @@ let ``rotate90 around origin sends (10,0) to (0,10) at fixture instance`` () =
 let ``mirrorX flips Y origin around pivot`` () =
     if not (System.IO.File.Exists fixturePath) then ()
     else
-        let lib, _ = Layout.LayoutLoader.load fixturePath
-        let instances = Layout.Instances.enumerate lib
+        let lib, _ = Layout.LayoutLoader.loadAsLibrary fixturePath
+        let instances = Layout.Instances.Library.enumerate lib
         let pickIdx = instances.[0].Index
-        let lib0 = Layout.Instances.translateSelection
+        let lib0 = Layout.Instances.Library.translateSelection
                        lib (Set.singleton pickIdx)
                        (0L - instances.[0].Sref.Origin.X)
                        (50L - instances.[0].Sref.Origin.Y)
         let after =
-            Layout.Instances.mirrorXSelection
+            Layout.Instances.Library.mirrorXSelection
                 lib0 (Set.singleton pickIdx) (0L, 0L)
         let updated =
-            Layout.Instances.enumerate after
+            Layout.Instances.Library.enumerate after
             |> Array.find (fun i -> i.Index = pickIdx)
         updated.Sref.Origin.X |> should equal 0L
         updated.Sref.Origin.Y |> should equal -50L
 
 [<Fact>]
 let ``snap helper handles negative deltas symmetrically`` () =
-    let lib : Rekolektion.Viz.Core.Gds.Types.Library = {
-        Name = "x"
-        UserUnitsPerDbUnit = 0.001       // 1 nm / DBU
-        DbUnitsInMeters = 1.0e-9
-        Structures = []
-    }
-    let step = Snap.gridDbu lib Snap.sky130MfgGridNm
+    let units : Rekolektion.Viz.Core.Rkt.Types.Units = { DbuNm = 1; UuUm = 1 }
+    let step = Snap.gridDbu units Snap.sky130MfgGridNm
     step |> should equal 5L
     Snap.snapCoord step 7L  |> should equal 5L
     Snap.snapCoord step 8L  |> should equal 10L

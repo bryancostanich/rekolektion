@@ -1,5 +1,17 @@
 # Rekolektion — SRAM Generator for SKY130
 
+## Building new cells — read `docs/workflows/rkt_primitive_workflow.md` first
+
+New layout goes through the `.rkt` workflow: Python generators mint
+PDK primitives via Magic CIF, blocks compose them with `(import …)` +
+`(sref …)`. **Do not** write new `.mag` files or hand-edit primitive
+geometry. The full rules are in
+`docs/workflows/rkt_primitive_workflow.md` — skim it before touching
+`src/rekolektion/primitives/` or `cell_designs/`.
+
+Quick smoke test of the toolchain:
+`.venv/bin/python scripts/demo_primitive_workflow.py /tmp/rkt_demo`
+
 ## Known traps — read before "fixing" these
 
 ### Magic ext2spice port-promotion through hierarchy is broken

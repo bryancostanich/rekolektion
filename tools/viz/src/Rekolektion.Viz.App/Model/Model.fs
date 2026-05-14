@@ -1,20 +1,20 @@
 module Rekolektion.Viz.App.Model.Model
 
 open Rekolektion.Viz.Core
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Sidecar.Types
 
 type Tab = View2D | View3D
 
 type LoadedMacro = {
     Path     : string
-    Library  : Library
+    Document : Document
     // Flattened polygons after walking SRef/ARef hierarchy. The
     // renderers (LayerPainter, Extruder) iterate this rather than
-    // raw `Library.Structures` so hierarchical macros render their
+    // raw `Document.Cells` so hierarchical macros render their
     // full content (e.g. an SRAM macro's bitcell array) instead of
     // showing only the top cell's polygons. Recomputed every time
-    // `Library` changes (drag commit, rotate, mirror) so the canvas
+    // `Document` changes (drag commit, rotate, mirror) so the canvas
     // always renders the edited geometry.
     FlatPolygons : Layout.Flatten.FlatPolygon array
     /// Movable top-level SRef instances, with their world bbox.
@@ -36,11 +36,11 @@ type LoadedMacro = {
     /// saved. Drives the title-bar "[edited]" indicator and the
     /// close-with-unsaved-changes prompt.
     Dirty : bool
-    /// Per-macro undo stack — snapshots of `Library` from before
+    /// Per-macro undo stack — snapshots of `Document` from before
     /// each edit (newest first). Capped to keep memory bounded.
-    /// Cmd+Z pops and restores; the popped library replaces the
+    /// Cmd+Z pops and restores; the popped document replaces the
     /// current one and re-derives FlatPolygons / TopInstances.
-    UndoStack : Library list
+    UndoStack : Document list
 }
 
 type RunState =
@@ -57,7 +57,7 @@ type Model = {
     OpenMacros      : LoadedMacro list
     ActiveMacroPath : string option
     Toggle          : Visibility.ToggleState
-    Selection       : (string * int) option   // (structure, element index)
+    Selection       : Set<string * int>        // top-cell polys: (structure, element index)
     /// Selected top-level SRef instances by their stable Index in
     /// the active macro's top structure. Empty set = nothing
     /// selected. Switching tabs / loading a new file clears this.
@@ -74,6 +74,13 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Tighten mode: when active, the canvas overlays the
+    /// candidate cardinal-direction tighten arrows (numbered)
+    /// instead of moving anything. Click a number → that single
+    /// tighten commits + mode exits. T or Esc exits without
+    /// committing. Computed from the active macro + selection
+    /// each render.
+    TightenMode : bool
     /// Path of the tab currently in inline-rename mode (file-tab
     /// title swapped for a TextBox). None when no tab is being
     /// renamed. Cleared on Esc, on commit, or when the user
@@ -100,10 +107,11 @@ let empty : Model = {
     OpenMacros = []
     ActiveMacroPath = None
     Toggle = Visibility.empty
-    Selection = None
+    Selection = Set.empty
     InstanceSelection = Set.empty
     ShowDimensions = false
     ShowDrc = false
+    TightenMode = false
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }

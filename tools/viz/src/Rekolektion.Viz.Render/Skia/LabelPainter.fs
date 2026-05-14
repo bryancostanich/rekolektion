@@ -2,16 +2,23 @@ module Rekolektion.Viz.Render.Skia.LabelPainter
 
 open SkiaSharp
 open Rekolektion.Viz.Core
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 
-let private bounds (lib: Library) =
+let private layerPair (layer: Layer) : int * int =
+    Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer
+
+let private bounds (doc: Document) =
     let allPts =
-        lib.Structures
-        |> List.collect (fun s ->
-            s.Elements |> List.collect (function
-                | Boundary b -> b.Points
-                | Path p -> p.Points
-                | Text t -> [t.Origin]
+        doc.Cells
+        |> List.collect (fun c ->
+            c.Elements
+            |> List.collect (function
+                | PolyEl p -> p.Points
+                | PathEl p -> p.Points
+                | LabelEl l -> [l.Origin]
+                | RectEl r ->
+                    [ { X = r.X1; Y = r.Y1 }
+                      { X = r.X2; Y = r.Y2 } ]
                 | _ -> []))
     match allPts with
     | [] -> 0L, 0L, 1L, 1L
@@ -30,7 +37,7 @@ let private bounds (lib: Library) =
 let paintIn
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
-        (lib: Library)
+        (doc: Document)
         (toggle: Visibility.ToggleState)
         : unit =
     let dx = float (vb.MaxX - vb.MinX) |> max 1.0
@@ -38,29 +45,30 @@ let paintIn
     use normal = new SKPaint(Color = SKColors.White, IsAntialias = true, TextSize = 11.0f, IsStroke = false)
     use highlight = new SKPaint(Color = SKColor(0xffuy, 0xe0uy, 0x40uy, 0xffuy), IsAntialias = true, TextSize = 12.0f, IsStroke = false)
     use dimmed = new SKPaint(Color = SKColor(0xffuy, 0xffuy, 0xffuy, 0x40uy), IsAntialias = true, TextSize = 11.0f, IsStroke = false)
-    for s in lib.Structures do
-        for el in s.Elements do
+    for c in doc.Cells do
+        for el in c.Elements do
             match el with
-            | Text t when Visibility.isLayerVisible toggle (t.Layer, t.TextType) ->
-                let x = float (t.Origin.X - vb.MinX) / dx * float vb.PixelW
-                let y = float vb.PixelH - (float (t.Origin.Y - vb.MinY) / dy * float vb.PixelH)
-                let p =
-                    match toggle.HighlightNet with
-                    | Some name when name = t.Text -> highlight
-                    | Some _ -> dimmed
-                    | None -> normal
-                canvas.DrawText(t.Text, float32 x, float32 y, p)
+            | LabelEl l ->
+                let key = layerPair l.Layer
+                if Visibility.isLayerVisible toggle key then
+                    let x = float (l.Origin.X - vb.MinX) / dx * float vb.PixelW
+                    let y = float vb.PixelH - (float (l.Origin.Y - vb.MinY) / dy * float vb.PixelH)
+                    let p =
+                        if toggle.HighlightedNets.IsEmpty then normal
+                        elif toggle.HighlightedNets.Contains l.Text then highlight
+                        else dimmed
+                    canvas.DrawText(l.Text, float32 x, float32 y, p)
             | _ -> ()
 
 /// Auto-fit variant: ViewBox derived from polygon + label bbox.
 /// Kept for callers that paint a one-off canvas-fit rendering
 /// (e.g. the headless render CLI).
-let paint (canvas: SKCanvas) (size: int * int) (lib: Library) : unit =
+let paint (canvas: SKCanvas) (size: int * int) (doc: Document) : unit =
     let (w, h) = size
-    let (xmin, ymin, xmax, ymax) = bounds lib
+    let (xmin, ymin, xmax, ymax) = bounds doc
     let vb : LayerPainter.ViewBox = {
         MinX = xmin; MinY = ymin
         MaxX = xmax; MaxY = ymax
         PixelW = w;  PixelH = h
     }
-    paintIn canvas vb lib Visibility.empty
+    paintIn canvas vb doc Visibility.empty

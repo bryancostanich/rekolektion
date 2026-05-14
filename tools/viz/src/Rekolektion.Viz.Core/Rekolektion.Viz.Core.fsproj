@@ -7,7 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Gds/Types.fs" />
-    <Compile Include="Gds/Reader.fs" />
     <Compile Include="Mag/Types.fs" />
     <Compile Include="Mag/LayerMap.fs" />
     <Compile Include="Mag/Transform.fs" />
@@ -15,17 +14,27 @@
     <Compile Include="Mag/Reader.fs" />
     <Compile Include="Mag/Writer.fs" />
     <Compile Include="Layout/Layer.fs" />
+    <Compile Include="Rkt/Types.fs" />
+    <Compile Include="Rkt/Cst.fs" />
+    <Compile Include="Rkt/Reader.fs" />
+    <Compile Include="Rkt/Writer.fs" />
+    <Compile Include="Rkt/OfGds.fs" />
+    <Compile Include="Rkt/ToGds.fs" />
+    <Compile Include="Gds/Reader.fs" />
+    <Compile Include="Gds/Writer.fs" />
     <Compile Include="Layout/Hierarchy.fs" />
     <Compile Include="Layout/Picking.fs" />
+    <Compile Include="Layout/Marquee.fs" />
     <Compile Include="Layout/Flatten.fs" />
     <Compile Include="Layout/Snap.fs" />
     <Compile Include="Layout/Instances.fs" />
-    <Compile Include="Layout/LayerAlias.fs" />
     <Compile Include="Layout/MagToLayout.fs" />
+    <Compile Include="Cif/Cif.fs" />
     <Compile Include="Layout/LayoutLoader.fs" />
     <Compile Include="Sidecar/Types.fs" />
     <Compile Include="Sidecar/Loader.fs" />
     <Compile Include="Net/LabelFlood.fs" />
+    <Compile Include="Net/Ratlines.fs" />
     <Compile Include="Drc/Rules.fs" />
     <Compile Include="Drc/Check.fs" />
     <Compile Include="Visibility.fs" />

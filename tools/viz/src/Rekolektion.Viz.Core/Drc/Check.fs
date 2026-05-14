@@ -1,7 +1,12 @@
 module Rekolektion.Viz.Core.Drc.Check
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout.Flatten
+
+/// µm per DBU, derived from the document's `Units.DbuNm` (nm/DBU).
+/// 1 µm = 1000 nm, so 1 nm/DBU = 0.001 µm/DBU.
+let private umPerDbuOf (units: Units) : float =
+    float units.DbuNm * 1.0e-3
 
 /// One DRC violation. `Rule` is "<layer>.<rule>", e.g. "met1.spacing".
 /// `BboxA` / `BboxB` are world-DBU axis-aligned bboxes — for a
@@ -64,8 +69,8 @@ let private umToDbu (umPerDbu: float) (um: float) : int64 =
 /// `lib.flat`. Quadratic per layer in the polygon count, so the
 /// caller is responsible for restricting the input to the edited
 /// neighborhood when working at production-scale macros.
-let check (lib: Library) (flat: FlatPolygon array) : Violation array =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+let check (units: Units) (flat: FlatPolygon array) : Violation array =
+    let umPerDbu = umPerDbuOf units
     let result = System.Collections.Generic.List<Violation>()
 
     // Group polygons by (layer, datatype) so per-layer rules only
@@ -143,13 +148,13 @@ let check (lib: Library) (flat: FlatPolygon array) : Violation array =
 /// not on `(dirX, dirY)`-side of the other bbox (e.g. asking
 /// for +X tighten when nothing is to the selected's right).
 let maxOrthoSlackDbu
-        (lib: Library)
+        (units: Units)
         (selectedPolys: FlatPolygon array)
         (otherPolys:    FlatPolygon array)
         (dirX: int)
         (dirY: int)
         : int64 option =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+    let umPerDbu = umPerDbuOf units
     let physical (p: FlatPolygon) =
         not (Rekolektion.Viz.Core.Layout.Layer.isNonPhysical p.Layer p.DataType)
     let selPhys = selectedPolys |> Array.filter physical
@@ -229,6 +234,120 @@ let maxOrthoSlackDbu
                 layerSlack |> List.map (fun (_, _, _, s) -> s) |> List.min
             if minSlack > 0L then Some minSlack else None
 
+/// One Tighten-mode candidate: the binding (most-constrained)
+/// polygon-pair on a single cardinal direction. Renderer uses
+/// `SelBb` and `OthBb` to draw an orthogonal arrow between the
+/// facing edges; on commit, the move is `(dx, dy) * SlackDbu`.
+type TightenCandidate = {
+    DirX        : int   // -1, 0, 1
+    DirY        : int
+    LayerName   : string
+    LimitDbu    : int64
+    GapDbu      : int64
+    SlackDbu    : int64
+    SelBb       : int64 * int64 * int64 * int64
+    OthBb       : int64 * int64 * int64 * int64
+}
+
+/// Compute the binding-pair Tighten candidate for each cardinal
+/// direction. Returns at most 4 entries (one per side that has
+/// any same-layer orthogonally-facing neighbor with positive
+/// slack). Each candidate's `SlackDbu = GapDbu - LimitDbu`; the
+/// candidate with the smallest SlackDbu is the most binding.
+///
+/// `selectedPolys` and `otherPolys` are world-DBU flat polys;
+/// the caller has already filtered selection vs. neighbor.
+let tightenCandidates
+        (units: Units)
+        (selectedPolys: FlatPolygon array)
+        (otherPolys:    FlatPolygon array)
+        : TightenCandidate array =
+    let umPerDbu = umPerDbuOf units
+    let physical (p: FlatPolygon) =
+        not (Rekolektion.Viz.Core.Layout.Layer.isNonPhysical p.Layer p.DataType)
+    let selPhys = selectedPolys |> Array.filter physical
+    let othPhys = otherPolys    |> Array.filter physical
+    if selPhys.Length = 0 || othPhys.Length = 0 then [||]
+    else
+        let bboxOf (p: FlatPolygon) =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for pt in p.Points do
+                if pt.X < xMin then xMin <- pt.X
+                if pt.X > xMax then xMax <- pt.X
+                if pt.Y < yMin then yMin <- pt.Y
+                if pt.Y > yMax then yMax <- pt.Y
+            xMin, yMin, xMax, yMax
+        let groupBy (polys: FlatPolygon array) =
+            polys
+            |> Array.map (fun p -> (p.Layer, p.DataType), bboxOf p)
+            |> Array.groupBy fst
+            |> Array.map (fun (k, arr) -> k, arr |> Array.map snd)
+            |> Map.ofArray
+        let selByLayer = groupBy selPhys
+        let othByLayer = groupBy othPhys
+
+        let dirs = [ (1, 0); (-1, 0); (0, 1); (0, -1) ]
+        dirs
+        |> List.choose (fun (dirX, dirY) ->
+            // Walk every shared layer; per layer find the closest
+            // facing pair on this direction; track the BINDING
+            // (smallest-slack) pair across layers.
+            let mutable best : TightenCandidate option = None
+            for KeyValue (key, selBbs) in selByLayer do
+                match Rules.tryFind (fst key) (snd key) with
+                | None -> ()
+                | Some rule ->
+                    match Map.tryFind key othByLayer with
+                    | None -> ()
+                    | Some othBbs ->
+                        let limit = umToDbu umPerDbu rule.MinSpacingUm
+                        if limit > 0L then
+                            for sBb in selBbs do
+                                let (sx1, sy1, sx2, sy2) = sBb
+                                for oBb in othBbs do
+                                    let (ox1, oy1, ox2, oy2) = oBb
+                                    let yOverlap = (min sy2 oy2) > (max sy1 oy1)
+                                    let xOverlap = (min sx2 ox2) > (max sx1 ox1)
+                                    let gOpt =
+                                        if dirX = 1 && yOverlap && ox1 >= sx2 then
+                                            Some (ox1 - sx2)
+                                        elif dirX = -1 && yOverlap && ox2 <= sx1 then
+                                            Some (sx1 - ox2)
+                                        elif dirY = 1 && xOverlap && oy1 >= sy2 then
+                                            Some (oy1 - sy2)
+                                        elif dirY = -1 && xOverlap && oy2 <= sy1 then
+                                            Some (sy1 - oy2)
+                                        else None
+                                    match gOpt with
+                                    | Some g ->
+                                        let slack = g - limit
+                                        if slack > 0L then
+                                            let cand = {
+                                                DirX = dirX
+                                                DirY = dirY
+                                                LayerName = rule.Layer
+                                                LimitDbu = limit
+                                                GapDbu = g
+                                                SlackDbu = slack
+                                                SelBb = sBb
+                                                OthBb = oBb
+                                            }
+                                            match best with
+                                            | None -> best <- Some cand
+                                            | Some cur when slack < cur.SlackDbu ->
+                                                best <- Some cand
+                                            | _ -> ()
+                                    | None -> ()
+            best)
+        |> List.toArray
+        // Order tightest-slack first so the user can see which
+        // one is the binding constraint at a glance. The label
+        // numbering uses this order.
+        |> Array.sortBy (fun c -> c.SlackDbu)
+
 // Side classification reused by `checkInterInstance`. Returns Some
 // for an orthogonally-facing pair (perpendicular projections
 // overlap, parallel projections disjoint), None for a diagonal
@@ -259,10 +378,10 @@ let private classifySide
 /// in world coords; the caller produces it via
 /// `Layout.Flatten.flattenInstance`.
 let checkInterInstance
-        (lib: Library)
+        (units: Units)
         (instancePolys: Map<int, FlatPolygon array>)
         : Violation array =
-    let umPerDbu = lib.UserUnitsPerDbUnit
+    let umPerDbu = umPerDbuOf units
     let result = System.Collections.Generic.List<Violation>()
 
     // Precompute per-instance per-(layer, datatype) bbox arrays —

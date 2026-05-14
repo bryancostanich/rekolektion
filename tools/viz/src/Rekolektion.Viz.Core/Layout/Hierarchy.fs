@@ -1,6 +1,6 @@
 module Rekolektion.Viz.Core.Layout.Hierarchy
 
-open Rekolektion.Viz.Core.Gds.Types
+open Rekolektion.Viz.Core.Rkt.Types
 
 type BlockRole =
     | Top
@@ -38,11 +38,11 @@ let private roleOfName (n: string) : BlockRole =
     elif lower.EndsWith "_top"                 then Top
     else Other
 
-let private childrenOf (s: Structure) : string list =
-    s.Elements
+let private childrenOf (c: Cell) : string list =
+    c.Elements
     |> List.choose (function
-        | SRef sr -> Some sr.StructureName
-        | ARef ar -> Some ar.StructureName
+        | SRefEl s -> Some s.Cell
+        | ARefEl a -> Some a.Cell
         | _ -> None)
     |> List.distinct
 
@@ -50,9 +50,9 @@ let private childrenOf (s: Structure) : string list =
 /// + ARef edges (rootName itself is always included). Used by the
 /// "Isolate block" feature so a single block click can hide every
 /// polygon outside that block's subtree.
-let closure (lib: Library) (rootName: string) : Set<string> =
+let closure (doc: Document) (rootName: string) : Set<string> =
     let byName =
-        lib.Structures |> List.map (fun s -> s.Name, s) |> Map.ofList
+        doc.Cells |> List.map (fun c -> c.Name, c) |> Map.ofList
     let visited = System.Collections.Generic.HashSet<string>()
     visited.Add rootName |> ignore
     let queue = System.Collections.Generic.Queue<string>()
@@ -61,25 +61,25 @@ let closure (lib: Library) (rootName: string) : Set<string> =
         let name = queue.Dequeue()
         match Map.tryFind name byName with
         | None -> ()
-        | Some s ->
-            for el in s.Elements do
+        | Some c ->
+            for el in c.Elements do
                 match el with
-                | SRef sr when visited.Add sr.StructureName ->
-                    queue.Enqueue sr.StructureName
-                | ARef ar when visited.Add ar.StructureName ->
-                    queue.Enqueue ar.StructureName
+                | SRefEl s when visited.Add s.Cell ->
+                    queue.Enqueue s.Cell
+                | ARefEl a when visited.Add a.Cell ->
+                    queue.Enqueue a.Cell
                 | _ -> ()
     Set.ofSeq visited
 
-/// Build a flat list of blocks for every structure in the library,
+/// Build a flat list of blocks for every cell in the document,
 /// skipping `Other` blocks unless they reference children. An `Other`
 /// with no children is almost certainly a leaf cell — bitcell, std
 /// cell instance — and isn't useful in the block tree.
-let detect (lib: Library) : Block list =
-    lib.Structures
-    |> List.choose (fun s ->
-        let role = roleOfName s.Name
-        let children = childrenOf s
+let detect (doc: Document) : Block list =
+    doc.Cells
+    |> List.choose (fun c ->
+        let role = roleOfName c.Name
+        let children = childrenOf c
         match role, children with
         | Other, [] -> None
-        | _ -> Some { Name = s.Name; Role = role; Children = children })
+        | _ -> Some { Name = c.Name; Role = role; Children = children })

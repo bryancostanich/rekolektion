@@ -6,7 +6,7 @@ open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 
 let private mkCell name : Cell =
-    { Name = name; Elements = []; Comments = [] }
+    { Name = name; Meta = None; Elements = []; Comments = [] }
 
 let private mkDoc (cells: Cell list) : Document =
     { emptyDocument with Cells = cells }
@@ -46,6 +46,7 @@ let ``Hierarchy.closure walks SRef and ARef edges`` () =
     let leaf = mkCell "leaf"
     let mid : Cell = {
         Name = "mid"
+        Meta = None
         Comments = []
         Elements = [
             ARefEl {
@@ -60,6 +61,7 @@ let ``Hierarchy.closure walks SRef and ARef edges`` () =
     }
     let top : Cell = {
         Name = "top"
+        Meta = None
         Comments = []
         Elements = [
             SRefEl {

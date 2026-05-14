@@ -118,6 +118,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
         emptyDocument with
             Cells = [
                 { Name = "top"
+                  Meta = None
                   Comments = []
                   Elements = [
                       SRefEl {
@@ -129,6 +130,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                       }
                   ] }
                 { Name = "leaf"
+                  Meta = None
                   Comments = []
                   Elements = [
                       PolyEl {
@@ -176,6 +178,7 @@ let ``Rkt port survives as geometry + label on round trip`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Meta = None
                   Comments = []
                   Elements = [
                       PortEl {
@@ -206,6 +209,7 @@ let ``unknown layer passes through to GDS and back intact`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Meta = None
                   Comments = []
                   Elements = [
                       PolyEl {

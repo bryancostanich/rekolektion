@@ -303,12 +303,49 @@ let private synthesizeElement (i: int) (e: Element) : Sexp =
         let kids = sym "" "props" :: (props.Items |> List.map (propForm " "))
         mkList lead kids ""
 
+/// Synthesize a `(meta ...)` block. Emitted as the first form
+/// inside a cell — geometry follows. Only `generator` is required;
+/// other sub-forms are conditional on Option-presence.
+let private synthesizeMeta (i: int) (m: Meta) : Sexp =
+    let lead = leading i m.Comments
+    let innerLead = indent (i + 1)
+    let kids = ResizeArray<Sexp>()
+    kids.Add (sym "" "meta")
+    kids.Add (mkList innerLead [ sym "" "generator"; stringAtom " " m.Generator ] "")
+    // `(params ...)` is always emitted, even when empty — consumers
+    // distinguish "no params" from "malformed schema" by its presence.
+    let paramKids =
+        sym "" "params"
+        :: (m.Params |> List.map (fun p ->
+            mkList " "
+                [ sym "" p.Key; propValueAtom " " p.Value ]
+                ""))
+    kids.Add (mkList innerLead paramKids "")
+    match m.Source with
+    | Some s ->
+        kids.Add (mkList innerLead [ sym "" "source"; stringAtom " " s ] "")
+    | None -> ()
+    match m.Generated with
+    | Some g ->
+        kids.Add (mkList innerLead [ sym "" "generated"; stringAtom " " g ] "")
+    | None -> ()
+    match m.Digest with
+    | Some d ->
+        kids.Add (mkList innerLead [ sym "" "digest"; stringAtom " " d ] "")
+    | None -> ()
+    mkList lead (List.ofSeq kids) ""
+
 let private synthesizeCell (i: int) (c: Cell) : Sexp =
     let lead = leading i c.Comments
+    let elementKids = c.Elements |> List.map (synthesizeElement (i + 1))
+    let metaKid =
+        match c.Meta with
+        | Some m -> [ synthesizeMeta (i + 1) m ]
+        | None -> []
     let kids =
         sym "" "cell"
         :: sym " " c.Name
-        :: (c.Elements |> List.map (synthesizeElement (i + 1)))
+        :: (metaKid @ elementKids)
     mkList lead kids ""
 
 let private synthesizeNet (i: int) (n: Net) : Sexp =

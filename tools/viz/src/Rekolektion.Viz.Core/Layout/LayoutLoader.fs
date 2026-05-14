@@ -7,10 +7,13 @@ open Rekolektion.Viz.Core.Rkt.Types
 /// Format-agnostic loader returning the canonical `Rkt.Document`
 /// model. Switches on file extension:
 ///   .gds / .gds2 → Gds.Reader.readGds (already Rkt-flavored)
-///   .mag         → Layout.MagToLayout.load (Rkt-flavored)
+///   .mag         → Cif.magToRkt (silicon-truth via Magic CIF)
+///                  with MagToLayout.load as fallback when Magic
+///                  isn't reachable.
 ///
-/// Returns the document plus any warnings (Mag's unknown-layer log
-/// + missing-subcell notices). GDS produces an empty warning list.
+/// Returns the document plus any warnings (CIF stderr, Mag's
+/// unknown-layer log, missing-subcell notices). GDS produces an
+/// empty warning list.
 ///
 /// Legacy ReRAM layer numbers (6/0, 8/0, 40/0, …) resolve inside
 /// `Layout.Layer.bySky130Number` via the alias table — no separate
@@ -34,7 +37,30 @@ let load (path: string) : Document * string list =
             Mag.SearchPath.fromEnv ()
             @ Mag.SearchPath.inferProjectPaths path
             |> List.distinct
-        MagToLayout.load path extras
+        // Silicon-truth path: spawn Magic, let it run the PDK's CIF
+        // rules, read the resulting GDS. Falls back to the
+        // shallow-rename `MagToLayout.load` view (editing-layer
+        // geometry, not silicon-truth) when Magic is unreachable,
+        // with a prominent warning so the user knows what they're
+        // looking at.
+        match Cif.magToRkt path extras with
+        | Ok (doc, cifWarnings) -> doc, cifWarnings
+        | Error err ->
+            let doc, magWarnings = MagToLayout.load path extras
+            let reason =
+                match err with
+                | Cif.MagicNotFound ->
+                    "Magic binary not found ($REKOLEKTION_MAGIC, ~/.local/bin/magic, PATH)"
+                | Cif.TechFileNotFound tech ->
+                    sprintf "tech file '%s.magicrc' missing under $PDK_ROOT" tech
+                | Cif.MagicFailed (stderr, code) ->
+                    sprintf "Magic exited %d: %s" code (stderr.Trim())
+                | Cif.GdsParseFailed msg ->
+                    sprintf "GDS parse after Magic CIF failed: %s" msg
+            let banner =
+                sprintf "rendering Magic editing-layer view (NOT silicon-truth) — CIF unavailable: %s"
+                    reason
+            doc, banner :: magWarnings
     | ".rkt" ->
         // Multi-file load with `(import ...)` resolution. The reader
         // walks the import graph (cycle-detected), and we merge every

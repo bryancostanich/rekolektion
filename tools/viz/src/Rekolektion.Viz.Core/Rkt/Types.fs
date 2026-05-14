@@ -164,8 +164,30 @@ let withElementComments (comments: string list) (e: Element) : Element =
     | ARefEl a -> ARefEl { a with Comments = comments }
     | PropsEl p -> PropsEl { p with Comments = comments }
 
+/// Provenance for a PDK-generated cell. Present only on primitives
+/// minted by a registered generator (`sky130/nfet_hv`, etc.). When
+/// `Meta = Some _` the cell is treated as PDK-owned: the viz editor
+/// refuses interior edits, the inspector exposes a "Regenerate"
+/// action driven by `Generator` + `Params`, and the cache uses
+/// `Digest` (when set) as the lookup key.
+///
+/// Tape-out ignores this block entirely — geometry alone determines
+/// GDS output. The reader is forgiving: unknown sub-forms are
+/// dropped (additive schema), `Generator` is the only required
+/// field. `Comments` follow the same leading-trivia convention as
+/// every other AST node.
+type Meta = {
+    Generator: string
+    Params: Property list
+    Source: string option
+    Generated: string option
+    Digest: string option
+    Comments: string list
+}
+
 type Cell = {
     Name: string
+    Meta: Meta option
     Elements: Element list
     Comments: string list
 }

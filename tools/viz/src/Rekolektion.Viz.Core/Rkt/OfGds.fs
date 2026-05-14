@@ -101,6 +101,7 @@ let fromElement (e: Gds.Types.Element) : Element =
 
 let fromStructure (s: Gds.Types.Structure) : Cell =
     { Name = s.Name
+      Meta = None
       Elements = s.Elements |> List.map fromElement
       Comments = [] }
 

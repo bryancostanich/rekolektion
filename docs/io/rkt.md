@@ -62,6 +62,7 @@ order shown:
 
 ```scheme
 (cell <name>
+  (meta ...)?    ; optional, at most one — PDK-generated cells only
   <element>
   <element>
   ...)
@@ -70,6 +71,54 @@ order shown:
 Cell names are bare symbols. Elements inside a cell are any of the
 forms below, in any order. The element's position is meaningful for
 hit-testing index identity (the writer preserves order).
+
+#### `(meta ...)` — generator provenance for PDK-minted cells
+
+```scheme
+(cell nfet_hv_W1p2_L1p0_core
+  (meta
+    (generator "sky130/nfet_hv")
+    (params
+      (w     1.2)
+      (l     1.0)
+      (guard 0)
+      (mode  "lvt"))
+    (source    "magic-cif sky130B 8.3 r638")   ; optional
+    (generated "2026-05-13")                    ; optional, ISO 8601
+    (digest    "sha256:9e3a1c…"))               ; optional
+  (rect (layer sky130:diff) (-1055 -1625) (1055 1625))
+  …)
+```
+
+Only `(generator …)` is required. `(params)` is always emitted (even
+empty) so consumers distinguish "no params" from "schema malformed."
+
+What `(meta …)` implies for consumers:
+
+| Consumer        | Behavior when `(meta …)` present                                                              |
+| --------------- | --------------------------------------------------------------------------------------------- |
+| Viz editor      | Cell is read-only. Clicks inside select the parent `sref`. Inspector exposes "Regenerate…". |
+| Tape-out (GDS)  | Ignored. Geometry alone determines output.                                                    |
+| Cache lookup    | Key is `(generator, digest)`. Hit returns existing file; miss re-mints via the generator.    |
+| Round-trip      | Reader populates `Meta`; writer emits verbatim. Non-interior edits preserve `Meta` bit-exact. |
+
+Param values use the same lexer as `(props ...)`: bare integers, decimals,
+quoted strings, or bare symbols (treated as atoms). Unknown sub-forms
+inside `(meta ...)` are dropped — the schema is additive.
+
+**Unknown-generator policy:** if `(generator "foo/bar")` doesn't match
+a registered generator on the loading machine, the file loads
+read-only. Geometry renders, tape-out works, "Regenerate" is disabled
+and the inspector surfaces a hint. The cell is not an error.
+
+**Anti-patterns:**
+
+- Don't hand-edit geometry inside a cell that has `(meta …)`. The next
+  regenerate overwrites it. If you need a tweak, fork params or copy
+  the cell to a hand-authored variant without `(meta …)`.
+- Don't use `(meta …)` for description / owner / notes. That's what
+  a cell-level `(props …)` element is for.
+- Don't trust `digest` for security. It's a cache key, not a tamper seal.
 
 ### Geometry elements
 

@@ -123,6 +123,84 @@ let ``editing an unrelated field keeps a node's comments`` () =
         s.Comments |> should equal [ "key vector" ]
     | _ -> failwith "sref"
 
+// ─── Meta (PDK-generated cell provenance) ──────────────────────────────
+
+[<Fact>]
+let ``analyzes a (meta ...) block on a cell`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell nfet_hv_W1p2_L1p0_core\n"
+        + "    (meta\n"
+        + "      (generator \"sky130/nfet_hv\")\n"
+        + "      (params (w 1.2) (l 1.0) (guard 0) (mode \"lvt\"))\n"
+        + "      (source \"magic-cif sky130B\")\n"
+        + "      (generated \"2026-05-13\")\n"
+        + "      (digest \"sha256:abc\"))))\n"
+    let ast = analyzeOk src
+    let cell = List.head ast.Cells
+    match cell.Meta with
+    | None -> failwith "expected meta"
+    | Some m ->
+        m.Generator |> should equal "sky130/nfet_hv"
+        m.Source |> should equal (Some "magic-cif sky130B")
+        m.Generated |> should equal (Some "2026-05-13")
+        m.Digest |> should equal (Some "sha256:abc")
+        m.Params |> List.length |> should equal 4
+        let byKey k = m.Params |> List.find (fun p -> p.Key = k)
+        (byKey "w").Value |> should equal (PvFloat 1.2)
+        (byKey "l").Value |> should equal (PvFloat 1.0)
+        (byKey "guard").Value |> should equal (PvInt 0L)
+        (byKey "mode").Value |> should equal (PvString "lvt")
+
+[<Fact>]
+let ``round-trips a (meta ...) block bit-equivalent`` () =
+    let doc : Document =
+        { emptyDocument with
+            Cells = [
+                { Name = "nfet_hv_W1p2_L1p0_core"
+                  Meta = Some {
+                      Generator = "sky130/nfet_hv"
+                      Params = [
+                          { Key = "w";     Value = PvFloat 1.2 }
+                          { Key = "l";     Value = PvFloat 1.0 }
+                          { Key = "guard"; Value = PvInt 0L }
+                      ]
+                      Source = Some "magic-cif sky130B"
+                      Generated = Some "2026-05-13"
+                      Digest = None
+                      Comments = []
+                  }
+                  Comments = []
+                  Elements = [] }
+            ] }
+    let rendered = Writer.write doc
+    let ast = analyzeOk rendered
+    let cell = List.head ast.Cells
+    let meta = cell.Meta.Value
+    meta.Generator |> should equal "sky130/nfet_hv"
+    meta.Params |> List.length |> should equal 3
+    meta.Source |> should equal (Some "magic-cif sky130B")
+    meta.Digest |> should equal None
+
+[<Fact>]
+let ``cells without (meta ...) keep Meta = None`` () =
+    let src = "(layout (version 1) (pdk sky130) (cell hand_authored))\n"
+    let ast = analyzeOk src
+    (List.head ast.Cells).Meta |> should equal None
+
+[<Fact>]
+let ``(meta ...) without (generator ...) is a parse error`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c (meta (params (w 1.0)))))\n"
+    let cst =
+        match Reader.parse src with
+        | Ok c -> c
+        | Error e -> failwithf "parse: %A" e
+    match Reader.analyze cst with
+    | Error _ -> ()
+    | Ok _ -> failwith "expected analyze error"
+
 // ─── Analyze pulls semantic fields ──────────────────────────────────────
 
 [<Fact>]
@@ -226,6 +304,7 @@ let ``synthesize then parse yields the same AST`` () =
         ]
         Cells = [
             { Name = "c"
+              Meta = None
               Comments = []
               Elements = [
                   PolyEl {
@@ -271,6 +350,7 @@ let ``synthesize emits floats with at least one decimal`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Meta = None
                   Comments = []
                   Elements = [
                       SRefEl {
@@ -297,6 +377,7 @@ let ``synthesize escapes special chars in strings`` () =
         emptyDocument with
             Cells = [
                 { Name = "c"
+                  Meta = None
                   Comments = []
                   Elements = [
                       LabelEl {

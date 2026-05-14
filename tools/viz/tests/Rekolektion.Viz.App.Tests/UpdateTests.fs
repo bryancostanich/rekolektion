@@ -51,6 +51,7 @@ let private fixtureDoc () : Document =
     { emptyDocument with
         Cells = [
             { Name = "TOP"
+              Meta = None
               Comments = []
               Elements = [
                   PolyEl (mkRectPoly 0L 0L 100L 100L)

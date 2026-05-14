@@ -228,10 +228,30 @@ Element = Union[Poly, Path, Rect, Port, Label, SRef, ARef, Props]
 
 
 @dataclass
+class Meta:
+    """Provenance for a PDK-generated cell. Mirrors the F#
+    `Rkt.Types.Meta` record. Only `generator` is required.
+
+    Consumers treat the presence of `Meta` on a `Cell` as "this is
+    PDK-owned" — viz refuses interior edits, tape-out ignores the
+    block, and the cache uses `(generator, digest)` as the lookup
+    key. See docs/io/rkt.md for the full schema.
+    """
+
+    generator: str
+    params: list[Property] = field(default_factory=list)
+    source: str | None = None
+    generated: str | None = None
+    digest: str | None = None
+    comments: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Cell:
     name: str
     elements: list[Element] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    meta: Meta | None = None
 
 
 @dataclass
@@ -518,11 +538,37 @@ def _emit_element(level: int, el: Element) -> str:
     raise TypeError(f"unknown element variant: {type(el).__name__}")
 
 
+def _emit_meta(level: int, meta: Meta) -> str:
+    """Emit a `(meta ...)` block as the first child of a cell.
+    Always emits `(params ...)` even when empty so consumers can
+    distinguish "no params" from "schema malformed."
+    """
+
+    inner = _indent(level + 1)
+    parts = [
+        _leading(level, meta.comments),
+        "(meta",
+        f"{inner}(generator {_string(meta.generator)})",
+    ]
+    params_body = "".join(f" {_prop(p)}" for p in meta.params)
+    parts.append(f"{inner}(params{params_body})")
+    if meta.source is not None:
+        parts.append(f"{inner}(source {_string(meta.source)})")
+    if meta.generated is not None:
+        parts.append(f"{inner}(generated {_string(meta.generated)})")
+    if meta.digest is not None:
+        parts.append(f"{inner}(digest {_string(meta.digest)})")
+    parts.append(")")
+    return "".join(parts)
+
+
 def _emit_cell(level: int, cell: Cell) -> str:
     parts = [
         _leading(level, cell.comments),
         f"(cell {cell.name}",
     ]
+    if cell.meta is not None:
+        parts.append(_emit_meta(level + 1, cell.meta))
     for el in cell.elements:
         parts.append(_emit_element(level + 1, el))
     parts.append(")")

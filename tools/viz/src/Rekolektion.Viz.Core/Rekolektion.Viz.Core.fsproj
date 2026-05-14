@@ -29,6 +29,7 @@
     <Compile Include="Layout/Snap.fs" />
     <Compile Include="Layout/Instances.fs" />
     <Compile Include="Layout/MagToLayout.fs" />
+    <Compile Include="Cif/Cif.fs" />
     <Compile Include="Layout/LayoutLoader.fs" />
     <Compile Include="Sidecar/Types.fs" />
     <Compile Include="Sidecar/Loader.fs" />

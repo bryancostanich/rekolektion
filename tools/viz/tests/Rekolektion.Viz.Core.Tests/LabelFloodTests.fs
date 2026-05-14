@@ -34,7 +34,7 @@ let private label (origin: Point) (text: string) : Element =
 let private docWith (elements: Element list) : Document =
     { emptyDocument with
         Cells = [
-            { Name = "top"; Elements = elements; Comments = [] }
+            { Name = "top"; Meta = None; Elements = elements; Comments = [] }
         ] }
 
 [<Fact>]

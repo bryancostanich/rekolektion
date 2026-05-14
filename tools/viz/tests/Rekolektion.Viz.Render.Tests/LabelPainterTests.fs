@@ -12,6 +12,7 @@ let ``Labels paint visible text`` () =
         { emptyDocument with
             Cells = [
                 { Name = "top"
+                  Meta = None
                   Comments = []
                   Elements = [
                       LabelEl {

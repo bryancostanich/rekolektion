@@ -892,6 +892,60 @@ let private analyzeElement
         // additive. Caller can decide whether to warn.
         Ok None
 
+/// Parse a `(meta ...)` header inside a cell. Only `generator` is
+/// required; everything else is optional. Unknown sub-forms are
+/// dropped — the schema is additive. Param values use the same
+/// PropValue typing as `(props ...)`.
+let private analyzeMeta
+    (path: string option)
+    (s: Sexp)
+    : Result<Meta, ReaderError> =
+    match childrenAfterHead s with
+    | None -> Error (err path (Some (Cst.posOf s)) "empty (meta ...)")
+    | Some children ->
+        let gen =
+            findForm "generator" children
+            |> Option.bind childrenAfterHead
+            |> Option.bind (function
+                | [a] ->
+                    match stringText a with
+                    | Some t -> Some t
+                    | None -> symbolText a
+                | _ -> None)
+        match gen with
+        | None ->
+            Error (err path (Some (Cst.posOf s))
+                "(meta ...) requires a (generator \"...\") sub-form")
+        | Some generator ->
+            let params' =
+                findForm "params" children
+                |> Option.bind childrenAfterHead
+                |> Option.defaultValue []
+                |> List.choose (fun p ->
+                    match p with
+                    | SList { Children = [ SAtom { Kind = Symbol; Text = key }; value ] } ->
+                        Some { Key = key; Value = propValueOf value }
+                    | SList { Children = [ SAtom { Kind = Symbol; Text = key } ] } ->
+                        Some { Key = key; Value = PvAtom "" }
+                    | _ -> None)
+            let single name =
+                findForm name children
+                |> Option.bind childrenAfterHead
+                |> Option.bind (function
+                    | [a] ->
+                        match stringText a with
+                        | Some t -> Some t
+                        | None -> symbolText a
+                    | _ -> None)
+            Ok {
+                Generator = generator
+                Params = params'
+                Source = single "source"
+                Generated = single "generated"
+                Digest = single "digest"
+                Comments = commentsOf s
+            }
+
 let private analyzeCell
     (path: string option)
     (defaultPdk: string)
@@ -906,16 +960,40 @@ let private analyzeCell
             | None ->
                 Error (err path (Some (Cst.posOf nameAtom)) "cell name must be a symbol")
             | Some name ->
-                let rec walk acc = function
-                    | [] -> Ok (List.rev acc)
-                    | el :: more ->
-                        match analyzeElement path defaultPdk el with
+                // `(meta ...)` is optional and, by convention, the
+                // first form after the cell name. We accept it anywhere
+                // (additive schema) by `findForm`-ing it out before
+                // walking the element list.
+                let metaResult =
+                    match findForm "meta" rest with
+                    | None -> Ok None
+                    | Some m ->
+                        match analyzeMeta path m with
+                        | Ok meta -> Ok (Some meta)
                         | Error e -> Error e
-                        | Ok (Some e) -> walk (e :: acc) more
-                        | Ok None -> walk acc more
-                match walk [] rest with
+                match metaResult with
                 | Error e -> Error e
-                | Ok els -> Ok { Name = name; Elements = els; Comments = commentsOf s }
+                | Ok meta ->
+                    let elementForms =
+                        rest
+                        |> List.filter (fun c ->
+                            match head c with
+                            | Some "meta" -> false
+                            | _ -> true)
+                    let rec walk acc = function
+                        | [] -> Ok (List.rev acc)
+                        | el :: more ->
+                            match analyzeElement path defaultPdk el with
+                            | Error e -> Error e
+                            | Ok (Some e) -> walk (e :: acc) more
+                            | Ok None -> walk acc more
+                    match walk [] elementForms with
+                    | Error e -> Error e
+                    | Ok els ->
+                        Ok { Name = name
+                             Meta = meta
+                             Elements = els
+                             Comments = commentsOf s }
         | [] ->
             Error (err path (Some (Cst.posOf s)) "(cell ...) needs a name")
 

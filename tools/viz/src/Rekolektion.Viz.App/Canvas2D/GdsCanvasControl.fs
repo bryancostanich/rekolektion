@@ -1322,16 +1322,22 @@ type GdsCanvasControl() =
             max 0L (int64 (stepUm / umPerDbu))
 
     /// Snap (dx, dy) DBU delta to the current grid step. No-op when
-    /// SnapEnabled is off.
+    /// SnapEnabled is off or when the raw delta is already zero
+    /// (the latter is critical — without the zero guard, simply
+    /// clicking a cell whose centroid sits off-grid would snap it
+    /// to the nearest grid point even though the user never
+    /// dragged).
     member private this.SnapDelta (lib: Document) (altHeld: bool) (dx: int64) (dy: int64)
             : int64 * int64 =
-        let step = this.SnapStepDbu lib altHeld
-        if step <= 1L then dx, dy
+        if dx = 0L && dy = 0L then 0L, 0L
         else
-            let snapCoord (v: int64) =
-                let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
-                q * step
-            snapCoord dx, snapCoord dy
+            let step = this.SnapStepDbu lib altHeld
+            if step <= 1L then dx, dy
+            else
+                let snapCoord (v: int64) =
+                    let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
+                    q * step
+                snapCoord dx, snapCoord dy
 
     /// Snap an absolute world-DBU point to the current grid step.
     /// Used by resize where the cursor's coord IS the new bbox edge.
@@ -1344,20 +1350,25 @@ type GdsCanvasControl() =
     /// `(dx, dy)`. We project the new centroid `(cx0+dx, cy0+dy)`
     /// onto the grid, then back out the delta that gets us there.
     /// Result: every commit lands the selection's centroid on a
-    /// grid intersection. No-op when SnapEnabled is off.
+    /// grid intersection. No-op when SnapEnabled is off OR when
+    /// the raw delta is zero — without the zero guard, selecting
+    /// a cell whose centroid is off-grid would auto-snap on
+    /// release even when the user never dragged.
     member private this.SnapDeltaCentroid
             (lib: Document) (altHeld: bool)
             (cx0: int64) (cy0: int64)
             (dx: int64) (dy: int64) : int64 * int64 =
-        let step = this.SnapStepDbu lib altHeld
-        if step <= 1L then dx, dy
+        if dx = 0L && dy = 0L then 0L, 0L
         else
-            let snapCoord (v: int64) =
-                let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
-                q * step
-            let snappedCx = snapCoord (cx0 + dx)
-            let snappedCy = snapCoord (cy0 + dy)
-            snappedCx - cx0, snappedCy - cy0
+            let step = this.SnapStepDbu lib altHeld
+            if step <= 1L then dx, dy
+            else
+                let snapCoord (v: int64) =
+                    let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
+                    q * step
+                let snappedCx = snapCoord (cx0 + dx)
+                let snappedCy = snapCoord (cy0 + dy)
+                snappedCx - cx0, snappedCy - cy0
 
     /// Bbox-center centroid of a set of `(int64*int64*int64*int64)`
     /// bboxes. Returns (0, 0) for an empty seq.

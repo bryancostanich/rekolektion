@@ -23,6 +23,85 @@ let private appendLog (line: string) (model: Model.Model) : Model.Model =
     let trimmed = if log.Length > 1000 then log |> List.skip (log.Length - 1000) else log
     { model with Log = trimmed }
 
+// -- Label-anchor inference helpers --------------------------------
+//
+// Labels in our model don't store a pointer to "their" polygon —
+// the association is inferred at use time by the same rule
+// `Net.Ratlines.anchorForLabel` and the renderer both use:
+//   "the smallest same-layer-number polygon whose bbox contains
+//    the label's origin."
+// We reuse that rule in the edit path so moving/resizing a polygon
+// also moves/resizes the labels anchored to it. Operates on a
+// cell's LOCAL elements (not flat space) because both move and
+// resize originate in the source-level element list.
+
+let private layerNumberOf (layer: Rekolektion.Viz.Core.Rkt.Types.Layer) : int =
+    fst (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer)
+
+let private elementBbox
+        (el: Rekolektion.Viz.Core.Rkt.Types.Element)
+        : (int64 * int64 * int64 * int64) option =
+    match el with
+    | Rekolektion.Viz.Core.Rkt.Types.PolyEl p when not p.Points.IsEmpty ->
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for pt in p.Points do
+            if pt.X < xMin then xMin <- pt.X
+            if pt.X > xMax then xMax <- pt.X
+            if pt.Y < yMin then yMin <- pt.Y
+            if pt.Y > yMax then yMax <- pt.Y
+        Some (xMin, yMin, xMax, yMax)
+    | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+        let xMin, xMax = if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+        let yMin, yMax = if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+        Some (xMin, yMin, xMax, yMax)
+    | _ -> None
+
+/// Build label-index → anchor-element-index for one cell. A label
+/// whose origin doesn't land inside any same-layer-number bbox is
+/// absent from the map (no anchor → label doesn't travel with any
+/// edit). "Smallest" so a label on a thin met1 stripe inside a
+/// wider areaid bbox anchors to the stripe.
+let private anchorMapForCell
+        (cell: Rekolektion.Viz.Core.Rkt.Types.Cell)
+        : Map<int, int> =
+    let indexed = cell.Elements |> List.indexed
+    let labels =
+        indexed
+        |> List.choose (fun (i, el) ->
+            match el with
+            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l -> Some (i, l)
+            | _ -> None)
+    labels
+    |> List.choose (fun (labelIdx, label) ->
+        let labelLayerNum = layerNumberOf label.Layer
+        let mutable best : int voption = ValueNone
+        let mutable bestArea = System.Int64.MaxValue
+        for (elIdx, el) in indexed do
+            let layerNum =
+                match el with
+                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p -> Some (layerNumberOf p.Layer)
+                | Rekolektion.Viz.Core.Rkt.Types.RectEl r -> Some (layerNumberOf r.Layer)
+                | _ -> None
+            match layerNum with
+            | Some n when n = labelLayerNum ->
+                match elementBbox el with
+                | Some (xMin, yMin, xMax, yMax) ->
+                    if label.Origin.X >= xMin && label.Origin.X <= xMax
+                       && label.Origin.Y >= yMin && label.Origin.Y <= yMax then
+                        let area = (xMax - xMin) * (yMax - yMin)
+                        if area < bestArea then
+                            bestArea <- area
+                            best <- ValueSome elIdx
+                | None -> ()
+            | _ -> ()
+        match best with
+        | ValueSome anchorIdx -> Some (labelIdx, anchorIdx)
+        | ValueNone -> None)
+    |> Map.ofList
+
 let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model.Model * Cmd<Msg.Msg> =
     match msg with
     | Msg.OpenFile path ->
@@ -410,16 +489,132 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
+                            // Identify top-cell labels whose anchor
+                            // polygon lives inside any moved SRef
+                            // (i.e., a sub-cell poly brought into
+                            // flat-space by that instance). Those
+                            // labels need to travel with the SRef.
+                            // Resolution runs on the PRE-MOVE doc
+                            // so the anchor candidates are at their
+                            // resting positions. The `Smallest` rule
+                            // matches the renderer / ratline /
+                            // LabelFlood inference: a label sticks to
+                            // the smallest same-layer-number poly
+                            // whose bbox contains it.
+                            let top = Layout.Flatten.findTop mc.Document
+                            let polyBboxesFor (poly: Layout.Flatten.FlatPolygon)
+                                    : (int * int64 * int64 * int64 * int64) option =
+                                if poly.Points.Length = 0 then None
+                                else
+                                    let mutable xMin = System.Int64.MaxValue
+                                    let mutable yMin = System.Int64.MaxValue
+                                    let mutable xMax = System.Int64.MinValue
+                                    let mutable yMax = System.Int64.MinValue
+                                    for pt in poly.Points do
+                                        if pt.X < xMin then xMin <- pt.X
+                                        if pt.X > xMax then xMax <- pt.X
+                                        if pt.Y < yMin then yMin <- pt.Y
+                                        if pt.Y > yMax then yMax <- pt.Y
+                                    Some (poly.Layer, xMin, yMin, xMax, yMax)
+                            // Anchor candidates: top-cell direct
+                            // paint (tag = None) + every flat poly
+                            // from every top-level instance (tag =
+                            // Some k). For top-cell direct, layer
+                            // comes from the Layer.Number conversion;
+                            // bbox from the element.
+                            let candidates = ResizeArray<int option * int * int64 * int64 * int64 * int64>()
+                            for el in Layout.Flatten.flattenTopCellDirect mc.Document do
+                                match polyBboxesFor el with
+                                | Some (ln, xMin, yMin, xMax, yMax) ->
+                                    candidates.Add (None, ln, xMin, yMin, xMax, yMax)
+                                | None -> ()
+                            // CRITICAL: `flattenInstance` takes the
+                            // top-cell ELEMENT index, not a dense
+                            // 0..N-1 counter. `mc.TopInstances` is
+                            // the SRef set; each Instance carries
+                            // its `Index` field which is the
+                            // position in `top.Elements`. The
+                            // `model.InstanceSelection` set is also
+                            // element indices, so the candidate
+                            // tag and the moved-set check must agree
+                            // on that key — using a dense counter
+                            // produces silently-wrong "no anchor"
+                            // results that look like the feature is
+                            // broken.
+                            for inst in mc.TopInstances do
+                                let polys =
+                                    Layout.Flatten.flattenInstance mc.Document inst.Index
+                                for poly in polys do
+                                    match polyBboxesFor poly with
+                                    | Some (ln, xMin, yMin, xMax, yMax) ->
+                                        candidates.Add
+                                            (Some inst.Index, ln, xMin, yMin, xMax, yMax)
+                                    | None -> ()
+                            // Identify labels in the top cell whose
+                            // best anchor (smallest containing same-
+                            // layer-number) belongs to a moved
+                            // instance. Track indices in the top
+                            // cell's Elements list.
+                            let movedSet = model.InstanceSelection
+                            let labelsToShift = System.Collections.Generic.HashSet<int>()
+                            top.Elements
+                            |> List.iteri (fun i el ->
+                                match el with
+                                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                                    let labelLn = layerNumberOf l.Layer
+                                    let mutable best : int option voption = ValueNone
+                                    let mutable bestArea = System.Int64.MaxValue
+                                    for (tag, ln, xMin, yMin, xMax, yMax) in candidates do
+                                        if ln = labelLn
+                                           && l.Origin.X >= xMin && l.Origin.X <= xMax
+                                           && l.Origin.Y >= yMin && l.Origin.Y <= yMax then
+                                            let area = (xMax - xMin) * (yMax - yMin)
+                                            if area < bestArea then
+                                                bestArea <- area
+                                                best <- ValueSome tag
+                                    match best with
+                                    | ValueSome (Some k) when movedSet.Contains k ->
+                                        labelsToShift.Add i |> ignore
+                                    | _ -> ()
+                                | _ -> ())
+                            // Translate the SRef origins.
                             let lib' =
                                 Layout.Instances.translateSelection
                                     mc.Document model.InstanceSelection dxDbu dyDbu
-                            let flat' = Layout.Flatten.flatten lib'
-                            let inst' = Layout.Instances.enumerate lib'
+                            // Now translate the SRef-anchored labels
+                            // in the post-move doc by the same delta.
+                            let lib'' =
+                                if labelsToShift.Count = 0 then lib'
+                                else
+                                    let topName = top.Name
+                                    let cells' =
+                                        lib'.Cells
+                                        |> List.map (fun c ->
+                                            if c.Name <> topName then c
+                                            else
+                                                let elems' =
+                                                    c.Elements
+                                                    |> List.mapi (fun i el ->
+                                                        if labelsToShift.Contains i then
+                                                            match el with
+                                                            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                                                                let o = l.Origin
+                                                                Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                                                    { l with
+                                                                        Origin =
+                                                                            ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
+                                                                             : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                                                            | other -> other
+                                                        else el)
+                                                { c with Elements = elems' })
+                                    { lib' with Cells = cells' }
+                            let flat' = Layout.Flatten.flatten lib''
+                            let inst' = Layout.Instances.enumerate lib''
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Document = lib'
+                                        Document = lib''
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -456,11 +651,17 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             match Map.tryFind c.Name perStruct with
                             | None -> c
                             | Some indices ->
+                                // Pre-compute the label→anchor map
+                                // ONCE per cell so we know which
+                                // labels travel with the moved
+                                // polys. Built BEFORE the element
+                                // mutation so the anchor indices
+                                // line up with `indices`.
+                                let anchorMap = anchorMapForCell c
                                 let elems' =
                                     c.Elements
                                     |> List.mapi (fun i el ->
-                                        if not (indices.Contains i) then el
-                                        else
+                                        if indices.Contains i then
                                             match el with
                                             | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
                                                 Rekolektion.Viz.Core.Rkt.Types.PolyEl
@@ -469,12 +670,27 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                                 Rekolektion.Viz.Core.Rkt.Types.PathEl
                                                     { p with Points = translatePoly p.Points }
                                             | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
-                                                // Translate the rect's corners.
                                                 Rekolektion.Viz.Core.Rkt.Types.RectEl
                                                     { r with
                                                         X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
                                                         X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu }
-                                            | other -> other)
+                                            | other -> other
+                                        else
+                                            // Translate any label
+                                            // anchored to a moved
+                                            // element so the text
+                                            // travels with its
+                                            // wire.
+                                            match el, Map.tryFind i anchorMap with
+                                            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l, Some anchorIdx
+                                                    when indices.Contains anchorIdx ->
+                                                let o = l.Origin
+                                                Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                                    { l with
+                                                        Origin =
+                                                            ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
+                                                             : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                                            | _ -> el)
                                 { c with Elements = elems' })
                     { doc with Cells = updated }
                 let mutable activePath' = path
@@ -511,40 +727,58 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         |> List.map (fun c ->
                             if c.Name <> sname then c
                             else
+                                // Pre-resize bbox of the target
+                                // element. Used both for poly-point
+                                // lerp and for label-origin lerp.
+                                let oldBbox =
+                                    if idx < 0 || idx >= c.Elements.Length then None
+                                    else elementBbox c.Elements.[idx]
+                                let anchorMap = anchorMapForCell c
+                                let lerp (oxMin, oyMin, oxMax, oyMax) (x: int64) (y: int64) =
+                                    let oldW = max 1L (oxMax - oxMin)
+                                    let oldH = max 1L (oyMax - oyMin)
+                                    let newW = nxMax - nxMin
+                                    let newH = nyMax - nyMin
+                                    nxMin + (x - oxMin) * newW / oldW,
+                                    nyMin + (y - oyMin) * newH / oldH
                                 let elems' =
                                     c.Elements
                                     |> List.mapi (fun i el ->
-                                        if i <> idx then el
-                                        else
-                                            match el with
-                                            | Rekolektion.Viz.Core.Rkt.Types.PolyEl p when not p.Points.IsEmpty ->
-                                                let mutable xMin = System.Int64.MaxValue
-                                                let mutable yMin = System.Int64.MaxValue
-                                                let mutable xMax = System.Int64.MinValue
-                                                let mutable yMax = System.Int64.MinValue
-                                                for pt in p.Points do
-                                                    if pt.X < xMin then xMin <- pt.X
-                                                    if pt.X > xMax then xMax <- pt.X
-                                                    if pt.Y < yMin then yMin <- pt.Y
-                                                    if pt.Y > yMax then yMax <- pt.Y
-                                                let oldW = max 1L (xMax - xMin)
-                                                let oldH = max 1L (yMax - yMin)
-                                                let newW = nxMax - nxMin
-                                                let newH = nyMax - nyMin
+                                        if i = idx then
+                                            match el, oldBbox with
+                                            | Rekolektion.Viz.Core.Rkt.Types.PolyEl p, Some bb when not p.Points.IsEmpty ->
                                                 let pts' =
                                                     p.Points
                                                     |> List.map (fun (pt: Rekolektion.Viz.Core.Rkt.Types.Point) ->
-                                                        ({ X = nxMin + (pt.X - xMin) * newW / oldW
-                                                           Y = nyMin + (pt.Y - yMin) * newH / oldH }
+                                                        let nx, ny = lerp bb pt.X pt.Y
+                                                        ({ X = nx; Y = ny }
                                                          : Rekolektion.Viz.Core.Rkt.Types.Point))
                                                 Rekolektion.Viz.Core.Rkt.Types.PolyEl
                                                     { p with Points = pts' }
-                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r, _ ->
                                                 Rekolektion.Viz.Core.Rkt.Types.RectEl
                                                     { r with
                                                         X1 = nxMin; Y1 = nyMin
                                                         X2 = nxMax; Y2 = nyMax }
-                                            | other -> other)
+                                            | other, _ -> other
+                                        else
+                                            // Lerp the origin of any
+                                            // label anchored to the
+                                            // resized element so a
+                                            // centered label stays
+                                            // centered and an off-
+                                            // center label keeps its
+                                            // proportional position.
+                                            match el, oldBbox, Map.tryFind i anchorMap with
+                                            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l, Some bb, Some anchorIdx
+                                                    when anchorIdx = idx ->
+                                                let nx, ny = lerp bb l.Origin.X l.Origin.Y
+                                                Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                                    { l with
+                                                        Origin =
+                                                            ({ X = nx; Y = ny }
+                                                             : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                                            | _ -> el)
                                 { c with Elements = elems' })
                     { doc with Cells = updatedCells }
                 let mutable activePath' = path

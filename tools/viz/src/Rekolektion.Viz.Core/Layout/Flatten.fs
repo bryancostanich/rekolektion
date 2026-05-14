@@ -99,7 +99,7 @@ let private layerPair (layer: Layer) : int * int =
 /// Detect the "top" cell: one that no other cell references via
 /// SRef/ARef. If multiple candidates (or none), fall back to the
 /// first cell in the document.
-let private findTop (doc: Document) : Cell =
+let findTop (doc: Document) : Cell =
     let referenced = System.Collections.Generic.HashSet<string>()
     for c in doc.Cells do
         for el in c.Elements do

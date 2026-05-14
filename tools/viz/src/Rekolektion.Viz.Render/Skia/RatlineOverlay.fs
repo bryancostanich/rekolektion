@@ -12,11 +12,15 @@ let private worldToScreen (vb: LayerPainter.ViewBox) (x: float) (y: float) : SKP
     let sy = float vb.PixelH - ((y - float vb.MinY) / dy * float vb.PixelH)
     SKPoint(float32 sx, float32 sy)
 
-/// Draw a single net's pairwise pin-to-pin ratlines, plus a
-/// label-bearing endpoint mark. Pairwise (n choose 2) is fine for
-/// the typical signal nets — a few hops between instances. For
-/// power rails with many fans-out the caller should either skip
-/// or pre-cluster.
+/// Draw a single net's ratlines as a rectilinear MST plus pin
+/// markers. `route.Mst` carries the N-1 spanning-tree edges
+/// pre-computed at `Ratlines.compute` time, so the renderer is
+/// purely visual — no algorithm logic here.
+///
+/// We deliberately avoid the old N(N-1)/2 all-pairs draw: even a
+/// 10-pin signal net produced 45 lines, and power nets turned into
+/// instant hairballs. MST gives the same "what wants to connect"
+/// information with N-1 edges and no aliasing.
 let private drawRoute
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
@@ -29,12 +33,10 @@ let private drawRoute
         route.Pins
         |> Array.map (fun p ->
             worldToScreen vb (float p.Position.X) (float p.Position.Y))
-    // Pairwise line: connect every pair of endpoints. For 2 pins
-    // this is 1 line; for n pins it's n(n-1)/2. Capped lightly
-    // by relying on the caller to filter mega-fanout nets.
-    for i in 0 .. pts.Length - 1 do
-        for j in i + 1 .. pts.Length - 1 do
-            canvas.DrawLine(pts.[i], pts.[j], paintLine)
+    for edge in route.Mst do
+        if edge.From >= 0 && edge.From < pts.Length
+           && edge.To >= 0 && edge.To < pts.Length then
+            canvas.DrawLine(pts.[edge.From], pts.[edge.To], paintLine)
     // Pin marker: small filled circle so the user sees the
     // endpoint as well as the line.
     for p in pts do

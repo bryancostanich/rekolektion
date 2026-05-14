@@ -1186,7 +1186,7 @@ type GdsCanvasControl() =
             let visibleRatlines = this.VisibleRatlines
             let routes =
                 if not visibleRatlines.IsEmpty then
-                    Net.Ratlines.compute (renderLib)
+                    Net.Ratlines.compute renderLib renderFlat
                 else [||]
             // Tighten-mode candidates: per-cardinal binding pair
             // for the current selection vs. every other top

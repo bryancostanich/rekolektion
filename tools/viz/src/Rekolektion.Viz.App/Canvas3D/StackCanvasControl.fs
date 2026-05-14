@@ -1327,32 +1327,44 @@ type StackCanvasControl() =
             if not visibleRatlines.IsEmpty && rulerProgram <> 0u then
                 match this.Library with
                 | Some lib ->
-                    let routes = Net.Ratlines.compute (lib)
+                    let routes = Net.Ratlines.compute lib (this.FlatPolygons)
                     let filtered =
                         routes |> Array.filter (fun r -> visibleRatlines.Contains r.Name)
                     // World-space DBU → user µm divisor.
                     let umPer = (float lib.Units.DbuNm * 1.0e-3)
-                    // Ratline Z: 0.5 µm above the highest tracked
-                    // layer (met5 sits around 3.77 + 0.50 = 4.27);
-                    // any flat constant above the stack works.
-                    let z = 5.0f
+                    // Ratline Z comes from the pin itself now — each
+                    // endpoint sits at the top of its anchoring
+                    // polygon's layer, with a small lift so it doesn't
+                    // Z-fight the metal. Cross-layer hops slant.
+                    let zLift = 0.10f
                     // amber, matches 2D ratline overlay color
                     let r = 1.0f
                     let g_ = 0.78f
                     let b = 0.25f
                     let verts = System.Collections.Generic.List<float32>()
+                    // Walk the pre-computed rectilinear MST instead
+                    // of all pin pairs. Matches the 2D RatlineOverlay
+                    // path; collapses N(N-1)/2 line draws to N-1
+                    // edges per net, which is the difference between
+                    // a hairball and a readable overlay on power
+                    // nets with hundreds of pins.
                     for route in filtered do
                         let pins = route.Pins
-                        for i in 0 .. pins.Length - 1 do
-                            for j in i + 1 .. pins.Length - 1 do
-                                let pi = pins.[i].Position
-                                let pj = pins.[j].Position
+                        for edge in route.Mst do
+                            if edge.From >= 0 && edge.From < pins.Length
+                               && edge.To >= 0 && edge.To < pins.Length then
+                                let pinI = pins.[edge.From]
+                                let pinJ = pins.[edge.To]
+                                let pi = pinI.Position
+                                let pj = pinJ.Position
                                 let xi = float32 (float pi.X * umPer)
                                 let yi = float32 (float pi.Y * umPer)
+                                let zi = float32 pinI.ZUm + zLift
                                 let xj = float32 (float pj.X * umPer)
                                 let yj = float32 (float pj.Y * umPer)
-                                verts.AddRange([| xi; yi; z; r; g_; b |])
-                                verts.AddRange([| xj; yj; z; r; g_; b |])
+                                let zj = float32 pinJ.ZUm + zLift
+                                verts.AddRange([| xi; yi; zi; r; g_; b |])
+                                verts.AddRange([| xj; yj; zj; r; g_; b |])
                     if verts.Count > 0 then
                         let arr = verts.ToArray()
                         g.BindVertexArray ratlineVao

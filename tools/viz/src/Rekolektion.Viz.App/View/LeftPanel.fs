@@ -1,5 +1,6 @@
 module Rekolektion.Viz.App.View.LeftPanel
 
+open Avalonia.Input
 open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
 open Avalonia.Controls
@@ -7,6 +8,23 @@ open Avalonia.Layout
 open Avalonia.Media
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model
+
+// -- Layer drag-paint state. UI thread only, mutated by row
+// pointer handlers; lives at module level so it survives FuncUI
+// re-renders. `dragActive` arms on PointerPressed over a layer
+// row; `dragTarget` is the visibility state we paint onto every
+// row the cursor enters next; `dragVisited` keeps a row from
+// flipping back-and-forth if the cursor wobbles back over it
+// (sticky semantics — drag sets state, doesn't toggle). Cleared
+// by ScrollViewer-level PointerReleased so a release outside a
+// row still ends the drag.
+let mutable private dragActive : bool = false
+let mutable private dragTarget : bool = false
+let mutable private dragVisited : Set<int * int> = Set.empty
+
+let private endDragPaint () =
+    dragActive <- false
+    dragVisited <- Set.empty
 
 let private layerRow
         (toggle: Visibility.ToggleState)
@@ -24,10 +42,36 @@ let private layerRow
         Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
         Border.onPointerPressed (fun e ->
             e.Handled <- true
-            // Dispatch a flip — the update fn reads current state.
-            // Capturing `not visible` from this closure was reading
-            // stale truth across renders and breaking re-enable.
-            dispatch (Msg.FlipLayer key))
+            // Avalonia auto-captures the pointer on PointerPressed;
+            // while captured, sibling rows don't fire PointerEntered
+            // and the drag-paint can't see them. Releasing capture
+            // immediately lets the cursor's hover state propagate to
+            // adjacent rows so the entered handler can paint them.
+            e.Pointer.Capture null
+            // First press in a drag-paint sequence: arm the drag
+            // with the OPPOSITE of this row's current state as the
+            // target. Subsequent rows the cursor enters get
+            // painted to the same target (sticky — entering a
+            // row already at target = no-op). Use explicit
+            // ToggleLayer (key, target) instead of FlipLayer so
+            // every row in the drag agrees on direction even when
+            // the closure's `visible` value is stale relative to
+            // mid-drag dispatches.
+            let target = not visible
+            dragActive <- true
+            dragTarget <- target
+            dragVisited <- Set.singleton key
+            dispatch (Msg.ToggleLayer (key, target)))
+        Border.onPointerEntered (fun e ->
+            // Drag-paint: while a drag is in flight AND the left
+            // button is still held, painting any unvisited row
+            // sets it to the drag's target state.
+            if dragActive
+               && not (dragVisited.Contains key)
+               && e.GetCurrentPoint(null).Properties.IsLeftButtonPressed then
+                dragVisited <- dragVisited.Add key
+                dispatch (Msg.ToggleLayer (key, dragTarget)))
+        Border.onPointerReleased (fun _ -> endDragPaint ())
         Border.child (
             StackPanel.create [
                 StackPanel.orientation Orientation.Horizontal
@@ -316,6 +360,12 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         ]
 
     ScrollViewer.create [
+        // Catch a release that happens between rows (gap area) or
+        // outside the row hit region but still inside the panel.
+        // Without this the drag-paint state stays armed and the
+        // next time the user enters a row their hover would paint
+        // unintentionally.
+        ScrollViewer.onPointerReleased (fun _ -> endDragPaint ())
         ScrollViewer.content (
             StackPanel.create [
                 StackPanel.spacing 4.0

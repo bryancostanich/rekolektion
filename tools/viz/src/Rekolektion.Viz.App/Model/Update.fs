@@ -857,7 +857,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 // automatic retarget, not user intent.)
                 let pathRestored =
                     if stillDirty then mc.Path
-                    elif mc.Path = EditSession.suggestEditedPathFor mc.OriginalPath then
+                    elif EditSession.isAutoSuggestedEditedPath mc.OriginalPath mc.Path then
                         mc.OriginalPath
                     else mc.Path
                 let openMacros' =
@@ -993,9 +993,20 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let activePath' =
             if model.ActiveMacroPath.IsSome then Some writtenPath
             else None
+        // Push the saved path to Recents. First-time saves of an
+        // opened file write to `<base>_edited.mag`; subsequent
+        // saves stay at that path. Save As writes to a fresh
+        // user-chosen path. Either way the resulting file is a
+        // new artifact the user will want to reopen, so it joins
+        // RecentFiles alongside the originals.
+        let recents' =
+            writtenPath :: (model.RecentFiles |> List.filter (fun p -> p <> writtenPath))
+            |> List.truncate 10
+        Rekolektion.Viz.App.Services.Recents.save recents'
         appendLog (sprintf "saved %s" writtenPath)
             { model with
                 OpenMacros = openMacros'
-                ActiveMacroPath = activePath' }, Cmd.none
+                ActiveMacroPath = activePath'
+                RecentFiles = recents' }, Cmd.none
     | Msg.SaveFailed reason ->
         appendLog (sprintf "save failed: %s" reason) model, Cmd.none

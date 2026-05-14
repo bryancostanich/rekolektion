@@ -27,23 +27,39 @@ let allDrawing : Layer list = [
     { Number =  64; DataType = 20; Name = "nwell";   Color = rgba 0xa0 0xc8 0xff 0xff; StackZ = -0.20; Thickness = 0.20 }
     { Number =  65; DataType = 20; Name = "diff";    Color = rgba 0xff 0xd0 0x80 0xff; StackZ = -0.10; Thickness = 0.15 }
     { Number =  65; DataType = 44; Name = "tap";     Color = rgba 0xff 0xd0 0x80 0xff; StackZ = -0.10; Thickness = 0.15 }
-    { Number =  66; DataType = 20; Name = "poly";    Color = rgba 0xff 0x40 0x40 0xff; StackZ =  0.00; Thickness = 0.18 }
+    // Poly gets the bright blue the routing metals used to wear —
+    // poly is the gate-forming layer and reading distinctly from
+    // diff/li1 is more important than reading "warm" or "metallic".
+    { Number =  66; DataType = 20; Name = "poly";    Color = rgba 0x40 0x90 0xff 0xff; StackZ =  0.00; Thickness = 0.18 }
     // licon1 = poly/diff contact down to li1. Name `licon1` matches the
     // sky130 stream convention and Python `_layer_map.py`; the Magic
     // `.mag` loader keeps the legacy `licon` name and aliases to this
     // pair via `Mag/LayerMap.fs`.
     { Number =  66; DataType = 44; Name = "licon1";  Color = rgba 0x80 0x80 0x80 0xff; StackZ =  0.05; Thickness = 0.38 }
-    { Number =  67; DataType = 20; Name = "li1";     Color = rgba 0xc0 0x80 0xff 0xff; StackZ =  0.43; Thickness = 0.10 }
+    // Routing-layer palette — silver/gold tones that read as
+    // "metal" instead of the saturated rainbow this used to be.
+    // Stacked alternating cool/warm so adjacent layers stay
+    // visually distinct without color-coding by function (which
+    // never quite worked at six routing layers anyway).
+    //   li1   → graphite gray-purple (titanium-nitride local IC)
+    //   met1  → aluminum silver
+    //   met2  → light gold
+    //   met3  → bronze
+    //   met4  → copper
+    //   met5  → pale brass
+    // Vias/contacts keep their dim-gray (they're tiny dots, not
+    // wires; competing color would distract from the routing).
+    { Number =  67; DataType = 20; Name = "li1";     Color = rgba 0x88 0x82 0x96 0xff; StackZ =  0.43; Thickness = 0.10 }
     { Number =  67; DataType = 44; Name = "mcon";    Color = rgba 0x60 0x60 0x60 0xff; StackZ =  0.53; Thickness = 0.36 }
-    { Number =  68; DataType = 20; Name = "met1";    Color = rgba 0x40 0x90 0xff 0xff; StackZ =  0.89; Thickness = 0.36 }
+    { Number =  68; DataType = 20; Name = "met1";    Color = rgba 0xc8 0xc8 0xd4 0xff; StackZ =  0.89; Thickness = 0.36 }
     { Number =  68; DataType = 44; Name = "via";     Color = rgba 0x50 0x50 0x50 0xff; StackZ =  1.25; Thickness = 0.36 }
-    { Number =  69; DataType = 20; Name = "met2";    Color = rgba 0x40 0xff 0x90 0xff; StackZ =  1.61; Thickness = 0.36 }
+    { Number =  69; DataType = 20; Name = "met2";    Color = rgba 0xdc 0xc8 0x88 0xff; StackZ =  1.61; Thickness = 0.36 }
     { Number =  69; DataType = 44; Name = "via2";    Color = rgba 0x64 0x64 0x64 0xff; StackZ =  1.97; Thickness = 0.36 }
-    { Number =  70; DataType = 20; Name = "met3";    Color = rgba 0xff 0xa0 0x40 0xff; StackZ =  2.33; Thickness = 0.36 }
+    { Number =  70; DataType = 20; Name = "met3";    Color = rgba 0xb8 0x8c 0x5c 0xff; StackZ =  2.33; Thickness = 0.36 }
     { Number =  70; DataType = 44; Name = "via3";    Color = rgba 0x46 0x46 0x46 0xff; StackZ =  2.69; Thickness = 0.36 }
-    { Number =  71; DataType = 20; Name = "met4";    Color = rgba 0xff 0xff 0x40 0xff; StackZ =  3.05; Thickness = 0.36 }
+    { Number =  71; DataType = 20; Name = "met4";    Color = rgba 0xc8 0x88 0x60 0xff; StackZ =  3.05; Thickness = 0.36 }
     { Number =  71; DataType = 44; Name = "via4";    Color = rgba 0x46 0x46 0x46 0xff; StackZ =  3.41; Thickness = 0.36 }
-    { Number =  72; DataType = 20; Name = "met5";    Color = rgba 0xbb 0xbb 0x66 0xff; StackZ =  3.77; Thickness = 0.50 }
+    { Number =  72; DataType = 20; Name = "met5";    Color = rgba 0xb4 0xa4 0x70 0xff; StackZ =  3.77; Thickness = 0.50 }
     // HV implant + native-threshold markers — required for sky130
     // `_g5v0d10v5_` device families (HV nfet / pfet).  Magic's DRC
     // rules switch from LV to HV variants based on these markers.

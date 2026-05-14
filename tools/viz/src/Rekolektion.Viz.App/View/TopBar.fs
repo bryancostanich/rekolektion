@@ -81,9 +81,14 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch msg)
         ] :> IView
-    let gridToggle  = mkToggle "Grid (G)"   model.ShowGrid    "#2c4b6f" Msg.ToggleGrid
-    let rulerToggle = mkToggle "Ruler (U)"  model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
-    let snapToggle  = mkToggle "Snap (S)"   model.SnapEnabled "#2c4b6f" Msg.ToggleSnap
+    let gridToggle    = mkToggle "Grid (G)"     model.ShowGrid    "#2c4b6f" Msg.ToggleGrid
+    let rulerToggle   = mkToggle "Ruler (U)"    model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
+    let snapToggle    = mkToggle "Snap (S)"     model.SnapEnabled "#2c4b6f" Msg.ToggleSnap
+    // Tighten mode lives next to the editor-action toggles so the
+    // mode-state indicator (filled = active) reads at a glance.
+    // Cyan accent matches Grid/Ruler/Snap; Tighten's keyboard
+    // hotkey is T (see App.fs key handler).
+    let tightenToggle = mkToggle "Tighten (T)"  model.TightenMode "#2c4b6f" Msg.ToggleTightenMode
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -104,6 +109,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     snapToggle
                                     rulerToggle
                                     gridToggle
+                                    tightenToggle
                                     ratlinesToggle
                                     drcToggle
                                     dimensionsToggle

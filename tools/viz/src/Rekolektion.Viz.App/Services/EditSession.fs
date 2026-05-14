@@ -14,6 +14,32 @@ let suggestEditedPathFor (originalPath: string) : string =
     let ext = Path.GetExtension originalPath
     Path.Combine(dir, sprintf "%s_edited%s" stem ext)
 
+/// Does `candidate` look like an auto-suggested edited-copy path
+/// for `originalPath`? Matches `<stem>_edited<ext>` AND the
+/// collision-suffixed variants `<stem>_edited_<N><ext>` that
+/// `suggestEditedPath` produces when the bare `_edited` name is
+/// already taken on disk. Used by the undo path-revert so the
+/// tab name snaps back to the original even when the auto-name
+/// landed at `_edited_2` etc. User-typed paths (anything that
+/// doesn't fit the pattern) are NOT auto-suggested and stay.
+let isAutoSuggestedEditedPath (originalPath: string) (candidate: string) : bool =
+    let dir = Path.GetDirectoryName originalPath
+    let stem = Path.GetFileNameWithoutExtension originalPath
+    let ext = Path.GetExtension originalPath
+    let cDir = Path.GetDirectoryName candidate
+    let cName = Path.GetFileNameWithoutExtension candidate
+    let cExt = Path.GetExtension candidate
+    if cDir <> dir || cExt <> ext then false
+    elif cName = sprintf "%s_edited" stem then true
+    else
+        let prefix = sprintf "%s_edited_" stem
+        if not (cName.StartsWith prefix) then false
+        else
+            let suffix = cName.Substring prefix.Length
+            match System.Int32.TryParse suffix with
+            | true, _ -> true
+            | _ -> false
+
 /// Compute the `_edited.mag` path used on first edit. If
 /// `<base>_edited.mag` already exists, append `_2`, `_3`, … until
 /// we land on an unused name. Lives next to the original so the

@@ -651,6 +651,75 @@ For a route that's purely on one axis (no row crossing), a single
 `place_wire` on the appropriate-direction layer suffices — no via
 stack needed.
 
+### Routing order — sequence by topology
+
+A block with more than a couple of internal nets needs a routing
+*order*. Routing the easiest net first eats channels that the
+hardest net then can't fit through; routing the hardest net first
+overconstrains everything else. The convention that works:
+
+| Phase | What | Why |
+| ----- | ---- | --- |
+| 1. Power | VDD, VSS, body taps | Already covered by `place_rail` + `place_taps_around` + `pin_to_rail`. Power needs the most real estate — do it first or it gets pushed into bad channels |
+| 2. **Local abutting connections** | Within-row D-D or S-S between adjacent FETs (same row, same well) | These are *not really routing* — they're li1 strip merges. Two FETs whose drains share a net just need their D-strips to abut. Often zero new geometry, just primitive placement |
+| 3. **Cross-row 2-pin nets** | A single nfet pin → a single pfet pin | One `pin_patch` + one `place_wire(layer="met2")` + via1 stacks at both ends. Predictable area cost |
+| 4. **Multi-fanout nets** (3+ pins) | Nets touching 3 or more cell pins, often spanning multiple rows | Hardest. Need a routing "spine" (typically met2 trunk with met1 stubs branching). Save for last so you know where the obstacles are |
+
+**Within each phase, tie-break by physical span: shortest first.**
+A net whose pins are 2 µm apart routes trivially; a net spanning
+the block width is much more constrained. Doing short ones first
+leaves the wide channels open for the long ones.
+
+**Classify by topology, not by signal name.** Whether a net is
+called `drn_L` or `OUT` doesn't matter — what matters is "how
+many pins, what rows do they sit in, can adjacent pins abut?"
+Walk the net list once at the start, tag each net with its phase,
+and route in phase order.
+
+```python
+# Pseudocode for the topology pass — agent-friendly.
+for net_name, pins in nets.items():
+    rows = {pin.row for pin in pins}
+    if len(pins) >= 3:
+        phase = 4  # multi-fanout
+    elif len(rows) > 1:
+        phase = 3  # cross-row 2-pin
+    elif pins_are_adjacent_same_row(pins):
+        phase = 2  # local abut
+    else:
+        phase = 3  # same-row but non-adjacent → treat as cross-row
+    net_phase[net_name] = phase
+```
+
+**Fallback when a later phase can't route:**
+
+1. Try a different layer for the blocked net (e.g. met3 if met2
+   is full in that channel).
+2. Add a met2 jog around the obstacle.
+3. If neither works, move an earlier-phase route to free the
+   channel. Don't move FET placement — re-route, not re-place.
+
+Re-running `verify_drc` between phases catches violations early
+when fixes are still cheap. Don't wait until every net is in.
+
+**Phase boundaries are NOT check-in points.** Once routing has
+started, walk the phases (2 → 3 → 4) to completion in a single
+pass. Run `verify_drc` at each phase boundary, but do not stop to
+ask the user "should I continue?" — that's the
+`feedback_decision_vs_checkpoint` anti-pattern. Only halt when:
+
+1. **DRC surfaces a violation that can't be fixed with a helper-
+   call change** — i.e. the fix requires a real architectural
+   decision (re-pick a layer, re-place a FET, abandon a topology).
+   Those are decision points; ask.
+2. **A net's required topology can't be expressed with the existing
+   helpers** — file the helper gap and ask whether to work around
+   or wait.
+3. **The user explicitly asked you to stop after a specific phase.**
+
+Otherwise: keep walking. Bugs, sizing tweaks, and natural pauses
+between phases are not stopping points.
+
 ### NOT a valid pattern
 
 **Routing everything on met1.** Every wire on one layer collides
@@ -750,6 +819,55 @@ The single `VBIAS_P` label makes the wire — plus anything that
 flood-fills to it (other met1 on the same net, via stacks down to
 gates) — show up as one net everywhere it appears.
 
+### Labeling a primitive's pin — use the extracted PORT position
+
+When you put a parent-level label directly over a primitive's `D` /
+`S` / `G` pin (rather than on a parent-painted wire), the label
+must sit on the **primitive's extracted port position**, not on the
+primitive's own label position.  These can differ by ~100 nm.
+
+Magic's port-promotion only merges a parent label with an SRef's
+internal pin when the label coord matches the port's tile coord.
+If the label is on the same `li1` polygon as the strap but at a
+different y from the port tile, the label becomes a **floating
+port** — visible in the extracted netlist's `.subckt` line but not
+electrically connected to any device.  LVS then reports a
+"port matching" failure even though the topology is correct.
+
+**Concrete example — `n_w12_l1` (W=1.2 nfet HV):**
+
+| Position kind                 | Cell-local | Source                  |
+| ----------------------------- | ---------- | ----------------------- |
+| Primitive's own `G` label     | (0, 620)   | `gen_nfet_hv` output    |
+| Primitive's extracted G port  | (0, 720)   | `cellname.ext`          |
+
+A parent label at (0, 620) sits on the li1 strap (which spans
+y=535..705) but doesn't merge with the G port (which Magic places
+at y=720 on `met1` above the strap).  A parent label at (0, 720)
+merges correctly.
+
+**How to find the port position.** After one round of
+`verify_lvs`, look in the extracted `<primitive>.ext` file:
+
+```
+$ grep "^port " /path/to/lvs-output/nfet_hv_W1p2_L1p0_core_topgate.ext
+port "S" 2 129 -31 129 -31 li
+port "D" 1 -129 -31 -129 -31 li
+port "G" 3 0 144 0 144 li         ← G port at Magic (0, 144) = (0 nm, 720 nm)
+```
+
+Multiply Magic coords by 5 to get nm (sky130 magic uses 1 unit =
+0.005 µm).  Use those coords for the parent label.
+
+**Don't trust the primitive's `.rkt` label position.** The
+generator places its own `(label …)` for the device-terminal name
+(`D`/`S`/`G`/`B`), but Magic's port extraction can pick a tile on
+an adjacent stacked layer (met1 over the li1 strap) with a small
+y-offset.  The `.ext` is the ground truth.
+
+The D/S ports usually coincide with the cell's label position for
+HV FETs; G ports for wider devices are the ones to watch.
+
 ### Declaring net semantics (optional but recommended)
 
 The document-level `(nets …)` block lets you declare a net's
@@ -795,15 +913,19 @@ before declaring the block done.
 
 ## Verifying your block
 
-Verification is a **two-step gate** — a block is not done until
-both pass:
+Verification is a **three-step gate** — a block is not done until
+all three pass:
 
 1. **Geometric / structural** (`viz read`, `viz app`): "is the
    geometry where I think it is, do the cells load, are the bboxes
    reasonable?" Fast, no PDK needed.
 2. **DRC** (`verify_drc`): "does Magic agree this is manufacturable
    silicon?" Slow (~30 s per block), needs PDK + Magic installed.
-   **Required before committing a new block.**
+3. **LVS** (`verify_lvs`): "does the extracted netlist match the
+   reference schematic?" Slow (~30–60 s per small block), needs
+   PDK + Magic + netgen installed. **Required before committing a
+   new block.** DRC-clean does NOT imply LVS-clean — see Step 3 for
+   why.
 
 ### Step 1 — geometric (`viz read` / `viz app`)
 
@@ -881,9 +1003,71 @@ output. Every real DRC violation traces back to one of:
   `place_rail`.
 
 DRC is slow (~30 s per block), so don't gate every edit on it — but
-**always run it before committing.** The agent-loop pattern that
-works is: build with helpers → `viz read` for sanity → `verify_drc`
-once at the end → fix + re-verify.
+**always run it before LVS.** Geometry must be manufacturable before
+electricals matter; iterating LVS on geometry that DRC would have
+flagged wastes the longer LVS cycle.
+
+### Step 3 — LVS (`verify_lvs`)
+
+```python
+from rekolektion.verify import verify_lvs
+
+result = verify_lvs(
+    "cell_designs/bl_clamp/blc_comparator.rkt",
+    "cell_designs/bl_clamp/blc_comparator_sch.spice",
+    cell_name="blc_comparator",
+)
+print(result.summary())
+if not result.match:
+    print("netgen log:", result.log_path)
+```
+
+`verify_lvs` converts the block to GDS, extracts a SPICE netlist
+via Magic (`ext2spice`), and compares the extraction against the
+reference schematic using netgen's batch-LVS mode.  Returns an
+`LVSResult` with `.match` (bool) and `.log_path` (netgen comparison
+log).
+
+**Why a separate gate?** DRC checks polygons; LVS checks the
+electrical net graph.  A block can be DRC-clean while:
+
+- A net's label sits on a polygon that's **electrically disjoint**
+  from the rest of the net (e.g. a Phase-2 abut bridge was forgotten
+  and two same-named islands exist).
+- A via stack lands on the **wrong met1 polygon** (right geometry,
+  wrong net).
+- A primitive's terminal isn't actually shorted to its sibling
+  (e.g. M3's unlabeled `D1` strip not actually tied to `D0` even
+  though both carry the same parent-level label by intent).
+- An nfet's bulk is connected to VDD instead of VSS through a
+  miswired tap.
+
+All of these pass `verify_drc` and fail `verify_lvs`.
+
+**Common LVS failure modes and their fixes:**
+
+| Symptom | Root cause | Fix |
+| ------- | ---------- | --- |
+| "net X not found in layout" | label exists but flood-fill can't reach a port | add a parent-paint wire merging the two islands; or correct the label position |
+| "extra net in layout" | un-named polygon picked up by extraction as a floating net | label the polygon, or short it to the intended net with parent paint |
+| "port matching failed" with port present in both .subckt lines, but `node "X" 0 0 …` in the layout `.ext` (zero tile count) | parent label is on the primitive's li1 strap but offset from the primitive's extracted *port* tile by ~100 nm — Magic creates a floating port instead of merging with the SRef pin | move the label to the port coord from the primitive's `.ext` (`grep "^port " <prim>.ext`).  See **Labeling a primitive's pin** in the Naming nets section |
+| "device mismatch — M3 W/L differs" | called a generator with wrong params | re-mint the primitive with the schematic's parameters |
+| "extra device — unexpected nfet" | a primitive SRef'd by accident, or a guard-ring variant minted instead of `_core` | drop the extra SRef; check `guard=` |
+| "port mismatch — schematic has VDDA1 layout has VDD" | schematic and label disagree | rename the label, or update the schematic — pick whichever matches the SoC integration spec |
+| "extra port — `src_node` in layout but not schematic" | internal-only net got labeled at the parent level, and `make_ports=True` promoted it | omit parent labels for internal-only nets; LVS will match them by topology |
+
+**Iterate until match.** As with DRC, every LVS failure traces back
+to one of: a missing parent-paint connection, a mis-positioned
+label, a wrong generator param, or a schematic that doesn't match
+intent.  Don't patch the extracted netlist; fix the source.
+
+**The reference schematic.** LVS needs a `<block>_sch.spice` (or
+similar) that you author or get from the analog designer.  It
+declares the same FETs, with the same W/L and same net names, that
+your `.rkt` is supposed to instantiate.  Without a reference, LVS
+has nothing to compare against — you'd be running an extraction
+only, which catches some classes of error (e.g. floating nets) but
+not "wrong topology."
 
 ---
 
@@ -973,14 +1157,29 @@ params → same digest → same content), but committing them means:
    produces hairballs and crossing failures; skipping pin_patch
    fails via1 enclosure on every cell pin.
 
-10. **Never declare a block "done" without running `verify_drc`.**
-    `viz read` confirms the geometry exists; it does NOT confirm
-    the geometry is manufacturable. Run `verify_drc(rkt_path)`
-    before committing — every error it surfaces traces back to a
-    fixable helper-call choice (wrong layer, missing pin patch,
-    bad placement gap, missing taps). DRC is slow (~30 s), so
-    iterate during construction with `viz read` and gate the final
-    commit on `verify_drc`.
+10. **Never declare a block "done" without running BOTH `verify_drc`
+    AND `verify_lvs`.** `viz read` confirms geometry exists;
+    `verify_drc` confirms it's manufacturable; `verify_lvs` confirms
+    the electrical net graph matches the reference schematic.  DRC
+    is necessary but NOT sufficient — a block can be DRC-clean and
+    still have disjoint same-named net islands, mis-landed via
+    stacks, or wrong-bulk taps that LVS will catch.  Run
+    `verify_drc` first (cheaper, fails earlier on geometry
+    problems), then `verify_lvs` against the reference SPICE.  Both
+    are required before committing.
+
+11. **Never route internal nets in arbitrary order, and never
+    treat phase boundaries as user check-ins.** Sort by topology
+    phase before you start: power (1) → local-abut (2) →
+    cross-row 2-pin (3) → multi-fanout (4). Within a phase,
+    shortest-span first. See **Routing order** above. Routing
+    `OUT (4-way)` before the simpler nets eats the channel that
+    `drn_R (2-way)` would have used, and you end up jogging every
+    easy net around the hard one. Once you start, walk all four
+    phases in one pass — `verify_drc` at each boundary, but do
+    NOT stop to ask "should I continue?" between them. Only halt
+    on a DRC violation that needs a real architectural decision
+    (re-place, re-layer, or new helper).
 
 ---
 

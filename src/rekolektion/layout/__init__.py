@@ -21,11 +21,16 @@ from rekolektion.layout.placement import (
     place_row,
     place_tub,
 )
+from rekolektion.layout.rail import place_rail
+from rekolektion.layout.taps import TapBandResult, place_taps_around
 
 __all__ = [
     "PrimitiveInfo",
     "TubResult",
+    "TapBandResult",
     "inspect_primitive",
+    "place_rail",
     "place_row",
     "place_tub",
+    "place_taps_around",
 ]

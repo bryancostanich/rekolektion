@@ -181,6 +181,88 @@ all primitives + margin, auto-adds `hvi` when any primitive is HV,
 and returns a `TubResult` with `.well_rects + .srefs` (or `.elements`
 for "everything in one list"). Same-well-type only.
 
+**`place_taps_around(inner_bbox, well_type, sides=('top','bottom'))`** —
+Substrate / well-tap helper. Paints DRC-clean tap bands (tap +
+implant + periodic licon contacts + li1 strap) around an active
+region. **`_core` primitives don't include taps** — without them
+your block fails the `tap.5` (every well needs a substrate
+connection) extraction step and is latch-up vulnerable in silicon.
+
+```python
+nfet = gen_nfet_hv(w_um=1.2, l_um=1.0)
+row = place_row([nfet] * 4)
+
+# Union bbox of the placed row, in parent coords.
+info = inspect_primitive(nfet)
+xs1 = min(s.origin[0] + info.bbox[0] for s in row)
+ys1 = min(s.origin[1] + info.bbox[1] for s in row)
+xs2 = max(s.origin[0] + info.bbox[2] for s in row)
+ys2 = max(s.origin[1] + info.bbox[3] for s in row)
+
+taps = place_taps_around((xs1, ys1, xs2, ys2), 'pwell')
+# Drop straight into the cell:
+elements = [*row, *taps.elements]
+```
+
+The helper warns when the inner bbox's longest extent exceeds
+~14.85 µm — above that the surround-only approach may miss the
+periodic-tap (latch-up) rule and you need interspersed tap rows.
+
+**Where tap bands go relative to the well:**
+
+| Surrounded primitives | `well_type` | Where the tap band sits |
+| --------------------- | ----------- | ----------------------- |
+| nfets in psub (no tub) | `'pwell'`  | Anywhere outside the FETs — psub is the default substrate |
+| pfets in a `place_tub` nwell | `'nwell'` | **Inside the nwell tub**. The nwell is what the taps contact; if they sit outside the tub, they have no well to contact |
+
+When in doubt, place tap bands such that their `tap` rectangle is
+**inside** the well rectangle they're tapping. `place_tub` paints
+its nwell large enough that the surround-style tap bands at the top
+and bottom of the pfet array still fall inside it (the tub's default
+margin is 0.4 µm; tap band's default clearance is 0.3 µm).
+
+**Tying tap straps to VSS / VDD rails — use `place_rail`.** The tap
+helper stops at the li1 strap because the via stack up to met1
+depends on rail orientation, layer, and surrounding routing. The
+companion `place_rail(bbox, label, stitch_li1_straps=…)` paints the
+met1 rail, labels it, and auto-fills the strap/rail overlap with an
+mcon contact array — closing the loop in one call.
+
+Most blocks have **two rails (VSS at the bottom, VDD at the top)
+each absorbing one tap strap**. Use `tap.li1_straps_by_side` to
+hand each rail only the straps it overlaps:
+
+```python
+from rekolektion.layout import place_taps_around, place_rail
+
+tap = place_taps_around(
+    active_bbox, "pwell", sides=("top", "bottom"),
+)
+straps = tap.li1_straps_by_side       # {"top": [...], "bottom": [...]}
+
+# Each rail absorbs only its side's strap. The rail's bbox must
+# overlap that strap; non-overlapping straps emit a "doesn't overlap
+# rail" warning and are skipped, so always split by side here.
+vss_rail = place_rail(
+    (block_x_min, vss_y_min, block_x_max, vss_y_max),
+    label="VSS",
+    stitch_li1_straps=straps["bottom"],
+)
+vdd_rail = place_rail(
+    (block_x_min, vdd_y_min, block_x_max, vdd_y_max),
+    label="VDD",
+    stitch_li1_straps=straps["top"],
+)
+
+cell.elements.extend([*tap.elements, *vss_rail, *vdd_rail])
+```
+
+If a single rail spans the whole block and absorbs every strap, use
+`tap.li1_straps` directly. For the (rare) case where one rail is
+intentionally connected to a strap that doesn't overlap it, paint
+the bridging met1 wire yourself and add the strap to the rail call
+that *does* overlap it.
+
 ```python
 pfet = gen_pfet_hv(w_um=2.0, l_um=2.0)
 tub = place_tub([
@@ -526,6 +608,8 @@ composed extent, open it in the GUI or use `viz-render`.
 | ---- | ---- |
 | `src/rekolektion/primitives/sky130/` | Generator Python (fet.py, ...) |
 | `src/rekolektion/layout/placement.py` | `place_row`, `place_tub` helpers |
+| `src/rekolektion/layout/taps.py` | `place_taps_around` |
+| `src/rekolektion/layout/rail.py` | `place_rail` (rail + auto-stitch) |
 | `src/rekolektion/io/rkt.py` | Python writer for `.rkt` |
 | `cell_designs/primitives/` | PDK-minted primitive cells (auto-generated on first generator call, **commit to git**) |
 | `cell_designs/<group>/<block>.rkt` | Hand-/Python-authored blocks |
@@ -581,6 +665,17 @@ params → same digest → same content), but committing them means:
    with a "spacing" constant lands you in the `nwell.2a`
    no-man's-land — silent until DRC runs, then hundreds of
    violations cascade.
+
+8. **Never ship a block without well taps.** `_core` primitives
+   don't contain substrate-tap contacts. Use
+   `place_taps_around(inner_bbox, well_type)` to add tap bands
+   around your active region — `'pwell'` taps (psdm + tap) under
+   nfet arrays, `'nwell'` taps (nsdm + tap) inside pfet tubs. Tie
+   the resulting li1 strap to VSS / VDD with
+   `place_rail(bbox, label, stitch_li1_straps=tap.li1_straps)`.
+   Without taps the block fails `tap.5` and is latch-up vulnerable;
+   without the stitch the well floats from the supply and LVS
+   sees split nets.
 
 ---
 

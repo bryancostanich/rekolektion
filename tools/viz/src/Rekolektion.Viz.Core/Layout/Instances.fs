@@ -575,6 +575,121 @@ let translateSelection
                         | other -> other)
             withTopElements doc top elems'
 
+/// Like `translateSelection`, but also moves any top-cell label
+/// anchored (per `Net.Ratlines.anchorForLabel` rule: smallest same-
+/// layer-number containing-bbox poly) to a polygon inside one of
+/// the moved SRefs. Without this, parent-cell labels stay at their
+/// original positions while the SRef they describe slides away —
+/// the renderer's ratline re-anchor mid-drag then computes a
+/// different component graph than the post-commit state, and the
+/// user sees the ratline set "snap" on release. Used by both the
+/// canvas live preview and the Update commit so the two stay
+/// consistent.
+let translateSelectionWithLabels
+        (doc: Document)
+        (selectionByIndex: Set<int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document =
+    if selectionByIndex.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then doc
+    else
+        match findTop doc with
+        | None -> doc
+        | Some top ->
+            // Build the anchor-candidate list in flat-world coords:
+            // top-cell direct paint (tag = None) + every selected
+            // instance's flat polys (tag = Some k). We only look at
+            // SELECTED instances because labels anchored to non-
+            // selected geometry shouldn't move.
+            let layerNum (layer: Rekolektion.Viz.Core.Rkt.Types.Layer) : int =
+                fst (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer)
+            let polyBboxFor (poly: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon)
+                    : (int * int64 * int64 * int64 * int64) option =
+                if poly.Points.Length = 0 then None
+                else
+                    let mutable xMin = System.Int64.MaxValue
+                    let mutable yMin = System.Int64.MaxValue
+                    let mutable xMax = System.Int64.MinValue
+                    let mutable yMax = System.Int64.MinValue
+                    for pt in poly.Points do
+                        if pt.X < xMin then xMin <- pt.X
+                        if pt.X > xMax then xMax <- pt.X
+                        if pt.Y < yMin then yMin <- pt.Y
+                        if pt.Y > yMax then yMax <- pt.Y
+                    Some (poly.Layer, xMin, yMin, xMax, yMax)
+            // Both the moved-SRef polys AND every other anchor
+            // candidate go in. We need ALL candidates (not just the
+            // moved ones) so the smallest-area tiebreak picks the
+            // RIGHT anchor — a label sitting on a tiny moved poly
+            // inside a wider non-moved bbox should anchor to the
+            // tiny one. Tag carries the originating instance index
+            // (or None for top-cell direct paint).
+            let candidates =
+                ResizeArray<int option * int * int64 * int64 * int64 * int64>()
+            for el in Rekolektion.Viz.Core.Layout.Flatten.flattenTopCellDirect doc do
+                match polyBboxFor el with
+                | Some (ln, xMin, yMin, xMax, yMax) ->
+                    candidates.Add (None, ln, xMin, yMin, xMax, yMax)
+                | None -> ()
+            for inst in enumerate doc do
+                let polys =
+                    Rekolektion.Viz.Core.Layout.Flatten.flattenInstance doc inst.Index
+                for poly in polys do
+                    match polyBboxFor poly with
+                    | Some (ln, xMin, yMin, xMax, yMax) ->
+                        candidates.Add (Some inst.Index, ln, xMin, yMin, xMax, yMax)
+                    | None -> ()
+            // Identify top-cell labels whose best anchor (smallest
+            // same-layer-number containing) lives inside a SELECTED
+            // instance.
+            let labelsToShift = System.Collections.Generic.HashSet<int>()
+            top.Elements
+            |> List.iteri (fun i el ->
+                match el with
+                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                    let labelLn = layerNum l.Layer
+                    let mutable best : int option voption = ValueNone
+                    let mutable bestArea = System.Int64.MaxValue
+                    for (tag, ln, xMin, yMin, xMax, yMax) in candidates do
+                        if ln = labelLn
+                           && l.Origin.X >= xMin && l.Origin.X <= xMax
+                           && l.Origin.Y >= yMin && l.Origin.Y <= yMax then
+                            let area = (xMax - xMin) * (yMax - yMin)
+                            if area < bestArea then
+                                bestArea <- area
+                                best <- ValueSome tag
+                    match best with
+                    | ValueSome (Some k) when selectionByIndex.Contains k ->
+                        labelsToShift.Add i |> ignore
+                    | _ -> ()
+                | _ -> ())
+            // Single pass: translate SRefs + shift identified
+            // labels. Same delta for both.
+            let elems' =
+                top.Elements
+                |> List.mapi (fun idx el ->
+                    if selectionByIndex.Contains idx then
+                        match el with
+                        | Rekolektion.Viz.Core.Rkt.Types.SRefEl sr ->
+                            let o = sr.Origin
+                            Rekolektion.Viz.Core.Rkt.Types.SRefEl
+                                { sr with
+                                    Origin =
+                                        ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
+                                         : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                        | other -> other
+                    elif labelsToShift.Contains idx then
+                        match el with
+                        | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                            let o = l.Origin
+                            Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                { l with
+                                    Origin =
+                                        ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
+                                         : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                        | other -> other
+                    else el)
+            withTopElements doc top elems'
+
 /// Transitional wrappers for callers that still hold a
 /// `Gds.Types.Library`. Each one converts to `Rkt.Document` on the
 /// way in and back to `Library` on the way out via `Rkt.OfGds` /

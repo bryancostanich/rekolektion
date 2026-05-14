@@ -82,6 +82,13 @@ type Msg =
     /// Translate every polygon in `sel` by (dxDbu, dyDbu) in one
     /// undo step. Used by polygon multi-drag.
     | MovePolygonsDbu of sel: Set<string * int> * dxDbu: int64 * dyDbu: int64
+    /// Remove every currently-selected polygon (Selection set) AND
+    /// every selected SRef (InstanceSelection) from the active
+    /// macro. Labels anchored to a deleted polygon (per the
+    /// `Net.Ratlines.anchorForLabel` rule) get removed too — they
+    /// were the wire's name; deleting the wire deletes the name.
+    /// Pushes one undo snapshot covering all of it.
+    | DeleteSelection
     /// Resize a single top-cell polygon (or rect) so its bbox
     /// becomes `(xMin, yMin, xMax, yMax)`. For a `PolyEl`, every
     /// point lerps from the element's current bbox to the new

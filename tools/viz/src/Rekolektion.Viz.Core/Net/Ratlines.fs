@@ -133,20 +133,25 @@ let isLikelyPowerNet (name: string) : bool =
 /// originating poly — used downstream as the per-anchor pin
 /// discriminator so two labels on the same physical poly collapse.
 type private FlatPolyAnchor = {
-    PolyId : string * int
-    XMin   : int64
-    YMin   : int64
-    XMax   : int64
-    YMax   : int64
+    /// Index into the `flat` array passed to `compute`. Lets us
+    /// distinguish two SRefs of the same source polygon as
+    /// different physical anchors, AND key the connected-components
+    /// union-find on the same anchor identity.
+    FlatIdx : int
+    XMin    : int64
+    YMin    : int64
+    XMax    : int64
+    YMax    : int64
     /// Z in micrometers at the top of this layer.
-    TopZUm : float
+    TopZUm  : float
 }
 
 let private buildPolyIndex
         (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
         : System.Collections.Generic.Dictionary<int, ResizeArray<FlatPolyAnchor>> =
     let dict = System.Collections.Generic.Dictionary<int, ResizeArray<FlatPolyAnchor>>()
-    for poly in flat do
+    for i in 0 .. flat.Length - 1 do
+        let poly = flat.[i]
         if poly.Points.Length > 0 then
             let topZ =
                 Rekolektion.Viz.Core.Layout.Layer.bySky130Number poly.Layer poly.DataType
@@ -162,7 +167,7 @@ let private buildPolyIndex
                 if p.Y < yMin then yMin <- p.Y
                 if p.Y > yMax then yMax <- p.Y
             let anchor =
-                { PolyId = (poly.SourceStructure, poly.SourceIndex)
+                { FlatIdx = i
                   XMin = xMin; YMin = yMin
                   XMax = xMax; YMax = yMax
                   TopZUm = topZ }
@@ -173,6 +178,120 @@ let private buildPolyIndex
                 list.Add anchor
                 dict.[poly.Layer] <- list
     dict
+
+/// SKY130 via stacks: each entry says "a polygon on `viaKey` is a
+/// contact that electrically bridges its bbox-overlapping
+/// neighbours on `lowerKeys` (below) to its bbox-overlapping
+/// neighbours on `upperKey` (above)." Used by `flatPolyComponents`
+/// to chain components across routing layers. Datatypes are
+/// drawing (20) / contact (44); the `_label` / `_pin` aux datatypes
+/// don't carry geometry and stay out.
+let private viaStacks : ((int * int) * (int * int) list * (int * int)) array =
+    [|
+        // licon1 contacts diff OR poly below; li1 above.
+        ((66, 44), [ (65, 20); (66, 20) ], (67, 20))
+        ((67, 44), [ (67, 20) ],            (68, 20))   // mcon
+        ((68, 44), [ (68, 20) ],            (69, 20))   // via
+        ((69, 44), [ (69, 20) ],            (70, 20))   // via2
+        ((70, 44), [ (70, 20) ],            (71, 20))   // via3
+        ((71, 44), [ (71, 20) ],            (72, 20))   // via4
+    |]
+
+/// Union-find over flat polys. Two polys are in the same component
+/// iff their bboxes overlap (touching counts) AND they share a
+/// strict (number, datatype) key, OR they're bridged by a via-
+/// stack contact polygon that overlaps both. Returns the
+/// `flatIdx -> componentId` map.
+///
+/// Same-layer key is strict — (66, 20) "poly" and (66, 44) "licon1"
+/// share number 66 but are different layers; the union between
+/// them happens via the licon1 entry in `viaStacks`, NOT via the
+/// number alone. Bbox-overlap is a coarse "do these touch"
+/// approximation; for rectilinear designs (typical SKY130) it's
+/// accurate, for non-rectilinear it can over-connect.
+let private flatPolyComponents
+        (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
+        : int array =
+    let n = flat.Length
+    let parent = Array.init n id
+    let rec find (i: int) : int =
+        if parent.[i] = i then i
+        else
+            let r = find parent.[i]
+            parent.[i] <- r
+            r
+    let union (a: int) (b: int) : unit =
+        let ra = find a
+        let rb = find b
+        if ra <> rb then parent.[ra] <- rb
+    // Pre-compute bboxes once.
+    let bb = Array.zeroCreate<struct (int64 * int64 * int64 * int64)> n
+    for i in 0 .. n - 1 do
+        let poly = flat.[i]
+        if poly.Points.Length > 0 then
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for p in poly.Points do
+                if p.X < xMin then xMin <- p.X
+                if p.X > xMax then xMax <- p.X
+                if p.Y < yMin then yMin <- p.Y
+                if p.Y > yMax then yMax <- p.Y
+            bb.[i] <- struct (xMin, yMin, xMax, yMax)
+        else
+            bb.[i] <- struct (0L, 0L, -1L, -1L)
+    // Group polys by strict (number, datatype) so we only compare
+    // pairs that COULD share a component.
+    let byKey = System.Collections.Generic.Dictionary<int * int, ResizeArray<int>>()
+    for i in 0 .. n - 1 do
+        let key = flat.[i].Layer, flat.[i].DataType
+        match byKey.TryGetValue key with
+        | true, list -> list.Add i
+        | _ ->
+            let list = ResizeArray<int>()
+            list.Add i
+            byKey.[key] <- list
+    let overlaps (i: int) (j: int) =
+        let struct (axMin, ayMin, axMax, ayMax) = bb.[i]
+        let struct (bxMin, byMin, bxMax, byMax) = bb.[j]
+        axMax >= axMin && bxMax >= bxMin
+        && not (axMax < bxMin || bxMax < axMin
+                || ayMax < byMin || byMax < ayMin)
+    // Same-key bbox-touching: routing layers connect within
+    // themselves.
+    for KeyValue (_, ids) in byKey do
+        for a in 0 .. ids.Count - 1 do
+            for b in a + 1 .. ids.Count - 1 do
+                if overlaps ids.[a] ids.[b] then
+                    union ids.[a] ids.[b]
+    // Via-stack bridges: each contact polygon unions with every
+    // overlapping poly on its adjacent routing layer(s). A
+    // contact whose bbox crosses both a lower and upper poly
+    // electrically connects them.
+    for (viaKey, lowerKeys, upperKey) in viaStacks do
+        match byKey.TryGetValue viaKey with
+        | false, _ -> ()
+        | true, viaIds ->
+            let upperIds =
+                match byKey.TryGetValue upperKey with
+                | true, list -> list
+                | _ -> null
+            let lowerLists =
+                lowerKeys
+                |> List.choose (fun lk ->
+                    match byKey.TryGetValue lk with
+                    | true, list -> Some list
+                    | _ -> None)
+            for vi in viaIds do
+                if not (isNull upperIds) then
+                    for ui in upperIds do
+                        if overlaps vi ui then union vi ui
+                for lowerList in lowerLists do
+                    for li in lowerList do
+                        if overlaps vi li then union vi li
+    // Flatten union-find: every poly's parent is its root.
+    Array.init n (fun i -> find i)
 
 /// Find the smallest containing-bbox poly on the same layer-number
 /// for a label origin. "Smallest" so a label sitting on a met1
@@ -202,14 +321,13 @@ let private anchorForLabel
 /// per-instance — the SRef is a black box from the parent's
 /// perspective, so multiple internal labels on the same net share
 /// one outside-the-box pin. Labels that live directly in the top
-/// cell collapse per anchoring polygon — the polygon IS the
-/// physical connection point, and two labels on the same poly are
-/// the same connection. Top-cell labels with no containing poly
-/// fall back to per-label uniqueness (so each unanchored label
-/// shows up as its own pin) via a synthetic ID.
+/// cell collapse per anchoring polygon (flat-index identity —
+/// distinguishing two SRefs of the same source poly as different
+/// physical anchors). Top-cell labels with no containing poly
+/// fall back to per-label uniqueness via a synthetic ID.
 type private PinKey =
     | InInstance of int
-    | OnPoly     of (string * int)
+    | OnPoly     of flatIdx: int
     | Unanchored of int     // monotonic counter
 
 /// Compute per-net per-pin centroids from the labels reachable
@@ -233,58 +351,129 @@ let compute
         : NetRoute array =
     let tagged = Rekolektion.Viz.Core.Layout.Flatten.flattenLabelsTagged doc
     let polyIdx = buildPolyIndex flat
-    // (net, pinKey) -> running sum (sumX, sumY, sumZ, count, topInstance)
-    // topInstance is preserved for the final Pin record but doesn't
-    // participate in grouping for top-cell labels (they all share
-    // None there).
+    // Components: which flat polys are physically connected (same-
+    // layer touching). Used downstream to collapse pins whose
+    // anchors flood-fill to each other into ONE representative pin —
+    // i.e., ratline edges only span unconnected components, so a
+    // pair the user has wired up disappears from the ratline view.
+    let polyComp = flatPolyComponents flat
+    // Stage 1: each (net, pinKey) gets a "logical pin" — one pin
+    // per label-group within an SRef OR per anchor polygon for
+    // top-cell labels. Same shape as before; the per-component
+    // collapse happens in stage 2.
+    // Accumulator: (net, pinKey) -> (sumX, sumY, sumZ, count,
+    // topInstance, anchor-flat-idx-option). Anchor flat-idx is
+    // captured so stage 2 can look up the component.
     let acc =
         System.Collections.Generic.Dictionary<
             string * PinKey,
-            int64 * int64 * float * int * int option>()
+            int64 * int64 * float * int * int option * int option>()
     let mutable unanchoredCounter = 0
+    // Canonical net rule: only labels whose text matches a net
+    // declared in the document's `(nets)` block contribute. Labels
+    // without a declaration are ANNOTATIONS — device-terminal
+    // markers (D / G / S / B inside FET primitives), probe
+    // markers, scratch notes — and treating them as nets would
+    // collapse every device's gate into one fake "G" net with
+    // ratlines between every FET. The workflow doc
+    // (`docs/workflows/rkt_primitive_workflow.md`) makes the
+    // declaration mandatory at block level. A document with NO
+    // `(nets)` block produces no ratlines by construction.
+    let declaredNets =
+        doc.Nets
+        |> List.map (fun n -> n.Name)
+        |> Set.ofList
     for (topIdx, label) in tagged do
-        if label.Text <> "" then
-            let (anchorX, anchorY, anchorZ, polyId) =
+        if label.Text <> "" && declaredNets.Contains label.Text then
+            let (anchorX, anchorY, anchorZ, anchorFlat) =
                 match anchorForLabel polyIdx label with
                 | Some a ->
                     let cx = (a.XMin + a.XMax) / 2L
                     let cy = (a.YMin + a.YMax) / 2L
-                    cx, cy, a.TopZUm, Some a.PolyId
+                    cx, cy, a.TopZUm, Some a.FlatIdx
                 | None ->
                     label.Origin.X, label.Origin.Y, 0.0, None
             let pinKey =
                 match topIdx with
                 | Some k -> InInstance k
                 | None ->
-                    match polyId with
-                    | Some id -> OnPoly id
+                    match anchorFlat with
+                    | Some fi -> OnPoly fi
                     | None ->
                         let n = unanchoredCounter
                         unanchoredCounter <- n + 1
                         Unanchored n
             let key = (label.Text, pinKey)
             match acc.TryGetValue key with
-            | true, (sx, sy, sz, n, ti) ->
-                acc.[key] <- (sx + anchorX, sy + anchorY, sz + anchorZ, n + 1, ti)
+            | true, (sx, sy, sz, n, ti, af) ->
+                acc.[key] <- (sx + anchorX, sy + anchorY, sz + anchorZ,
+                              n + 1, ti, af)
             | _ ->
-                acc.[key] <- (anchorX, anchorY, anchorZ, 1, topIdx)
-    acc
-    |> Seq.map (fun kv ->
-        let (name, _) = kv.Key
-        let (sx, sy, sz, n, ti) = kv.Value
-        let pin : Pin = {
-            TopInstanceIndex = ti
-            Position = { X = sx / int64 n; Y = sy / int64 n }
-            ZUm = sz / float n
-            LabelCount = n
-        }
-        name, pin)
-    |> Seq.groupBy fst
-    |> Seq.map (fun (name, pairs) ->
-        let pins = pairs |> Seq.map snd |> Seq.toArray
+                acc.[key] <- (anchorX, anchorY, anchorZ, 1, topIdx, anchorFlat)
+    // Stage 1 → logical pin records, paired with their (net,
+    // anchor-component-id-or-unique-tag).
+    let mutable uniqueCompTag = -1
+    let nextUniqueTag () =
+        uniqueCompTag <- uniqueCompTag - 1
+        uniqueCompTag
+    let logicalPins =
+        acc
+        |> Seq.map (fun kv ->
+            let (name, _) = kv.Key
+            let (sx, sy, sz, n, ti, anchorFlat) = kv.Value
+            let pin : Pin = {
+                TopInstanceIndex = ti
+                Position = { X = sx / int64 n; Y = sy / int64 n }
+                ZUm = sz / float n
+                LabelCount = n
+            }
+            // Component bucket: real component id when we have an
+            // anchor flat idx; unique negative tag for unanchored
+            // pins so they never merge with anything.
+            let compId =
+                match anchorFlat with
+                | Some fi when fi >= 0 && fi < polyComp.Length -> polyComp.[fi]
+                | _ -> nextUniqueTag ()
+            name, compId, pin)
+        |> Seq.toArray
+    // Stage 2: per net, group logical pins by component id. Each
+    // group collapses into ONE final Pin (centroid + Z averaged
+    // across the contributing logical pins, total label count
+    // summed). The MST then runs over these per-component reps —
+    // a net with everything routed together has 1 component, 0
+    // ratline edges; two unconnected components → 1 edge.
+    logicalPins
+    |> Array.groupBy (fun (name, _, _) -> name)
+    |> Array.map (fun (name, group) ->
+        let byComp =
+            group
+            |> Array.groupBy (fun (_, compId, _) -> compId)
+        let reps =
+            byComp
+            |> Array.map (fun (_, members) ->
+                let pins = members |> Array.map (fun (_, _, p) -> p)
+                let n = pins.Length
+                if n = 1 then pins.[0]
+                else
+                    let mutable sx = 0L
+                    let mutable sy = 0L
+                    let mutable sz = 0.0
+                    let mutable labelCount = 0
+                    let mutable ti : int option = None
+                    for p in pins do
+                        sx <- sx + p.Position.X
+                        sy <- sy + p.Position.Y
+                        sz <- sz + p.ZUm
+                        labelCount <- labelCount + p.LabelCount
+                        // First non-None instance wins; multi-
+                        // instance components lose the tag.
+                        if ti.IsNone then ti <- p.TopInstanceIndex
+                    { TopInstanceIndex = ti
+                      Position = { X = sx / int64 n; Y = sy / int64 n }
+                      ZUm = sz / float n
+                      LabelCount = labelCount })
         { Name = name
-          Pins = pins
-          Mst = mstOf pins
+          Pins = reps
+          Mst = mstOf reps
           IsPower = isLikelyPowerNet name })
-    |> Seq.filter (fun route -> route.Pins.Length >= 2)
-    |> Seq.toArray
+    |> Array.filter (fun route -> route.Pins.Length >= 2)

@@ -1513,8 +1513,16 @@ type GdsCanvasControl() =
                 // subtree's polygons" path, but P0 doesn't need it.
                 match this.Library with
                 | Some lib ->
+                    // Use the labels-aware variant so parent-cell
+                    // labels anchored to moved SRefs travel with
+                    // them in the live preview. Otherwise the
+                    // ratline overlay re-anchors mid-drag against
+                    // labels that haven't moved yet, producing a
+                    // different component graph than the post-
+                    // commit state — the user sees ratlines "snap"
+                    // on release.
                     let lib' =
-                        Instances.translateSelection
+                        Instances.translateSelectionWithLabels
                             lib this.InstanceSelection dxSnap dySnap
                     dragLiveLib <- Some lib'
                     dragLiveFlat <- Layout.Flatten.flatten lib'

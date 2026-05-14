@@ -489,132 +489,22 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            // Identify top-cell labels whose anchor
-                            // polygon lives inside any moved SRef
-                            // (i.e., a sub-cell poly brought into
-                            // flat-space by that instance). Those
-                            // labels need to travel with the SRef.
-                            // Resolution runs on the PRE-MOVE doc
-                            // so the anchor candidates are at their
-                            // resting positions. The `Smallest` rule
-                            // matches the renderer / ratline /
-                            // LabelFlood inference: a label sticks to
-                            // the smallest same-layer-number poly
-                            // whose bbox contains it.
-                            let top = Layout.Flatten.findTop mc.Document
-                            let polyBboxesFor (poly: Layout.Flatten.FlatPolygon)
-                                    : (int * int64 * int64 * int64 * int64) option =
-                                if poly.Points.Length = 0 then None
-                                else
-                                    let mutable xMin = System.Int64.MaxValue
-                                    let mutable yMin = System.Int64.MaxValue
-                                    let mutable xMax = System.Int64.MinValue
-                                    let mutable yMax = System.Int64.MinValue
-                                    for pt in poly.Points do
-                                        if pt.X < xMin then xMin <- pt.X
-                                        if pt.X > xMax then xMax <- pt.X
-                                        if pt.Y < yMin then yMin <- pt.Y
-                                        if pt.Y > yMax then yMax <- pt.Y
-                                    Some (poly.Layer, xMin, yMin, xMax, yMax)
-                            // Anchor candidates: top-cell direct
-                            // paint (tag = None) + every flat poly
-                            // from every top-level instance (tag =
-                            // Some k). For top-cell direct, layer
-                            // comes from the Layer.Number conversion;
-                            // bbox from the element.
-                            let candidates = ResizeArray<int option * int * int64 * int64 * int64 * int64>()
-                            for el in Layout.Flatten.flattenTopCellDirect mc.Document do
-                                match polyBboxesFor el with
-                                | Some (ln, xMin, yMin, xMax, yMax) ->
-                                    candidates.Add (None, ln, xMin, yMin, xMax, yMax)
-                                | None -> ()
-                            // CRITICAL: `flattenInstance` takes the
-                            // top-cell ELEMENT index, not a dense
-                            // 0..N-1 counter. `mc.TopInstances` is
-                            // the SRef set; each Instance carries
-                            // its `Index` field which is the
-                            // position in `top.Elements`. The
-                            // `model.InstanceSelection` set is also
-                            // element indices, so the candidate
-                            // tag and the moved-set check must agree
-                            // on that key — using a dense counter
-                            // produces silently-wrong "no anchor"
-                            // results that look like the feature is
-                            // broken.
-                            for inst in mc.TopInstances do
-                                let polys =
-                                    Layout.Flatten.flattenInstance mc.Document inst.Index
-                                for poly in polys do
-                                    match polyBboxesFor poly with
-                                    | Some (ln, xMin, yMin, xMax, yMax) ->
-                                        candidates.Add
-                                            (Some inst.Index, ln, xMin, yMin, xMax, yMax)
-                                    | None -> ()
-                            // Identify labels in the top cell whose
-                            // best anchor (smallest containing same-
-                            // layer-number) belongs to a moved
-                            // instance. Track indices in the top
-                            // cell's Elements list.
-                            let movedSet = model.InstanceSelection
-                            let labelsToShift = System.Collections.Generic.HashSet<int>()
-                            top.Elements
-                            |> List.iteri (fun i el ->
-                                match el with
-                                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
-                                    let labelLn = layerNumberOf l.Layer
-                                    let mutable best : int option voption = ValueNone
-                                    let mutable bestArea = System.Int64.MaxValue
-                                    for (tag, ln, xMin, yMin, xMax, yMax) in candidates do
-                                        if ln = labelLn
-                                           && l.Origin.X >= xMin && l.Origin.X <= xMax
-                                           && l.Origin.Y >= yMin && l.Origin.Y <= yMax then
-                                            let area = (xMax - xMin) * (yMax - yMin)
-                                            if area < bestArea then
-                                                bestArea <- area
-                                                best <- ValueSome tag
-                                    match best with
-                                    | ValueSome (Some k) when movedSet.Contains k ->
-                                        labelsToShift.Add i |> ignore
-                                    | _ -> ()
-                                | _ -> ())
-                            // Translate the SRef origins.
+                            // SRef translate + label-shift in one
+                            // pass via the shared Layout.Instances
+                            // helper. Same code path the canvas's
+                            // live preview uses, so the post-commit
+                            // state matches what the user saw mid-
+                            // drag (no ratline "snap" on release).
                             let lib' =
-                                Layout.Instances.translateSelection
+                                Layout.Instances.translateSelectionWithLabels
                                     mc.Document model.InstanceSelection dxDbu dyDbu
-                            // Now translate the SRef-anchored labels
-                            // in the post-move doc by the same delta.
-                            let lib'' =
-                                if labelsToShift.Count = 0 then lib'
-                                else
-                                    let topName = top.Name
-                                    let cells' =
-                                        lib'.Cells
-                                        |> List.map (fun c ->
-                                            if c.Name <> topName then c
-                                            else
-                                                let elems' =
-                                                    c.Elements
-                                                    |> List.mapi (fun i el ->
-                                                        if labelsToShift.Contains i then
-                                                            match el with
-                                                            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
-                                                                let o = l.Origin
-                                                                Rekolektion.Viz.Core.Rkt.Types.LabelEl
-                                                                    { l with
-                                                                        Origin =
-                                                                            ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
-                                                                             : Rekolektion.Viz.Core.Rkt.Types.Point) }
-                                                            | other -> other
-                                                        else el)
-                                                { c with Elements = elems' })
-                                    { lib' with Cells = cells' }
-                            let flat' = Layout.Flatten.flatten lib''
-                            let inst' = Layout.Instances.enumerate lib''
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
                                     { m with
-                                        Document = lib''
+                                        Document = lib'
                                         FlatPolygons = flat'
                                         TopInstances = inst' }
                                 |> EditSession.markDirty
@@ -623,6 +513,91 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 { model with
                     OpenMacros = openMacros'
                     ActiveMacroPath = Some activePath' }, Cmd.none
+    | Msg.DeleteSelection ->
+        // Combine polygon Selection (cell, idx) + InstanceSelection
+        // (idx in top cell). Both sets are dropped post-delete.
+        // No-op when nothing's selected.
+        let polySel = model.Selection
+        let instSel = model.InstanceSelection
+        if polySel.IsEmpty && instSel.IsEmpty then model, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> model, Cmd.none
+            | Some path ->
+                let updateDoc (doc: Rekolektion.Viz.Core.Rkt.Types.Document) =
+                    let topName =
+                        (Rekolektion.Viz.Core.Layout.Flatten.findTop doc).Name
+                    // Per-cell deletion set: poly Selection grouped
+                    // by cell, plus InstanceSelection lifted into
+                    // the top cell's bucket.
+                    let perCell =
+                        let m = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>()
+                        for (sname, idx) in polySel do
+                            match m.TryGetValue sname with
+                            | true, set -> set.Add idx |> ignore
+                            | _ ->
+                                let set = System.Collections.Generic.HashSet<int>()
+                                set.Add idx |> ignore
+                                m.[sname] <- set
+                        if not instSel.IsEmpty then
+                            match m.TryGetValue topName with
+                            | true, set ->
+                                for idx in instSel do set.Add idx |> ignore
+                            | _ ->
+                                let set = System.Collections.Generic.HashSet<int>()
+                                for idx in instSel do set.Add idx |> ignore
+                                m.[topName] <- set
+                        m
+                    let updatedCells =
+                        doc.Cells
+                        |> List.map (fun c ->
+                            match perCell.TryGetValue c.Name with
+                            | false, _ -> c
+                            | true, deleting ->
+                                // Find labels anchored to a deleted
+                                // element so they go too — same
+                                // anchor rule as move/resize.
+                                let anchorMap = anchorMapForCell c
+                                let elems' =
+                                    c.Elements
+                                    |> List.mapi (fun i el -> i, el)
+                                    |> List.filter (fun (i, el) ->
+                                        if deleting.Contains i then false
+                                        else
+                                            match el with
+                                            | Rekolektion.Viz.Core.Rkt.Types.LabelEl _ ->
+                                                match Map.tryFind i anchorMap with
+                                                | Some anchorIdx ->
+                                                    not (deleting.Contains anchorIdx)
+                                                | None -> true
+                                            | _ -> true)
+                                    |> List.map snd
+                                { c with Elements = elems' })
+                    { doc with Cells = updatedCells }
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let lib' = updateDoc mc.Document
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Document = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath'
+                    Selection = Set.empty
+                    InstanceSelection = Set.empty }, Cmd.none
     | Msg.MovePolygonDbu (sname, idx, dxDbu, dyDbu) ->
         model, Cmd.ofMsg (Msg.MovePolygonsDbu (Set.singleton (sname, idx), dxDbu, dyDbu))
     | Msg.MovePolygonsDbu (sel, dxDbu, dyDbu) ->

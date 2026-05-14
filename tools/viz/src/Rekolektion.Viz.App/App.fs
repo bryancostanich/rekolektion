@@ -176,6 +176,15 @@ type MainWindow() as this =
                 // not in mode.
                 AppDispatch.send Msg.ToggleTightenMode
                 e.Handled <- true
+            | Key.Delete, KeyModifiers.None
+            | Key.Back,   KeyModifiers.None ->
+                // Delete every selected polygon + every selected
+                // SRef from the active macro. Avalonia maps the
+                // macOS `delete` key to `Key.Back`; the standalone
+                // forward-delete key on full keyboards is
+                // `Key.Delete`. Handle both.
+                AppDispatch.send Msg.DeleteSelection
+                e.Handled <- true
             | k, KeyModifiers.None
               when (Services.AppDispatch.currentModel
                     |> Option.map (fun m -> m.TightenMode)

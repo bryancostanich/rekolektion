@@ -22,9 +22,24 @@ let mutable private dragActive : bool = false
 let mutable private dragTarget : bool = false
 let mutable private dragVisited : Set<int * int> = Set.empty
 
+// Net-row drag state. Two checkbox columns per row (H + R) need
+// independent drag sequences — dragging in the highlight column
+// must not paint the ratline column and vice versa. `netDragKind`
+// tags which column the in-flight drag is on; `Highlight` for
+// `HighlightedNets`, `Ratline` for `VisibleRatlines`.
+type private NetDragKind =
+    | Highlight
+    | Ratline
+
+let mutable private netDragKind   : NetDragKind voption = ValueNone
+let mutable private netDragTarget : bool = false
+let mutable private netDragVisited : Set<string> = Set.empty
+
 let private endDragPaint () =
     dragActive <- false
     dragVisited <- Set.empty
+    netDragKind <- ValueNone
+    netDragVisited <- Set.empty
 
 let private layerRow
         (toggle: Visibility.ToggleState)
@@ -139,6 +154,48 @@ let private clickable
         Border.child child
     ] :> IView
 
+/// Net-column drag-paint cell. Wires both PointerPressed (arm drag)
+/// and PointerEntered (paint during drag) so the user can click +
+/// sweep through a column to toggle many nets at once. `readLive`
+/// returns the CURRENT model state for this net+column at press
+/// time — captured-state would go stale across the in-flight
+/// dispatch (the layer panel hit the same bug, see
+/// `LeftPanel.layerRow`). `setMsg` builds the explicit-polarity
+/// Msg the drag-paint dispatches; we use it instead of a "flip"
+/// Msg so every row in the drag agrees on direction.
+let private netCell
+        (kind: NetDragKind)
+        (name: string)
+        (currentlyOn: bool)
+        (readLive: unit -> bool)
+        (setMsg: bool -> Msg.Msg)
+        (dispatch: Msg.Msg -> unit)
+        (color: string)
+        : IView =
+    Border.create [
+        Border.background "Transparent"
+        Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
+        Border.onPointerPressed (fun e ->
+            e.Handled <- true
+            e.Pointer.Capture null
+            let target = not (readLive ())
+            netDragKind <- ValueSome kind
+            netDragTarget <- target
+            netDragVisited <- Set.singleton name
+            dispatch (setMsg target))
+        Border.onPointerEntered (fun e ->
+            match netDragKind with
+            | ValueSome k
+                when k = kind
+                     && not (netDragVisited.Contains name)
+                     && e.GetCurrentPoint(null).Properties.IsLeftButtonPressed ->
+                netDragVisited <- netDragVisited.Add name
+                dispatch (setMsg netDragTarget)
+            | _ -> ())
+        Border.onPointerReleased (fun _ -> endDragPaint ())
+        Border.child (netIndicator currentlyOn color)
+    ] :> IView
+
 let private netRow
         (toggle: Visibility.ToggleState)
         (dispatch: Msg.Msg -> unit)
@@ -146,19 +203,50 @@ let private netRow
         : IView =
     let highlighted = Visibility.isNetHighlighted toggle name
     let ratlineOn = Visibility.isRatlineVisible toggle name
+    // `readLive` consults the current Services.AppDispatch.currentModel
+    // so the press handler computes target from the LIVE state, not
+    // a stale closure capture (FuncUI reuses Border instances across
+    // renders without rebinding the lambdas — see layerRow comment).
+    let readLiveHighlight () =
+        match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+        | Some (m: Model.Model) -> Visibility.isNetHighlighted m.Toggle name
+        | None -> highlighted
+    let readLiveRatline () =
+        match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+        | Some (m: Model.Model) -> Visibility.isRatlineVisible m.Toggle name
+        | None -> ratlineOn
+    let setHighlightMsg target =
+        // ToggleNetHighlight flips the membership; for the drag
+        // target case we want explicit polarity instead. Use
+        // SetHighlightedNets with the appropriately-built set.
+        match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+        | Some m ->
+            let next =
+                if target then m.Toggle.HighlightedNets.Add name
+                else m.Toggle.HighlightedNets.Remove name
+            Msg.SetHighlightedNets next
+        | None ->
+            Msg.ToggleNetHighlight name
+    let setRatlineMsg target =
+        match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+        | Some m ->
+            let next =
+                if target then m.Toggle.VisibleRatlines.Add name
+                else m.Toggle.VisibleRatlines.Remove name
+            Msg.SetVisibleRatlines next
+        | None ->
+            Msg.ToggleNetRatline name
     StackPanel.create [
         StackPanel.orientation Orientation.Horizontal
         StackPanel.spacing 6.0
         StackPanel.verticalAlignment VerticalAlignment.Center
         StackPanel.children [
-            // H column — polygon highlight (cyan/blue)
-            clickable
-                (fun () -> dispatch (Msg.ToggleNetHighlight name))
-                (netIndicator highlighted "#4090ff")
-            // R column — ratline (amber, matches the overlay color)
-            clickable
-                (fun () -> dispatch (Msg.ToggleNetRatline name))
-                (netIndicator ratlineOn "#ffc840")
+            // H column — polygon highlight (cyan/blue).
+            netCell Highlight name highlighted readLiveHighlight
+                setHighlightMsg dispatch "#4090ff"
+            // R column — ratline (amber, matches overlay color).
+            netCell Ratline name ratlineOn readLiveRatline
+                setRatlineMsg dispatch "#ffc840"
             TextBlock.create [
                 TextBlock.text name
                 TextBlock.fontSize 11.0

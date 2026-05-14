@@ -655,7 +655,7 @@ type private DragKind =
     | PolygonDrag
     | ResizeDrag of handle: ResizeHandle * structure: string * index: int
 
-type GdsCanvasControl() =
+type GdsCanvasControl() as this =
     inherit Control()
 
     // 2D view state. `centerX/Y` is the world DBU point at the
@@ -676,6 +676,24 @@ type GdsCanvasControl() =
     // edit through the model on every mouse-move tick.
     let mutable dragKind : DragKind = NoDrag
     let mutable lastPos : Avalonia.Point = Avalonia.Point()
+    // Last modifier-key state captured from a PointerMoved. The
+    // auto-pan timer fires WITHOUT an event arg, so it can't read
+    // KeyModifiers from the source event; it pulls from here.
+    let mutable lastModifiers : KeyModifiers = KeyModifiers.None
+    // Auto-pan ticker. Drives the edge-of-viewport pan + drag
+    // advance while the cursor sits in the edge band, including
+    // when the user is HOLDING the cursor still. Started by
+    // OnPointerMoved when the cursor enters the band; stopped by
+    // its own Tick handler when the band-or-drag condition no
+    // longer holds, and by OnPointerReleased when the drag ends.
+    // 33 ms = ~30 fps; combined with the maxRatePx in
+    // AutoPanIfNearEdge, that's ~120 px/sec at saturation —
+    // steerable, not jarring.
+    let autoPanTimer =
+        let t = Avalonia.Threading.DispatcherTimer()
+        t.Interval <- System.TimeSpan.FromMilliseconds(33.0)
+        t
+    do autoPanTimer.Tick.Add(fun _ -> this.OnAutoPanTick ())
     // Resting centroid of the selection at the moment a drag
     // armed. Used so move snaps the SELECTION'S CENTROID to the
     // user grid — not the cursor delta. A user grabbing a cell
@@ -1084,8 +1102,20 @@ type GdsCanvasControl() =
             // shouldn't initiate pan / marquee / selection.
             ()
         elif props.IsMiddleButtonPressed || props.IsRightButtonPressed then
-            // Middle / right → pan, regardless of geometry beneath.
-            dragKind <- PanDrag
+            // Middle / right while a left-button drag is already in
+            // flight → no dragKind change. PointerMoved checks the
+            // live button state and routes to pan handling. Just
+            // reset `lastPos` so the first Move-tick computes its
+            // delta from this press point.
+            let dragInFlight =
+                match dragKind with
+                | SelectionDrag | PolygonDrag -> true
+                | ResizeDrag _ -> true
+                | _ -> false
+            if dragInFlight then
+                lastPos <- p
+            else
+                dragKind <- PanDrag
         elif props.IsLeftButtonPressed
              && this.SelectedPolygons.Count = 1
              && (let handles = !resizeHandleHits
@@ -1312,6 +1342,53 @@ type GdsCanvasControl() =
     /// (effectively raw 1-DBU resolution). The legacy SKY130 5 nm
     /// mfg-grid path is gone — the user explicitly asked for
     /// "replaces sky snap".
+    /// Edge-of-viewport auto-pan: when the cursor sits within
+    /// `edgePx` of any canvas edge during a left-button drag,
+    /// nudge the camera toward the edge so the user can drag past
+    /// the visible region without lifting the button. Capped at a
+    /// deliberately slow rate so the pan stays steerable.
+    member private this.AutoPanIfNearEdge (p: Avalonia.Point) : unit =
+        let bw = this.Bounds.Width
+        let bh = this.Bounds.Height
+        if bw <= 0.0 || bh <= 0.0 then () else
+        let edgePx = 24.0
+        // Pixels-per-tick at full saturation — kept low so the
+        // pan stays steerable. With the cursor inside the canvas
+        // edge, the linear ramp tops out at maxRatePx. With the
+        // cursor PAST the edge the ramp saturates at 1.0 (was
+        // letting it run away into negative-distance territory).
+        let maxRatePx = 4.0
+        let speedFactor (dist: double) : double =
+            // Clamp at the edge — when the cursor goes PAST the
+            // canvas (negative dist) we'd otherwise read >1.0 and
+            // get a runaway pan rate.
+            if dist <= 0.0 then 1.0
+            elif dist >= edgePx then 0.0
+            else (edgePx - dist) / edgePx
+        let leftSpeed   = speedFactor p.X
+        let rightSpeed  = speedFactor (bw - p.X)
+        let topSpeed    = speedFactor p.Y
+        let bottomSpeed = speedFactor (bh - p.Y)
+        let dxPx =
+            if leftSpeed > 0.0 then -leftSpeed * maxRatePx
+            elif rightSpeed > 0.0 then rightSpeed * maxRatePx
+            else 0.0
+        let dyPx =
+            if topSpeed > 0.0 then -topSpeed * maxRatePx
+            elif bottomSpeed > 0.0 then bottomSpeed * maxRatePx
+            else 0.0
+        if dxPx <> 0.0 || dyPx <> 0.0 then
+            let scale = max pixelsPerDbu 0.0001
+            // Sign opposite the middle-button overlay: auto-pan
+            // pushes the camera TOWARD the edge (so the world
+            // point under the cursor moves toward the camera's new
+            // center). The dragKind move handler downstream then
+            // computes a larger `wx - dragStartWorldX` and the
+            // selection drags toward the edge — exactly the wanted
+            // effect.
+            centerX <- centerX + dxPx / scale
+            centerY <- centerY - dyPx / scale
+
     member private this.SnapStepDbu (lib: Document) (altHeld: bool) : int64 =
         if not this.SnapEnabled then 0L
         else
@@ -1459,19 +1536,27 @@ type GdsCanvasControl() =
                     { c with Elements = elems' })
         { doc with Cells = updated }
 
-    override this.OnPointerMoved e =
-        base.OnPointerMoved e
+    /// Per-dragKind move-event handler body, abstracted from the
+    /// PointerEventArgs so both real PointerMoved events AND the
+    /// auto-pan timer can drive it. `pos` is the current cursor
+    /// position; `modifiers` is the current keyboard modifier
+    /// state (Shift / Alt). The timer pulls these from `lastPos`
+    /// + `lastModifiers` (cached on every real move).
+    member private this.HandleDragMove
+            (pos: Avalonia.Point)
+            (modifiers: KeyModifiers)
+            : unit =
         match dragKind with
         | NoDrag -> ()
         | MarqueeDrag ->
-            let p = e.GetPosition this
+            let p = pos
             let wx, wy = this.ScreenToWorld p
             marqueeWorldEnd <-
                 int64 (System.Math.Round wx),
                 int64 (System.Math.Round wy)
             this.InvalidateVisual()
         | PanDrag ->
-            let p = e.GetPosition this
+            let p = pos
             let dxPx = p.X - lastPos.X
             let dyPx = p.Y - lastPos.Y
             let scale = max pixelsPerDbu 0.0001
@@ -1480,18 +1565,12 @@ type GdsCanvasControl() =
             lastPos <- p
             this.InvalidateVisual()
         | SelectionDrag ->
-            let p = e.GetPosition this
+            let p = pos
             let wx, wy = this.ScreenToWorld p
             let dxRaw = int64 (System.Math.Round (wx - dragStartWorldX))
             let dyRaw = int64 (System.Math.Round (wy - dragStartWorldY))
-            // Shift held → ortho-lock. Whichever axis has the
-            // larger absolute Δ since drag-start wins, the other
-            // is forced to zero. Re-evaluated every move so the
-            // user can flip the dominant axis by reversing
-            // direction; the moment they release Shift, free
-            // motion resumes.
-            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
-            let alt = e.KeyModifiers.HasFlag KeyModifiers.Alt
+            let shift = modifiers.HasFlag KeyModifiers.Shift
+            let alt = modifiers.HasFlag KeyModifiers.Alt
             let dxRaw, dyRaw =
                 if shift then
                     if abs dxRaw >= abs dyRaw then dxRaw, 0L
@@ -1532,12 +1611,12 @@ type GdsCanvasControl() =
                 this.InvalidateVisual()
             lastPos <- p
         | PolygonDrag ->
-            let p = e.GetPosition this
+            let p = pos
             let wx, wy = this.ScreenToWorld p
             let dxRaw = int64 (System.Math.Round (wx - dragStartWorldX))
             let dyRaw = int64 (System.Math.Round (wy - dragStartWorldY))
-            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
-            let alt = e.KeyModifiers.HasFlag KeyModifiers.Alt
+            let shift = modifiers.HasFlag KeyModifiers.Shift
+            let alt = modifiers.HasFlag KeyModifiers.Alt
             let dxRaw, dyRaw =
                 if shift then
                     if abs dxRaw >= abs dyRaw then dxRaw, 0L
@@ -1579,13 +1658,13 @@ type GdsCanvasControl() =
                 this.InvalidateVisual()
             lastPos <- p
         | ResizeDrag (handle, sname, idx) ->
-            let p = e.GetPosition this
+            let p = pos
             let wx, wy = this.ScreenToWorld p
             let (sxMin0, syMin0, sxMax0, syMax0) = resizeStartBbox
             // Snap the cursor's world coord to the user grid (Alt
             // = finer step). When SnapEnabled is off the cursor
             // lands at raw DBU.
-            let alt = e.KeyModifiers.HasFlag KeyModifiers.Alt
+            let alt = modifiers.HasFlag KeyModifiers.Alt
             let (cx, cy) =
                 let rx = int64 (System.Math.Round wx)
                 let ry = int64 (System.Math.Round wy)
@@ -1626,7 +1705,7 @@ type GdsCanvasControl() =
             // Aspect-ratio lock: Shift + corner handle. Pick the
             // axis with the smaller proportional change, scale the
             // other to match the original aspect.
-            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            let shift = modifiers.HasFlag KeyModifiers.Shift
             let isCorner =
                 match handle with HNW | HNE | HSW | HSE -> true | _ -> false
             let (finalXMin, finalYMin, finalXMax, finalYMax) =
@@ -1710,8 +1789,110 @@ type GdsCanvasControl() =
                 this.InvalidateVisual()
             lastPos <- p
 
+    /// True when `p` is inside the auto-pan edge band along ANY of
+    /// the four canvas edges. Used by both the move handler (start
+    /// timer) and the timer tick (keep panning).
+    member private this.CursorInEdgeBand (p: Avalonia.Point) : bool =
+        let edgePx = 24.0
+        let bw = this.Bounds.Width
+        let bh = this.Bounds.Height
+        bw > 0.0 && bh > 0.0
+        && (p.X <= edgePx || (bw - p.X) <= edgePx
+            || p.Y <= edgePx || (bh - p.Y) <= edgePx)
+
+    /// Auto-pan timer tick. Fires while the cursor is in the edge
+    /// band during a drag — including when the user is holding the
+    /// cursor still. Pans the camera + advances the dragKind move
+    /// handler against `lastPos` so the dragged geometry follows
+    /// the camera. Stops itself when the band-or-drag condition no
+    /// longer holds.
+    member private this.OnAutoPanTick () : unit =
+        let dragInFlight =
+            match dragKind with
+            | SelectionDrag | PolygonDrag | MarqueeDrag -> true
+            | ResizeDrag _ -> true
+            | _ -> false
+        if not dragInFlight then
+            autoPanTimer.Stop()
+        elif not (this.CursorInEdgeBand lastPos) then
+            autoPanTimer.Stop()
+        else
+            this.AutoPanIfNearEdge lastPos
+            this.HandleDragMove lastPos lastModifiers
+
+    override this.OnPointerMoved e =
+        base.OnPointerMoved e
+        let props = e.GetCurrentPoint(this).Properties
+        let p = e.GetPosition this
+        // Capture the prior cursor position BEFORE any handler
+        // updates `lastPos`. The middle-pan branch needs this to
+        // compute its screen delta (we rebind `lastPos = p` only
+        // after the pan math).
+        let prevPos = lastPos
+        lastModifiers <- e.KeyModifiers
+        let middleOrRightHeld =
+            props.IsMiddleButtonPressed || props.IsRightButtonPressed
+        let dragInFlight =
+            match dragKind with
+            | SelectionDrag | PolygonDrag | MarqueeDrag -> true
+            | ResizeDrag _ -> true
+            | _ -> false
+        if middleOrRightHeld && dragInFlight then
+            // Manual pan-overlay: middle/right held during a left-
+            // button drag. Pan camera, skip dragKind handler.
+            // Auto-pan timer (if running) yields — manual pan
+            // takes precedence.
+            autoPanTimer.Stop()
+            let dxPx = p.X - prevPos.X
+            let dyPx = p.Y - prevPos.Y
+            let scale = max pixelsPerDbu 0.0001
+            centerX <- centerX - dxPx / scale
+            centerY <- centerY + dyPx / scale
+            lastPos <- p
+            this.InvalidateVisual()
+        else
+            // The auto-pan timer is the SOLE source of edge-band
+            // pan. Doing AutoPanIfNearEdge per move event AND on
+            // the timer would double the rate when the mouse is
+            // moving. The dragKind handler runs every move so the
+            // dragged geometry tracks the cursor under user input;
+            // when the cursor enters the band, we hand pan over to
+            // the timer and fire one tick immediately so there's
+            // no perceptible pause.
+            this.HandleDragMove p e.KeyModifiers
+            // Some HandleDragMove branches don't update lastPos
+            // (NoDrag, MarqueeDrag). Ensure the timer sees the
+            // current cursor position regardless.
+            lastPos <- p
+            if dragInFlight && this.CursorInEdgeBand p then
+                if not autoPanTimer.IsEnabled then
+                    autoPanTimer.Start()
+                    // Prime the first pan immediately so the user
+                    // doesn't see a 33 ms dead zone on entry.
+                    this.OnAutoPanTick ()
+            elif autoPanTimer.IsEnabled then
+                autoPanTimer.Stop()
+
     override this.OnPointerReleased e =
         base.OnPointerReleased e
+        // Middle / right released while left is still held → the
+        // user finished the pan-overlay; leave the drag armed.
+        // Reset `lastPos` so the next move-tick doesn't compute a
+        // stale delta and pan again.
+        let props = e.GetCurrentPoint(this).Properties
+        let dragInFlight =
+            match dragKind with
+            | SelectionDrag | PolygonDrag -> true
+            | ResizeDrag _ -> true
+            | _ -> false
+        if dragInFlight && props.IsLeftButtonPressed then
+            lastPos <- e.GetPosition this
+        else
+        // Drag itself is ending (left released, OR a pure pan
+        // dragKind ending). Reset state + commit if we had a
+        // left-button drag in flight. Stop the auto-pan timer too —
+        // no drag → nothing to advance.
+        autoPanTimer.Stop()
         let kind = dragKind
         let dx, dy = dragLiveDeltaDbu
         // Capture resize state before resetting; the commit branch

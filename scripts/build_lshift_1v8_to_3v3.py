@@ -376,11 +376,11 @@ out_n_x, out_n_y = pin_xy(npd_outn, "D", mv_n_info)
 out_x, out_y = pin_xy(npd_out, "D", mv_n_info)
 port_labels.extend([
     rkt.Label(layer=rkt.named("sky130", "met1_label"), text="IN", origin=in_label_pt),
-    # IN_n net = LV INV drain (D_n in old naming). Label on the
-    # met2 horizontal that runs at NMOS_EXT_Y, midway between LV
-    # drain col and MV1 NFET ext.
-    rkt.Label(layer=rkt.named("sky130", "met2_label"), text="IN_n",
-              origin=((INV_DRAIN_WIRE_X + pd_out_ext.center[0]) // 2, NMOS_EXT_Y_HI)),
+    # IN_n is an INTERNAL net (LV INV output drives MV1 NFET gate)
+    # — NOT a cell-level port. We deliberately do NOT label it
+    # here; Magic's flood-fill is enough for net continuity, and
+    # labeling it would promote IN_n to a 7th subckt port that the
+    # schematic doesn't declare → LVS pin-match would fail.
     rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT_N", origin=(out_n_x, out_n_y)),
     rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT", origin=(out_x, out_y)),
     # Belt & suspenders: also label the parent-paint met1 verticals

@@ -143,7 +143,6 @@
     (label (layer sky130:met1_label) (text "VDDA1") (origin 45 7750))
     (label (layer sky130:met1_label) (text "VSS") (origin 45 -2850))
     (label (layer sky130:met1_label) (text "IN") (origin 600 655))
-    (label (layer sky130:met2_label) (text "IN_n") (origin 1915 3090))
     (label (layer sky130:li1_label) (text "OUT_N") (origin 1505 -155))
     (label (layer sky130:li1_label) (text "OUT") (origin 3205 -155))
     (label (layer sky130:met1_label) (text "OUT_N") (origin 1460 2882))

@@ -16,6 +16,7 @@ from rekolektion.layout import (
     pin_to_rail,
     place_via,
     place_wire,
+    poly_bridge,
 )
 from rekolektion.layout._rkt_bbox import _clear_primitive_cache
 from rekolektion.primitives.sky130 import gen_nfet_hv, gen_pfet_hv
@@ -476,3 +477,110 @@ def test_gate_extension_translates_by_sref_origin(
     for e in ext.elements:
         cx = (e.x1 + e.x2) // 2
         assert cx == 2000 + g_pin.origin[0]
+
+
+# ─── poly_bridge ─────────────────────────────────────────────────────
+
+
+def _bridge_setup(primitives_dir):
+    """Mint a topgate NFET + botgate PFET and place them aligned in
+    the column convention used by stdcells: NFET at origin, PFET
+    above with a 1 µm inter-row gap. Returns the SRefs.
+    """
+
+    n_name = gen_nfet_hv(
+        w_um=1.0, l_um=0.5, botc=False, primitives_dir=primitives_dir,
+    )
+    p_name = gen_pfet_hv(
+        w_um=1.0, l_um=0.5, topc=False, primitives_dir=primitives_dir,
+    )
+    n_info = inspect_primitive(n_name, primitives_dir=primitives_dir)
+    p_info = inspect_primitive(p_name, primitives_dir=primitives_dir)
+    nfet = rkt.SRef(cell=n_name, origin=(0, 0))
+    inter_row = 1000
+    pfet_y = n_info.bbox[3] + inter_row - p_info.bbox[1]
+    pfet = rkt.SRef(cell=p_name, origin=(0, pfet_y))
+    return pfet, nfet, n_info, p_info
+
+
+def test_poly_bridge_emits_strap_and_enlargers_without_pin(
+    primitives_dir: Path,
+) -> None:
+    pfet, nfet, _, _ = _bridge_setup(primitives_dir)
+    br = poly_bridge(pfet, nfet, primitives_dir=primitives_dir)
+
+    # Default (pin_y=None): poly strap + two met1 enlargers, no
+    # channel pin contact.
+    layers = [e.layer.name for e in br.elements]
+    assert layers == ["poly", "met1", "met1"]
+    assert br.center is None
+    assert br.met1_rect is None
+    # Both enlargers are 320×320 by default and anchored to cell bbox.
+    for r in (br.top_in_cell_met1, br.bot_in_cell_met1):
+        assert r.layer.name == "met1"
+        assert (r.x2 - r.x1, r.y2 - r.y1) == (320, 320)
+
+
+def test_poly_bridge_with_pin_emits_full_stack(
+    primitives_dir: Path,
+) -> None:
+    pfet, nfet, n_info, p_info = _bridge_setup(primitives_dir)
+    # Pin midway between trunk-eligible Y values.
+    pin_y = (n_info.bbox[3] + pfet.origin[1] + p_info.bbox[1]) // 2
+    br = poly_bridge(pfet, nfet, pin_y=pin_y, primitives_dir=primitives_dir)
+
+    layers = [e.layer.name for e in br.elements]
+    # poly strap + (licon1, li1, mcon, met1 pin) + 2 met1 enlargers.
+    assert layers == [
+        "poly", "licon1", "li1", "mcon", "met1", "met1", "met1",
+    ]
+    assert br.center == (0, pin_y)
+    assert br.met1_rect is not None
+    assert (br.met1_rect.x2 - br.met1_rect.x1) == 320
+
+
+def test_poly_bridge_enlargers_anchor_to_cell_bbox(
+    primitives_dir: Path,
+) -> None:
+    pfet, nfet, n_info, p_info = _bridge_setup(primitives_dir)
+    br = poly_bridge(pfet, nfet, primitives_dir=primitives_dir)
+
+    # NFET-side enlarger: outer edge (top) at NFET bbox top.
+    nfet_bbox_top_parent = nfet.origin[1] + n_info.bbox[3]
+    assert br.bot_in_cell_met1.y2 == nfet_bbox_top_parent
+    # PFET-side enlarger: outer edge (bottom) at PFET bbox bottom.
+    pfet_bbox_bot_parent = pfet.origin[1] + p_info.bbox[1]
+    assert br.top_in_cell_met1.y1 == pfet_bbox_bot_parent
+
+
+def test_poly_bridge_refuses_wrong_gate_direction(
+    primitives_dir: Path,
+) -> None:
+    # Both-contact primitives lack the _topgate/_botgate suffix and
+    # are refused.
+    both = gen_nfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    pfet, _, _, _ = _bridge_setup(primitives_dir)
+    bad_bot = rkt.SRef(cell=both, origin=(0, 0))
+    with pytest.raises(ValueError, match="_topgate"):
+        poly_bridge(pfet, bad_bot, primitives_dir=primitives_dir)
+
+
+def test_poly_bridge_refuses_misaligned_gate_columns(
+    primitives_dir: Path,
+) -> None:
+    pfet, nfet, _, _ = _bridge_setup(primitives_dir)
+    # Shift NFET sideways so gate columns no longer line up.
+    nfet_shifted = rkt.SRef(cell=nfet.cell, origin=(500, 0))
+    with pytest.raises(ValueError, match="aligned gate columns"):
+        poly_bridge(pfet, nfet_shifted, primitives_dir=primitives_dir)
+
+
+def test_poly_bridge_refuses_pin_y_outside_strap(
+    primitives_dir: Path,
+) -> None:
+    pfet, nfet, _, _ = _bridge_setup(primitives_dir)
+    # pin_y in NFET cell, not in the strap.
+    with pytest.raises(ValueError, match="80 nm poly enclosure"):
+        poly_bridge(
+            pfet, nfet, pin_y=200, primitives_dir=primitives_dir,
+        )

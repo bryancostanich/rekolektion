@@ -45,8 +45,14 @@ mv_n_info = inspect_primitive(mv_n)
 # Top: PMOS row (LV inv P + MV PU pair).
 # Layout: LV cells on the LEFT, MV cells on the RIGHT.
 LV_COL_X = 600
+# LV-to-MV minimum X pitch: the binding rule is LV-vs-MV same-type
+# diff spacing (diff/tap.22+.23 = 360 nm). LV PFET diff right edge
+# at LV_COL_X + 365 (LV diff half-width); MV PFET diff left edge at
+# MV0_X − 540 (MV diff half-width is wider due to longer S/D taps).
+# MV0_X ≥ LV_COL_X + 365 + 360 + 540 = LV_COL_X + 1265.
+# 1300 leaves 35 nm slack.
 MV_PITCH_X = 1700
-MV0_X = LV_COL_X + 2200
+MV0_X = LV_COL_X + 1300
 MV1_X = MV0_X + MV_PITCH_X
 
 # NMOS row
@@ -55,7 +61,7 @@ npd_outn = rkt.SRef(cell=mv_n, origin=(MV0_X, 0))
 npd_out  = rkt.SRef(cell=mv_n, origin=(MV1_X, 0))
 
 # PMOS row — y above NMOS bbox top.
-INTER_ROW_CHANNEL = 1500
+INTER_ROW_CHANNEL = 700
 # Use the taller of lv_p / mv_p y_min for consistent y_origin.
 # Actually two separate rows: LV INV at LV_COL_X y=lv_y, MV PMOS at MV_X y=mv_y.
 # They need different y_origin to align top edges. To keep things simple,

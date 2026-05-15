@@ -1168,6 +1168,53 @@ has nothing to compare against — you'd be running an extraction
 only, which catches some classes of error (e.g. floating nets) but
 not "wrong topology."
 
+**Port aliases — when LVS sees a V_TIE-style alias.** Some
+schematics use a 0 V source (e.g. `V_TIE NODE_A NODE_B 0`) to
+declare two port names as the same physical node, for clarity at
+the SoC boundary.  netgen removes zero-vsrcs as a normalization
+step, leaving the second name as a floating port that fails
+top-level pin matching — even though the topology is identical.
+
+`verify_lvs` accepts a `port_aliases=[(layout_name, schematic_name), ...]`
+argument that resolves this by rewriting the reference schematic
+on the fly: dropping the V_TIE source and renaming the port in the
+`.subckt` header.  This is a **structured waiver, not a workaround**
+— the shim enforces a strict safety contract:
+
+1. **Verified.** The schematic must contain exactly one 0 V source
+   between the two named nodes.  If absent, the alias is rejected.
+   This means you cannot fudge LVS by declaring two unrelated
+   ports as equivalent.
+2. **Constrained.** Only two line-level changes are allowed in the
+   rewritten file: the `.subckt` port-list rewrite and the V_TIE
+   removal.  Any other delta aborts the call.
+3. **Auditable.** The rewritten schematic is saved alongside the
+   original (`<schematic>_lvs_aliased.spice`) and returned in
+   `LVSResult.aliased_schematic_path`.  Future readers can diff
+   against the original.
+4. **Caller-scoped.** Aliases are passed at the `verify_lvs` call
+   site, in the block's build script.  Not in a global config that
+   silently affects other blocks.
+5. **Visible in the result.** `LVSResult.port_aliases_applied`
+   lists every alias that ran, and the `summary()` headline
+   includes them: `LVS MATCH: blc_trim_ref [port aliases: V_BIAS_TRIM↔BLC_REF_5UA]`.
+
+Example:
+
+```python
+result = verify_lvs(
+    "cell_designs/bl_clamp/blc_trim_ref.rkt",
+    "cell_designs/bl_clamp/blc_trim_ref_sch.spice",
+    cell_name="blc_trim_ref",
+    port_aliases=[("V_BIAS_TRIM", "BLC_REF_5UA")],
+)
+```
+
+What this does NOT bypass: device count, parameter values, net
+topology, or any electrical correctness check.  The shim only
+mediates a SPICE-naming convention that doesn't survive netgen's
+vsrc normalization.
+
 **Announce the gate-3 pass explicitly.** When `verify_lvs` returns
 `LVS MATCH`, the very next user-facing line must be a HEADLINE
 acknowledging that all three verification gates closed:

@@ -54,11 +54,175 @@ class LVSResult:
     log_path: Path
     cell_name: str
     extracted_netlist_path: Path | None = None
+    # Port aliases applied to the schematic before comparison.  Each
+    # entry is (layout_name, schematic_name).  These are V_TIE 0V
+    # source aliases verified against the original schematic — see
+    # `_apply_port_aliases` for the safety contract.
+    port_aliases_applied: tuple[tuple[str, str], ...] = ()
+    # Path to the rewritten schematic (if any aliases were applied),
+    # for auditability.  None when no aliases requested.
+    aliased_schematic_path: Path | None = None
 
     def summary(self) -> str:
+        suffix = ""
+        if self.port_aliases_applied:
+            pairs = ", ".join(f"{a}↔{b}" for a, b in self.port_aliases_applied)
+            suffix = f"  [port aliases: {pairs}]"
         if self.match:
-            return f"LVS MATCH: {self.cell_name}"
-        return f"LVS MISMATCH: {self.cell_name} — see {self.log_path}"
+            return f"LVS MATCH: {self.cell_name}{suffix}"
+        return f"LVS MISMATCH: {self.cell_name}{suffix} — see {self.log_path}"
+
+
+# ─── Port aliasing shim (V_TIE 0V source pattern) ────────────────────
+
+
+class PortAliasError(ValueError):
+    """Raised when a requested port alias cannot be safely applied."""
+
+
+def _apply_port_aliases(
+    schematic_path: Path,
+    cell_name: str,
+    aliases: list[tuple[str, str]],
+    output_dir: Path,
+) -> Path:
+    """Rewrite the schematic to alias V_TIE-connected ports.
+
+    Safety contract (see workflow doc § "Port aliases — when LVS sees
+    a V_TIE-style alias"):
+
+    1. CONSTRAINED.  Only one transformation is supported: renaming a
+       port in the cell's `.subckt` line + removing the V_TIE 0 V
+       source that aliases the two named nodes.  No general schematic
+       rewriting.
+
+    2. VERIFIED.  For each (layout_name, schematic_name) pair, the
+       schematic must contain exactly one V_TIE-style line:
+           V<anything> <name_a> <name_b> 0
+       where {name_a, name_b} == {layout_name, schematic_name}.  If
+       absent, the alias is REJECTED as potentially bug-masking.
+
+    3. AUDITABLE.  The rewritten file is saved to
+       `<output_dir>/<schematic-stem>_lvs_aliased.spice` so future
+       readers can diff against the original.
+
+    4. STRICT DIFF.  The transformation removes exactly one line (the
+       V_TIE source) and modifies exactly one line (the `.subckt`
+       header).  Any additional difference aborts the shim.
+
+    5. ORIGINAL UNCHANGED.  The original schematic file is opened
+       read-only.
+
+    Returns the path to the rewritten schematic.
+    """
+
+    schematic_path = Path(schematic_path)
+    original = schematic_path.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+
+    # Locate the .subckt <cell_name> ... line(s).  Multi-line continuations
+    # (`+ ...`) are joined for parsing then re-split for the rewrite.
+    subckt_line_indices: list[int] = []
+    for i, ln in enumerate(lines):
+        stripped = ln.strip()
+        if stripped.lower().startswith(".subckt"):
+            tokens = stripped.split()
+            if len(tokens) >= 2 and tokens[1] == cell_name:
+                subckt_line_indices.append(i)
+    if len(subckt_line_indices) != 1:
+        raise PortAliasError(
+            f"Expected exactly one .subckt {cell_name} declaration in "
+            f"{schematic_path}, found {len(subckt_line_indices)}"
+        )
+    subckt_idx = subckt_line_indices[0]
+
+    # Validate every requested alias against the schematic body.
+    # For each alias, scan for a 0 V source whose two nodes match the
+    # alias pair.
+    body_lines = [ln.rstrip("\n") for ln in lines]
+    vtie_indices_per_alias: list[int] = []
+    for layout_name, schematic_name in aliases:
+        if layout_name == schematic_name:
+            raise PortAliasError(
+                f"Alias {layout_name}↔{schematic_name} has identical names — "
+                f"nothing to rewrite"
+            )
+        matches: list[int] = []
+        for i, ln in enumerate(body_lines):
+            tokens = ln.strip().split()
+            # Voltage source line: V<name> n+ n- <value>
+            if (len(tokens) >= 4
+                    and tokens[0].lower().startswith("v")
+                    and tokens[3] == "0"
+                    and {tokens[1], tokens[2]} == {layout_name, schematic_name}):
+                matches.append(i)
+        if len(matches) != 1:
+            raise PortAliasError(
+                f"Alias {layout_name}↔{schematic_name} requires exactly one "
+                f"0 V source between those nodes in the schematic; found "
+                f"{len(matches)} matching V_TIE-style lines. Refusing to "
+                f"alias — this could mask a real LVS mismatch."
+            )
+        vtie_indices_per_alias.append(matches[0])
+
+    # Apply the rewrite.
+    # (a) Rewrite the .subckt header: replace each schematic_name port
+    #     with layout_name; dedupe if it becomes a duplicate of an
+    #     existing port.
+    header = body_lines[subckt_idx]
+    header_tokens = header.split()
+    # Tokens: .subckt <cell> <port1> <port2> ...
+    new_ports: list[str] = []
+    seen: set[str] = set()
+    rename_map = {sch: lay for lay, sch in aliases}
+    for tok in header_tokens[2:]:
+        replaced = rename_map.get(tok, tok)
+        if replaced not in seen:
+            new_ports.append(replaced)
+            seen.add(replaced)
+    new_header = " ".join(header_tokens[:2] + new_ports)
+
+    # (b) Remove the V_TIE lines.
+    drop_indices = set(vtie_indices_per_alias)
+
+    out_lines: list[str] = []
+    for i, ln in enumerate(body_lines):
+        if i in drop_indices:
+            continue
+        if i == subckt_idx:
+            # Preserve trailing newline / continuation cleanliness.
+            out_lines.append(new_header)
+        else:
+            out_lines.append(ln)
+
+    rewritten = "\n".join(out_lines) + "\n"
+
+    # (c) Verify the diff: exactly len(aliases)+1 line-level changes
+    #     compared to the original (1 header change + N V_TIE removals).
+    import difflib
+    orig_lines = [ln.rstrip("\n") for ln in original.splitlines()]
+    diff_changes = sum(
+        1 for d in difflib.unified_diff(orig_lines, out_lines, n=0, lineterm="")
+        if (d.startswith(("-", "+"))
+            and not d.startswith(("---", "+++")))
+    )
+    expected_changes = 1 + len(aliases) * 2  # 1 header (− and +) is 2, plus 2N for V_TIE remove (− only) wait
+    # Actually: header: 1 removed, 1 added = 2 changes.
+    # Each V_TIE: 1 removed = 1 change.
+    expected_changes = 2 + len(aliases)
+    if diff_changes != expected_changes:
+        raise PortAliasError(
+            f"Port-alias shim produced {diff_changes} line changes; "
+            f"expected exactly {expected_changes} (1 header rewrite + "
+            f"{len(aliases)} V_TIE removals).  Aborting to avoid masking "
+            f"unintended schematic edits."
+        )
+
+    # (d) Save rewritten schematic for audit.
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rewritten_path = output_dir / f"{schematic_path.stem}_lvs_aliased.spice"
+    rewritten_path.write_text(rewritten, encoding="utf-8")
+    return rewritten_path
 
 
 def extract_netlist(
@@ -180,6 +344,8 @@ def run_lvs(
     extracted_netlist: str | Path | None = None,
     netgen_timeout: int = 3600,
     extra_flatten_cells: list[str] | None = None,
+    extra_equates: list[tuple[str, str]] | None = None,
+    port_aliases: list[tuple[str, str]] | None = None,
 ) -> LVSResult:
     """Run LVS: extract layout netlist, compare against schematic.
 
@@ -221,6 +387,21 @@ def run_lvs(
     else:
         extracted = extract_netlist(gds_path, cell_name, pdk_root, output_dir)
 
+    # Step 1.5: Apply port aliases if requested (V_TIE 0V source pattern).
+    # See _apply_port_aliases for the safety contract.
+    schematic_for_compare = Path(schematic_path)
+    aliases_applied: tuple[tuple[str, str], ...] = ()
+    aliased_schematic: Path | None = None
+    if port_aliases:
+        aliased_schematic = _apply_port_aliases(
+            Path(schematic_path),
+            cell_name or "(top)",
+            list(port_aliases),
+            output_dir,
+        )
+        schematic_for_compare = aliased_schematic
+        aliases_applied = tuple(port_aliases)
+
     # Audit 2026-05-03 / task #108: VSUBS→VSS textual rewrite REMOVED.
     # The same alias is now expressed as a netgen `equate nets VSUBS VSS`
     # directive in the wrapper-setup.tcl below (already in
@@ -242,7 +423,7 @@ def run_lvs(
     # Use absolute paths; netgen runs with cwd=output_dir so relative paths
     # from repo root won't resolve.
     extracted_abs = Path(extracted).resolve()
-    schematic_abs = Path(schematic_path).resolve()
+    schematic_abs = Path(schematic_for_compare).resolve()
 
     # Write a wrapper setup.tcl that sources the PDK's default setup
     # and then flattens decap / fill / tap / clock-buffer cells.  The
@@ -340,6 +521,13 @@ def run_lvs(
     for c1, c2 in _equate_pairs:
         lines.append(f"catch {{equate nets -circuit1 {c1} {c2}}}")
         lines.append(f"catch {{equate nets -circuit2 {c1} {c2}}}")
+    # Per-block caller-supplied equates — for block-specific aliases
+    # (e.g., V_TIE 0 V naming hacks in the schematic that don't survive
+    # netgen's zero-vsrc removal).
+    if extra_equates:
+        for c1, c2 in extra_equates:
+            lines.append(f"catch {{equate nets -circuit1 {c1} {c2}}}")
+            lines.append(f"catch {{equate nets -circuit2 {c1} {c2}}}")
     # netgen `equate classes` ledger.  Audit 2026-05-03 / task #101 +
     # follow-up: the foundry SRAM bitcell hand-written body uses the
     # SKY130 special_* SRAM models (special_nfet_pass for access W=0.14,
@@ -419,4 +607,6 @@ def run_lvs(
         log_path=log_path,
         cell_name=cell_name or "(top)",
         extracted_netlist_path=extracted,
+        port_aliases_applied=aliases_applied,
+        aliased_schematic_path=aliased_schematic,
     )

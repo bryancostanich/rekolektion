@@ -300,20 +300,23 @@ OUT_N_VERT_X = ppu_outn_d[0] - 45  # 860 — 140 nm gap from MV0 PFET gate met1 
 gate_routes.extend(place_wire(
     (OUT_N_VERT_X, npd_outn_d[1]), (OUT_N_VERT_X, ppu_outn_d[1]), layer="met1",
 ))
-# Met1 patch + via1 at PMOS_EXT_Y_HI to tap onto met2 for the
-# horizontal cross-couple.
+# Met1 patch + via1 at PMOS_EXT_Y_HI to tap onto met2. Center on
+# OUT_N_VERT_X (the wire's X) and use an asymmetric width (280 nm
+# in X, 320 nm in Y) so the patch right edge keeps 140 nm met1.2
+# from pu_outn_ext's bridge at x=[1740, 2060]. Asym enclosure of
+# the via1 cut: X (65 nm) ≥ 55 and Y (85 nm) ≥ 85 — meets via.4a.
 gate_routes.append(
     rkt.Rect(
         layer=rkt.named("sky130", "met1"),
-        x1=ppu_outn_d[0] - 160, y1=PMOS_EXT_Y_HI - 160,
-        x2=ppu_outn_d[0] + 160, y2=PMOS_EXT_Y_HI + 160,
+        x1=OUT_N_VERT_X - 140, y1=PMOS_EXT_Y_HI - 160,
+        x2=OUT_N_VERT_X + 140, y2=PMOS_EXT_Y_HI + 160,
     )
 )
-gate_routes.extend(place_via((ppu_outn_d[0], PMOS_EXT_Y_HI), "met1", "met2"))
-# Cross-couple: met2 east at PMOS_EXT_Y_HI from drain col to MV1
-# PFET ext patch.
+gate_routes.extend(place_via((OUT_N_VERT_X, PMOS_EXT_Y_HI), "met1", "met2"))
+# Cross-couple: met2 east at PMOS_EXT_Y_HI from the OUT_N wire
+# column to MV1 PFET ext patch.
 gate_routes.extend(place_wire(
-    (ppu_outn_d[0], PMOS_EXT_Y_HI), pu_out_ext.center, layer="met2",
+    (OUT_N_VERT_X, PMOS_EXT_Y_HI), pu_out_ext.center, layer="met2",
 ))
 gate_routes.extend(place_via(pu_out_ext.center, "met1", "met2"))
 
@@ -340,16 +343,18 @@ OUT_VERT_X = ppu_out_d[0] - 45  # 2560 — same met1.2 reasoning as OUT_N
 gate_routes.extend(place_wire(
     (OUT_VERT_X, npd_out_d[1]), (OUT_VERT_X, ppu_out_d[1]), layer="met1",
 ))
+# Asymmetric met1 patch + via1 centered on OUT_VERT_X (same reason
+# as OUT_N side: keep 140 nm gap from pu_out_ext bridge to the east).
 gate_routes.append(
     rkt.Rect(
         layer=rkt.named("sky130", "met1"),
-        x1=ppu_out_d[0] - 160, y1=PMOS_EXT_Y_LO - 160,
-        x2=ppu_out_d[0] + 160, y2=PMOS_EXT_Y_LO + 160,
+        x1=OUT_VERT_X - 140, y1=PMOS_EXT_Y_LO - 160,
+        x2=OUT_VERT_X + 140, y2=PMOS_EXT_Y_LO + 160,
     )
 )
-gate_routes.extend(place_via((ppu_out_d[0], PMOS_EXT_Y_LO), "met1", "met2"))
+gate_routes.extend(place_via((OUT_VERT_X, PMOS_EXT_Y_LO), "met1", "met2"))
 gate_routes.extend(place_wire(
-    (ppu_out_d[0], PMOS_EXT_Y_LO), pu_outn_ext.center, layer="met2",
+    (OUT_VERT_X, PMOS_EXT_Y_LO), pu_outn_ext.center, layer="met2",
 ))
 gate_routes.extend(place_via(pu_outn_ext.center, "met1", "met2"))
 

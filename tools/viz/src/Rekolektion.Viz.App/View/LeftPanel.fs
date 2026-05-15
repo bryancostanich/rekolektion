@@ -154,21 +154,38 @@ let private clickable
         Border.child child
     ] :> IView
 
+/// Resolve the net name for `rowIdx` from the current model's sorted
+/// net list. Returns None when the row no longer maps to a net (rare,
+/// only happens between async net-derivation completing and a
+/// re-render). Centralizing here keeps the handler closures from
+/// having to re-implement the alphabetical lookup three times.
+let private liveNetName (rowIdx: int) : string option =
+    match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+    | None -> None
+    | Some m ->
+        match Model.activeMacro m with
+        | None -> None
+        | Some am ->
+            let names = am.Nets |> Map.toList |> List.map fst |> List.sort
+            if rowIdx < 0 || rowIdx >= names.Length then None
+            else Some names.[rowIdx]
+
 /// Net-column drag-paint cell. Wires both PointerPressed (arm drag)
 /// and PointerEntered (paint during drag) so the user can click +
-/// sweep through a column to toggle many nets at once. `readLive`
-/// returns the CURRENT model state for this net+column at press
-/// time — captured-state would go stale across the in-flight
-/// dispatch (the layer panel hit the same bug, see
-/// `LeftPanel.layerRow`). `setMsg` builds the explicit-polarity
-/// Msg the drag-paint dispatches; we use it instead of a "flip"
-/// Msg so every row in the drag agrees on direction.
+/// sweep through a column to toggle many nets at once. The cell
+/// resolves the net it acts on via `liveNetName rowIdx` at click
+/// time — capturing `name` directly went stale because FuncUI
+/// reuses Border instances across renders without rebinding the
+/// lambdas (same trap layerRow documents). When the async
+/// `NetsLoaded` shifts row positions (alphabetical insert) the
+/// stale capture would dispatch against whatever name the row
+/// originally rendered, e.g. clicking "A" toggling "D".
 let private netCell
         (kind: NetDragKind)
-        (name: string)
+        (rowIdx: int)
         (currentlyOn: bool)
         (readLive: unit -> bool)
-        (setMsg: bool -> Msg.Msg)
+        (setMsg: string -> bool -> Msg.Msg)
         (dispatch: Msg.Msg -> unit)
         (color: string)
         : IView =
@@ -178,19 +195,22 @@ let private netCell
         Border.onPointerPressed (fun e ->
             e.Handled <- true
             e.Pointer.Capture null
-            let target = not (readLive ())
-            netDragKind <- ValueSome kind
-            netDragTarget <- target
-            netDragVisited <- Set.singleton name
-            dispatch (setMsg target))
+            match liveNetName rowIdx with
+            | None -> ()
+            | Some name ->
+                let target = not (readLive ())
+                netDragKind <- ValueSome kind
+                netDragTarget <- target
+                netDragVisited <- Set.singleton name
+                dispatch (setMsg name target))
         Border.onPointerEntered (fun e ->
-            match netDragKind with
-            | ValueSome k
+            match netDragKind, liveNetName rowIdx with
+            | ValueSome k, Some name
                 when k = kind
                      && not (netDragVisited.Contains name)
                      && e.GetCurrentPoint(null).Properties.IsLeftButtonPressed ->
                 netDragVisited <- netDragVisited.Add name
-                dispatch (setMsg netDragTarget)
+                dispatch (setMsg name netDragTarget)
             | _ -> ())
         Border.onPointerReleased (fun _ -> endDragPaint ())
         Border.child (netIndicator currentlyOn color)
@@ -199,53 +219,54 @@ let private netCell
 let private netRow
         (toggle: Visibility.ToggleState)
         (dispatch: Msg.Msg -> unit)
+        (rowIdx: int)
         (name: string)
         : IView =
     let highlighted = Visibility.isNetHighlighted toggle name
     let ratlineOn = Visibility.isRatlineVisible toggle name
-    // `readLive` consults the current Services.AppDispatch.currentModel
-    // so the press handler computes target from the LIVE state, not
-    // a stale closure capture (FuncUI reuses Border instances across
-    // renders without rebinding the lambdas — see layerRow comment).
+    // Live readers resolve the net name from the row index against
+    // the CURRENT model so they never act on a stale captured name.
     let readLiveHighlight () =
-        match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
-        | Some (m: Model.Model) -> Visibility.isNetHighlighted m.Toggle name
-        | None -> highlighted
+        match liveNetName rowIdx,
+              Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+        | Some n, Some (m: Model.Model) -> Visibility.isNetHighlighted m.Toggle n
+        | _ -> highlighted
     let readLiveRatline () =
-        match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
-        | Some (m: Model.Model) -> Visibility.isRatlineVisible m.Toggle name
-        | None -> ratlineOn
-    let setHighlightMsg target =
+        match liveNetName rowIdx,
+              Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+        | Some n, Some (m: Model.Model) -> Visibility.isRatlineVisible m.Toggle n
+        | _ -> ratlineOn
+    let setHighlightMsg (currentName: string) (target: bool) =
         // ToggleNetHighlight flips the membership; for the drag
         // target case we want explicit polarity instead. Use
         // SetHighlightedNets with the appropriately-built set.
         match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
         | Some m ->
             let next =
-                if target then m.Toggle.HighlightedNets.Add name
-                else m.Toggle.HighlightedNets.Remove name
+                if target then m.Toggle.HighlightedNets.Add currentName
+                else m.Toggle.HighlightedNets.Remove currentName
             Msg.SetHighlightedNets next
         | None ->
-            Msg.ToggleNetHighlight name
-    let setRatlineMsg target =
+            Msg.ToggleNetHighlight currentName
+    let setRatlineMsg (currentName: string) (target: bool) =
         match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
         | Some m ->
             let next =
-                if target then m.Toggle.VisibleRatlines.Add name
-                else m.Toggle.VisibleRatlines.Remove name
+                if target then m.Toggle.VisibleRatlines.Add currentName
+                else m.Toggle.VisibleRatlines.Remove currentName
             Msg.SetVisibleRatlines next
         | None ->
-            Msg.ToggleNetRatline name
+            Msg.ToggleNetRatline currentName
     StackPanel.create [
         StackPanel.orientation Orientation.Horizontal
         StackPanel.spacing 6.0
         StackPanel.verticalAlignment VerticalAlignment.Center
         StackPanel.children [
             // H column — polygon highlight (cyan/blue).
-            netCell Highlight name highlighted readLiveHighlight
+            netCell Highlight rowIdx highlighted readLiveHighlight
                 setHighlightMsg dispatch "#4090ff"
             // R column — ratline (amber, matches overlay color).
-            netCell Ratline name ratlineOn readLiveRatline
+            netCell Ratline rowIdx ratlineOn readLiveRatline
                 setRatlineMsg dispatch "#ffc840"
             TextBlock.create [
                 TextBlock.text name
@@ -262,7 +283,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         | Some m -> m.Nets |> Map.toList |> List.map fst |> List.sort
 
     let netRows : IView list =
-        allNets |> List.map (netRow model.Toggle dispatch)
+        allNets |> List.mapi (fun i n -> netRow model.Toggle dispatch i n)
 
     // Header has a "H" / "R" mini-label row + master select-all
     // affordances. The master button next to each glyph flips the

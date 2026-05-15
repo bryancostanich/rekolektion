@@ -205,34 +205,16 @@ def enlarger_center(rect):
     return ((rect.x1 + rect.x2) // 2, (rect.y1 + rect.y2) // 2)
 
 port_labels = [
-    # A and B pins live on the NFET-side enlarger (inside the cell,
-    # accessible to the router from above the cell). No channel
-    # contact for these nets.
+    # CELL-LEVEL PORTS only. nand_out and nand_mid are internal
+    # nets — labeling them would promote them to subckt ports
+    # and fail LVS pin-matching against the schematic which
+    # declares only A, B, Y, VDD, VSS.
     rkt.Label(layer=rkt.named("sky130", "met1_label"), text="A",
               origin=enlarger_center(a_bridge.bot_in_cell_met1)),
     rkt.Label(layer=rkt.named("sky130", "met1_label"), text="B",
               origin=enlarger_center(b_bridge.bot_in_cell_met1)),
     rkt.Label(layer=rkt.named("sky130", "met2_label"), text="Y", origin=pip_d),
-    # nand_out: one label on trunk, one per met2 S/D branch.
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="nand_out",
-              origin=((min(trunk_xs) + max(trunk_xs)) // 2, NAND_OUT_TRACK_Y)),
-    # nand_mid label on the same-row met1 wire.
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="nand_mid",
-              origin=((nna_s[0] + nnb_d[0]) // 2, nna_s[1])),
 ]
-# S/D branch met2 polygons.
-for px, py in sd_branches:
-    mid_y = (py + NAND_OUT_TRACK_Y) // 2
-    port_labels.append(rkt.Label(layer=rkt.named("sky130", "met2_label"),
-                                  text="nand_out", origin=(px, mid_y)))
-# In-cell met1 enlargers at each FET's gate position. Each bridge
-# painted two enlargers (top and bot); each is its own met1 polygon.
-for br, net in [(a_bridge, "A"), (b_bridge, "B"), (inv_bridge, "nand_out")]:
-    for enlarger in (br.top_in_cell_met1, br.bot_in_cell_met1):
-        cx = (enlarger.x1 + enlarger.x2) // 2
-        cy = (enlarger.y1 + enlarger.y2) // 2
-        port_labels.append(rkt.Label(layer=rkt.named("sky130", "met1_label"),
-                                      text=net, origin=(cx, cy)))
 
 doc = rkt.Document(
     imports=[

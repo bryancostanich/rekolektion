@@ -84,6 +84,7 @@ def _build_fet(
     topc: bool,
     botc: bool,
     primitives_dir: Path | None,
+    abut_pad_nm: int = 0,
 ) -> str:
     if not (topc or botc):
         raise ValueError(
@@ -141,6 +142,34 @@ def _build_fet(
         for cell in doc.cells:
             if cell.name == name:
                 cell.meta = meta
+                # If the caller asked for abut padding (typically because
+                # this device family has implant overhang too tight to
+                # satisfy diff/tap.3 at bbox-edge abutment), inject a
+                # boundary rect that extends the bbox accordingly. The
+                # boundary layer (GDS 235/4) is fab-inert and DRC-clean,
+                # so this only changes what `_extract_bbox` sees — exactly
+                # the contract `place_row` relies on.
+                if abut_pad_nm > 0:
+                    xs: list[int] = []
+                    ys: list[int] = []
+                    for el in cell.elements:
+                        if isinstance(el, rkt.Rect):
+                            xs.extend((el.x1, el.x2))
+                            ys.extend((el.y1, el.y2))
+                    if xs:
+                        x_min = min(xs) - abut_pad_nm
+                        x_max = max(xs) + abut_pad_nm
+                        y_min = min(ys) - abut_pad_nm
+                        y_max = max(ys) + abut_pad_nm
+                        cell.elements.append(
+                            rkt.Rect(
+                                layer=rkt.named("sky130", "boundary"),
+                                x1=x_min,
+                                y1=y_min,
+                                x2=x_max,
+                                y2=y_max,
+                            )
+                        )
                 break
         else:
             # Magic didn't emit a top cell with the expected name —
@@ -245,4 +274,79 @@ def gen_pfet_hv(
         topc=topc,
         botc=botc,
         primitives_dir=primitives_dir,
+    )
+
+
+def gen_nfet_01v8(
+    w_um: float,
+    l_um: float,
+    *,
+    nf: int = 1,
+    m: int = 1,
+    guard: bool = False,
+    topc: bool = True,
+    botc: bool = True,
+    primitives_dir: Path | None = None,
+) -> str:
+    """Mint (or fetch cached) a 1.8 V LV nfet primitive `.rkt`.
+
+    Same semantics as `gen_nfet_hv` (`topc` / `botc` control gate
+    contacts; `guard=False` returns a `_core` variant). Uses the
+    PDK's `sky130::sky130_fd_pr__nfet_01v8_draw` proc.
+    """
+
+    # 1.8 V draw procs give nsdm/psdm overhang of 125 nm to diff. Bbox
+    # = nsdm/psdm extent, so bbox-edge abutment puts adjacent diffs at
+    # 250 nm — 20 nm short of the diff/tap.3 rule (270 nm). Pad bbox
+    # by 10 nm per side via a fab-inert boundary rect so `place_row`
+    # gives DRC-clean abutment by construction.
+    return _build_fet(
+        prefix="nfet_01v8",
+        draw_proc="sky130::sky130_fd_pr__nfet_01v8_draw",
+        defaults_proc="sky130::sky130_fd_pr__nfet_01v8_defaults",
+        w_um=w_um,
+        l_um=l_um,
+        nf=nf,
+        m=m,
+        guard=guard,
+        topc=topc,
+        botc=botc,
+        primitives_dir=primitives_dir,
+        abut_pad_nm=10,
+    )
+
+
+def gen_pfet_01v8(
+    w_um: float,
+    l_um: float,
+    *,
+    nf: int = 1,
+    m: int = 1,
+    guard: bool = False,
+    topc: bool = True,
+    botc: bool = True,
+    primitives_dir: Path | None = None,
+) -> str:
+    """Mint (or fetch cached) a 1.8 V LV pfet primitive `.rkt`.
+
+    Same semantics as `gen_pfet_hv` (`topc` / `botc` control gate
+    contacts; `guard=False` returns a `_core` variant). Uses the
+    PDK's `sky130::sky130_fd_pr__pfet_01v8_draw` proc.
+    """
+
+    # See gen_nfet_01v8 for the abut_pad_nm rationale — same 10 nm
+    # padding for the matching diff/tap.3 abutment safety on PFETs.
+    return _build_fet(
+        prefix="pfet_01v8",
+        draw_proc="sky130::sky130_fd_pr__pfet_01v8_draw",
+        defaults_proc="sky130::sky130_fd_pr__pfet_01v8_defaults",
+        w_um=w_um,
+        l_um=l_um,
+        nf=nf,
+        m=m,
+        guard=guard,
+        topc=topc,
+        botc=botc,
+        primitives_dir=primitives_dir,
+        abut_pad_nm=10,
     )

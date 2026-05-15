@@ -443,6 +443,515 @@ def pin_patch(
     )
 
 
+# ─── Gate extension ──────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class GateExtension:
+    """Result of `gate_extension`. Drop `elements` into the parent
+    cell's elements list, then route to `center` / `met1_rect` like
+    any other patched pin.
+
+    `center` is the new gate contact's centroid in **parent** coords
+    — `(gate_pin_x_parent, contact_y)`.
+
+    `met1_rect` is the met1 patch at the new contact, sized for a
+    via1 landing. Equivalent to what `pin_patch` would produce, just
+    relocated outside the FET diff envelope.
+    """
+
+    cell: str
+    terminal: str
+    center: tuple[int, int]
+    met1_rect: rkt.Rect
+    elements: list[rkt.Element]
+
+
+def gate_extension(
+    sref: rkt.SRef,
+    *,
+    contact_y: int,
+    primitives_dir=None,
+    patch_half_um: float = 0.16,
+    dbu_nm: int = 1,
+) -> GateExtension:
+    """Extend a topgate/botgate FET primitive's gate poly out of the
+    cell to a parent-chosen Y, with a fresh polycont + li1 + mcon +
+    met1 stack at the new location.
+
+    **Why this exists.** When a digital stdcell crams gates and S/D
+    contacts into a tight column pitch, the in-cell gate contact
+    sits inside the diff envelope (Y ≈ ±620 for default sky130
+    FETs) and forces every cross-row met2 trace to thread between
+    the S/D contacts' met1 strips. Pulling the gate contact OUT of
+    the cell into the inter-row channel decouples the gate via's
+    X position from the S/D vias' X positions — no more competing
+    for sub-220 nm gaps. The poly carrying the gate net runs from
+    its in-cell location up (topgate) or down (botgate) past the
+    cell edge to the new contact site.
+
+    **Mechanism.** Paints, at parent level:
+
+      1. Poly extension from the primitive's poly edge to
+         `(gate_pin_x ± 165, contact_y ± 165)` — 330 nm wide,
+         enough to land a polycont with the required 80 nm
+         enclosure on every side.
+      2. `licon1` (polycont) 170×170 at `(gate_pin_x, contact_y)`.
+      3. `li1` 330 nm wide centered on the new contact (matching
+         the primitive's in-cell gate-li1 shape).
+      4. `mcon` 170×170 at `(gate_pin_x, contact_y)` so li1 can
+         bridge up to met1.
+      5. `met1` square 2 × `patch_half_um` on a side — the via1
+         landing pad. Equivalent to what `pin_patch` paints.
+
+    The in-cell gate contact is left in place (electrically the
+    same net via poly); we just add a second contact at the new
+    location for routing.
+
+    **Direction inference.** Reads the `G` pin label. If its Y is
+    above the primitive's bbox center it's a topgate (extend up);
+    below, a botgate (extend down). Pass `contact_y` accordingly —
+    above the cell for topgate, below for botgate.
+
+    Args:
+        sref: SRef to a `*_topgate` or `*_botgate` FET primitive
+            (mint with `gen_*_01v8(topc=True, botc=False)` or
+            `gen_*_hv(topc=False, botc=True)` etc.). Will refuse
+            if the primitive has both gate contacts (no
+            `_topgate` / `_botgate` suffix) — the cell already
+            exposes a gate contact on both sides, so use that
+            instead of fabricating a third.
+        contact_y: parent-coord Y for the new gate contact. Must
+            sit at least 165 nm past the cell's poly edge on the
+            extension side, or the polycont won't have its 80 nm
+            poly enclosure.
+        patch_half_um: half-side of the met1 patch (defaults to
+            0.16 µm → 320 nm square, same default as `pin_patch`).
+
+    Returns:
+        `GateExtension` with `.center`, `.met1_rect`, and `.elements`
+        ready to splice into the cell.
+
+    Raises:
+        ValueError: missing `G` pin, ambiguous gate direction
+            (both-contact primitive), or `contact_y` too close to
+            the cell's poly edge.
+    """
+
+    info = inspect_primitive(sref.cell, primitives_dir=primitives_dir)
+    g = info.pin("G")
+    if g is None:
+        available = ", ".join(p.terminal for p in info.pins) or "(none)"
+        raise ValueError(
+            f"primitive '{sref.cell}' has no 'G' pin label. "
+            f"Available: {available}."
+        )
+
+    # Direction from gate-pin Y relative to bbox center.
+    bbox = info.bbox
+    cy_local = (bbox[1] + bbox[3]) // 2
+    is_topgate = g.origin[1] > cy_local
+
+    # Refuse on both-contact primitives — they already expose gate
+    # contacts on both sides, no need to fabricate a third. Caller
+    # should mint a `_topgate` or `_botgate` variant instead.
+    name = sref.cell
+    if "_topgate" not in name and "_botgate" not in name:
+        raise ValueError(
+            f"gate_extension expects a '_topgate' or '_botgate' "
+            f"primitive (mint with topc=True, botc=False or vice "
+            f"versa); got '{name}'. The both-contact variant "
+            f"already has gate access on both sides — use the "
+            f"existing in-cell contact via pin_patch / pin_to_rail."
+        )
+
+    # Gate pin in parent coords. The X is the gate poly column
+    # (centered on x=0 in primitive); Y is the in-cell contact.
+    gx_parent = sref.origin[0] + g.origin[0]
+
+    # Geometry constants (sky130 sky130B, all in nm):
+    LICON_HALF = 85     # 170 nm licon → ±85
+    POLY_ENCL_LICON = 80  # poly must extend ≥80 nm past licon
+    LI1_HALF = 165      # 330 nm li1 over gate (matches primitive)
+    MCON_HALF = 85      # 170 nm mcon → ±85
+    POLY_HALF = 165     # 330 nm poly extension (= polycont landing
+                        # min width: 170 licon + 2×80 encl)
+    # The primitive's in-cell gate met1 strip extends MET1_ENCL_MCON
+    # (30 nm) past the gate mcon → its outer edge is G_pin_Y ± 115.
+    # Captured here so we can paint a met1 bridge that abuts it.
+    IN_CELL_MET1_HALF = MCON_HALF + 30  # = 115
+    patch_half = _um_to_dbu(patch_half_um, dbu_nm)
+
+    # The primitive's poly edge on the extension side. The wide
+    # polycont-landing section always extends exactly LICON_HALF +
+    # POLY_ENCL_LICON (= 165 nm) past the in-cell gate contact —
+    # that's the polycont-enclosure rule playing out the same way
+    # every FET generator paints it. So poly_edge = G_pin_Y ± 165,
+    # which scales correctly with W (taller diff → poly_edge moves
+    # with the gate contact, since the gate contact is at a fixed
+    # offset from the diff edge).
+    edge_offset = LICON_HALF + POLY_ENCL_LICON
+    poly_edge_local = g.origin[1] + (edge_offset if is_topgate else -edge_offset)
+    poly_edge_parent = sref.origin[1] + poly_edge_local
+
+    # Validate contact_y has room for the polycont + enclosure.
+    if is_topgate:
+        if contact_y < poly_edge_parent + POLY_ENCL_LICON + LICON_HALF:
+            raise ValueError(
+                f"contact_y={contact_y} is too close to topgate poly "
+                f"edge ({poly_edge_parent}); need ≥ "
+                f"{poly_edge_parent + POLY_ENCL_LICON + LICON_HALF} "
+                f"for the polycont's 80 nm poly enclosure."
+            )
+        # Poly extension runs from cell poly top up past the new
+        # contact by enough to satisfy poly encl of licon (80 nm).
+        poly_y1 = poly_edge_parent
+        poly_y2 = contact_y + LICON_HALF + POLY_ENCL_LICON
+    else:
+        if contact_y > poly_edge_parent - POLY_ENCL_LICON - LICON_HALF:
+            raise ValueError(
+                f"contact_y={contact_y} is too close to botgate poly "
+                f"edge ({poly_edge_parent}); need ≤ "
+                f"{poly_edge_parent - POLY_ENCL_LICON - LICON_HALF} "
+                f"for the polycont's 80 nm poly enclosure."
+            )
+        poly_y1 = contact_y - LICON_HALF - POLY_ENCL_LICON
+        poly_y2 = poly_edge_parent
+
+    elements: list[rkt.Element] = []
+
+    # Poly extension.
+    elements.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "poly"),
+            x1=gx_parent - POLY_HALF, y1=poly_y1,
+            x2=gx_parent + POLY_HALF, y2=poly_y2,
+        )
+    )
+
+    # Polycont (licon1).
+    elements.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "licon1"),
+            x1=gx_parent - LICON_HALF, y1=contact_y - LICON_HALF,
+            x2=gx_parent + LICON_HALF, y2=contact_y + LICON_HALF,
+        )
+    )
+
+    # li1 over polycont.
+    elements.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "li1"),
+            x1=gx_parent - LI1_HALF, y1=contact_y - LICON_HALF,
+            x2=gx_parent + LI1_HALF, y2=contact_y + LICON_HALF,
+        )
+    )
+
+    # mcon at the same spot to bridge li1 → met1.
+    elements.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "mcon"),
+            x1=gx_parent - MCON_HALF, y1=contact_y - MCON_HALF,
+            x2=gx_parent + MCON_HALF, y2=contact_y + MCON_HALF,
+        )
+    )
+
+    # met1 landing patch.
+    met1_rect = rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=gx_parent - patch_half, y1=contact_y - patch_half,
+        x2=gx_parent + patch_half, y2=contact_y + patch_half,
+    )
+    elements.append(met1_rect)
+
+    # Met1 bridge from the primitive's in-cell gate met1 strip to the
+    # new patch. Without this, the in-cell strip is left as an
+    # isolated 290×230 nm polygon (for LV variants, where the strip
+    # width matches the 290 nm gate-li1 minus enclosure) — area
+    # 66700 nm², below the 83000 nm² met1.6 minimum. With the
+    # bridge they merge into one large polygon that easily clears
+    # min area. Harmless for HV (where the in-cell strip is already
+    # above min area on its own): the bridge just adds more area
+    # to a same-net polygon.
+    in_cell_met1_outer_local = g.origin[1] + (
+        IN_CELL_MET1_HALF if is_topgate else -IN_CELL_MET1_HALF
+    )
+    in_cell_met1_outer_parent = sref.origin[1] + in_cell_met1_outer_local
+    patch_inner_y = contact_y - patch_half if is_topgate else contact_y + patch_half
+    # Overlap the bridge into both the in-cell met1 strip and the
+    # ext patch by 10 nm at each end. Pure abutment (shared edge,
+    # no shared area) keeps three separate rectangles in the GDS;
+    # GDS readers that don't flood-fill across abutments would then
+    # see three disconnected polygons. 10 nm of interior overlap
+    # forces a single merged polygon, so any reader sees one rect.
+    OVERLAP = 10
+    if is_topgate:
+        bridge_y1 = in_cell_met1_outer_parent - OVERLAP
+        bridge_y2 = patch_inner_y + OVERLAP
+    else:
+        bridge_y1 = patch_inner_y - OVERLAP
+        bridge_y2 = in_cell_met1_outer_parent + OVERLAP
+    if bridge_y2 > bridge_y1:
+        elements.append(
+            rkt.Rect(
+                layer=rkt.named("sky130", "met1"),
+                x1=gx_parent - patch_half, y1=bridge_y1,
+                x2=gx_parent + patch_half, y2=bridge_y2,
+            )
+        )
+
+    return GateExtension(
+        cell=sref.cell,
+        terminal="G",
+        center=(gx_parent, contact_y),
+        met1_rect=met1_rect,
+        elements=elements,
+    )
+
+
+# ─── Poly bridge ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PolyBridge:
+    """Result of `poly_bridge`. The bridge ties two FETs' gates together
+    via a continuous gate-poly strap across the inter-row channel,
+    with one pin contact along the run. The cell-level "input pin"
+    for the net is at `.center` on met1, sized by `patch_half_um`.
+
+    `top_in_cell_met1` and `bot_in_cell_met1` are parent-painted
+    met1 enlargers, each overlapping one FET's primitive gate-met1
+    strip. Without them the small primitive strips (290×230 nm)
+    violate met1.6 minimum area, because in this topology there's
+    no other parent-paint met1 covering them.
+
+    All three met1 rects are on the same electrical net but, by
+    design, NOT geometrically connected — the poly strap carries
+    the net between them. Each is its own polygon and needs its
+    own label for tools that don't propagate names through
+    licon/mcon stacks.
+    """
+
+    top_cell: str
+    bot_cell: str
+    center: tuple[int, int] | None
+    met1_rect: rkt.Rect | None
+    top_in_cell_met1: rkt.Rect
+    bot_in_cell_met1: rkt.Rect
+    elements: list[rkt.Element]
+
+
+def poly_bridge(
+    top_sref: rkt.SRef,
+    bot_sref: rkt.SRef,
+    *,
+    pin_y: int | None = None,
+    primitives_dir=None,
+    patch_half_um: float = 0.16,
+    dbu_nm: int = 1,
+) -> PolyBridge:
+    """Bridge two FETs' gate poly across the inter-row channel.
+
+    **Why this exists.** In a digital stdcell, the PMOS and NMOS that
+    share a gate net (e.g. PA and NA on net A in a NAND2) connect
+    their gates via the gate poly itself, not via metal. The PFET's
+    poly extends past its diff downward; the NFET's poly extends
+    upward; the parent paints a poly strap that fills the gap, and
+    a single pin contact (polycont + li1 + mcon + met1) somewhere
+    along the strap is the cell's pin for the net.
+
+    This sidesteps the trunk-via-vs-gate-wire collision that
+    `gate_extension` runs into: there is no gate-net met2 wire
+    at all — the gate signal is on poly. The pin's met1 patch
+    can sit anywhere along the bridge that's clear of other
+    geometry.
+
+    Args:
+        top_sref: the upper FET. Must be a `*_botgate` variant —
+            its gate poly extends downward past its diff.
+        bot_sref: the lower FET. Must be a `*_topgate` variant —
+            its gate poly extends upward past its diff.
+        pin_y: parent-coord Y for an optional in-channel pin contact.
+            Choose a Y inside the inter-row channel where you want
+            an additional met1 access point (e.g. directly on the
+            trunk Y if you want this pin to merge with a horizontal
+            met1 net). Pass `None` (default) to skip the in-channel
+            contact altogether — for nets whose only metal access
+            is the in-cell met1 enlargers, the channel pin is
+            redundant load (the gate poly already carries the net
+            between the two FETs).
+
+    Returns:
+        `PolyBridge` with:
+          - `.center` — pin's (gx_parent, pin_y), the cell-level
+            input/output pin location
+          - `.met1_rect` — pin's met1 patch (320 nm square at default
+            patch_half_um), ready for via1 stacking or trunk merge
+          - `.top_in_cell_met1` / `.bot_in_cell_met1` — parent-paint
+            met1 enlargers that satisfy met1.6 at each FET's
+            primitive gate-met1 strip
+          - `.elements` — every painted rect, drop into the cell
+
+    Raises:
+        ValueError: top_sref isn't `_botgate`, bot_sref isn't
+            `_topgate`, gates aren't at the same X column, or
+            pin_y is outside the inter-row gap.
+    """
+
+    if "_botgate" not in top_sref.cell:
+        raise ValueError(
+            f"poly_bridge top_sref must be a '_botgate' primitive "
+            f"(gate extends DOWN); got '{top_sref.cell}'."
+        )
+    if "_topgate" not in bot_sref.cell:
+        raise ValueError(
+            f"poly_bridge bot_sref must be a '_topgate' primitive "
+            f"(gate extends UP); got '{bot_sref.cell}'."
+        )
+
+    top_info = inspect_primitive(top_sref.cell, primitives_dir=primitives_dir)
+    bot_info = inspect_primitive(bot_sref.cell, primitives_dir=primitives_dir)
+    top_g = top_info.pin("G")
+    bot_g = bot_info.pin("G")
+    if top_g is None or bot_g is None:
+        raise ValueError("both primitives must expose a 'G' pin label.")
+
+    # Gate X in parent coords, must match (same poly column).
+    top_gx_parent = top_sref.origin[0] + top_g.origin[0]
+    bot_gx_parent = bot_sref.origin[0] + bot_g.origin[0]
+    if top_gx_parent != bot_gx_parent:
+        raise ValueError(
+            f"poly_bridge requires aligned gate columns; got "
+            f"top gate x={top_gx_parent}, bot gate x={bot_gx_parent}."
+        )
+    gx_parent = top_gx_parent
+
+    # Same geometry constants as gate_extension (sky130 sky130B, nm).
+    LICON_HALF = 85
+    POLY_ENCL_LICON = 80
+    LI1_HALF = 165
+    MCON_HALF = 85
+    POLY_HALF = 165
+    IN_CELL_MET1_HALF = MCON_HALF + 30  # 115 nm: half of the in-cell
+                                        # gate-met1 strip's height
+    EDGE_OFFSET = LICON_HALF + POLY_ENCL_LICON  # 165 nm
+
+    # Primitive poly edges in parent coords (same derivation as
+    # gate_extension): poly edge sits EDGE_OFFSET past the gate pin.
+    top_poly_edge_parent = top_sref.origin[1] + top_g.origin[1] - EDGE_OFFSET
+    bot_poly_edge_parent = bot_sref.origin[1] + bot_g.origin[1] + EDGE_OFFSET
+
+    # The inter-row gap that the strap must fill.
+    if top_poly_edge_parent <= bot_poly_edge_parent:
+        raise ValueError(
+            f"top FET (sref y={top_sref.origin[1]}) and bot FET "
+            f"(sref y={bot_sref.origin[1]}) are not separated; "
+            f"top poly bottom edge ({top_poly_edge_parent}) must "
+            f"be above bot poly top edge ({bot_poly_edge_parent})."
+        )
+
+    # If the caller wants an in-channel pin, validate pin_y has room
+    # for the polycontact + its poly enclosure within the strap.
+    if pin_y is not None and not (
+        bot_poly_edge_parent + EDGE_OFFSET
+        <= pin_y
+        <= top_poly_edge_parent - EDGE_OFFSET
+    ):
+        raise ValueError(
+            f"pin_y={pin_y} doesn't leave room for the polycont's "
+            f"80 nm poly enclosure; valid range is "
+            f"[{bot_poly_edge_parent + EDGE_OFFSET}, "
+            f"{top_poly_edge_parent - EDGE_OFFSET}]."
+        )
+
+    patch_half = _um_to_dbu(patch_half_um, dbu_nm)
+    elements: list[rkt.Element] = []
+
+    # 1. Vertical poly strap spanning the gap.
+    elements.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "poly"),
+            x1=gx_parent - POLY_HALF, y1=bot_poly_edge_parent,
+            x2=gx_parent + POLY_HALF, y2=top_poly_edge_parent,
+        )
+    )
+
+    # 2. Optional in-channel pin contact: licon1 + li1 + mcon + met1.
+    pin_center: tuple[int, int] | None = None
+    met1_rect: rkt.Rect | None = None
+    if pin_y is not None:
+        elements.append(
+            rkt.Rect(
+                layer=rkt.named("sky130", "licon1"),
+                x1=gx_parent - LICON_HALF, y1=pin_y - LICON_HALF,
+                x2=gx_parent + LICON_HALF, y2=pin_y + LICON_HALF,
+            )
+        )
+        elements.append(
+            rkt.Rect(
+                layer=rkt.named("sky130", "li1"),
+                x1=gx_parent - LI1_HALF, y1=pin_y - LICON_HALF,
+                x2=gx_parent + LI1_HALF, y2=pin_y + LICON_HALF,
+            )
+        )
+        elements.append(
+            rkt.Rect(
+                layer=rkt.named("sky130", "mcon"),
+                x1=gx_parent - MCON_HALF, y1=pin_y - MCON_HALF,
+                x2=gx_parent + MCON_HALF, y2=pin_y + MCON_HALF,
+            )
+        )
+        met1_rect = rkt.Rect(
+            layer=rkt.named("sky130", "met1"),
+            x1=gx_parent - patch_half, y1=pin_y - patch_half,
+            x2=gx_parent + patch_half, y2=pin_y + patch_half,
+        )
+        elements.append(met1_rect)
+        pin_center = (gx_parent, pin_y)
+
+    # 3. Met1 enlargers at each FET's in-cell gate-met1 strip. The
+    # primitive paints a 290×230 strip there which is below met1.6
+    # min area when isolated. A 320×320 parent-paint patch
+    # (overlapping the strip) merges with it and clears the rule.
+    #
+    # The enlarger is anchored at the cell's outer boundary on the
+    # gate side, not centered on the gate pin: centering would push
+    # the enlarger's INNER edge too close to the FET's S/D met1
+    # strips and violate met1.2 (140 nm). With the outer edge at
+    # the bbox boundary, the inner edge sits 320 nm into the cell,
+    # which still fully covers the 230 nm in-cell gate strip and
+    # leaves room from the S/D met1 below/above.
+    top_bbox = top_info.bbox
+    bot_bbox = bot_info.bbox
+    top_bbox_outer_parent = top_sref.origin[1] + top_bbox[1]  # PFET bot
+    bot_bbox_outer_parent = bot_sref.origin[1] + bot_bbox[3]  # NFET top
+    top_enlarger = rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=gx_parent - patch_half,
+        y1=top_bbox_outer_parent,
+        x2=gx_parent + patch_half,
+        y2=top_bbox_outer_parent + 2 * patch_half,
+    )
+    bot_enlarger = rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=gx_parent - patch_half,
+        y1=bot_bbox_outer_parent - 2 * patch_half,
+        x2=gx_parent + patch_half,
+        y2=bot_bbox_outer_parent,
+    )
+    elements.extend([top_enlarger, bot_enlarger])
+
+    return PolyBridge(
+        top_cell=top_sref.cell,
+        bot_cell=bot_sref.cell,
+        center=pin_center,
+        met1_rect=met1_rect,
+        top_in_cell_met1=top_enlarger,
+        bot_in_cell_met1=bot_enlarger,
+        elements=elements,
+    )
+
+
 # ─── Wires ───────────────────────────────────────────────────────────
 
 

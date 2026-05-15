@@ -24,19 +24,27 @@ from rekolektion.layout.placement import (
 )
 from rekolektion.layout.rail import place_rail, place_rail_from_strap
 from rekolektion.layout.routing import (
+    GateExtension,
     PinPatch,
+    PolyBridge,
+    gate_extension,
     pin_patch,
     pin_to_rail,
     place_via,
     place_wire,
+    poly_bridge,
+    route_net_on_track,
 )
 from rekolektion.layout.taps import TapBandResult, place_taps_around
 
 __all__ = [
+    "GateExtension",
     "PrimitiveInfo",
     "PinPatch",
+    "PolyBridge",
     "TapBandResult",
     "TubResult",
+    "gate_extension",
     "inspect_primitive",
     "pin_patch",
     "pin_to_rail",
@@ -48,4 +56,6 @@ __all__ = [
     "place_tub_row",
     "place_via",
     "place_wire",
+    "poly_bridge",
+    "route_net_on_track",
 ]

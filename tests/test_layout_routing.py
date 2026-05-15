@@ -10,6 +10,7 @@ import pytest
 
 from rekolektion.io import rkt
 from rekolektion.layout import (
+    gate_extension,
     inspect_primitive,
     pin_patch,
     pin_to_rail,
@@ -363,3 +364,115 @@ def test_clear_primitive_cache_drops_entries(
     # Re-read works fine after clearing.
     info = inspect_primitive(nfet, primitives_dir=primitives_dir)
     assert info.pins
+
+
+# ─── gate_extension ──────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def nfet_topgate(primitives_dir: Path) -> str:
+    return gen_nfet_hv(
+        w_um=1.0, l_um=0.5, botc=False, primitives_dir=primitives_dir,
+    )
+
+
+@pytest.fixture(scope="module")
+def pfet_botgate(primitives_dir: Path) -> str:
+    return gen_pfet_hv(
+        w_um=1.0, l_um=0.5, topc=False, primitives_dir=primitives_dir,
+    )
+
+
+def test_gate_extension_topgate_paints_full_stack(
+    primitives_dir: Path, nfet_topgate: str,
+) -> None:
+    sref = rkt.SRef(cell=nfet_topgate, origin=(0, 0))
+    info = inspect_primitive(nfet_topgate, primitives_dir=primitives_dir)
+    g_pin = info.pin("G")
+    # Poly edge for topgate = G_y + 165. Pick contact 600 nm past
+    # that so the polycont's 80 nm poly encl + 85 nm half all fit.
+    contact_y = g_pin.origin[1] + 165 + 600
+
+    ext = gate_extension(
+        sref, contact_y=contact_y, primitives_dir=primitives_dir,
+    )
+
+    layers = [e.layer.name for e in ext.elements]
+    # Includes the in-cell-met1 bridge as a second met1 rect.
+    assert layers == ["poly", "licon1", "li1", "mcon", "met1", "met1"]
+    # Center matches gate-pin X and chosen contact_y.
+    assert ext.center == (g_pin.origin[0], contact_y)
+    # met1 patch is 320 nm square at default patch_half_um=0.16.
+    m = ext.met1_rect
+    assert (m.x2 - m.x1, m.y2 - m.y1) == (320, 320)
+
+
+def test_gate_extension_botgate_extends_downward(
+    primitives_dir: Path, pfet_botgate: str,
+) -> None:
+    # Place pfet at a positive sref Y so the extension lands at a
+    # parent-coord Y we can reason about cleanly.
+    sref = rkt.SRef(cell=pfet_botgate, origin=(0, 5000))
+    info = inspect_primitive(pfet_botgate, primitives_dir=primitives_dir)
+    g_pin = info.pin("G")
+    # Botgate poly bottom in primitive = G_y - 165; in parent =
+    # sref.y + G_y - 165. Place contact 600 nm below that.
+    poly_bot_parent = 5000 + g_pin.origin[1] - 165
+    contact_y = poly_bot_parent - 600
+
+    ext = gate_extension(
+        sref, contact_y=contact_y, primitives_dir=primitives_dir,
+    )
+
+    poly_rect = ext.elements[0]
+    assert poly_rect.layer.name == "poly"
+    # Extension poly runs from contact_y - 165 (poly encl below the
+    # licon) up to the primitive's poly bottom edge.
+    assert poly_rect.y1 == contact_y - 165
+    assert poly_rect.y2 == poly_bot_parent
+
+
+def test_gate_extension_refuses_both_contact_primitive(
+    primitives_dir: Path, nfet: str,
+) -> None:
+    sref = rkt.SRef(cell=nfet, origin=(0, 0))
+    with pytest.raises(ValueError, match="_topgate.*_botgate"):
+        gate_extension(
+            sref, contact_y=5000, primitives_dir=primitives_dir,
+        )
+
+
+def test_gate_extension_refuses_contact_too_close(
+    primitives_dir: Path, nfet_topgate: str,
+) -> None:
+    sref = rkt.SRef(cell=nfet_topgate, origin=(0, 0))
+    info = inspect_primitive(nfet_topgate, primitives_dir=primitives_dir)
+    g_pin = info.pin("G")
+    poly_top = g_pin.origin[1] + 165
+    # 100 nm above poly top — short of the 165 nm needed.
+    with pytest.raises(ValueError, match="too close"):
+        gate_extension(
+            sref, contact_y=poly_top + 100,
+            primitives_dir=primitives_dir,
+        )
+
+
+def test_gate_extension_translates_by_sref_origin(
+    primitives_dir: Path, nfet_topgate: str,
+) -> None:
+    sref = rkt.SRef(cell=nfet_topgate, origin=(2000, 3000))
+    info = inspect_primitive(nfet_topgate, primitives_dir=primitives_dir)
+    g_pin = info.pin("G")
+    poly_top_parent = 3000 + g_pin.origin[1] + 165
+    contact_y = poly_top_parent + 500
+
+    ext = gate_extension(
+        sref, contact_y=contact_y, primitives_dir=primitives_dir,
+    )
+
+    # Gate-pin X is translated by sref.x.
+    assert ext.center[0] == 2000 + g_pin.origin[0]
+    # All elements sit at the translated X column.
+    for e in ext.elements:
+        cx = (e.x1 + e.x2) // 2
+        assert cx == 2000 + g_pin.origin[0]

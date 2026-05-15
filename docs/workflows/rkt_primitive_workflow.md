@@ -67,8 +67,13 @@ pfet = gen_pfet_hv(w_um=2.4, l_um=1.0, guard=False)
 
 | Function | What it makes | Notes |
 | -------- | ------------- | ----- |
-| `gen_nfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV nfet | see below |
-| `gen_pfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV pfet | same params |
+| `gen_nfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV nfet (`sky130_fd_pr__nfet_g5v0d10v5`) | see below |
+| `gen_pfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV pfet (`sky130_fd_pr__pfet_g5v0d10v5`) | same params |
+| `gen_nfet_01v8(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 1.8 V LV nfet (`sky130_fd_pr__nfet_01v8`) | same shape as HV; used for VCCD1 / VCCD2 analog (Track 37 BG, OTA, etc.) |
+| `gen_pfet_01v8(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 1.8 V LV pfet (`sky130_fd_pr__pfet_01v8`) | same shape as HV |
+| `gen_pnp_05v5(kind, nx=1, ny=1)` | 5.5 V substrate PNP — `kind="small"` → W=0.68×L=0.68 µm, `kind="large"` → W=3.40×L=3.40 µm (≈25× area ratio) | Fixed-geometry device (no `w`/`l` knob); the variant IS the size. Canonical sub-bandgap pair |
+| `gen_res_xhigh_po(width_um, l_um, m=1, guard=False, snake=0)` | xpoly high-sheet poly resistor (~2 kΩ/□) | `width_um` must be one of `0.35`, `0.69`, `1.41`, `2.85`, `5.73` µm (PDK-fixed widths); `l_um` is free |
+| `gen_cap_mim_m3(w_um, l_um, stack=1)` | MIM capacitor between met3 + capm (`stack=1`) or capm + capm2 (`stack=2`) | W and L each must be 2.0 ≤ x ≤ 30.0 µm. Lives above met3 — area underneath on li1/met1/met2 is free |
 
 **Two topology axes that matter for routing:**
 
@@ -226,7 +231,34 @@ elements = [*row, *taps.elements]
 
 The helper warns when the inner bbox's longest extent exceeds
 ~14.85 µm — above that the surround-only approach may miss the
-periodic-tap (latch-up) rule and you need interspersed tap rows.
+periodic-tap (latch-up) rule.
+
+**The two fixes (preferred order):**
+
+1. **Perimeter tap band at the *parent* cell** — preferred for hand-
+   laid analog. The block stays matching-clean; latch-up gets closed
+   by a guard-ring-style tap band the parent paints around the whole
+   active analog region (the band also serves any neighbouring cells
+   in that parent, so it's reused, not wasted). This is how real
+   analog ICs handle latch-up: blocks worry about their own well
+   continuity (the surround-only taps from `place_taps_around` are
+   enough for that), and the parent worries about chip-level
+   periodic taps via a perimeter band that wraps multiple blocks.
+2. **Interspersed tap row inside the block** — fallback for cases
+   where the block has no enclosing parent (a top cell, or a macro
+   that ships standalone). Costs cell area (~0.85 µm of extra
+   height/width per row) but doesn't impair matching — an nwell tap
+   row sits in the nwell band, doesn't touch any channel, and
+   common-centroid layouts routinely include them.
+
+**Do NOT** "defer with a checklist" — there is no automated catch
+for missed periodic taps. P&R tools treat analog macros as
+black-box LEF abstracts and won't reach inside to add tap rows.
+Full-chip DRC eventually flags it, but by then re-fixing forces
+costly re-routing of whatever sits next to your block. Pick one of
+the two fixes above before sign-off; document the parent-level
+fix in the project's track plan or floorplan doc so it lands at
+integration time.
 
 **Where tap bands go relative to the well:**
 
@@ -480,13 +512,80 @@ so it doesn't matter which side authored which lines.
 
 ---
 
+## Placement review — STOP and show the user before routing
+
+After cells are placed and tap/rail geometry is in — but **before any
+signal routing** (Phase 1 `pin_to_rail` and onward) — pause and
+present the geometry to the user in viz for approval or redirection.
+
+This is a **hard gate**.  Placement is the architectural decision
+that locks every downstream routing channel: aspect ratio, which
+inverters align vertically, which pins are cross-row vs same-row,
+where the inter-row routing channel sits, what nets need to jog
+around what.  Once you start wiring, every redirect costs N turns of
+unwinding.  Catching a bad placement before any wire is painted is
+the cheapest loop in the entire workflow.
+
+The agent surfaces, the user decides whether to keep going:
+
+1. **Open in viz**: `mcp__rekolektion-viz__rekolektion_viz_open` (or
+   `dotnet run -- app cell_designs/<group>/<block>.rkt`) so the user
+   can see the silicon-truth view.
+2. **Describe what's there in text**, since the user may scan the
+   summary before opening viz:
+   - Block dimensions (W × H).
+   - Per-row cell list with center x positions.
+   - Which inverter / diff-pair partners align vertically and which
+     don't, and why (e.g. "P2 is offset 395 nm right of N2 because
+     P2's nf=2 width doesn't match N2's nf=1 width").
+   - Aspect-ratio quirks (e.g. "block is 25 µm tall because W=10
+     L=0.5 cells dominate the row height").
+   - Which signal nets will be cross-row (need met2 vertical) vs
+     same-row (likely met1 horizontal or li1 abut).
+3. **Ask one plain-language question**: "placement OK or want
+   changes?"  Per `feedback_state_question_first` — lead with the
+   question, not an option matrix.
+
+Routing **does not start** until the user signs off.  This is true
+for *every* new block, every layout-from-scratch.  Editing an
+existing block to fix a known bug is exempt — that's a maintenance
+edit, not a fresh authoring pass.
+
+### Why not just iterate via DRC?
+
+DRC catches manufacturability, not topology.  A block can be
+DRC-clean with the inverter pair mis-aligned, the gates on different
+rows, or the pulldown FET 10 µm from where it needs to be — DRC
+won't complain, but routing then has to bend around the
+misplacement, you'll burn budget on jogs and bridges, and the user
+will redirect you anyway after seeing the result.  Skip the bend by
+asking up front.
+
+### What "approval" covers and what it doesn't
+
+- **Approval covers**: cell positions, row arrangement, rail
+  locations, tap band placement, overall block dimensions, port-pin
+  side decisions.  These are frozen until the user explicitly
+  changes them.
+- **Approval does NOT cover**: routing-layer choices, individual
+  wire paths, jog corners, via stack details.  Those are agent-level
+  decisions that get DRC/LVS-gated downstream.
+
+If a routing-phase DRC failure forces a placement change — e.g. a
+4-pin net genuinely cannot route in the available channels — that
+itself is a decision point: stop, propose the placement edit, get
+re-approval.  Don't silently re-place.
+
+---
+
 ## Routing signals — direction conventions and helpers
 
-Once primitives are placed and tap/rail geometry is in, you wire the
-signal nets that aren't rails. The two traps here are picking the
-wrong layer (everything on met1 → instant hairball + DRC failures
-where wires cross) and skipping the parent met1 patch that every
-cell pin needs before via1 can land on it.
+Once primitives are placed, tap/rail geometry is in, **and the user
+has signed off on placement** (see *Placement review* above), you
+wire the signal nets that aren't rails. The two traps here are
+picking the wrong layer (everything on met1 → instant hairball +
+DRC failures where wires cross) and skipping the parent met1 patch
+that every cell pin needs before via1 can land on it.
 
 ### Preferred routing direction
 
@@ -1069,6 +1168,19 @@ has nothing to compare against — you'd be running an extraction
 only, which catches some classes of error (e.g. floating nets) but
 not "wrong topology."
 
+**Announce the gate-3 pass explicitly.** When `verify_lvs` returns
+`LVS MATCH`, the very next user-facing line must be a HEADLINE
+acknowledging that all three verification gates closed:
+
+> **LVS MATCH — gate 3 passed.** Block is DRC + LVS clean against
+> `<block>_sch.spice`.  Ready to commit.
+
+Don't bury the LVS result inside a paragraph about block dimensions
+or routing topology.  The user (and future-you) should be able to
+glance at the close of the conversation and see the three-gate
+clearance.  Burying it leads to "did LVS actually run?" callouts.
+Move-to-next-block / commit / push only after this headline appears.
+
 ---
 
 ## Where files live
@@ -1158,15 +1270,19 @@ params → same digest → same content), but committing them means:
    fails via1 enclosure on every cell pin.
 
 10. **Never declare a block "done" without running BOTH `verify_drc`
-    AND `verify_lvs`.** `viz read` confirms geometry exists;
-    `verify_drc` confirms it's manufacturable; `verify_lvs` confirms
-    the electrical net graph matches the reference schematic.  DRC
-    is necessary but NOT sufficient — a block can be DRC-clean and
-    still have disjoint same-named net islands, mis-landed via
-    stacks, or wrong-bulk taps that LVS will catch.  Run
-    `verify_drc` first (cheaper, fails earlier on geometry
-    problems), then `verify_lvs` against the reference SPICE.  Both
-    are required before committing.
+    AND `verify_lvs` — AND announcing the gate-3 pass as a headline.**
+    `viz read` confirms geometry exists; `verify_drc` confirms it's
+    manufacturable; `verify_lvs` confirms the electrical net graph
+    matches the reference schematic.  DRC is necessary but NOT
+    sufficient — a block can be DRC-clean and still have disjoint
+    same-named net islands, mis-landed via stacks, or wrong-bulk taps
+    that LVS will catch.  Run `verify_drc` first (cheaper, fails
+    earlier on geometry problems), then `verify_lvs` against the
+    reference SPICE.  Both are required before committing, AND the
+    next user-facing line after `verify_lvs` returns `LVS MATCH`
+    must be the headline "**LVS MATCH — gate 3 passed.**" — not
+    buried in a paragraph about dimensions or routing.  See **Step 3
+    — LVS** § "Announce the gate-3 pass explicitly" for the format.
 
 11. **Never route internal nets in arbitrary order, and never
     treat phase boundaries as user check-ins.** Sort by topology
@@ -1180,6 +1296,18 @@ params → same digest → same content), but committing them means:
     NOT stop to ask "should I continue?" between them. Only halt
     on a DRC violation that needs a real architectural decision
     (re-place, re-layer, or new helper).
+
+12. **Never start routing without a placement-review gate with
+    the user.** After cells are placed and rails/taps are in, but
+    before any `pin_to_rail` / `pin_patch` / `place_wire` call,
+    stop.  Open the block in viz, describe the placement in text
+    (dimensions, cell positions, alignment / aspect quirks), and
+    ask the user: "placement OK or want changes?"  Routing begins
+    only on approval.  Skipping this gate is the most expensive
+    mistake in the workflow — every redirect after wiring starts
+    burns N turns of unwinding.  Editing an existing block to
+    fix a known bug is exempt; new layout-from-scratch is not.
+    See **Placement review** above for the full procedure.
 
 ---
 

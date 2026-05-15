@@ -265,7 +265,7 @@ def place_tub_row(
     origin: tuple[int, int] = (0, 0),
     well_layer: str | None = None,
     extra_layers: list[str] | None = None,
-    margin_um: float = 0.4,
+    margin_um: float | dict[str, float] = 0.4,
     primitives_dir: Path | None = None,
     dbu_nm: int = 1,
 ) -> TubResult:
@@ -305,7 +305,7 @@ def place_tub(
     *,
     well_layer: str | None = None,
     extra_layers: list[str] | None = None,
-    margin_um: float = 0.4,
+    margin_um: float | dict[str, float] = 0.4,
     primitives_dir: Path | None = None,
     dbu_nm: int = 1,
 ) -> TubResult:
@@ -323,13 +323,30 @@ def place_tub(
     pmos primitives, `pwell` for nmos. Override when the design needs
     something else (e.g. `dnwell` for deep-well isolation).
 
-    `margin_um` is the surround the tub extends past the union bbox.
-    Defaults to 0.4 µm — slightly more than the `nwell.4` enclosure
-    rule for diffusion. Increase for safety, decrease at your own DRC
-    peril.
+    `margin_um` controls the surround the tub extends past the union
+    bbox.  Two forms:
+
+    - **float** (symmetric): one value applied to all four sides.
+      Defaults to 0.4 µm — slightly more than the `nwell.4` enclosure
+      rule for diffusion.
+    - **dict** (per-side): asymmetric margins.  Keys are "top",
+      "bottom", "left", "right".  Missing keys fall back to 0.4 µm.
+      Useful when tap bands sit on one side only (use ~1.2 µm on the
+      tap side; other sides need just the nwell-pdiff enclosure rule,
+      ~0.18 µm), saving block area.
+
+    Examples::
+
+        # Symmetric — every side 1.2 µm:
+        place_tub(prims, margin_um=1.2)
+
+        # Tight on three sides, generous on top for the tap band:
+        place_tub(prims, margin_um={"top": 1.2, "bottom": 0.18,
+                                    "left": 0.18, "right": 0.18})
 
     Raises:
-        ValueError: if primitives mix nmos and pmos, or list is empty.
+        ValueError: if primitives mix nmos and pmos, or list is empty,
+            or `margin_um` dict contains an unknown key.
     """
 
     if not primitives:
@@ -358,12 +375,32 @@ def place_tub(
     min_y = min(o[1] + info.bbox[1] for info, o in pairs)
     max_x = max(o[0] + info.bbox[2] for info, o in pairs)
     max_y = max(o[1] + info.bbox[3] for info, o in pairs)
-    margin_dbu = int(round(margin_um * 1000 / dbu_nm))
+
+    # Resolve per-side margins (float → all sides; dict → per-side with
+    # 0.4 µm default for unspecified sides).
+    if isinstance(margin_um, dict):
+        valid = {"top", "bottom", "left", "right"}
+        unknown = set(margin_um) - valid
+        if unknown:
+            raise ValueError(
+                f"margin_um dict has unknown keys {unknown}; "
+                f"valid keys are {valid}"
+            )
+        m_top    = margin_um.get("top",    0.4)
+        m_bottom = margin_um.get("bottom", 0.4)
+        m_left   = margin_um.get("left",   0.4)
+        m_right  = margin_um.get("right",  0.4)
+    else:
+        m_top = m_bottom = m_left = m_right = margin_um
+
+    def _to_dbu(v: float) -> int:
+        return int(round(v * 1000 / dbu_nm))
+
     tub = (
-        min_x - margin_dbu,
-        min_y - margin_dbu,
-        max_x + margin_dbu,
-        max_y + margin_dbu,
+        min_x - _to_dbu(m_left),
+        min_y - _to_dbu(m_bottom),
+        max_x + _to_dbu(m_right),
+        max_y + _to_dbu(m_top),
     )
 
     well_rects = [

@@ -62,7 +62,13 @@ npd_outn = rkt.SRef(cell=mv_n, origin=(MV0_X, 0))
 npd_out  = rkt.SRef(cell=mv_n, origin=(MV1_X, 0))
 
 # PMOS row — y above NMOS bbox top.
-INTER_ROW_CHANNEL = 700
+# Inter-row channel needs to fit BOTH a topgate NFET ext (rising
+# UP from NFET cell top) and a botgate PFET ext (falling DOWN from
+# PFET cell bot) at the same MV column for cross-coupling. Each
+# ext is a 320×320 met1 patch with 165 nm poly setback to its cell
+# edge, plus 140 nm met1.2 between the two patches. Min channel:
+# 165 + 320 + 140 + 320 + 165 = 1110 nm. 1200 leaves 90 nm slack.
+INTER_ROW_CHANNEL = 1200
 # Use the taller of lv_p / mv_p y_min for consistent y_origin.
 # Actually two separate rows: LV INV at LV_COL_X y=lv_y, MV PMOS at MV_X y=mv_y.
 # They need different y_origin to align top edges. To keep things simple,
@@ -183,14 +189,19 @@ gate_routes.extend(inv_bridge.elements)
 # met1 layer where they'd otherwise collide with MV S/D met1 strips
 # (x=±[280,510] from MV gate, 230 nm wide).
 d_route_y_lv = (inv_bridge.bot_in_cell_met1.y1 + inv_bridge.bot_in_cell_met1.y2) // 2
-# Pull the MV0 NFET gate UP into the inter-row channel via
-# gate_extension, where there's clearance for a full-size via1
-# met1 patch (no MV S/D met1 to worry about). The channel runs
-# from MV NFET bbox top (2305) to MV PFET bbox bot (3015) — a
-# 710 nm gap. Land the new contact at the channel midpoint.
-pd_outn_ext_y = (mv_n_info.bbox[3] + (pmos_y_offset + mv_p_info.bbox[1])) // 2
-pd_outn_ext = gate_extension(npd_outn, contact_y=pd_outn_ext_y)
+# Channel layout: NFET ext patches at the bottom of the channel
+# (just above MV NFET cell top), PFET ext patches at the top
+# (just below MV PFET cell bot). Both 320×320 with 165 nm poly
+# setback. Cross-couple horizontals weave between.
+NMOS_EXT_Y_LO = mv_n_info.bbox[3] + 165 + 160                 # 2630
+NMOS_EXT_Y_HI = NMOS_EXT_Y_LO + 320 + 140                     # 3090: 320 nm patch + 140 met1.2
+PMOS_EXT_Y = pmos_y_offset + mv_p_info.bbox[1] - 165 - 160    # PFET bot − 325
+# Backwards-compat alias for the existing D-distribution code below.
+NMOS_EXT_Y = NMOS_EXT_Y_LO
+# D's gate-ext on MV0 NFET (XPD_OUTN).
+pd_outn_ext = gate_extension(npd_outn, contact_y=NMOS_EXT_Y)
 gate_routes.extend(pd_outn_ext.elements)
+pd_outn_ext_y = NMOS_EXT_Y
 # via1 LV-side: LV bot enlarger covers the cut with 85 nm enclosure.
 gate_routes.extend(place_via((LV_COL_X, d_route_y_lv), "met1", "met2"))
 # met2 chain: vertical from LV INV up to the gate-ext Y, then
@@ -216,18 +227,79 @@ gate_routes.append(
 # fully enclosed).
 gate_routes.extend(place_via(pd_outn_ext.center, "met1", "met2"))
 
+# ─── Phase 3 — D_n distribution ──────────────────────────────────────
+# D_n connects: XINV_P.D + XINV_N.D (both at LV col x=380, opposite
+# Y rows) AND XPD_OUT.G (MV1 NFET, gate-ext at NMOS_EXT_Y).
+#
+# D and D_n both have wires at the LV column area. To avoid met2.2
+# spacing collisions (the two columns are only 220 nm apart but
+# need 140+140+140=420 nm centerline for two met2 wires), D_n
+# routes vertically on MET1 (D is on met2). Different layers, no
+# conflict. The MV1 NFET ext sits at NMOS_EXT_Y just like D's MV0
+# ext (different X column, no overlap).
+inv_p_d_x, inv_p_d_y = pin_xy(pinv, "D", lv_p_info)
+inv_n_d_x, inv_n_d_y = pin_xy(ninv, "D", lv_n_info)
+pd_out_ext = gate_extension(npd_out, contact_y=NMOS_EXT_Y_HI)
+gate_routes.extend(pd_out_ext.elements)
+# Vertical met1 from LV NFET drain up to LV PFET drain. Shift X
+# WEST of the drain pins (to x=300) so the 140 nm wide wire
+# (x=230..370) doesn't overlap the LV INV poly_bridge's bot
+# enlarger (x=440..760, on net IN, not IN_n) which would merge
+# the two nets on met1 — that overlap is geometrically a single
+# polygon (DRC sees no violation) but electrically a short. The
+# wire still overlaps the drain met1 strips at x=265..495 (same
+# IN_n net via primitive li1_label="D" → fine).
+INV_DRAIN_WIRE_X = 230
+gate_routes.extend(place_wire(
+    (INV_DRAIN_WIRE_X, inv_n_d_y), (INV_DRAIN_WIRE_X, inv_p_d_y), layer="met1",
+))
+# At NMOS_EXT_Y_HI (D_n's NFET ext row, ABOVE D's row), paint a
+# met1 patch for via1 enclosure on the LV side, then met2
+# horizontal east to MV1 NFET ext. Different Y from D's
+# horizontal at NMOS_EXT_Y_LO → no met2 short between D and D_n.
+gate_routes.append(
+    rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=INV_DRAIN_WIRE_X - 160, y1=NMOS_EXT_Y_HI - 160,
+        x2=INV_DRAIN_WIRE_X + 160, y2=NMOS_EXT_Y_HI + 160,
+    )
+)
+gate_routes.extend(place_via((INV_DRAIN_WIRE_X, NMOS_EXT_Y_HI), "met1", "met2"))
+gate_routes.extend(place_wire(
+    (INV_DRAIN_WIRE_X, NMOS_EXT_Y_HI), (pd_out_ext.center[0], NMOS_EXT_Y_HI),
+    layer="met2",
+))
+gate_routes.extend(place_via(pd_out_ext.center, "met1", "met2"))
+
+# TODO Phases 4-5: OUT and OUT_N cross-couple routing. The
+# cross-couple needs PFET gate-extensions on MV0 and MV1 PFETs
+# plus horizontals that don't collide on met2. Likely needs met3
+# for one of the cross-couples or a wider channel. Deferred until
+# we LVS what we have so far and confirm the rest is right.
+
 port_labels = [
     rkt.Label(layer=rkt.named("sky130", "met1_label"),
               text="VDDA1", origin=(cell_x1 + 200, (vdda1_y1+vdda1_y2)//2)),
     rkt.Label(layer=rkt.named("sky130", "met1_label"),
               text="VSS", origin=(cell_x1 + 200, (vss_y1+vss_y2)//2)),
 ]
-# Add D, OUT, OUT_N labels at a known place (just for SRef compatibility).
-d_x, d_y = pin_xy(ninv, "G", lv_n_info)
+# Cell-port labels. The input net is named 'IN' (not 'D') to
+# avoid collision with the FET primitives' built-in li1_label="D"
+# terminal markers. Place IN on the poly_bridge's bot enlarger
+# (which is on the gate-D net, fully merged with the bridge).
+in_label_pt = (
+    (inv_bridge.bot_in_cell_met1.x1 + inv_bridge.bot_in_cell_met1.x2) // 2,
+    (inv_bridge.bot_in_cell_met1.y1 + inv_bridge.bot_in_cell_met1.y2) // 2,
+)
 out_n_x, out_n_y = pin_xy(npd_outn, "D", mv_n_info)
 out_x, out_y = pin_xy(npd_out, "D", mv_n_info)
 port_labels.extend([
-    rkt.Label(layer=rkt.named("sky130", "li1_label"), text="D", origin=(d_x, d_y)),
+    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="IN", origin=in_label_pt),
+    # IN_n net = LV INV drain (D_n in old naming). Label on the
+    # met2 horizontal that runs at NMOS_EXT_Y, midway between LV
+    # drain col and MV1 NFET ext.
+    rkt.Label(layer=rkt.named("sky130", "met2_label"), text="IN_n",
+              origin=((INV_DRAIN_WIRE_X + pd_out_ext.center[0]) // 2, NMOS_EXT_Y_HI)),
     rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT_N", origin=(out_n_x, out_n_y)),
     rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT", origin=(out_x, out_y)),
 ])

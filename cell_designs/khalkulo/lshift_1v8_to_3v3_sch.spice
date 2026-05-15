@@ -3,13 +3,18 @@
 *
 * Cross-coupled MV level shifter, VDD=1.8 V → VDDA1=3.3 V.
 *
-* D (LV 1.8 V) drives an LV inverter (XINV_P + XINV_N), producing D_n.
-* D and D_n feed the MV pull-down pair (XPD_OUTN + XPD_OUT) which
+* IN (LV 1.8 V) drives an LV inverter (XINV_P + XINV_N), producing IN_n.
+* IN and IN_n feed the MV pull-down pair (XPD_OUTN + XPD_OUT) which
 * pulls OUT_N or OUT low against the cross-coupled MV pull-up latch
-* (XPU_OUTN + XPU_OUT). OUT follows D, OUT_N follows !D, both with
+* (XPU_OUTN + XPU_OUT). OUT follows IN, OUT_N follows !IN, both with
 * full MV swing.
+*
+* The schematic uses 'IN' for the input net (not 'D') because the
+* underlying FET primitives carry their own li1_label="D" terminal
+* markers at every drain pin — naming a net 'D' here would collide
+* with those primitive labels at LVS time.
 
-.subckt lshift_1v8_to_3v3 D OUT OUT_N VDD VDDA1 VSS
+.subckt lshift_1v8_to_3v3 IN OUT OUT_N VDD VDDA1 VSS
 
 * LV input inverter (1.8 V). Bulk of XINV_P is tied to VDDA1 (not
 * VDD) because the LV PFET shares the MV PMOS pair's nwell — the
@@ -17,15 +22,15 @@
 * which is electrically benign for a 1.8 V LV device. This
 * one-cell shortcut saves the ~2 µm cell-width penalty of having
 * a separate VDD-biased nwell with nwell.2a spacing to the MV nwell.
-XINV_P D_n D VDD VDDA1 sky130_fd_pr__pfet_01v8 w=2.0 l=0.15
-XINV_N D_n D VSS VSS sky130_fd_pr__nfet_01v8 w=1.0 l=0.15
+XINV_P IN_n IN VDD VDDA1 sky130_fd_pr__pfet_01v8 w=2.0 l=0.15
+XINV_N IN_n IN VSS VSS sky130_fd_pr__nfet_01v8 w=1.0 l=0.15
 
 * Cross-coupled MV pull-up latch.
 XPU_OUTN OUT_N OUT VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=2.0 l=0.5
 XPU_OUT  OUT OUT_N VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=2.0 l=0.5
 
-* MV pull-down pair, driven by D and D_n.
-XPD_OUTN OUT_N D   VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=4.0 l=0.5
-XPD_OUT  OUT   D_n VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=4.0 l=0.5
+* MV pull-down pair, driven by IN and IN_n.
+XPD_OUTN OUT_N IN   VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=4.0 l=0.5
+XPD_OUT  OUT   IN_n VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=4.0 l=0.5
 
 .ends lshift_1v8_to_3v3

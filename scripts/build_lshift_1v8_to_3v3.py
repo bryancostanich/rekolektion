@@ -25,6 +25,7 @@ from rekolektion.io import rkt
 from rekolektion.layout import (
     place_tub, place_taps_around, place_rail, inspect_primitive,
     pin_to_rail, place_wire, place_via, pin_patch, poly_bridge,
+    gate_extension,
 )
 from rekolektion.primitives.sky130 import (
     gen_pfet_01v8, gen_nfet_01v8, gen_pfet_hv, gen_nfet_hv,
@@ -125,25 +126,42 @@ vdd_rail_stub = [
               text="VDD", origin=(LV_COL_X, vdd_y)),
 ]
 
+# ─── Pin-coord helper ────────────────────────────────────────────────
+def pin_xy(sref, terminal, info):
+    p = info.pin(terminal)
+    return (sref.origin[0] + p.origin[0], sref.origin[1] + p.origin[1])
+
 # ─── Phase 1 — Power ─────────────────────────────────────────────────
 power_routes = []
 # LV INV PMOS source → VDD stub (via2 stack from LV PMOS S to met2 stub).
 # Quick approach: pin_to_rail to vdda1 strap for MV PMOS, manual for LV INV.
 power_routes.extend(pin_to_rail(ppu_outn, "S", vdda1_strap))
 power_routes.extend(pin_to_rail(ppu_out, "S", vdda1_strap))
-# LV INV P source → not VDDA1, it's VDD. Route to met2 vdd stub via via1.
-# For now skip LV INV power — known LVS gap.
+# LV INV PMOS source → VDD stub. The primitive paints met1 over the
+# S/D li1 strip; we just need to add a via1 + met2 vertical from S
+# pin up to the VDD stub Y. The via1 at the stub Y overlaps the
+# stub met2, so they merge into the VDD net polygon.
+inv_p_s_x, inv_p_s_y = pin_xy(pinv, "S", lv_p_info)
+# met1 patch at S pin (overlaps primitive met1 strip → merges).
+PATCH_HALF = 160
+power_routes.append(
+    rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=inv_p_s_x - PATCH_HALF, y1=inv_p_s_y - PATCH_HALF,
+        x2=inv_p_s_x + PATCH_HALF, y2=inv_p_s_y + PATCH_HALF,
+    )
+)
+power_routes.extend(place_via((inv_p_s_x, inv_p_s_y), "met1", "met2"))
+power_routes.extend(
+    place_wire((inv_p_s_x, inv_p_s_y), (inv_p_s_x, vdd_y), layer="met2")
+)
+# via1 at the stub Y merges with the stub met2 (same layer, same Y).
 
 # MV NMOS source → VSS.
 power_routes.extend(pin_to_rail(npd_outn, "S", vss_strap))
 power_routes.extend(pin_to_rail(npd_out, "S", vss_strap))
 # LV INV N source → VSS.
 power_routes.extend(pin_to_rail(ninv, "S", vss_strap))
-
-# ─── Pin coords ──────────────────────────────────────────────────────
-def pin_xy(sref, terminal, info):
-    p = info.pin(terminal)
-    return (sref.origin[0] + p.origin[0], sref.origin[1] + p.origin[1])
 
 gate_routes = []
 
@@ -160,8 +178,50 @@ gate_routes.extend(inv_bridge.elements)
 # MV cells have cross-coupled gates (XPU_OUTN.G=OUT, XPU_OUT.G=OUT_N)
 # and pull-down gates on different nets from the INV (XPD_OUTN.G=D
 # but on different X column from INV, so no poly_bridge candidate).
-# Cross-coupling routing left for a later pass — current baseline is
-# DRC-clean with just the INV poly bridge.
+
+# D distribution: net D drives both LV INV gates (already on the
+# bridge) AND XPD_OUTN.G (MV0 NFET gate, different X column).
+#
+# Route: rise from LV INV bot enlarger on met2 up to the MV NFET
+# gate's Y level (well above the MV NFET S/D met1 strips that fill
+# y up to 1845), then traverse east on met2 to the MV0 gate column,
+# then via1 down to the MV NFET gate met1 strip (at y=2005..2235).
+# Routing on met2 in the cell interior keeps the wires off the
+# met1 layer where they'd otherwise collide with MV S/D met1 strips
+# (x=±[280,510] from MV gate, 230 nm wide).
+d_route_y_lv = (inv_bridge.bot_in_cell_met1.y1 + inv_bridge.bot_in_cell_met1.y2) // 2
+# Pull the MV0 NFET gate UP into the inter-row channel via
+# gate_extension, where there's clearance for a full-size via1
+# met1 patch (no MV S/D met1 to worry about). The channel runs
+# from MV NFET bbox top (2305) to MV PFET bbox bot (3015) — a
+# 710 nm gap. Land the new contact at the channel midpoint.
+pd_outn_ext_y = (mv_n_info.bbox[3] + (pmos_y_offset + mv_p_info.bbox[1])) // 2
+pd_outn_ext = gate_extension(npd_outn, contact_y=pd_outn_ext_y)
+gate_routes.extend(pd_outn_ext.elements)
+# via1 LV-side: LV bot enlarger covers the cut with 85 nm enclosure.
+gate_routes.extend(place_via((LV_COL_X, d_route_y_lv), "met1", "met2"))
+# met2 chain: vertical from LV INV up to the gate-ext Y, then
+# horizontal east to the gate-ext column. Explicit corner avoids
+# the implicit-L notch.
+gate_routes.extend(place_wire(
+    [
+        (LV_COL_X, d_route_y_lv),
+        (LV_COL_X, pd_outn_ext_y),
+        (pd_outn_ext.center[0], pd_outn_ext_y),
+    ],
+    layer="met2",
+))
+# Met2 corner patch at the L-bend (avoids met2.1 min-width notch).
+gate_routes.append(
+    rkt.Rect(
+        layer=rkt.named("sky130", "met2"),
+        x1=LV_COL_X - 160, y1=pd_outn_ext_y - 160,
+        x2=LV_COL_X + 160, y2=pd_outn_ext_y + 160,
+    )
+)
+# MV-side via1 lands on the gate-extension's met1 patch (320×320,
+# fully enclosed).
+gate_routes.extend(place_via(pd_outn_ext.center, "met1", "met2"))
 
 port_labels = [
     rkt.Label(layer=rkt.named("sky130", "met1_label"),

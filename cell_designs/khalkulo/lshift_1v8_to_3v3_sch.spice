@@ -1,0 +1,26 @@
+* Reference SPICE for lshift_1v8_to_3v3 (extracted from
+* khalkulo/source/cell_designs/reram_drv/cim_reram_drv_phaseA_sch.spice).
+*
+* Cross-coupled MV level shifter, VDD=1.8 V → VDDA1=3.3 V.
+*
+* D (LV 1.8 V) drives an LV inverter (XINV_P + XINV_N), producing D_n.
+* D and D_n feed the MV pull-down pair (XPD_OUTN + XPD_OUT) which
+* pulls OUT_N or OUT low against the cross-coupled MV pull-up latch
+* (XPU_OUTN + XPU_OUT). OUT follows D, OUT_N follows !D, both with
+* full MV swing.
+
+.subckt lshift_1v8_to_3v3 D OUT OUT_N VDD VDDA1 VSS
+
+* LV input inverter (1.8 V).
+XINV_P D_n D VDD VDD sky130_fd_pr__pfet_01v8 w=2.0 l=0.15
+XINV_N D_n D VSS VSS sky130_fd_pr__nfet_01v8 w=1.0 l=0.15
+
+* Cross-coupled MV pull-up latch.
+XPU_OUTN OUT_N OUT VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=2.0 l=0.5
+XPU_OUT  OUT OUT_N VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=2.0 l=0.5
+
+* MV pull-down pair, driven by D and D_n.
+XPD_OUTN OUT_N D   VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=4.0 l=0.5
+XPD_OUT  OUT   D_n VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=4.0 l=0.5
+
+.ends lshift_1v8_to_3v3

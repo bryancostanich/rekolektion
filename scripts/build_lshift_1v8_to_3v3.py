@@ -62,13 +62,13 @@ npd_outn = rkt.SRef(cell=mv_n, origin=(MV0_X, 0))
 npd_out  = rkt.SRef(cell=mv_n, origin=(MV1_X, 0))
 
 # PMOS row — y above NMOS bbox top.
-# Inter-row channel needs to fit BOTH a topgate NFET ext (rising
-# UP from NFET cell top) and a botgate PFET ext (falling DOWN from
-# PFET cell bot) at the same MV column for cross-coupling. Each
-# ext is a 320×320 met1 patch with 165 nm poly setback to its cell
-# edge, plus 140 nm met1.2 between the two patches. Min channel:
-# 165 + 320 + 140 + 320 + 165 = 1110 nm. 1200 leaves 90 nm slack.
-INTER_ROW_CHANNEL = 1200
+# Inter-row channel needs four ext rows: NMOS_LO (D), NMOS_HI (D_n),
+# PMOS_LO (OUT cross-couple), PMOS_HI (OUT_N cross-couple). Each
+# row is a 320 nm patch with 140 nm met1.2 to neighbors, with
+# 165 nm poly setback to the FET cell edge on the outer rows.
+# Min channel: 165 + 320 + 140 + 320 + 140 + 320 + 140 + 320 + 165
+#            = 2030 nm. 2100 leaves 70 nm slack.
+INTER_ROW_CHANNEL = 2100
 # Use the taller of lv_p / mv_p y_min for consistent y_origin.
 # Actually two separate rows: LV INV at LV_COL_X y=lv_y, MV PMOS at MV_X y=mv_y.
 # They need different y_origin to align top edges. To keep things simple,
@@ -193,11 +193,13 @@ d_route_y_lv = (inv_bridge.bot_in_cell_met1.y1 + inv_bridge.bot_in_cell_met1.y2)
 # (just above MV NFET cell top), PFET ext patches at the top
 # (just below MV PFET cell bot). Both 320×320 with 165 nm poly
 # setback. Cross-couple horizontals weave between.
-NMOS_EXT_Y_LO = mv_n_info.bbox[3] + 165 + 160                 # 2630
-NMOS_EXT_Y_HI = NMOS_EXT_Y_LO + 320 + 140                     # 3090: 320 nm patch + 140 met1.2
-PMOS_EXT_Y = pmos_y_offset + mv_p_info.bbox[1] - 165 - 160    # PFET bot − 325
-# Backwards-compat alias for the existing D-distribution code below.
+NMOS_EXT_Y_LO = mv_n_info.bbox[3] + 165 + 160                 # 2630 (D net via XPD_OUTN)
+NMOS_EXT_Y_HI = NMOS_EXT_Y_LO + 320 + 140                     # 3090 (IN_n via XPD_OUT)
+PMOS_EXT_Y_HI = pmos_y_offset + mv_p_info.bbox[1] - 165 - 160 # PFET bot − 325 (OUT_N via XPU_OUT)
+PMOS_EXT_Y_LO = PMOS_EXT_Y_HI - 320 - 140                     # OUT cross-couple via XPU_OUTN
+# Backwards-compat alias for the existing D-distribution code.
 NMOS_EXT_Y = NMOS_EXT_Y_LO
+PMOS_EXT_Y = PMOS_EXT_Y_HI
 # D's gate-ext on MV0 NFET (XPD_OUTN).
 pd_outn_ext = gate_extension(npd_outn, contact_y=NMOS_EXT_Y)
 gate_routes.extend(pd_outn_ext.elements)
@@ -271,11 +273,85 @@ gate_routes.extend(place_wire(
 ))
 gate_routes.extend(place_via(pd_out_ext.center, "met1", "met2"))
 
-# TODO Phases 4-5: OUT and OUT_N cross-couple routing. The
-# cross-couple needs PFET gate-extensions on MV0 and MV1 PFETs
-# plus horizontals that don't collide on met2. Likely needs met3
-# for one of the cross-couples or a wider channel. Deferred until
-# we LVS what we have so far and confirm the rest is right.
+# ─── Phase 4 — OUT_N net ─────────────────────────────────────────────
+# OUT_N = MV0 PFET drain (XPU_OUTN.D) + MV0 NFET drain (XPD_OUTN.D)
+# + MV1 PFET gate (XPU_OUT.G, cross-couple).
+# Vertical met2 at MV0 drain X (905) connects the two drains; the
+# cross-couple to MV1 PFET gate uses gate_extension to pull the
+# gate down to PMOS_EXT_Y_HI in the channel, then a met2 horizontal
+# east at PMOS_EXT_Y_HI.
+ppu_outn_d = pin_xy(ppu_outn, "D", mv_p_info)
+npd_outn_d = pin_xy(npd_outn, "D", mv_n_info)
+pu_out_ext = gate_extension(ppu_out, contact_y=PMOS_EXT_Y_HI)
+gate_routes.extend(pu_out_ext.elements)
+# Met1 patches at MV drain via locations (primitive S/D met1 strip
+# is only 230 nm wide → 40 nm X enclosure of via1, fails via.4a).
+for px, py in [ppu_outn_d, npd_outn_d]:
+    gate_routes.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "met1"),
+            x1=px - 160, y1=py - 160, x2=px + 160, y2=py + 160,
+        )
+    )
+# Vertical met1 connecting MV0 PFET drain (top) to MV0 NFET drain
+# (bot). On MET1 (not met2) so we don't short to D's / D_n's met2
+# horizontals where this vertical crosses them at the channel Y rows.
+OUT_N_VERT_X = ppu_outn_d[0] - 45  # 860 — 140 nm gap from MV0 PFET gate met1 strip (parent x=1070-1530)
+gate_routes.extend(place_wire(
+    (OUT_N_VERT_X, npd_outn_d[1]), (OUT_N_VERT_X, ppu_outn_d[1]), layer="met1",
+))
+# Met1 patch + via1 at PMOS_EXT_Y_HI to tap onto met2 for the
+# horizontal cross-couple.
+gate_routes.append(
+    rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=ppu_outn_d[0] - 160, y1=PMOS_EXT_Y_HI - 160,
+        x2=ppu_outn_d[0] + 160, y2=PMOS_EXT_Y_HI + 160,
+    )
+)
+gate_routes.extend(place_via((ppu_outn_d[0], PMOS_EXT_Y_HI), "met1", "met2"))
+# Cross-couple: met2 east at PMOS_EXT_Y_HI from drain col to MV1
+# PFET ext patch.
+gate_routes.extend(place_wire(
+    (ppu_outn_d[0], PMOS_EXT_Y_HI), pu_out_ext.center, layer="met2",
+))
+gate_routes.extend(place_via(pu_out_ext.center, "met1", "met2"))
+
+# ─── Phase 5 — OUT net ───────────────────────────────────────────────
+# OUT = MV1 PFET drain (XPU_OUT.D) + MV1 NFET drain (XPD_OUT.D)
+# + MV0 PFET gate (XPU_OUTN.G, cross-couple).
+# Symmetric to Phase 4 but at MV1 drain X (2605) and using
+# PMOS_EXT_Y_LO so OUT's met2 horizontal is at a different Y from
+# OUT_N's (PMOS_EXT_Y_HI) — no same-layer merge.
+ppu_out_d = pin_xy(ppu_out, "D", mv_p_info)
+npd_out_d = pin_xy(npd_out, "D", mv_n_info)
+pu_outn_ext = gate_extension(ppu_outn, contact_y=PMOS_EXT_Y_LO)
+gate_routes.extend(pu_outn_ext.elements)
+for px, py in [ppu_out_d, npd_out_d]:
+    gate_routes.append(
+        rkt.Rect(
+            layer=rkt.named("sky130", "met1"),
+            x1=px - 160, y1=py - 160, x2=px + 160, y2=py + 160,
+        )
+    )
+# Vertical met1 (not met2) for the same reason as OUT_N: avoid
+# shorting to D / D_n / OUT_N met2 horizontals at the channel rows.
+OUT_VERT_X = ppu_out_d[0] - 45  # 2560 — same met1.2 reasoning as OUT_N
+gate_routes.extend(place_wire(
+    (OUT_VERT_X, npd_out_d[1]), (OUT_VERT_X, ppu_out_d[1]), layer="met1",
+))
+gate_routes.append(
+    rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=ppu_out_d[0] - 160, y1=PMOS_EXT_Y_LO - 160,
+        x2=ppu_out_d[0] + 160, y2=PMOS_EXT_Y_LO + 160,
+    )
+)
+gate_routes.extend(place_via((ppu_out_d[0], PMOS_EXT_Y_LO), "met1", "met2"))
+gate_routes.extend(place_wire(
+    (ppu_out_d[0], PMOS_EXT_Y_LO), pu_outn_ext.center, layer="met2",
+))
+gate_routes.extend(place_via(pu_outn_ext.center, "met1", "met2"))
 
 port_labels = [
     rkt.Label(layer=rkt.named("sky130", "met1_label"),
@@ -302,6 +378,13 @@ port_labels.extend([
               origin=((INV_DRAIN_WIRE_X + pd_out_ext.center[0]) // 2, NMOS_EXT_Y_HI)),
     rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT_N", origin=(out_n_x, out_n_y)),
     rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT", origin=(out_x, out_y)),
+    # Belt & suspenders: also label the parent-paint met1 verticals
+    # so the OUT/OUT_N net polygons carry the name even when label
+    # propagation through subckt boundaries is finicky.
+    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="OUT_N",
+              origin=(OUT_N_VERT_X, (npd_outn_d[1] + ppu_outn_d[1]) // 2)),
+    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="OUT",
+              origin=(OUT_VERT_X, (npd_out_d[1] + ppu_out_d[1]) // 2)),
 ])
 
 doc = rkt.Document(

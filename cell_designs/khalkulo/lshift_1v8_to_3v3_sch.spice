@@ -11,8 +11,13 @@
 
 .subckt lshift_1v8_to_3v3 D OUT OUT_N VDD VDDA1 VSS
 
-* LV input inverter (1.8 V).
-XINV_P D_n D VDD VDD sky130_fd_pr__pfet_01v8 w=2.0 l=0.15
+* LV input inverter (1.8 V). Bulk of XINV_P is tied to VDDA1 (not
+* VDD) because the LV PFET shares the MV PMOS pair's nwell — the
+* VDDA1 bulk reverse-biases the source-body junction (Vbs = +1.5 V),
+* which is electrically benign for a 1.8 V LV device. This
+* one-cell shortcut saves the ~2 µm cell-width penalty of having
+* a separate VDD-biased nwell with nwell.2a spacing to the MV nwell.
+XINV_P D_n D VDD VDDA1 sky130_fd_pr__pfet_01v8 w=2.0 l=0.15
 XINV_N D_n D VSS VSS sky130_fd_pr__nfet_01v8 w=1.0 l=0.15
 
 * Cross-coupled MV pull-up latch.

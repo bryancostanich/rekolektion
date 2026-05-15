@@ -46,12 +46,12 @@ mv_n_info = inspect_primitive(mv_n)
 # Top: PMOS row (LV inv P + MV PU pair).
 # Layout: LV cells on the LEFT, MV cells on the RIGHT.
 LV_COL_X = 600
-# LV-to-MV minimum X pitch: the binding rule is LV-vs-MV same-type
-# diff spacing (diff/tap.22+.23 = 360 nm). LV PFET diff right edge
-# at LV_COL_X + 365 (LV diff half-width); MV PFET diff left edge at
-# MV0_X − 540 (MV diff half-width is wider due to longer S/D taps).
+# LV-to-MV minimum X pitch: with all PFETs sharing one nwell at VDDA1
+# (the LV PFET's bulk goes to VDDA1 too — see schematic note about
+# Vbs reverse bias), the binding rule is LV-vs-MV same-type diff
+# spacing (diff/tap.22+.23 = 360 nm). LV PFET diff right edge at
+# LV_COL_X + 365; MV PFET diff left edge at MV0_X − 540. So
 # MV0_X ≥ LV_COL_X + 365 + 360 + 540 = LV_COL_X + 1265.
-# 1300 leaves 35 nm slack.
 MV_PITCH_X = 1700
 MV0_X = LV_COL_X + 1300
 MV1_X = MV0_X + MV_PITCH_X
@@ -77,14 +77,17 @@ ppu_out  = rkt.SRef(cell=mv_p, origin=(MV1_X, pmos_y_offset))
 nfet_row = [ninv, npd_outn, npd_out]
 pfet_row = [pinv, ppu_outn, ppu_out]
 
-# ─── PMOS tub ────────────────────────────────────────────────────────
-tub_inputs = [
-    (lv_p, (pinv.origin[0], pinv.origin[1])),
-    (mv_p, (ppu_outn.origin[0], ppu_outn.origin[1])),
-    (mv_p, (ppu_out.origin[0], ppu_out.origin[1])),
-]
+# ─── PMOS tub (single nwell at VDDA1 — see schematic note) ───────────
+# All three PFETs share one nwell biased to VDDA1. The LV PFET's
+# bulk = VDDA1 (not the schematic's nominal VDD); we accept the
+# Vbs = +1.5V reverse bias on the LV PFET's source-body junction
+# to save the ~2 µm of cell width that nwell.2a would otherwise cost.
 pfet_tub = place_tub(
-    tub_inputs,
+    [
+        (lv_p, (pinv.origin[0], pinv.origin[1])),
+        (mv_p, (ppu_outn.origin[0], ppu_outn.origin[1])),
+        (mv_p, (ppu_out.origin[0], ppu_out.origin[1])),
+    ],
     margin_um={'top': 1.2, 'bottom': 0.4, 'left': 0.4, 'right': 0.4},
 )
 
@@ -112,18 +115,21 @@ vdda1_y1, vdda1_y2 = vdda1_strap.y1 - 30, vdda1_strap.y2 + 30
 
 vss_rail = place_rail((cell_x1, vss_y1, cell_x2, vss_y2),
                       label='VSS', stitch_li1_straps=[vss_strap])
-# VDDA1 = 3.3 V power for MV.
 vdda1_rail = place_rail((cell_x1, vdda1_y1, cell_x2, vdda1_y2),
-                       label='VDDA1', stitch_li1_straps=[vdda1_strap])
+                        label='VDDA1', stitch_li1_straps=[vdda1_strap])
 
-# VDD (1.8 V) — separate rail for LV INV. Put it as a met2 horizontal
-# strap above the LV INV column only. Quick stub — paint a met2 rect.
-vdd_y = pmos_y_offset + lv_p_info.bbox[3] + 400
-vdd_rail_stub = [
-    rkt.Rect(layer=rkt.named("sky130", "met2"),
-             x1=LV_COL_X - 400, y1=vdd_y - 70, x2=LV_COL_X + 400, y2=vdd_y + 70),
-    rkt.Label(layer=rkt.named("sky130", "met2_label"),
-              text="VDD", origin=(LV_COL_X, vdd_y)),
+# VDD (1.8 V): a small met1 pin patch directly above the LV INV
+# PMOS source. The LV INV source connects met1-north to this pin —
+# no via stack. Pin sits between the PMOS row top and the VDDA1
+# rail bottom (with met1.2 spacing on both sides).
+inv_p_s_x_pin, _ = (LV_COL_X + 220, 0)  # LV PFET S X (pin from primitive)
+vdd_y = vdda1_y1 - 140 - 160  # 140 nm spacing + 160 patch half
+vdd_pin = [
+    rkt.Rect(layer=rkt.named("sky130", "met1"),
+             x1=inv_p_s_x_pin - 160, y1=vdd_y - 160,
+             x2=inv_p_s_x_pin + 160, y2=vdd_y + 160),
+    rkt.Label(layer=rkt.named("sky130", "met1_label"),
+              text="VDD", origin=(inv_p_s_x_pin, vdd_y)),
 ]
 
 # ─── Pin-coord helper ────────────────────────────────────────────────
@@ -137,25 +143,12 @@ power_routes = []
 # Quick approach: pin_to_rail to vdda1 strap for MV PMOS, manual for LV INV.
 power_routes.extend(pin_to_rail(ppu_outn, "S", vdda1_strap))
 power_routes.extend(pin_to_rail(ppu_out, "S", vdda1_strap))
-# LV INV PMOS source → VDD stub. The primitive paints met1 over the
-# S/D li1 strip; we just need to add a via1 + met2 vertical from S
-# pin up to the VDD stub Y. The via1 at the stub Y overlaps the
-# stub met2, so they merge into the VDD net polygon.
+# LV INV PMOS source → VDD pin patch. Both on met1 — paint a
+# vertical met1 stub from the source pin up to the VDD pin patch.
 inv_p_s_x, inv_p_s_y = pin_xy(pinv, "S", lv_p_info)
-# met1 patch at S pin (overlaps primitive met1 strip → merges).
-PATCH_HALF = 160
-power_routes.append(
-    rkt.Rect(
-        layer=rkt.named("sky130", "met1"),
-        x1=inv_p_s_x - PATCH_HALF, y1=inv_p_s_y - PATCH_HALF,
-        x2=inv_p_s_x + PATCH_HALF, y2=inv_p_s_y + PATCH_HALF,
-    )
-)
-power_routes.extend(place_via((inv_p_s_x, inv_p_s_y), "met1", "met2"))
-power_routes.extend(
-    place_wire((inv_p_s_x, inv_p_s_y), (inv_p_s_x, vdd_y), layer="met2")
-)
-# via1 at the stub Y merges with the stub met2 (same layer, same Y).
+power_routes.extend(place_wire(
+    (inv_p_s_x, inv_p_s_y), (inv_p_s_x, vdd_y), layer="met1",
+))
 
 # MV NMOS source → VSS.
 power_routes.extend(pin_to_rail(npd_outn, "S", vss_strap))
@@ -256,7 +249,7 @@ doc = rkt.Document(
                 *nwell_taps.elements,
                 *vss_rail,
                 *vdda1_rail,
-                *vdd_rail_stub,
+                *vdd_pin,
                 *power_routes,
                 *gate_routes,
                 *port_labels,

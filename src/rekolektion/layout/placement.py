@@ -105,12 +105,24 @@ def _default_primitives_dir() -> Path:
 def inspect_primitive(
     name: str,
     primitives_dir: Path | None = None,
+    *,
+    search_dirs: list[Path] | None = None,
 ) -> PrimitiveInfo:
-    """Read a primitive .rkt and return its bbox + generator classification.
+    """Read a primitive or block `.rkt` and return its bbox + generator
+    classification.
 
     Pass `name` either as the bare cell name (`"nfet_hv_W1p2_L1p0_core"`)
     — in which case the helper resolves it under `primitives_dir/<name>.rkt`
     — or as a path-like string ending in `.rkt`.
+
+    For composite blocks that SRef other cells at non-zero origins
+    (e.g. a top cell SRef'ing a previously-built nand2 block), pass
+    `search_dirs` listing the directories where those child cells'
+    `.rkt` files live. The reader walks the SRef tree, translates
+    each child bbox by its origin, and returns the union bbox of the
+    whole composite. If `search_dirs` is omitted, the reader still
+    looks in the parent file's directory and in `primitives_dir` —
+    sufficient for blocks that only SRef sibling cells.
     """
 
     if name.endswith(".rkt"):
@@ -118,7 +130,15 @@ def inspect_primitive(
     else:
         base = primitives_dir or _default_primitives_dir()
         path = base / f"{name}.rkt"
-    summary = read_primitive(path)
+    # Default search: parent dir of the file + primitives_dir.
+    resolved_search = list(search_dirs) if search_dirs else []
+    if primitives_dir is not None and primitives_dir not in resolved_search:
+        resolved_search.append(primitives_dir)
+    else:
+        default = _default_primitives_dir()
+        if default not in resolved_search:
+            resolved_search.append(default)
+    summary = read_primitive(path, search_dirs=resolved_search)
     return PrimitiveInfo(
         name=summary.name,
         generator=summary.generator,

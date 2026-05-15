@@ -111,6 +111,7 @@ def place_via(
     to_layer: str,
     *,
     cuts: tuple[int, int] = (1, 1),
+    up_encl_um: float | tuple[float, float] | None = None,
     dbu_nm: int = 1,
 ) -> list[rkt.Element]:
     """Paint a single via stack centered on `point` between two
@@ -118,12 +119,22 @@ def place_via(
     default is a single 1×1 contact. Use larger arrays for
     high-current rails.
 
+    `up_encl_um` overrides the upper-layer enclosure from `_VIA_STACK`.
+
+      - `None` (default): use the symmetric value from `_VIA_STACK`.
+      - `float`: symmetric (same value all four sides).
+      - `(x_encl, y_encl)` tuple: asymmetric. SKY130's via.4a/met2.4
+        rule has different x vs y minimums (narrow-axis vs wide-axis)
+        — use the asymmetric form for tight stdcell-pitch placements
+        where the default symmetric enclosure would collide with
+        neighboring routes.
+
     Returns the cut rectangles plus the upper-layer enclosure rect.
     The caller is responsible for the lower-layer rect (typically
     already painted as part of the wire or pin patch).
     """
 
-    cut_name, cut_size_um, lo_encl_um, up_encl_um = _via_info(
+    cut_name, cut_size_um, lo_encl_um, default_up_encl_um = _via_info(
         from_layer, to_layer
     )
     rules = SKY130Rules()
@@ -164,17 +175,22 @@ def place_via(
                 )
             )
 
-    # Upper-layer enclosure rect — symmetric, covers all cuts plus
-    # `up_encl` on every side. We use the larger of the asymmetric
-    # rule values so both axes satisfy DRC.
-    up_encl = _um_to_dbu(up_encl_um, dbu_nm)
+    # Upper-layer enclosure rect — symmetric by default, asymmetric
+    # if the caller passed a (x_encl, y_encl) tuple.
+    if up_encl_um is None:
+        x_encl = y_encl = _um_to_dbu(default_up_encl_um, dbu_nm)
+    elif isinstance(up_encl_um, tuple):
+        x_encl = _um_to_dbu(up_encl_um[0], dbu_nm)
+        y_encl = _um_to_dbu(up_encl_um[1], dbu_nm)
+    else:
+        x_encl = y_encl = _um_to_dbu(up_encl_um, dbu_nm)
     elements.append(
         rkt.Rect(
             layer=rkt.named("sky130", to_layer),
-            x1=array_x0 - up_encl,
-            y1=array_y0 - up_encl,
-            x2=array_x0 + array_w + up_encl,
-            y2=array_y0 + array_h + up_encl,
+            x1=array_x0 - x_encl,
+            y1=array_y0 - y_encl,
+            x2=array_x0 + array_w + x_encl,
+            y2=array_y0 + array_h + y_encl,
         )
     )
     return elements
@@ -340,6 +356,7 @@ def pin_patch(
     *,
     primitives_dir=None,
     patch_half_um: float = 0.16,
+    mcon: bool = True,
     dbu_nm: int = 1,
 ) -> PinPatch:
     """Paint a met1 contact patch over an SRef'd cell's named pin.
@@ -360,6 +377,17 @@ def pin_patch(
       2. A 1×1 mcon at the pin center, with its met1 enclosure
          rect folded into the met1 patch (we paint the patch
          oversize so the via fits comfortably).
+
+    `mcon` controls whether to paint the mcon. Most sky130 FET
+    primitives — including the 1.8 V LV and 5 V HV families generated
+    by `gen_*_01v8` and `gen_*_hv` — already paint mcon at every S/D
+    and gate contact internally; an additional parent-level mcon at
+    the same coords stacks two contacts and fails `mcon.spacing`.
+    **Pass `mcon=False` whenever the primitive already provides mcon
+    coverage at the pin** (which is the common case for FETs);
+    `mcon=True` is only correct for primitives that expose a bare
+    li1 pin needing a parent-painted contact (rare — most are
+    fully-contacted primitives).
 
     Returns a `PinPatch` with the painted geometry and the pin
     center in parent coords — ready for `place_wire(start=p.center, ...)`.
@@ -391,24 +419,27 @@ def pin_patch(
     )
 
     # mcon: 1×1 contact at pin center, sized via _VIA_STACK rules.
-    # We don't emit the upper met1 enclosure rect from place_via
-    # here — the met1 patch above already covers it.
-    rules = SKY130Rules()
-    mcon_size = _um_to_dbu(rules.MCON_SIZE, dbu_nm)
-    mcon_rect = rkt.Rect(
-        layer=rkt.named("sky130", "mcon"),
-        x1=px - mcon_size // 2,
-        y1=py - mcon_size // 2,
-        x2=px - mcon_size // 2 + mcon_size,
-        y2=py - mcon_size // 2 + mcon_size,
-    )
+    # Skipped when `mcon=False` (typical case for FET primitives that
+    # already provide mcon coverage at every contact internally).
+    mcon_rects: tuple[rkt.Rect, ...] = ()
+    if mcon:
+        rules = SKY130Rules()
+        mcon_size = _um_to_dbu(rules.MCON_SIZE, dbu_nm)
+        mcon_rect = rkt.Rect(
+            layer=rkt.named("sky130", "mcon"),
+            x1=px - mcon_size // 2,
+            y1=py - mcon_size // 2,
+            x2=px - mcon_size // 2 + mcon_size,
+            y2=py - mcon_size // 2 + mcon_size,
+        )
+        mcon_rects = (mcon_rect,)
 
     return PinPatch(
         cell=sref.cell,
         terminal=terminal,
         center=(px, py),
         met1_rect=met1_rect,
-        mcon_rects=(mcon_rect,),
+        mcon_rects=mcon_rects,
     )
 
 
@@ -434,109 +465,340 @@ def _wire_width_dbu(layer: str, dbu_nm: int = 1) -> int:
     return _um_to_dbu(mapping[layer], dbu_nm)
 
 
+def _is_point(value: object) -> bool:
+    """Heuristic: a 2-tuple/list of ints is a Point; anything else
+    that's a sequence is treated as a list of points."""
+
+    return (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(isinstance(c, (int, float)) for c in value)
+    )
+
+
+def _simplify_chain(
+    points: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Drop intermediate points that are collinear with their two
+    neighbours on the same axis. Collapses `[A, B, C]` where A, B, C
+    share an x or y into `[A, C]` — the segment becomes one rect
+    instead of two abutting rects.
+
+    Why this matters: a label flood-fill on `met1_label` may not
+    cross the seam between two abutting met1 rects, leaving one
+    half on an autogenerated net and failing LVS port-matching.
+    Producing one rect per straight run sidesteps the seam.
+    """
+
+    if len(points) < 3:
+        return list(points)
+    out: list[tuple[int, int]] = [points[0]]
+    for i in range(1, len(points) - 1):
+        prev = out[-1]
+        curr = points[i]
+        nxt = points[i + 1]
+        same_x = prev[0] == curr[0] == nxt[0]
+        same_y = prev[1] == curr[1] == nxt[1]
+        if same_x or same_y:
+            # Curr is collinear with prev/nxt on the same axis — drop it.
+            continue
+        out.append(curr)
+    out.append(points[-1])
+    return out
+
+
+def _segment_rects(
+    p1: tuple[int, int],
+    p2: tuple[int, int],
+    *,
+    layer: str,
+    half: int,
+    preferred: "Axis",
+) -> list[rkt.Rect]:
+    """Two-point segment → 1 rect (straight) or 2 rects (L-shape)."""
+
+    x1, y1 = p1
+    x2, y2 = p2
+    if (x1, y1) == (x2, y2):
+        return []
+    rects: list[rkt.Rect] = []
+    if y1 == y2:
+        if preferred is Axis.VERTICAL:
+            warnings.warn(
+                f"horizontal wire on '{layer}' (preferred vertical). "
+                f"Legal but costs area.",
+                stacklevel=3,
+            )
+        lo_x, hi_x = sorted((x1, x2))
+        rects.append(
+            rkt.Rect(
+                layer=rkt.named("sky130", layer),
+                x1=lo_x, y1=y1 - half,
+                x2=hi_x, y2=y1 + half,
+            )
+        )
+    elif x1 == x2:
+        if preferred is Axis.HORIZONTAL:
+            warnings.warn(
+                f"vertical wire on '{layer}' (preferred horizontal). "
+                f"Legal but costs area.",
+                stacklevel=3,
+            )
+        lo_y, hi_y = sorted((y1, y2))
+        rects.append(
+            rkt.Rect(
+                layer=rkt.named("sky130", layer),
+                x1=x1 - half, y1=lo_y,
+                x2=x1 + half, y2=hi_y,
+            )
+        )
+    else:
+        # L-shape — first leg along preferred axis.
+        if preferred is Axis.VERTICAL:
+            corner = (x1, y2)
+        else:
+            corner = (x2, y1)
+        rects.extend(
+            _segment_rects(
+                p1, corner, layer=layer, half=half, preferred=preferred
+            )
+        )
+        rects.extend(
+            _segment_rects(
+                corner, p2, layer=layer, half=half, preferred=preferred
+            )
+        )
+    return rects
+
+
 def place_wire(
-    start: tuple[int, int],
-    end: tuple[int, int],
+    start: "tuple[int, int] | Sequence[tuple[int, int]]",
+    end: "tuple[int, int] | None" = None,
     *,
     layer: str = "met1",
     width_um: float | None = None,
     via_to: str | None = None,
     dbu_nm: int = 1,
 ) -> list[rkt.Element]:
-    """Paint a Manhattan wire from `start` to `end` on `layer`.
+    """Paint a Manhattan wire on `layer`. Two call shapes:
 
-    Straight (purely horizontal or purely vertical) segments produce
-    a single rect. L-shaped routes produce two segments: the first
-    along the layer's preferred axis, then a corner, then the
-    perpendicular segment. The corner sits at the same layer — no
-    automatic layer change.
+    1. **Two-point form** — `place_wire(start, end, layer=...)`. Same
+       behaviour as before: straight segment → 1 rect, diagonal →
+       L-shape (corner along the layer's preferred axis).
 
-    `via_to`, when set, paints a via stack at `end` from `layer` to
-    `via_to`. Useful for terminating a wire into a pin patch on a
-    different layer.
+    2. **Chain form** — `place_wire([p1, p2, p3, ...], layer=...)`.
+       Pass a single list of points; the helper walks them in order
+       and emits one rect per straight run. **Collinear intermediate
+       points are collapsed into a single rect** rather than two
+       abutting rects — important because Magic's
+       `met1_label`-driven flood-fill can fail to cross the seam
+       between two abutting met1 polygons, splitting what should be
+       one net into two extracted nets and failing LVS.
 
-    `width_um` defaults to the layer's minimum width per `SKY130Rules`.
-    Override for wider wires (power straps, high-current signals).
+    `via_to`, when set, paints a via stack at the chain's END
+    (`end` in the 2-point form, `points[-1]` in chain form).
+
+    `width_um` defaults to the layer's minimum width per
+    `SKY130Rules`. Override for wider wires.
 
     Warns when the wire's natural direction conflicts with the
-    layer's preferred axis (per `ROUTING_DIRECTION`). The wire is
-    painted anyway — non-preferred routing is legal, just costs
-    area.
+    layer's preferred axis. The wire is painted anyway — non-
+    preferred routing is legal, just costs area.
     """
 
-    x1, y1 = start
-    x2, y2 = end
-    if (x1, y1) == (x2, y2):
+    if end is None:
+        # Chain form: `start` is the list of points.
+        if _is_point(start):
+            raise ValueError(
+                "place_wire: pass either (start, end) for a 2-point "
+                "wire, or a list of points for a chain. Got a single "
+                "point with no `end`."
+            )
+        points = [tuple(p) for p in start]  # type: ignore[union-attr]
+    else:
+        if not _is_point(start) or not _is_point(end):
+            raise ValueError(
+                "place_wire(start, end): start and end must be "
+                "(x, y) point tuples."
+            )
+        points = [tuple(start), tuple(end)]  # type: ignore[arg-type]
+
+    if len(points) < 2:
         return []
 
-    width = _um_to_dbu(width_um, dbu_nm) if width_um is not None else _wire_width_dbu(layer, dbu_nm)
+    width = (
+        _um_to_dbu(width_um, dbu_nm)
+        if width_um is not None
+        else _wire_width_dbu(layer, dbu_nm)
+    )
     half = width // 2
-
-    is_pure_horizontal = y1 == y2
-    is_pure_vertical = x1 == x2
     preferred = ROUTING_DIRECTION.get(layer, Axis.FREE)
 
+    simplified = _simplify_chain(points)
     elements: list[rkt.Element] = []
-
-    if is_pure_horizontal or is_pure_vertical:
-        # Single straight segment.
-        if is_pure_horizontal and preferred is Axis.VERTICAL:
-            warnings.warn(
-                f"horizontal wire on '{layer}' (preferred vertical). "
-                f"Legal but costs area. Consider met1 (horizontal "
-                f"preferred) for short horizontal segments.",
-                stacklevel=2,
-            )
-        elif is_pure_vertical and preferred is Axis.HORIZONTAL:
-            warnings.warn(
-                f"vertical wire on '{layer}' (preferred horizontal). "
-                f"Legal but costs area. Consider met2 (vertical "
-                f"preferred) for cross-row signal routes.",
-                stacklevel=2,
-            )
-        # Build the rect: extend by half-width perpendicular to
-        # the wire's direction.
-        if is_pure_horizontal:
-            lo_x, hi_x = sorted((x1, x2))
-            elements.append(
-                rkt.Rect(
-                    layer=rkt.named("sky130", layer),
-                    x1=lo_x, y1=y1 - half,
-                    x2=hi_x, y2=y1 + half,
-                )
-            )
-        else:
-            lo_y, hi_y = sorted((y1, y2))
-            elements.append(
-                rkt.Rect(
-                    layer=rkt.named("sky130", layer),
-                    x1=x1 - half, y1=lo_y,
-                    x2=x1 + half, y2=hi_y,
-                )
-            )
-    else:
-        # L-shape. Corner along preferred axis: if preferred is
-        # horizontal, go horizontal first then vertical; otherwise
-        # vertical first then horizontal. FREE defaults to
-        # horizontal-first.
-        if preferred is Axis.VERTICAL:
-            corner = (x1, y2)
-        else:
-            corner = (x2, y1)
-        # First leg.
+    for p1, p2 in zip(simplified, simplified[1:]):
         elements.extend(
-            place_wire(
-                start, corner, layer=layer, width_um=width_um, dbu_nm=dbu_nm
-            )
-        )
-        # Second leg.
-        elements.extend(
-            place_wire(
-                corner, end, layer=layer, width_um=width_um, dbu_nm=dbu_nm
+            _segment_rects(
+                p1, p2, layer=layer, half=half, preferred=preferred
             )
         )
 
     if via_to is not None:
-        elements.extend(place_via(end, layer, via_to, dbu_nm=dbu_nm))
+        elements.extend(
+            place_via(points[-1], layer, via_to, dbu_nm=dbu_nm)
+        )
+
+    return elements
+
+
+def route_net_on_track(
+    pins: list[tuple[int, int]],
+    track_pos: int,
+    *,
+    axis: str = "x",
+    track_layer: str = "met1",
+    branch_layer: str = "met2",
+    track_extend: int = 0,
+    dbu_nm: int = 1,
+) -> list[rkt.Element]:
+    """Route a multi-pin net on a single dedicated track + per-pin
+    branches.
+
+    The standard digital std-cell pattern: each net gets one routing
+    track (a horizontal `met1` strip in the inter-row channel, or a
+    vertical `met2` column at the gate poly). Pins not on the track
+    Y/X get a perpendicular branch on the orthogonal preferred-axis
+    layer, with via1 stacks at both ends to bridge layers.
+
+    Allocating one track per net by construction prevents the
+    track-vs-track collisions that hand-routing with overlapping
+    `place_wire` calls produces.
+
+    Args:
+        pins: list of `(x, y)` pin coordinates in DBU. Typically the
+            `.center` field from a `pin_patch` result, but any DBU
+            coord works.
+        track_pos: when `axis='x'` the Y of the horizontal track;
+            when `axis='y'` the X of the vertical track.
+        axis: `'x'` for a horizontal track, `'y'` for a vertical one.
+            Pick whichever axis the net's pins span more — for an
+            inter-row 2-pin net, vertical (`'y'`) is usually right.
+        track_layer: layer the track is painted on. Defaults to
+            `met1` (horizontal preferred). Use `met2` for vertical
+            tracks (where it's the preferred axis).
+        branch_layer: layer the perpendicular branches use.
+            Defaults to `met2` for horizontal tracks (vertical
+            branches), or `met1` for vertical tracks (horizontal
+            branches). Override when track / branch layers are the
+            same (e.g. all met1 for short same-row routes).
+        track_extend: extra DBU to extend the track past the
+            leftmost/rightmost (or topmost/bottommost) pin. Use to
+            land the track's edge inside an existing patch or rail.
+
+    Returns:
+        list of `rkt.Element` (Rect + via geometry). Append to the
+        cell's `elements` directly.
+
+    Notes:
+        - `pin_patch` (or equivalent) MUST already exist at each pin
+          coord on `branch_layer`. Otherwise the via1 lands on bare
+          li1 and fails `via.5a` enclosure.
+        - Single-pin "nets" produce no track, just a via if the pin
+          is on a different layer than `track_layer`.
+        - For 2-pin same-row nets where both pins share the track Y,
+          the function returns just the track segment (no branches).
+    """
+
+    if not pins:
+        return []
+    if axis not in ("x", "y"):
+        raise ValueError(f"axis must be 'x' or 'y', got {axis!r}")
+
+    elements: list[rkt.Element] = []
+
+    if axis == "x":
+        xs = [p[0] for p in pins]
+        x_min = min(xs) - track_extend
+        x_max = max(xs) + track_extend
+        # Horizontal track segment.
+        if x_min != x_max:
+            elements.extend(
+                place_wire(
+                    (x_min, track_pos),
+                    (x_max, track_pos),
+                    layer=track_layer,
+                    dbu_nm=dbu_nm,
+                )
+            )
+        # Vertical branches per pin not on the track Y.
+        for px, py in pins:
+            if py == track_pos:
+                continue
+            elements.extend(
+                place_wire(
+                    (px, track_pos),
+                    (px, py),
+                    layer=branch_layer,
+                    dbu_nm=dbu_nm,
+                )
+            )
+            if track_layer != branch_layer:
+                elements.extend(
+                    place_via(
+                        (px, track_pos),
+                        track_layer,
+                        branch_layer,
+                        dbu_nm=dbu_nm,
+                    )
+                )
+                elements.extend(
+                    place_via(
+                        (px, py),
+                        branch_layer,
+                        track_layer,
+                        dbu_nm=dbu_nm,
+                    )
+                )
+    else:
+        ys = [p[1] for p in pins]
+        y_min = min(ys) - track_extend
+        y_max = max(ys) + track_extend
+        if y_min != y_max:
+            elements.extend(
+                place_wire(
+                    (track_pos, y_min),
+                    (track_pos, y_max),
+                    layer=track_layer,
+                    dbu_nm=dbu_nm,
+                )
+            )
+        for px, py in pins:
+            if px == track_pos:
+                continue
+            elements.extend(
+                place_wire(
+                    (track_pos, py),
+                    (px, py),
+                    layer=branch_layer,
+                    dbu_nm=dbu_nm,
+                )
+            )
+            if track_layer != branch_layer:
+                elements.extend(
+                    place_via(
+                        (track_pos, py),
+                        track_layer,
+                        branch_layer,
+                        dbu_nm=dbu_nm,
+                    )
+                )
+                elements.extend(
+                    place_via(
+                        (px, py),
+                        branch_layer,
+                        track_layer,
+                        dbu_nm=dbu_nm,
+                    )
+                )
 
     return elements

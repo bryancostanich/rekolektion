@@ -23,84 +23,13 @@ let private appendLog (line: string) (model: Model.Model) : Model.Model =
     let trimmed = if log.Length > 1000 then log |> List.skip (log.Length - 1000) else log
     { model with Log = trimmed }
 
-// -- Label-anchor inference helpers --------------------------------
-//
-// Labels in our model don't store a pointer to "their" polygon —
-// the association is inferred at use time by the same rule
-// `Net.Ratlines.anchorForLabel` and the renderer both use:
-//   "the smallest same-layer-number polygon whose bbox contains
-//    the label's origin."
-// We reuse that rule in the edit path so moving/resizing a polygon
-// also moves/resizes the labels anchored to it. Operates on a
-// cell's LOCAL elements (not flat space) because both move and
-// resize originate in the source-level element list.
-
-let private layerNumberOf (layer: Rekolektion.Viz.Core.Rkt.Types.Layer) : int =
-    fst (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer)
-
-let private elementBbox
-        (el: Rekolektion.Viz.Core.Rkt.Types.Element)
-        : (int64 * int64 * int64 * int64) option =
-    match el with
-    | Rekolektion.Viz.Core.Rkt.Types.PolyEl p when not p.Points.IsEmpty ->
-        let mutable xMin = System.Int64.MaxValue
-        let mutable yMin = System.Int64.MaxValue
-        let mutable xMax = System.Int64.MinValue
-        let mutable yMax = System.Int64.MinValue
-        for pt in p.Points do
-            if pt.X < xMin then xMin <- pt.X
-            if pt.X > xMax then xMax <- pt.X
-            if pt.Y < yMin then yMin <- pt.Y
-            if pt.Y > yMax then yMax <- pt.Y
-        Some (xMin, yMin, xMax, yMax)
-    | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
-        let xMin, xMax = if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
-        let yMin, yMax = if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
-        Some (xMin, yMin, xMax, yMax)
-    | _ -> None
-
-/// Build label-index → anchor-element-index for one cell. A label
-/// whose origin doesn't land inside any same-layer-number bbox is
-/// absent from the map (no anchor → label doesn't travel with any
-/// edit). "Smallest" so a label on a thin met1 stripe inside a
-/// wider areaid bbox anchors to the stripe.
-let private anchorMapForCell
-        (cell: Rekolektion.Viz.Core.Rkt.Types.Cell)
-        : Map<int, int> =
-    let indexed = cell.Elements |> List.indexed
-    let labels =
-        indexed
-        |> List.choose (fun (i, el) ->
-            match el with
-            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l -> Some (i, l)
-            | _ -> None)
-    labels
-    |> List.choose (fun (labelIdx, label) ->
-        let labelLayerNum = layerNumberOf label.Layer
-        let mutable best : int voption = ValueNone
-        let mutable bestArea = System.Int64.MaxValue
-        for (elIdx, el) in indexed do
-            let layerNum =
-                match el with
-                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p -> Some (layerNumberOf p.Layer)
-                | Rekolektion.Viz.Core.Rkt.Types.RectEl r -> Some (layerNumberOf r.Layer)
-                | _ -> None
-            match layerNum with
-            | Some n when n = labelLayerNum ->
-                match elementBbox el with
-                | Some (xMin, yMin, xMax, yMax) ->
-                    if label.Origin.X >= xMin && label.Origin.X <= xMax
-                       && label.Origin.Y >= yMin && label.Origin.Y <= yMax then
-                        let area = (xMax - xMin) * (yMax - yMin)
-                        if area < bestArea then
-                            bestArea <- area
-                            best <- ValueSome elIdx
-                | None -> ()
-            | _ -> ()
-        match best with
-        | ValueSome anchorIdx -> Some (labelIdx, anchorIdx)
-        | ValueNone -> None)
-    |> Map.ofList
+// Label-anchor helpers (anchorMapForCell, elementBbox,
+// layerNumberOf) live in `Layout.Instances` so the canvas live
+// preview and the Update commit share the implementation. Same
+// rule the renderer / Net.Ratlines / LabelFlood all use.
+let private anchorMapForCell = Layout.Instances.anchorMapForCell
+let private elementBbox = Layout.Instances.elementBbox
+let private layerNumberOf = Layout.Instances.layerNumberOf
 
 let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model.Model * Cmd<Msg.Msg> =
     match msg with
@@ -368,7 +297,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.RotateSelection90
     | Msg.MirrorSelectionX
     | Msg.MirrorSelectionY ->
-        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        // Unified: rotates / mirrors BOTH the SRef selection AND
+        // the polygon selection around the same pivot (union bbox
+        // centroid). A mixed selection rotates as one rigid group.
+        let instSel = model.InstanceSelection
+        let polySel = model.Selection
+        if instSel.IsEmpty && polySel.IsEmpty then model, Cmd.none
         else
             match model.ActiveMacroPath with
             | None -> model, Cmd.none
@@ -379,25 +313,27 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            let selected =
+                            let selectedInsts =
                                 mc.TopInstances
-                                |> Array.filter (fun i ->
-                                    model.InstanceSelection.Contains i.Index)
-                            match Layout.Instances.selectionPivotSnapped
-                                    mc.Document selected with
+                                |> Array.filter (fun i -> instSel.Contains i.Index)
+                            match Layout.Instances.selectionsPivotSnapped
+                                    mc.Document selectedInsts polySel with
                             | None -> mc
                             | Some pivot ->
                                 let lib' =
                                     match msg with
                                     | Msg.RotateSelection90 ->
-                                        Layout.Instances.rotate90Selection
-                                            mc.Document model.InstanceSelection pivot
+                                        mc.Document
+                                        |> fun d -> Layout.Instances.rotate90Selection d instSel pivot
+                                        |> fun d -> Layout.Instances.rotate90Polygons d polySel pivot
                                     | Msg.MirrorSelectionX ->
-                                        Layout.Instances.mirrorXSelection
-                                            mc.Document model.InstanceSelection pivot
+                                        mc.Document
+                                        |> fun d -> Layout.Instances.mirrorXSelection d instSel pivot
+                                        |> fun d -> Layout.Instances.mirrorXPolygons d polySel pivot
                                     | _ ->
-                                        Layout.Instances.mirrorYSelection
-                                            mc.Document model.InstanceSelection pivot
+                                        mc.Document
+                                        |> fun d -> Layout.Instances.mirrorYSelection d instSel pivot
+                                        |> fun d -> Layout.Instances.mirrorYPolygons d polySel pivot
                                 let flat' = Layout.Flatten.flatten lib'
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
@@ -414,7 +350,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     OpenMacros = openMacros'
                     ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.DuplicateSelection ->
-        if model.InstanceSelection.IsEmpty then model, Cmd.none
+        let instSel = model.InstanceSelection
+        let polySel = model.Selection
+        if instSel.IsEmpty && polySel.IsEmpty then model, Cmd.none
         else
             match model.ActiveMacroPath with
             | None -> model, Cmd.none
@@ -422,21 +360,25 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 // Snap the duplicate offset to the SKY130 mfg grid
                 // so clones land on-grid even if the source's bbox
                 // width doesn't divide evenly.
-                let mutable nextSelection : Set<int> = model.InstanceSelection
+                let mutable nextInstSel : Set<int> = instSel
+                let mutable nextPolySel : Set<string * int> = polySel
                 let mutable activePath' = path
                 let openMacros' =
                     model.OpenMacros
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            // Offset = bbox-of-bboxes width + a
+                            // Offset = union-bbox width (over both
+                            // selected SRefs AND selected polys) + a
                             // small gap so duplicates clearly sit
                             // beside the originals, not on top.
-                            let selected =
+                            let selectedInsts =
                                 mc.TopInstances
                                 |> Array.filter (fun i ->
-                                    model.InstanceSelection.Contains i.Index)
-                            let bb = Layout.Instances.selectionBbox selected
+                                    instSel.Contains i.Index)
+                            let bb =
+                                Layout.Instances.selectionsBbox
+                                    mc.Document selectedInsts polySel
                             let dxRaw, dyRaw =
                                 match bb with
                                 | Some (x1, _, x2, _) ->
@@ -450,12 +392,13 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                     mc.Document.Units
                                     Layout.Snap.sky130MfgGridNm
                                     dxRaw dyRaw
-                            let lib', clones =
-                                Layout.Instances.duplicateSelection
-                                    mc.Document model.InstanceSelection dx dy
+                            let lib', instClones, polyClones =
+                                Layout.Instances.duplicateSelections
+                                    mc.Document instSel polySel dx dy
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
-                            nextSelection <- clones
+                            nextInstSel <- instClones
+                            nextPolySel <- polyClones
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
@@ -469,15 +412,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 { model with
                     OpenMacros = openMacros'
                     ActiveMacroPath = Some activePath'
-                    InstanceSelection = nextSelection }, Cmd.none
+                    InstanceSelection = nextInstSel
+                    Selection = nextPolySel }, Cmd.none
     | Msg.SetInstanceSelection indices ->
         { model with InstanceSelection = indices }, Cmd.none
     | Msg.ClearInstanceSelection ->
         { model with InstanceSelection = Set.empty }, Cmd.none
     | Msg.MoveSelectionDbu (dxDbu, dyDbu) ->
-        // No-op when nothing selected or the snapped delta is zero
-        // — avoids a pointless re-flatten on a sub-grid drag.
-        if model.InstanceSelection.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then
+        // Unified: translates BOTH the SRef selection AND the
+        // polygon selection by the same delta. The user can
+        // build a mixed selection (shift-click instance + shift-
+        // click polygon) and drag it as one — clicking on either
+        // an SRef or a polygon dispatches this Msg via the
+        // canvas, which always passes both sets through.
+        let instSel = model.InstanceSelection
+        let polySel = model.Selection
+        if (dxDbu = 0L && dyDbu = 0L)
+           || (instSel.IsEmpty && polySel.IsEmpty) then
             model, Cmd.none
         else
             match model.ActiveMacroPath with
@@ -489,15 +440,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            // SRef translate + label-shift in one
-                            // pass via the shared Layout.Instances
-                            // helper. Same code path the canvas's
-                            // live preview uses, so the post-commit
-                            // state matches what the user saw mid-
-                            // drag (no ratline "snap" on release).
+                            // SRef + poly translate (each with their
+                            // anchored labels) in one composed pass
+                            // via the shared Layout.Instances helper.
+                            // Same code path the canvas live preview
+                            // uses, so post-commit matches mid-drag.
                             let lib' =
-                                Layout.Instances.translateSelectionWithLabels
-                                    mc.Document model.InstanceSelection dxDbu dyDbu
+                                Layout.Instances.translateSelectionsWithLabels
+                                    mc.Document instSel polySel dxDbu dyDbu
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
                             let mc' =
@@ -601,80 +551,30 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.MovePolygonDbu (sname, idx, dxDbu, dyDbu) ->
         model, Cmd.ofMsg (Msg.MovePolygonsDbu (Set.singleton (sname, idx), dxDbu, dyDbu))
     | Msg.MovePolygonsDbu (sel, dxDbu, dyDbu) ->
-        if (dxDbu = 0L && dyDbu = 0L) || sel.IsEmpty then model, Cmd.none
+        // Mixed-selection drag: also translate any selected SRefs
+        // by the same delta so a poly+instance selection moves as
+        // one. The canvas's PolygonDrag commit dispatches this Msg
+        // either as a singleton (one poly clicked) or as the full
+        // SelectedPolygons set; the InstanceSelection passenger
+        // rides along.
+        let polySel = sel
+        let instSel = model.InstanceSelection
+        if (dxDbu = 0L && dyDbu = 0L)
+           || (polySel.IsEmpty && instSel.IsEmpty) then
+            model, Cmd.none
         else
             match model.ActiveMacroPath with
             | None -> model, Cmd.none
             | Some path ->
-                // Group target indices by structure so we only walk
-                // each structure's element list once.
-                let perStruct =
-                    sel
-                    |> Set.toList
-                    |> List.groupBy fst
-                    |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
-                    |> Map.ofList
-                let translatePoly (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
-                    pts
-                    |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
-                        ({ X = p.X + dxDbu; Y = p.Y + dyDbu }
-                         : Rekolektion.Viz.Core.Rkt.Types.Point))
-                let updateDoc (doc: Rekolektion.Viz.Core.Rkt.Types.Document) =
-                    let updated =
-                        doc.Cells
-                        |> List.map (fun c ->
-                            match Map.tryFind c.Name perStruct with
-                            | None -> c
-                            | Some indices ->
-                                // Pre-compute the label→anchor map
-                                // ONCE per cell so we know which
-                                // labels travel with the moved
-                                // polys. Built BEFORE the element
-                                // mutation so the anchor indices
-                                // line up with `indices`.
-                                let anchorMap = anchorMapForCell c
-                                let elems' =
-                                    c.Elements
-                                    |> List.mapi (fun i el ->
-                                        if indices.Contains i then
-                                            match el with
-                                            | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
-                                                Rekolektion.Viz.Core.Rkt.Types.PolyEl
-                                                    { p with Points = translatePoly p.Points }
-                                            | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
-                                                Rekolektion.Viz.Core.Rkt.Types.PathEl
-                                                    { p with Points = translatePoly p.Points }
-                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
-                                                Rekolektion.Viz.Core.Rkt.Types.RectEl
-                                                    { r with
-                                                        X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
-                                                        X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu }
-                                            | other -> other
-                                        else
-                                            // Translate any label
-                                            // anchored to a moved
-                                            // element so the text
-                                            // travels with its
-                                            // wire.
-                                            match el, Map.tryFind i anchorMap with
-                                            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l, Some anchorIdx
-                                                    when indices.Contains anchorIdx ->
-                                                let o = l.Origin
-                                                Rekolektion.Viz.Core.Rkt.Types.LabelEl
-                                                    { l with
-                                                        Origin =
-                                                            ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
-                                                             : Rekolektion.Viz.Core.Rkt.Types.Point) }
-                                            | _ -> el)
-                                { c with Elements = elems' })
-                    { doc with Cells = updated }
                 let mutable activePath' = path
                 let openMacros' =
                     model.OpenMacros
                     |> List.map (fun mc ->
                         if mc.Path <> path then mc
                         else
-                            let lib' = updateDoc mc.Document
+                            let lib' =
+                                Layout.Instances.translateSelectionsWithLabels
+                                    mc.Document instSel polySel dxDbu dyDbu
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
                             let mc' =

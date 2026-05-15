@@ -414,6 +414,80 @@ let duplicateSelection
                 Set.ofList [ for i in 0 .. originals.Length - 1 -> baseIdx + i ]
             withTopElements doc top elems', cloneIndices
 
+/// Duplicate every PolyEl / PathEl / RectEl in `polySelection` by
+/// cloning each element with its points / coords shifted by Δ DBU.
+/// Clones are appended to their source cell's element list (one
+/// new element per original); the returned set names the clones'
+/// (cell, new-index) pairs so callers can flip selection to the
+/// clones (matching `duplicateSelection`'s SRef contract).
+let duplicatePolygons
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document * Set<string * int> =
+    if polySelection.IsEmpty then doc, Set.empty
+    else
+        let perCell =
+            polySelection
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        let translatePts (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
+            pts
+            |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                ({ X = p.X + dxDbu; Y = p.Y + dyDbu }
+                 : Rekolektion.Viz.Core.Rkt.Types.Point))
+        let cloneIndices = ResizeArray<string * int>()
+        let updatedCells =
+            doc.Cells
+            |> List.map (fun c ->
+                match Map.tryFind c.Name perCell with
+                | None -> c
+                | Some indices ->
+                    let clones =
+                        c.Elements
+                        |> List.indexed
+                        |> List.choose (fun (i, el) ->
+                            if not (indices.Contains i) then None
+                            else
+                                match el with
+                                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
+                                    Some (Rekolektion.Viz.Core.Rkt.Types.PolyEl
+                                        { p with Points = translatePts p.Points })
+                                | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
+                                    Some (Rekolektion.Viz.Core.Rkt.Types.PathEl
+                                        { p with Points = translatePts p.Points })
+                                | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                    Some (Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                        { r with
+                                            X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
+                                            X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu })
+                                | _ -> None)
+                    let baseIdx = c.Elements.Length
+                    for i in 0 .. clones.Length - 1 do
+                        cloneIndices.Add (c.Name, baseIdx + i)
+                    { c with Elements = c.Elements @ clones })
+        { doc with Cells = updatedCells }, Set.ofSeq cloneIndices
+
+/// Combined duplicate: SRefs (`instSelection`) + polys
+/// (`polySelection`), each cloned with the same Δ. Returns the new
+/// doc and the two new selection sets so the caller can flip
+/// selection to the clones (so a follow-up drag moves the clones,
+/// not the originals).
+let duplicateSelections
+        (doc: Document)
+        (instSelection: Set<int>)
+        (polySelection: Set<string * int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document * Set<int> * Set<string * int> =
+    let doc1, instClones = duplicateSelection doc instSelection dxDbu dyDbu
+    let doc2, polyClones = duplicatePolygons doc1 polySelection dxDbu dyDbu
+    doc2, instClones, polyClones
+
+// `selectionsBbox` lives below the rotate/mirror block so it can
+// reuse the file-level `elementBbox` helper.
+
 // 2x2 rotation matrices for the supported rigid transforms. Each
 // has integer entries so applying R to integer origins, with a
 // snapped pivot, keeps every result on the manufacturing grid by
@@ -575,6 +649,139 @@ let translateSelection
                         | other -> other)
             withTopElements doc top elems'
 
+// -- Label-anchor inference shared by edit ops --------------------
+// Same rule the renderer / Net.Ratlines / LabelFlood all use:
+// "the smallest same-layer-number polygon whose bbox contains the
+// label's origin." Lifted to Core so the canvas live preview AND
+// the Update commit can share the implementation.
+
+let layerNumberOf (layer: Rekolektion.Viz.Core.Rkt.Types.Layer) : int =
+    fst (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer)
+
+let elementBbox
+        (el: Rekolektion.Viz.Core.Rkt.Types.Element)
+        : (int64 * int64 * int64 * int64) option =
+    match el with
+    | Rekolektion.Viz.Core.Rkt.Types.PolyEl p when not p.Points.IsEmpty ->
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for pt in p.Points do
+            if pt.X < xMin then xMin <- pt.X
+            if pt.X > xMax then xMax <- pt.X
+            if pt.Y < yMin then yMin <- pt.Y
+            if pt.Y > yMax then yMax <- pt.Y
+        Some (xMin, yMin, xMax, yMax)
+    | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+        let xMin, xMax = if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+        let yMin, yMax = if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+        Some (xMin, yMin, xMax, yMax)
+    | _ -> None
+
+/// Per-cell label → anchoring-element index map. A label whose
+/// origin doesn't land inside any same-layer-number bbox is
+/// absent (no anchor → label doesn't travel with any edit).
+/// "Smallest" so a label on a thin met1 stripe inside a wider
+/// areaid bbox anchors to the stripe.
+let anchorMapForCell
+        (cell: Rekolektion.Viz.Core.Rkt.Types.Cell)
+        : Map<int, int> =
+    let indexed = cell.Elements |> List.indexed
+    let labels =
+        indexed
+        |> List.choose (fun (i, el) ->
+            match el with
+            | Rekolektion.Viz.Core.Rkt.Types.LabelEl l -> Some (i, l)
+            | _ -> None)
+    labels
+    |> List.choose (fun (labelIdx, label) ->
+        let labelLayerNum = layerNumberOf label.Layer
+        let mutable best : int voption = ValueNone
+        let mutable bestArea = System.Int64.MaxValue
+        for (elIdx, el) in indexed do
+            let layerNum =
+                match el with
+                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p -> Some (layerNumberOf p.Layer)
+                | Rekolektion.Viz.Core.Rkt.Types.RectEl r -> Some (layerNumberOf r.Layer)
+                | _ -> None
+            match layerNum with
+            | Some n when n = labelLayerNum ->
+                match elementBbox el with
+                | Some (xMin, yMin, xMax, yMax) ->
+                    if label.Origin.X >= xMin && label.Origin.X <= xMax
+                       && label.Origin.Y >= yMin && label.Origin.Y <= yMax then
+                        let area = (xMax - xMin) * (yMax - yMin)
+                        if area < bestArea then
+                            bestArea <- area
+                            best <- ValueSome elIdx
+                | None -> ()
+            | _ -> ()
+        match best with
+        | ValueSome anchorIdx -> Some (labelIdx, anchorIdx)
+        | ValueNone -> None)
+    |> Map.ofList
+
+/// Translate every polygon (PolyEl / PathEl / RectEl) in
+/// `polySelection` by Δ DBU, plus any same-cell label anchored
+/// (per `anchorMapForCell`) to one of the moved polygons. Mirrors
+/// `translateSelectionWithLabels` for SRefs.
+let translatePolygonsWithLabels
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document =
+    if polySelection.IsEmpty || (dxDbu = 0L && dyDbu = 0L) then doc
+    else
+        let perCell =
+            polySelection
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        let translatePts (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
+            pts
+            |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                ({ X = p.X + dxDbu; Y = p.Y + dyDbu }
+                 : Rekolektion.Viz.Core.Rkt.Types.Point))
+        let updatedCells =
+            doc.Cells
+            |> List.map (fun c ->
+                match Map.tryFind c.Name perCell with
+                | None -> c
+                | Some indices ->
+                    let anchorMap = anchorMapForCell c
+                    let elems' =
+                        c.Elements
+                        |> List.mapi (fun i el ->
+                            if indices.Contains i then
+                                match el with
+                                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
+                                    Rekolektion.Viz.Core.Rkt.Types.PolyEl
+                                        { p with Points = translatePts p.Points }
+                                | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
+                                    Rekolektion.Viz.Core.Rkt.Types.PathEl
+                                        { p with Points = translatePts p.Points }
+                                | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                    Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                        { r with
+                                            X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
+                                            X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu }
+                                | other -> other
+                            else
+                                match el, Map.tryFind i anchorMap with
+                                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l, Some anchorIdx
+                                        when indices.Contains anchorIdx ->
+                                    let o = l.Origin
+                                    Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                        { l with
+                                            Origin =
+                                                ({ X = o.X + dxDbu; Y = o.Y + dyDbu }
+                                                 : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                                | _ -> el)
+                    { c with Elements = elems' })
+        { doc with Cells = updatedCells }
+
 /// Like `translateSelection`, but also moves any top-cell label
 /// anchored (per `Net.Ratlines.anchorForLabel` rule: smallest same-
 /// layer-number containing-bbox poly) to a polygon inside one of
@@ -689,6 +896,208 @@ let translateSelectionWithLabels
                         | other -> other
                     else el)
             withTopElements doc top elems'
+
+/// Combined translate: SRefs (`instSelection`) + polys
+/// (`polySelection`), each with their anchored labels, by the
+/// same Δ. Order is "instances first, then polys"; the two
+/// operations don't overlap in the elements they touch (SRefs vs.
+/// polys/rects/paths/labels are disjoint kinds), so the result is
+/// commutative. Used by drag commits + canvas live preview when
+/// either or both selections are non-empty.
+let translateSelectionsWithLabels
+        (doc: Document)
+        (instSelection: Set<int>)
+        (polySelection: Set<string * int>)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document =
+    if (dxDbu = 0L && dyDbu = 0L)
+       || (instSelection.IsEmpty && polySelection.IsEmpty) then doc
+    else
+        doc
+        |> fun d -> translateSelectionWithLabels d instSelection dxDbu dyDbu
+        |> fun d -> translatePolygonsWithLabels d polySelection dxDbu dyDbu
+
+// -- Polygon rotate / mirror --------------------------------------
+//
+// Mirror of `rotate90Selection` / `mirrorXSelection` /
+// `mirrorYSelection` for the polygon side of a mixed selection.
+// Applies a per-point transform (rotation OR mirror around `pivot`)
+// to every selected `PolyEl` / `PathEl` / `RectEl`. Rect corners
+// are re-normalized after rotation so the bbox stays axis-aligned.
+// SRefs are NOT touched here — call the corresponding *Selection
+// helper for those.
+
+let private transformPolygons
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pointXform: int64 -> int64 -> int64 * int64)
+        : Document =
+    if polySelection.IsEmpty then doc
+    else
+        let perCell =
+            polySelection
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        let xformPts (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
+            pts
+            |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                let nx, ny = pointXform p.X p.Y
+                ({ X = nx; Y = ny } : Rekolektion.Viz.Core.Rkt.Types.Point))
+        let updatedCells =
+            doc.Cells
+            |> List.map (fun c ->
+                match Map.tryFind c.Name perCell with
+                | None -> c
+                | Some indices ->
+                    let elems' =
+                        c.Elements
+                        |> List.mapi (fun i el ->
+                            if not (indices.Contains i) then el
+                            else
+                                match el with
+                                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
+                                    Rekolektion.Viz.Core.Rkt.Types.PolyEl
+                                        { p with Points = xformPts p.Points }
+                                | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
+                                    Rekolektion.Viz.Core.Rkt.Types.PathEl
+                                        { p with Points = xformPts p.Points }
+                                | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                    let nx1, ny1 = pointXform r.X1 r.Y1
+                                    let nx2, ny2 = pointXform r.X2 r.Y2
+                                    let xMin, xMax =
+                                        if nx1 <= nx2 then nx1, nx2 else nx2, nx1
+                                    let yMin, yMax =
+                                        if ny1 <= ny2 then ny1, ny2 else ny2, ny1
+                                    Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                        { r with
+                                            X1 = xMin; Y1 = yMin
+                                            X2 = xMax; Y2 = yMax }
+                                | other -> other)
+                    { c with Elements = elems' })
+        { doc with Cells = updatedCells }
+
+/// Rotate every polygon in `polySelection` 90° CCW around `pivot`.
+let rotate90Polygons
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    let px, py = pivot
+    transformPolygons doc polySelection (fun x y -> px + py - y, py - px + x)
+
+/// Mirror every polygon in `polySelection` about the X axis
+/// through `pivot` (flips Y).
+let mirrorXPolygons
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    let _, py = pivot
+    transformPolygons doc polySelection (fun x y -> x, 2L * py - y)
+
+/// Mirror every polygon in `polySelection` about the Y axis
+/// through `pivot` (flips X).
+let mirrorYPolygons
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    let px, _ = pivot
+    transformPolygons doc polySelection (fun x y -> 2L * px - x, y)
+
+/// Snapped centroid of the bbox-of-bboxes covering BOTH the
+/// selected SRefs (`instances`) AND the selected polys
+/// (`polySelection`). Returns None when no bboxes contribute.
+/// Used as the pivot for unified rotate / mirror over a mixed
+/// selection.
+let selectionsPivotSnapped
+        (doc: Document)
+        (instances: Instance array)
+        (polySelection: Set<string * int>)
+        : (int64 * int64) option =
+    let bboxes = ResizeArray<int64 * int64 * int64 * int64>()
+    for inst in instances do
+        bboxes.Add inst.BBox
+    if not polySelection.IsEmpty then
+        let perCell =
+            polySelection
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        for c in doc.Cells do
+            match Map.tryFind c.Name perCell with
+            | None -> ()
+            | Some indices ->
+                c.Elements
+                |> List.iteri (fun i el ->
+                    if indices.Contains i then
+                        match elementBbox el with
+                        | Some bb -> bboxes.Add bb
+                        | None -> ())
+    if bboxes.Count = 0 then None
+    else
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for (a, b, c, d) in bboxes do
+            if a < xMin then xMin <- a
+            if b < yMin then yMin <- b
+            if c > xMax then xMax <- c
+            if d > yMax then yMax <- d
+        let cx = (xMin + xMax) / 2L
+        let cy = (yMin + yMax) / 2L
+        let p =
+            Rekolektion.Viz.Core.Layout.Snap.snapPointDbu doc.Units
+                Rekolektion.Viz.Core.Layout.Snap.sky130MfgGridNm
+                ({ X = cx; Y = cy }
+                 : Rekolektion.Viz.Core.Rkt.Types.Point)
+        Some (p.X, p.Y)
+
+/// Bbox-of-bboxes spanning the SELECTED SRefs + the SELECTED polys.
+/// Returns None when no bboxes contribute. Used by duplicate to
+/// derive the per-clone offset (one selection-bbox width to the
+/// right + a small gap).
+let selectionsBbox
+        (doc: Document)
+        (instances: Instance array)
+        (polySelection: Set<string * int>)
+        : (int64 * int64 * int64 * int64) option =
+    let bboxes = ResizeArray<int64 * int64 * int64 * int64>()
+    for inst in instances do
+        bboxes.Add inst.BBox
+    if not polySelection.IsEmpty then
+        let perCell =
+            polySelection
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        for c in doc.Cells do
+            match Map.tryFind c.Name perCell with
+            | None -> ()
+            | Some indices ->
+                c.Elements
+                |> List.iteri (fun i el ->
+                    if indices.Contains i then
+                        match elementBbox el with
+                        | Some bb -> bboxes.Add bb
+                        | None -> ())
+    if bboxes.Count = 0 then None
+    else
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for (a, b, c, d) in bboxes do
+            if a < xMin then xMin <- a
+            if b < yMin then yMin <- b
+            if c > xMax then xMax <- c
+            if d > yMax then yMax <- d
+        Some (xMin, yMin, xMax, yMax)
 
 /// Transitional wrappers for callers that still hold a
 /// `Gds.Types.Library`. Each one converts to `Rkt.Document` on the

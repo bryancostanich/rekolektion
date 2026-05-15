@@ -1125,46 +1125,26 @@ type StackCanvasControl() =
                 rulerCornerX <- cornerX
                 rulerCornerY <- cornerY
                 rulerMajorTickLen <- majorTick
-                // Tick scheme:
-                //  • Minor (small) every 1 µm.
-                //  • Major (longer) ONLY at 15, 20, 25, … µm — the
-                //    outer-region majors. Ticks in the 0..10 µm
-                //    region keep minor length even though they get
-                //    labels (user: "just because they have numbers
-                //    doesn't mean they need large ticks").
-                //  • Labels at every 1 µm in 0..10, then every 5 µm
-                //    after 10.
-                //  • Sub-µm cells fall back to the 1-2-5 picker.
+                // Label scheme: place labels at world-space `step`
+                // intervals (the 1-2-5 nice-numbers picker above
+                // already chose `step` to give ~4-6 ticks across the
+                // longer axis). Same per-axis count on small and
+                // large cells; the count is purely a function of the
+                // bbox and never of camera state, so labels do NOT
+                // appear or disappear when the user zooms.
                 let labelPositions (axisRange: float) : float[] =
-                    if axisRange < 1.0 then
-                        let s = niceStep axisRange
-                        let result = ResizeArray<float>()
-                        let mutable t = 0.0
-                        while t <= axisRange + s * 1e-6 do
-                            result.Add t
-                            t <- t + s
-                        result.ToArray()
+                    if axisRange <= 0.0 then [||]
                     else
                         let result = ResizeArray<float>()
-                        let firstMax = min axisRange 10.0
                         let mutable t = 0.0
-                        while t <= firstMax + 1e-6 do
+                        while t <= axisRange + step * 1e-6 do
                             result.Add t
-                            t <- t + 1.0
-                        if axisRange > 10.0 then
-                            let mutable t = 15.0
-                            while t <= axisRange + 1e-6 do
-                                result.Add t
-                                t <- t + 5.0
+                            t <- t + step
                         result.ToArray()
+                // Long tick marks coincide with labels — gives the
+                // user a clear visual anchor at every numbered tick.
                 let outerMajorPositions (axisRange: float) : float seq =
-                    seq {
-                        if axisRange > 10.0 then
-                            let mutable t = 15.0
-                            while t <= axisRange + 1e-6 do
-                                yield t
-                                t <- t + 5.0
-                    }
+                    labelPositions axisRange :> _
                 let minorPositions (axisRange: float) : float seq =
                     seq {
                         let s = if axisRange < 1.0 then niceStep axisRange / 5.0 else 1.0

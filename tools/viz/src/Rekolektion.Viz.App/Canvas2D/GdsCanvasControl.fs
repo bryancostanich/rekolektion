@@ -297,6 +297,18 @@ type private SkiaDraw(bounds: Rect,
                 if not overlay.Dragging
                    && overlay.Selected.Count > 0
                    && overlay.Instances.Length > 0 then
+                    // Soft outer halo so the selection stays
+                    // legible when a DRC red outline (or any other
+                    // overlay) sits on top of the same edge. Drawn
+                    // first so the crisp cyan line lands on top.
+                    use halo = new SKPaint(
+                                    Style = SKPaintStyle.Stroke,
+                                    Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xC0uy),
+                                    StrokeWidth = 7.0f,
+                                    IsAntialias = true,
+                                    MaskFilter =
+                                        SKMaskFilter.CreateBlur(
+                                            SKBlurStyle.Normal, 3.5f))
                     use stroke = new SKPaint(
                                     Style = SKPaintStyle.Stroke,
                                     Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xFFuy),
@@ -304,7 +316,9 @@ type private SkiaDraw(bounds: Rect,
                                     IsAntialias = true)
                     for inst in overlay.Instances do
                         if overlay.Selected.Contains inst.Index then
-                            canvas.DrawRect(bboxRect inst.BBox, stroke)
+                            let r = bboxRect inst.BBox
+                            canvas.DrawRect(r, halo)
+                            canvas.DrawRect(r, stroke)
 
                 if overlay.ShowDimensions
                    && overlay.Selected.Count > 0
@@ -329,6 +343,18 @@ type private SkiaDraw(bounds: Rect,
                     let scaleY =
                         if vb.MaxY = vb.MinY then 1.0
                         else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                    // Soft halo first so the crisp 2 px stroke
+                    // lands on top — keeps the selection readable
+                    // when DRC's red outline shares the edge.
+                    use pHalo =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            Color = SKColor(0x00uy, 0xFFuy, 0xFFuy, 0xC0uy),
+                            StrokeWidth = 7.0f,
+                            IsAntialias = true,
+                            MaskFilter =
+                                SKMaskFilter.CreateBlur(
+                                    SKBlurStyle.Normal, 3.5f))
                     use pSel =
                         new SKPaint(
                             Style = SKPaintStyle.Stroke,
@@ -367,6 +393,7 @@ type private SkiaDraw(bounds: Rect,
                                 for i in 1 .. points.Length - 1 do
                                     path.LineTo (toScreen points.[i])
                                 path.Close()
+                                canvas.DrawPath(path, pHalo)
                                 canvas.DrawPath(path, pSel)
                                 path.Dispose()
                             | _ -> ()
@@ -1217,6 +1244,16 @@ type GdsCanvasControl() as this =
                 if next <> prior then
                     let h = this.SetInstanceSelectionHandler
                     if not (isNull h) then h.Invoke next
+                // No-shift click on a NEW item should also clear
+                // the OTHER selection (polys), matching standard
+                // CAD selection semantics. Shift-click EXTENDS,
+                // never clears. Clicking on an already-selected
+                // member also doesn't clear (the user intends to
+                // grab the existing group).
+                if not shift && not (prior.Contains target.Index)
+                   && not this.SelectedPolygons.IsEmpty then
+                    let h = this.ClearPolygonSelectionHandler
+                    if not (isNull h) then h.Invoke ()
                 dragStartWorldX <- wx
                 dragStartWorldY <- wy
                 dragLiveDeltaDbu <- 0L, 0L
@@ -1280,6 +1317,13 @@ type GdsCanvasControl() as this =
                     if next <> prior then
                         let h = this.SetPolygonSelectionHandler
                         if not (isNull h) then h.Invoke next
+                    // No-shift click on a NEW polygon clears the
+                    // OTHER selection (instances). Mirrors the
+                    // instance click path above.
+                    if not shift && not (prior.Contains target)
+                       && not this.InstanceSelection.IsEmpty then
+                        let h = this.ClearInstanceSelectionHandler
+                        if not (isNull h) then h.Invoke ()
                     dragStartWorldX <- wx
                     dragStartWorldY <- wy
                     dragLiveDeltaDbu <- 0L, 0L
@@ -1592,17 +1636,15 @@ type GdsCanvasControl() as this =
                 // subtree's polygons" path, but P0 doesn't need it.
                 match this.Library with
                 | Some lib ->
-                    // Use the labels-aware variant so parent-cell
-                    // labels anchored to moved SRefs travel with
-                    // them in the live preview. Otherwise the
-                    // ratline overlay re-anchors mid-drag against
-                    // labels that haven't moved yet, producing a
-                    // different component graph than the post-
-                    // commit state — the user sees ratlines "snap"
-                    // on release.
+                    // Translate SRefs (with anchored labels) AND
+                    // any selected polys (with their anchored
+                    // labels) in one composed pass. Same code path
+                    // the Update commit uses, so post-release
+                    // matches mid-drag.
                     let lib' =
-                        Instances.translateSelectionWithLabels
-                            lib this.InstanceSelection dxSnap dySnap
+                        Instances.translateSelectionsWithLabels
+                            lib this.InstanceSelection this.SelectedPolygons
+                            dxSnap dySnap
                     dragLiveLib <- Some lib'
                     dragLiveFlat <- Layout.Flatten.flatten lib'
                 | None ->
@@ -1628,30 +1670,39 @@ type GdsCanvasControl() as this =
                 | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap
-                // Fast path: skip the library rebuild and the
-                // hierarchical re-flatten that the instance-drag
-                // path runs. The selection is top-cell polygons
-                // only — no SRef transforms to recompose — so we
-                // can transform the existing FlatPolygon array
-                // directly. O(N_polys) per move, no allocation
-                // beyond the shifted points.
                 match this.Library with
                 | Some lib ->
-                    let sel = this.SelectedPolygons
-                    let flat0 = this.FlatPolygons
-                    let flat' =
-                        flat0
-                        |> Array.map (fun fp ->
-                            if sel.Contains (fp.SourceStructure, fp.SourceIndex) then
-                                { fp with
-                                    Points =
-                                        fp.Points
-                                        |> Array.map (fun p ->
-                                            { X = p.X + dxSnap
-                                              Y = p.Y + dySnap }) }
-                            else fp)
-                    dragLiveLib <- Some lib
-                    dragLiveFlat <- flat'
+                    let polySel = this.SelectedPolygons
+                    let instSel = this.InstanceSelection
+                    if instSel.IsEmpty then
+                        // Fast path: only polys are selected. Skip
+                        // the library rebuild and the hierarchical
+                        // re-flatten — no SRef transforms to
+                        // recompose. O(N_polys) per move tick.
+                        let flat0 = this.FlatPolygons
+                        let flat' =
+                            flat0
+                            |> Array.map (fun fp ->
+                                if polySel.Contains (fp.SourceStructure, fp.SourceIndex) then
+                                    { fp with
+                                        Points =
+                                            fp.Points
+                                            |> Array.map (fun p ->
+                                                { X = p.X + dxSnap
+                                                  Y = p.Y + dySnap }) }
+                                else fp)
+                        dragLiveLib <- Some lib
+                        dragLiveFlat <- flat'
+                    else
+                        // Mixed selection: instances are also moving.
+                        // Re-flatten via the unified helper so SRefs
+                        // and polys (each with anchored labels)
+                        // shift together.
+                        let lib' =
+                            Instances.translateSelectionsWithLabels
+                                lib instSel polySel dxSnap dySnap
+                        dragLiveLib <- Some lib'
+                        dragLiveFlat <- Layout.Flatten.flatten lib'
                 | None ->
                     dragLiveLib <- None
                     dragLiveFlat <- [||]

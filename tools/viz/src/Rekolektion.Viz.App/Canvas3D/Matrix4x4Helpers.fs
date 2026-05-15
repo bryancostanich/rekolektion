@@ -45,8 +45,11 @@ let buildOrbitMvp
             radius * MathF.Sin(pitch))
     // 60° vertical FOV at zoom=1 — typical for CAD/3D viewers.
     // Wider than the previous 30° so perspective foreshortening
-    // is unambiguous.
-    let fovY = deg2rad (60.0 / max zoom 0.05)
+    // is unambiguous. The cap at 170° keeps us safely under
+    // CreatePerspectiveFieldOfView's hard limit of π radians (180°);
+    // without it a zoom-out beyond ~0.33 throws ArgumentOutOfRange.
+    let fovDeg = min 170.0 (60.0 / max zoom 0.05)
+    let fovY = deg2rad fovDeg
     // Near tight enough to maximize depth-buffer precision; far
     // generous enough to never clip the bbox.
     let near = max 0.01f (radius * 0.05f)

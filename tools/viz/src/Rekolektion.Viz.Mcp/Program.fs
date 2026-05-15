@@ -295,6 +295,50 @@ let private toolSetTab (args: JsonElement) : ToolResult =
     with ex ->
         toolError (sprintf "set_tab failed: %s" ex.Message)
 
+/// Tool: rekolektion_viz_list_macros — GET /macros. Returns the
+/// list of open macro tabs (paths + dirty flags) and which one is
+/// currently active. Used as the "what's open?" probe before
+/// rekolektion_viz_set_active_macro.
+let private toolListMacros (_args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let resp = udsRequest "GET" "/macros" None
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "list_macros failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_set_active_macro { path } — POST
+/// /active-macro. Switches the active tab to the open macro whose
+/// path matches. The path must already be open (use
+/// rekolektion_viz_open first if not).
+let private toolSetActiveMacro (args: JsonElement) : ToolResult =
+    try
+        let path = args.GetProperty("path").GetString()
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body = sprintf "{\"path\":\"%s\"}" (jsonEscape path)
+            let resp = udsRequest "POST" "/active-macro" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "set_active_macro failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_get_selection — GET /selection. Returns
+/// the current instance + polygon selection in the active macro,
+/// with bboxes in µm so the agent can reason about geometry
+/// without knowing the document's DBU.
+let private toolGetSelection (_args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let resp = udsRequest "GET" "/selection" None
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "get_selection failed: %s" ex.Message)
+
 /// Try a JsonElement property by name, returning Some if present
 /// AND a non-null value. Helps keep optional-arg parsing terse.
 let private tryProp (elem: JsonElement) (name: string) : JsonElement option =
@@ -433,13 +477,16 @@ let private toolRunMacro (args: JsonElement) : ToolResult =
 let private toolHandlers
         : Map<string, JsonElement -> ToolResult> =
     Map.ofList [
-        "rekolektion_viz_screenshot",     toolScreenshot
-        "rekolektion_viz_open",           toolOpen
-        "rekolektion_viz_toggle_layer",   toolToggleLayer
-        "rekolektion_viz_highlight_net",  toolHighlightNet
-        "rekolektion_viz_set_tab",        toolSetTab
-        "rekolektion_viz_render",         toolVizRender
-        "rekolektion_viz_run_macro",      toolRunMacro
+        "rekolektion_viz_screenshot",        toolScreenshot
+        "rekolektion_viz_open",              toolOpen
+        "rekolektion_viz_toggle_layer",      toolToggleLayer
+        "rekolektion_viz_highlight_net",     toolHighlightNet
+        "rekolektion_viz_set_tab",           toolSetTab
+        "rekolektion_viz_list_macros",       toolListMacros
+        "rekolektion_viz_set_active_macro",  toolSetActiveMacro
+        "rekolektion_viz_get_selection",     toolGetSelection
+        "rekolektion_viz_render",            toolVizRender
+        "rekolektion_viz_run_macro",         toolRunMacro
     ]
 
 /// Static tool schema list for MCP's `tools/list` response. Each
@@ -488,7 +535,8 @@ let private toolList : obj =
                           required = [| "name" |] |} |}
         box {| name = "rekolektion_viz_set_tab"
                description =
-                   "Switch the viz app's active tab between 2D and 3D."
+                   "Switch the viz app's active view between 2D and 3D \
+                    (the 2D/3D toggle in the top bar)."
                inputSchema =
                    box {| ``type`` = "object"
                           properties =
@@ -496,6 +544,40 @@ let private toolList : obj =
                                   {| ``type`` = "string"
                                      ``enum`` = [| "2D"; "3D" |] |} |}
                           required = [| "tab" |] |} |}
+        box {| name = "rekolektion_viz_list_macros"
+               description =
+                   "List the macro tabs currently open in the viz app. \
+                    Returns { active, macros[{path, originalPath, dirty}] }. \
+                    Use to find the path to feed into \
+                    rekolektion_viz_set_active_macro."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties = obj()
+                          additionalProperties = false |} |}
+        box {| name = "rekolektion_viz_set_active_macro"
+               description =
+                   "Switch the viz app's active macro tab to the one whose \
+                    path matches. The macro must already be open — call \
+                    rekolektion_viz_list_macros first if unsure, or \
+                    rekolektion_viz_open to add a new tab."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| path =
+                                  {| ``type`` = "string"
+                                     description = "Absolute path of an open macro tab" |} |}
+                          required = [| "path" |] |} |}
+        box {| name = "rekolektion_viz_get_selection"
+               description =
+                   "Read the current geometry selection in the active \
+                    macro. Returns { activePath, instances[{index, cell, \
+                    originXUm, originYUm, bboxUm}], polygons[{cell, index, \
+                    kind, layer, datatype, bboxUm}] }. Use to inspect what \
+                    the user has selected before issuing edits."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties = obj()
+                          additionalProperties = false |} |}
         box {| name = "rekolektion_viz_render"
                description =
                    "Render a GDS file to a PNG headlessly via the \

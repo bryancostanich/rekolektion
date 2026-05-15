@@ -4,17 +4,6 @@ open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Sidecar.Types
 open Rekolektion.Viz.Core.Layout.Picking
 
-/// Polygon entry used during flood-fill. Layer key is the canonical
-/// `(number, datatype)` pair so `NetEntry.Polygons` round-trips into
-/// the sidecar without info loss.
-type private PolyEntry = {
-    StructureName: string
-    Index        : int
-    Layer        : int
-    DataType     : int
-    Points       : Point list
-}
-
 let private bbox (pts: Point list) : (int64 * int64 * int64 * int64) =
     let xs = pts |> List.map (fun p -> p.X)
     let ys = pts |> List.map (fun p -> p.Y)
@@ -36,46 +25,6 @@ let private touch (a: Point list) (b: Point list) : bool =
         || b |> List.exists (fun p -> pointInPolygon p a)
     )
 
-let private layerPair (layer: Layer) : int * int =
-    Rekolektion.Viz.Core.Rkt.ToGds.layerToGds layer
-
-/// Flatten every poly-bearing element across the document into a list
-/// of `PolyEntry`. Only `PolyEl` and `RectEl` contribute; paths,
-/// labels, refs, and ports do not (they aren't fill geometry).
-let private flatten (doc: Document) : PolyEntry list =
-    doc.Cells
-    |> List.collect (fun c ->
-        c.Elements
-        |> List.indexed
-        |> List.choose (fun (i, e) ->
-            match e with
-            | PolyEl p ->
-                let n, d = layerPair p.Layer
-                Some {
-                    StructureName = c.Name
-                    Index = i
-                    Layer = n
-                    DataType = d
-                    Points = p.Points
-                }
-            | RectEl r ->
-                let n, d = layerPair r.Layer
-                let pts : Point list = [
-                    { X = r.X1; Y = r.Y1 }
-                    { X = r.X2; Y = r.Y1 }
-                    { X = r.X2; Y = r.Y2 }
-                    { X = r.X1; Y = r.Y2 }
-                    { X = r.X1; Y = r.Y1 }
-                ]
-                Some {
-                    StructureName = c.Name
-                    Index = i
-                    Layer = n
-                    DataType = d
-                    Points = pts
-                }
-            | _ -> None))
-
 let private classOfName (n: string) : NetClass =
     let upper = n.ToUpperInvariant()
     if   upper = "VPWR" || upper = "VDD"      then Power
@@ -83,76 +32,69 @@ let private classOfName (n: string) : NetClass =
     elif upper.StartsWith "CLK"               then Clock
     else Signal
 
-/// Tagged label: cell-of-origin, layer pair, text, and origin point
-/// in the cell's local frame. Only `LabelEl` with non-empty text
-/// participates.
-type private LabelEntry = {
-    StructureName: string
-    Layer        : int
-    DataType     : int
-    Text         : string
-    Origin       : Point
-}
-
-let private collectLabels (doc: Document) : LabelEntry list =
-    doc.Cells
-    |> List.collect (fun c ->
-        c.Elements
-        |> List.choose (function
-            | LabelEl l when l.Text <> "" ->
-                let n, d = layerPair l.Layer
-                Some {
-                    StructureName = c.Name
-                    Layer = n
-                    DataType = d
-                    Text = l.Text
-                    Origin = l.Origin
-                }
-            | _ -> None))
-
-/// Build NetMap from labels in the document. For each `LabelEl`,
-/// find the polygon on the same layer that contains the label point,
-/// then flood-fill across same-layer touching polygons. Polygons not
-/// reached by any label are not included in the result (they show as
-/// net-unknown in the inspector).
+/// Build NetMap from labels in the document. Operates on
+/// `Layout.Flatten`'s world-coord polys + labels so a label authored
+/// at the TOP cell can anchor to a polygon living inside an SRef'd
+/// child cell — that case (e.g. `drn_L` placed at top against a FET
+/// drain pin) was silently dropping out of the Nets panel under the
+/// previous local-frame implementation.
+///
+/// For each label: find the world-coord polygon on the same layer
+/// that contains the label point, then flood across same-layer
+/// touching polygons. Output `PolyRef`s deduplicate by (cell, index)
+/// so multiple instances of the same source polygon collapse to one
+/// entry — the Nets panel only needs to know the net exists.
 let derive (doc: Document) : Map<string, NetEntry> =
-    let polys = flatten doc
-    let labels = collectLabels doc
+    let polys = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+    let labels = Rekolektion.Viz.Core.Layout.Flatten.flattenLabels doc
+    let pointsList (p: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) =
+        Array.toList p.Points
 
     labels
-    |> List.fold (fun (acc: Map<string, NetEntry>) lbl ->
-        let seed =
+    |> Array.fold (fun (acc: Map<string, NetEntry>) (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel) ->
+        if lbl.Text = "" then acc else
+        let seedIdx =
             polys
-            |> List.tryFind (fun p ->
-                p.Layer = lbl.Layer && pointInPolygon lbl.Origin p.Points)
-        match seed with
+            |> Array.tryFindIndex (fun p ->
+                p.Layer = lbl.Layer
+                && pointInPolygon lbl.Origin (pointsList p))
+        match seedIdx with
         | None -> acc
-        | Some s0 ->
-            // BFS over same-layer polygons that touch.
+        | Some i0 ->
+            let s0 = polys.[i0]
+            // BFS over same-(layer, datatype) world polygons that
+            // touch. Index keyed by flat-array position so the two
+            // instances of the same source poly count as separate
+            // candidates (their world geometry sits in different
+            // places, so flood reaches one only via a real touch).
             let sameLayer =
                 polys
-                |> List.filter (fun p ->
+                |> Array.mapi (fun i p -> i, p)
+                |> Array.filter (fun (_, p) ->
                     p.Layer = s0.Layer && p.DataType = s0.DataType)
-            let visited = System.Collections.Generic.HashSet<string * int>()
-            let queue = System.Collections.Generic.Queue<PolyEntry>()
-            queue.Enqueue s0 |> ignore
-            visited.Add (s0.StructureName, s0.Index) |> ignore
-            let collected = System.Collections.Generic.List<PolyEntry>()
+            let visited = System.Collections.Generic.HashSet<int>()
+            let queue = System.Collections.Generic.Queue<int>()
+            queue.Enqueue i0 |> ignore
+            visited.Add i0 |> ignore
+            let collected = System.Collections.Generic.List<Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon>()
             while queue.Count > 0 do
-                let cur = queue.Dequeue()
+                let curIdx = queue.Dequeue()
+                let cur = polys.[curIdx]
                 collected.Add cur
-                for cand in sameLayer do
-                    let key = (cand.StructureName, cand.Index)
-                    if not (visited.Contains key) && touch cur.Points cand.Points then
-                        visited.Add key |> ignore
-                        queue.Enqueue cand |> ignore
+                let curPts = pointsList cur
+                for (cIdx, cand) in sameLayer do
+                    if not (visited.Contains cIdx)
+                       && touch curPts (pointsList cand) then
+                        visited.Add cIdx |> ignore
+                        queue.Enqueue cIdx |> ignore
             let polyRefs =
                 collected
                 |> Seq.map (fun p ->
-                    { Structure = p.StructureName
+                    { Structure = p.SourceStructure
                       Layer = p.Layer
                       DataType = p.DataType
-                      Index = p.Index })
+                      Index = p.SourceIndex })
+                |> Seq.distinct
                 |> Seq.toList
             let entry =
                 match Map.tryFind lbl.Text acc with

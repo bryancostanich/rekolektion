@@ -159,26 +159,78 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                 [ SelectableTextBlock.foreground "#888" ]
               yield! labelLines ]
 
+let private instanceDetails (model: Model.Model) (idx: int) : IView list =
+    match Model.activeMacro model with
+    | None -> []
+    | Some m ->
+        let inst =
+            m.TopInstances
+            |> Array.tryFind (fun i -> i.Index = idx)
+        match inst with
+        | None ->
+            [ line (sprintf "instance #%d" idx) [] ]
+        | Some inst ->
+            let uupdb = float m.Document.Units.DbuNm * 1.0e-3
+            let (x1, y1, x2, y2) = inst.BBox
+            let bw = float (x2 - x1) * uupdb
+            let bh = float (y2 - y1) * uupdb
+            let ox = float inst.Sref.Origin.X * uupdb
+            let oy = float inst.Sref.Origin.Y * uupdb
+            let orientation =
+                let parts =
+                    [ if inst.Sref.Rot <> 0.0 then
+                          yield sprintf "rot %g°" inst.Sref.Rot
+                      if inst.Sref.Reflect then
+                          yield "reflected"
+                      if inst.Sref.Mag <> 1.0 then
+                          yield sprintf "mag %g" inst.Sref.Mag ]
+                if parts.IsEmpty then "identity" else String.concat ", " parts
+            [ line
+                (sprintf "cell: %s" inst.Sref.Cell)
+                [ SelectableTextBlock.fontWeight FontWeight.SemiBold ]
+              line (sprintf "instance #%d" inst.Index) []
+              line (sprintf "@ (%.3f, %.3f) µm" ox oy) []
+              line (sprintf "bbox: %.3f × %.3f µm" bw bh) []
+              line orientation
+                [ SelectableTextBlock.foreground "#888" ] ]
+
 let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
+    let polySel = model.Selection
+    let instSel = model.InstanceSelection
     let body : IView list =
         [
             yield TextBlock.create [
                 TextBlock.text "Inspector"
                 TextBlock.fontWeight FontWeight.Bold
             ] :> IView
-            if model.Selection.IsEmpty then
+            if polySel.IsEmpty && instSel.IsEmpty then
                 yield TextBlock.create [
                     TextBlock.text "(nothing selected)"
                     TextBlock.foreground "#888"
                 ] :> IView
-            elif model.Selection.Count = 1 then
-                let struc, idx = model.Selection.MinimumElement
-                yield! polyDetails model struc idx
             else
-                yield TextBlock.create [
-                    TextBlock.text (sprintf "%d polygons selected" model.Selection.Count)
-                    TextBlock.foreground "#CCC"
-                ] :> IView
+                if instSel.Count = 1 && polySel.IsEmpty then
+                    yield! instanceDetails model instSel.MinimumElement
+                elif polySel.Count = 1 && instSel.IsEmpty then
+                    let struc, idx = polySel.MinimumElement
+                    yield! polyDetails model struc idx
+                else
+                    if instSel.Count > 0 then
+                        yield TextBlock.create [
+                            TextBlock.text
+                                (sprintf "%d instance%s selected"
+                                    instSel.Count
+                                    (if instSel.Count = 1 then "" else "s"))
+                            TextBlock.foreground "#CCC"
+                        ] :> IView
+                    if polySel.Count > 0 then
+                        yield TextBlock.create [
+                            TextBlock.text
+                                (sprintf "%d polygon%s selected"
+                                    polySel.Count
+                                    (if polySel.Count = 1 then "" else "s"))
+                            TextBlock.foreground "#CCC"
+                        ] :> IView
         ]
 
     StackPanel.create [

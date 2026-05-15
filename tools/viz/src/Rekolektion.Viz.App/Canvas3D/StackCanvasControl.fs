@@ -1095,8 +1095,14 @@ type StackCanvasControl() =
                 rulerStep <- step
                 let minor = step / 5.0
                 let z = -0.5f
-                let majorTick = float32 (step * 0.20)
-                let minorTick = float32 (step * 0.08)
+                // Tick lengths are fixed in world µm so they look
+                // the same on a 1-µm FET and a 100-µm macro. Old
+                // rule scaled by `step`, which produced 10-µm ticks
+                // on big macros and sub-µm ticks on small cells —
+                // both wrong by the user's "ticks shouldn't scale
+                // with the bbox" rule.
+                let majorTick = 0.3f
+                let minorTick = 0.12f
                 let xColor = struct (1.0f, 0.35f, 0.35f)
                 let yColor = struct (0.35f, 1.0f, 0.35f)
                 let verts = ResizeArray<float32>()
@@ -1187,7 +1193,9 @@ type StackCanvasControl() =
                 // small white cross so the user can spot where the
                 // ruler's "0" sits even at oblique camera angles.
                 let originColor = struct (1.0f, 1.0f, 1.0f)
-                let originSize = float32 (max minor 0.05)
+                // Fixed world-µm size, same rationale as the major
+                // / minor tick lengths above — don't scale with bbox.
+                let originSize = 0.2f
                 push (cornerX - originSize) cornerY               z originColor
                 push (cornerX + originSize) cornerY               z originColor
                 push cornerX               (cornerY - originSize) z originColor

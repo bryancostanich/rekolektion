@@ -7,3 +7,4 @@
 | `03_cim_sram_macros` | `complete` | 7T+1C CIM SRAM array macros — LVS unique / DRC clean (flat + hier) on all four variants, OpenROAD smoke route end-to-end |
 | `04_sky130B_upgrade` | (see track plan) | Migration to the sky130B PDK variant |
 | `05_cim_tapeout_audit` | `pending` | Pre-tapeout audit on the track 03 CIM macros: functional SPICE, bitcell margin under CIM, Calibre sign-off, antenna/density/latch-up, power integrity, independent design review |
+| `06_authoring_data_model` | `pending` | Per-label `Kind` (NetName vs DeviceTerminal) replaces fragile name-based blacklist; `(nets …)` block auto-derives from labels at write time; viz ratlines work on every `.rkt` without manual declaration |

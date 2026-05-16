@@ -35,6 +35,104 @@ from rekolektion.primitives._cache import (
 from rekolektion.primitives.sky130._gds_to_rkt import read_gds
 
 
+def _add_multifinger_sd_ties(cell: rkt.Cell, nf: int) -> None:
+    """Add internal met2 D-strap + S-strap with via1 stacks tying
+    alternate-finger S/D contact strips.
+
+    Magic's PDK draw proc paints each finger's S/D as a separate
+    vertical met1 strip with no horizontal strap. Magic's extraction
+    sees each S/D position as a distinct node, so a multi-finger
+    primitive extracts as N separate transistors instead of one
+    paralleled device. Adding D and S straps at the primitive level
+    ties alternate strips into single D and S nets, so the LVS sees
+    one device matching the schematic's `nf=N` instance.
+
+    Strap geometry — both straps live *inside* the existing met1
+    strips' y range so via1 enclosure is satisfied by the existing
+    met1 with no extension needed. D-strap near the top of that
+    range, S-strap near the bottom — well separated so the two
+    straps don't touch.
+    """
+
+    if nf < 2:
+        return
+
+    met1_layer = rkt.named("sky130", "met1")
+
+    # Find tall thin met1 rects — these are the S/D contact strips.
+    # Horizontal gate-contact strips have width >> height and are
+    # filtered out by the aspect ratio check.
+    vertical_strips: list[rkt.Rect] = []
+    for el in cell.elements:
+        if not isinstance(el, rkt.Rect):
+            continue
+        if el.layer != met1_layer:
+            continue
+        w = el.x2 - el.x1
+        h = el.y2 - el.y1
+        if h > 4 * w:
+            vertical_strips.append(el)
+
+    # nf gates → nf+1 S/D positions. If we found a different count,
+    # we don't understand the layout — bail rather than corrupt it.
+    if len(vertical_strips) != nf + 1:
+        return
+
+    vertical_strips.sort(key=lambda r: (r.x1 + r.x2) / 2)
+
+    # Alternating D / S, starting with D (PDK draws D-G-S-G-D… with
+    # default evens=1). Even indices → D, odd → S.
+    d_idx = list(range(0, len(vertical_strips), 2))
+    s_idx = list(range(1, len(vertical_strips), 2))
+
+    sd_y_min = min(r.y1 for r in vertical_strips)
+    sd_y_max = max(r.y2 for r in vertical_strips)
+
+    # Strap geometry: 350 nm tall (≥ via1 cut 150 + 2×85 met2 enclosure
+    # + small buffer). Place D-strap near top of S/D strip y range,
+    # S-strap near bottom — strap CENTER offset by half-strap-height
+    # from the y edge so the strap lies entirely within the S/D y range.
+    STRAP_HALF = 175    # half-height of the strap (350 nm total)
+    VIA_CUT_HALF = 75   # half of via1 cut (150 nm total)
+
+    d_strap_y = sd_y_max - STRAP_HALF
+    s_strap_y = sd_y_min + STRAP_HALF
+
+    # Met1 landing pad sized for symmetric ≥100 nm via1 enclosure.
+    # Magic's via.5a/via.4a check rejects bare-strip enclosures
+    # (≤40 nm narrow x) even when y enclosure is huge — pad an
+    # explicit larger met1 patch at each via1 site to clear the rule.
+    M1_PAD_HALF = 175  # 75 + 100 = symmetric 175 nm half (350 wide)
+
+    def _emit_strap(indices: list[int], strap_y: int) -> list[rkt.Element]:
+        if len(indices) < 2:
+            return []
+        xs = [(vertical_strips[i].x1 + vertical_strips[i].x2) // 2
+              for i in indices]
+        x_min = min(xs) - STRAP_HALF
+        x_max = max(xs) + STRAP_HALF
+        elements: list[rkt.Element] = [rkt.Rect(
+            layer=rkt.named("sky130", "met2"),
+            x1=x_min, y1=strap_y - STRAP_HALF,
+            x2=x_max, y2=strap_y + STRAP_HALF,
+        )]
+        for x in xs:
+            elements.append(rkt.Rect(
+                layer=rkt.named("sky130", "met1"),
+                x1=x - M1_PAD_HALF, y1=strap_y - M1_PAD_HALF,
+                x2=x + M1_PAD_HALF, y2=strap_y + M1_PAD_HALF,
+            ))
+            elements.append(rkt.Rect(
+                layer=rkt.named("sky130", "via"),
+                x1=x - VIA_CUT_HALF, y1=strap_y - VIA_CUT_HALF,
+                x2=x + VIA_CUT_HALF, y2=strap_y + VIA_CUT_HALF,
+            ))
+        return elements
+
+    cell.elements.extend(_emit_strap(d_idx, d_strap_y))
+    cell.elements.extend(_emit_strap(s_idx, s_strap_y))
+
+
 def _fmt_um(value: float) -> str:
     """Format a micron value the way device names want it: `1.2` → `1p2`,
     `0.15` → `0p15`. Trailing zeros after the decimal are kept (a 1.0 µm
@@ -142,6 +240,13 @@ def _build_fet(
         for cell in doc.cells:
             if cell.name == name:
                 cell.meta = meta
+                # Multi-finger ties: PDK draw proc paints each S/D
+                # finger as a separate met1 strip with no horizontal
+                # connection — so Magic extracts each as a distinct
+                # node and the primitive becomes N transistors instead
+                # of one. Inject D and S met2 straps to fix that.
+                if nf > 1:
+                    _add_multifinger_sd_ties(cell, nf)
                 # If the caller asked for abut padding (typically because
                 # this device family has implant overhang too tight to
                 # satisfy diff/tap.3 at bbox-edge abutment), inject a

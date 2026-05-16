@@ -105,6 +105,36 @@ Why it matters: with default `botc=True`, the bottom gate contact is at `x=(-250
 > `_core` primitives** in the next section before you write any
 > SRefs.
 
+> **Prefer `nf=1` for current mirrors / matched-FET cells; reserve
+> `nf>1` for cases where finger-matching is the design intent.**
+> Multi-finger FETs (`nf=2`, D-S-D pattern) have two drain
+> polycontacts (D0, D2) on separate li1 columns inside the
+> primitive — the parent must short them externally on met2 with a
+> via1 jumper, *and* Magic's hierarchical extraction is flaky about
+> merging the two fingers' GATE polycontacts at the parent level
+> (sometimes autonames one of them with the primitive cell name,
+> failing parallel-device merging in netgen). The result: an LVS
+> mismatch where the layout has more device instances than the
+> schematic, even with the geometry correct. For a 3-PMOS current
+> mirror at W/L = 20 µm / 2 µm, calling `gen_pfet_01v8(w_um=20, l_um=2, nf=1)`
+> gives an electrically identical FET as `nf=2, w_um=10` but cleaner
+> extraction and no external D-D jumper. If you specifically need
+> multi-finger for matching (common-centroid, dummy fingers),
+> accept the extraction complexity and label EACH finger's gate/
+> drain explicitly at the parent so the labels propagate.
+
+> **Fixed-geometry primitives are multi-cell `.rkt` files.** PNPs,
+> VPP caps, varactors, inductors — anything the PDK ships as a
+> pre-laid-out `.mag` under `libs.ref/sky130_fd_pr/mag/` and draws
+> via `getcell` — produce a `.rkt` with TWO cells: the generator's
+> wrapper cell + the PDK cell as a child SRef at origin (0, 0).
+> Placement helpers (`inspect_primitive`, `place_row`, `place_tub`,
+> `pin_patch`) handle this transparently — they read the `(top …)`
+> declaration and union all geometry. You don't need to flatten
+> anything by hand. (If a future generator places a child SRef at
+> non-(0, 0) origin, `read_primitive` will raise a clear error
+> until the bbox helper learns hierarchical translation.)
+
 **Adding a new generator?** Follow the pattern in `fet.py`:
 
 1. Call the PDK's defaults proc (`sky130::<dev>_defaults`)
@@ -174,6 +204,33 @@ nfet = gen_nfet_hv(w_um=1.2, l_um=1.0)
 row = place_row([nfet] * 4)        # 4 identical nfets, wells merge
 # row[0].origin → (975, 0); row[1].origin → (2925, 0); …
 ```
+
+> **Pfet row + `place_taps_around` is a trap.** `place_row` paints
+> nwell only as wide as the abutted FETs themselves. Nwell taps from
+> `place_taps_around(..., 'nwell', sides=('top', 'bottom'))` sit
+> OUTSIDE that band (above/below the FET row), so the tap's n-tap
+> rectangle has no nwell over it and DRC fails `diff/tap.10` (N-well
+> overlap of N-tap < 0.18 µm). For pfet rows that need taps, use
+> `place_tub(..., margin_um >= 1.0)` instead — the parent-painted
+> nwell extends past the FET row and covers the tap bands. `place_row`
+> + tap-band is fine for **nfet** rows (psub is the default substrate;
+> no tap-enclosure rule).
+
+> **Abutting two FETs does NOT auto-merge their S/D li1.** `place_row`
+> abuts cells so wells/implants merge, but each FET primitive's S/D
+> li1 strip stops ~195 nm *inside* its own cell edge — when M_IN1
+> sits at the left and M_IN2 sits at the right with pitch=width,
+> M_IN1.S's li1 and M_IN2.D's li1 are ~390 nm apart in the parent.
+> Magic's extractor sees two separate nets, and LVS reports a
+> mismatched `Number of nets` with the unmerged terminal showing up
+> on an autonamed net like `<primitive>_0/D`. **Fix:** paint an
+> explicit li1 bridge between the two pin coords with
+> `place_wire(parent_coord(s1, "S"), parent_coord(s2, "D"), layer="li1")`,
+> then label the bridge's midpoint with the shared net name. The
+> bridge overlaps both pin li1s and fuses them into one extracted
+> net. Rule of thumb: **abutment merges wells; it never merges
+> metal.** Any shared-S/D topology (cascodes, folded pairs, series
+> stacks) needs an explicit li1 or met1 bridge.
 
 **Stacking multiple rows vertically.** A primitive's bbox is
 **centered around the cell origin** (e.g. y_min ≈ -1060,
@@ -339,6 +396,18 @@ If a single rail spans the whole block and absorbs every strap, use
 intentionally connected to a strap that doesn't overlap it, paint
 the bridging met1 wire yourself and add the strap to the rail call
 that *does* overlap it.
+
+> **Extend the rail 30 nm past the strap on the long axis.** The
+> stitch helper insets its mcons by `MET1_ENCLOSURE_OF_MCON = 0.03`
+> on every side of the rail/strap overlap — that satisfies met1.5's
+> *narrow* enclosure rule (≥30 nm one side) but not the *wide* one
+> (≥60 nm on the perpendicular axis). If the rail bbox exactly
+> matches the strap bbox, you get 30/30 enclosure on both axes for
+> mcons at the strap ends and DRC fails met1.5. The fix: pass
+> `rail_bbox=(xs1, strap_y_min - 30, xs2, strap_y_max + 30)` for a
+> horizontal strap (extend in y), or the orthogonal version for a
+> vertical strap. The 30 nm extension brings the wide-axis enclosure
+> to 60 nm and passes the asymmetric rule.
 
 ```python
 pfet = gen_pfet_hv(w_um=2.0, l_um=2.0)
@@ -718,10 +787,80 @@ elements += place_wire(
 )
 ```
 
+**Chain form — `place_wire([p1, p2, p3, ...], layer, ...)`.** Pass
+a single list of points instead of `(start, end)`. The helper walks
+them in order, emits one rect per straight run, and **collapses
+collinear intermediate points into a single rect** rather than two
+abutting ones.
+
+Why this matters: a `met1_label`-driven flood-fill in Magic can
+fail to traverse the seam between two abutting met1 polygons,
+splitting what should be one logical net into two extracted nets
+and failing LVS port-matching. The chain form sidesteps the seam
+entirely by emitting one rect for a collinear run.
+
+```python
+# Connect three pin patches with one met1 wire — collinear points
+# collapse into a single rect, so the gate_p label flood-fills
+# across the whole wire.
+gate_wire = place_wire(
+    [p.center for p in gate_patches], layer="met1"
+)
+elements.extend(gate_wire)
+```
+
+Pairwise `place_wire(a.center, b.center)` + `place_wire(b.center,
+c.center)` produces two abutting rects whose seam at `b` can stop
+the flood-fill — use the chain form (or a single
+`place_wire(a.center, c.center)` if the route is straight).
+
+**L-shape corners need extended overlap.** The chain form (and the
+2-point form's auto-L) emits each segment ending *exactly at the
+corner point*. Each rect is min-width wide → half-width either side
+of the centerline → at the L's corner the two rects share only a
+**half-width × half-width** overlap (e.g. 85 × 85 nm for li1). That
+overlap *is* sealed, but it forms a 45°-symmetric JOG that Magic's
+DRC interprets as a sub-min-width "neck" at the concave corner —
+trips `li.1` / `met1.1` even though both straight segments are
+spec-width.
+
+**Fix:** emit the L as two manual `place_wire` calls whose endpoints
+each extend **one half-width past the corner point** along the
+*other* segment's axis. That produces a full min-width × min-width
+overlap and the JOG disappears.
+
+```python
+li1_w = 170  # SKY130 li1 min width
+half = li1_w // 2
+vertical = place_wire(top, (top[0], corner_y - half), layer="li1")
+horizontal = place_wire((top[0] - half, corner_y), right, layer="li1")
+elements.extend([*vertical, *horizontal])
+```
+
+Use the auto-L only when the corner is *interior* to a wider feature
+that already seals it (e.g. landing on top of an existing strap or
+pin patch); for free-standing L corners between two min-width
+segments, paint the overlap explicitly.
+
 **`place_via(point, from_layer, to_layer, cuts=(1, 1))` → `list[Element]`** —
 paints a single via stack between two adjacent metal layers, with
 the upper-layer enclosure rect. `cuts` controls the contact array
 size (use larger arrays for power-strap stitches).
+
+> **`place_via` does NOT paint the lower-layer rect.** The doc string
+> says the caller owns it, "typically already painted as part of the
+> wire or pin patch." When you drop a via1 directly onto a FET pin
+> (without a `pin_patch`), the primitive's existing met1 contact strip
+> is what catches the via — and that strip is sized for *mcon*
+> enclosure, not via1. Sky130's via1 asymmetric rule (30 nm narrow +
+> 60 nm wide, or thereabouts) is interpreted by Magic in a way that
+> bare-strip enclosure trips `via.5a / via.4a` even when the strip is
+> visibly wider than the cut. **Fix:** paint an explicit met1 landing
+> pad at each via coord, **symmetric ≥0.10 µm enclosure on all four
+> sides** (150 nm via1 cut → 350 × 350 nm pad). Symmetric is the
+> reliable answer; asymmetric 30/60 nm encoded as a non-square pad
+> still trips the rule when it overlaps the primitive's pre-existing
+> met1 strip (the union polygon's step geometry confuses the check).
 
 ### Cross-row pattern (the common case)
 
@@ -749,6 +888,102 @@ elements.extend(place_via(pfet_pin.center, "met1", "met2"))
 For a route that's purely on one axis (no row crossing), a single
 `place_wire` on the appropriate-direction layer suffices — no via
 stack needed.
+
+### Composing sub-blocks — align pin Ys first, allocate tracks second
+
+When the parent SRefs multiple sub-blocks side-by-side, the default
+placement instinct is to **center each cell at parent y=0** (use
+`oy = -(info.bbox[1] + info.bbox[3]) // 2`). That's clean visually
+but it places different cells' *pins* at different parent Y values,
+because each primitive's S/D pin local-Y is fixed:
+
+- NFET S/D pins sit at cell-local y=0.
+- PFET S/D pins sit at cell-local y=+180 (the bottom of the diffusion
+  to S/D contact is offset from the cell origin).
+
+So a bbox-centered NFET cell lands its S/D pin at OTA y=0, but a
+bbox-centered PFET cell lands its S/D pin at OTA y=+97 (depends on
+the PFET's bbox asymmetry). An inter-cell signal connecting an NFET
+drain to a PFET drain across the row sees endpoints **97 nm apart in
+y** — too small for a min-width wire to span without each endpoint's
+via1 met2 enclosure (~160 nm half-extent) protruding into a concave
+step that trips `met2.2`. The forced workarounds are ugly: a wide
+rect spanning both via1 enclosures, or an L-corner with the JOG
+sealed.
+
+**Fix:** align cells by their **S/D pin Y**, not their bbox center.
+At the parent placement step, set `sref_y = -pin_local_y` for each
+cell so its S/D pin lands at the same parent Y (typically y=0):
+
+```python
+PIN_Y_OFFSET = {
+    "nfet_cell":         0,    # NFET S/D pin at cell-local y=0
+    "pfet_only_cell":  180,    # PFET S/D pin at cell-local y=+180
+}
+for name in order:
+    oy = -PIN_Y_OFFSET.get(name, default_bbox_center)
+    srefs[name] = rkt.SRef(cell=name, origin=(ox, oy))
+```
+
+With pin-Y aligned across cells, inter-cell signal nets become **clean
+min-width horizontal wires** at a single Y — no wide rects, no L
+corners, no Y-track allocation needed for those nets. Power rails
+(VDD/GND) still need track allocation since they connect tap-strap
+labels, not S/D pins, and tap straps are at very different Ys across
+cell heights.
+
+The cost: cells are no longer center-aligned by bbox, so the OTA's
+visual centerline drifts slightly per cell. Acceptable for analog
+where bbox centering wasn't load-bearing anyway.
+
+### Composing sub-blocks — Y-track allocation for inter-cell nets
+
+When pin-Y alignment isn't enough (different cells expose pins at
+genuinely different Ys, e.g. multi-FET stage2 cells whose PMOS and
+NMOS pins are far apart), the **all-at-y=0 trap** strikes: every
+sub-block's external pins tend to sit at or near the FET pin y, so
+naive horizontal wires for v_s_pair, ota_a, gate_pmos, etc. all
+share the same Y band, overlap as met2 polygons, and merge into a
+single short. Magic's extractor cheerfully reports one big net
+containing every ostensibly-separate inter-cell signal — LVS rejects.
+
+**Rule:** at the parent level, give each inter-cell net its own
+horizontal Y-track. Choose tracks **outside the FET active y range**
+(above the top tap strap, or below the bottom tap strap, or — for a
+small number of nets — in the narrow safe band between the FET pin y
+and the rail y). For each endpoint pin, jog vertically on the same
+layer from the pin coord to the track Y before running horizontally.
+
+```python
+OTA_A_TRACK_Y = 1000   # above FET active, below VDD rail
+GP_TRACK_Y    = -2800  # below FET active
+VS_TRACK_Y    = -500   # just below FET pin y, clears ota_a's vertical jogs
+
+ota_a_wire = [
+    *vertical_segment(inp_ota_a[1], OTA_A_TRACK_Y, inp_ota_a[0]),
+    *horizontal_segment(inp_ota_a[0], load_ota_a[0], OTA_A_TRACK_Y),
+    *vertical_segment(load_ota_a[1], OTA_A_TRACK_Y, load_ota_a[0]),
+]
+```
+
+**Watch the vertical jogs.** A vertical jog at x=X going from y=0 up
+to y=TRACK is itself a met2 rect spanning x=[X-half, X+half] and
+y=[0, TRACK]. If another net's horizontal wire at y=Y' crosses x=X
+in the jog's y range, they merge. So pick each net's track y so that
+no *other* net's track passes through the vertical jog's column. In
+practice this means routing v_s_pair *below* y=0 (rather than above)
+so the ota_a vertical jog from y=0 up to y=1000 doesn't cross
+v_s_pair's track.
+
+**Power rail rects must envelop their via1 enclosures.** A VDD or
+GND rail that connects two endpoints at different y values is most
+robustly painted as a **single wide met2 rect** spanning the bbox of
+both endpoints — extended by the **via1 met2 enclosure half-extent
+(~160 nm for via1)** past each endpoint y. Without that extension,
+the via1 met2 enclosure rect at each endpoint protrudes past the
+rail and creates a concave step, which trips met2.2 spacing inside
+the same polygon. A min-width L-shape rail with the JOG sealed only
+covers the rail itself — not the via1 enclosure padding around it.
 
 ### Routing order — sequence by topology
 
@@ -832,6 +1067,49 @@ li1 stubs are 230 nm wide; via1's enclosure rule demands ≥260 nm
 along one axis and ≥320 nm along the other. Dropping a via1
 directly onto an unpatched cell pin fails `via.1` / `met1.enclosure`
 on every such pin. Always pin_patch first.
+
+**`pin_patch` on a pin that already has met1 + mcon from the
+primitive.** Some fixed-geometry primitives (PNPs, varactors,
+certain caps) bake a met1 contact patch + mcon array into the
+cell at the pin location. `pin_patch` paints another mcon on top
+— with the primitive's mcons 100-200 nm away, the extra mcon trips
+`mcon.2` (190 nm spacing) on every patched pin. Symptom: a tidy
+`28 tiles: mcon.spacing < 0.19um` DRC failure right after adding
+your routing.
+
+**Fix:** for these primitives, skip `pin_patch` entirely. The
+primitive already gives you met1 — just paint a `(label …)` on the
+existing met1 polygon at the pin coord (via `inspect_primitive` →
+`info.pin(name).origin` translated by the SRef origin). For pins
+where the primitive provides only li1 (e.g. PNP Base / Collector),
+label them on `li1_label` and let the parent's GND grid (or other
+parent paint) handle the routing.
+
+```python
+# PNP-style: no pin_patch, just labels on the primitive's existing
+# polygons. The PDK PNP already paints met1 over the Emitter and
+# leaves Base/Collector on li1.
+def pin_coord(sref, terminal, primitives_dir):
+    info = inspect_primitive(sref.cell, primitives_dir=primitives_dir)
+    pin = info.pin(terminal)
+    return (sref.origin[0] + pin.origin[0],
+            sref.origin[1] + pin.origin[1])
+
+labels = [
+    rkt.Label(layer=rkt.named("sky130", "met1_label"),
+              text="v_be1",
+              origin=pin_coord(q1_sref, "Emitter", primitives_dir)),
+    rkt.Label(layer=rkt.named("sky130", "li1_label"),
+              text="GND",
+              origin=pin_coord(q1_sref, "Base", primitives_dir)),
+    # … and so on for Collector, Q2's pins, …
+]
+```
+
+The general rule: `pin_patch` is for FET-style pins that come out
+on li1 only and need a via1 stack added. If the primitive already
+provides met1 (check the `.rkt` for `met1` rects near the pin
+label), don't double-stack.
 
 ## Naming nets — DON'T skip this step
 
@@ -1154,6 +1432,8 @@ All of these pass `verify_drc` and fail `verify_lvs`.
 | "extra device — unexpected nfet" | a primitive SRef'd by accident, or a guard-ring variant minted instead of `_core` | drop the extra SRef; check `guard=` |
 | "port mismatch — schematic has VDDA1 layout has VDD" | schematic and label disagree | rename the label, or update the schematic — pick whichever matches the SoC integration spec |
 | "extra port — `src_node` in layout but not schematic" | internal-only net got labeled at the parent level, and `make_ports=True` promoted it | omit parent labels for internal-only nets; LVS will match them by topology |
+| "device mismatch — instance has named pins Emitter/Base/Collector vs positional 1/2/3 with proxy pins" | The PDK black-box device (PNP, NPN, varactor, …) carries **named** pin labels in its `.mag`; Magic's extraction preserves the names. Your schematic calls the device by positional pin order, so netgen can't align them and adds `proxyEmitter` / `proxyBase` / proxy-numbered pins to both sides | Add **stub `.subckt` declarations** with matching named pins to your reference SPICE. For each PDK device used: `\.subckt sky130_fd_pr__rf_pnp_05v5_W0p68L0p68 Emitter Base Collector` `.ends`. The schematic's `X` line stays positional (`XQ1 v_be1 GND GND sky130_fd_pr__rf_pnp_05v5_W0p68L0p68` — order matches the stub's pin list), but netgen now sees `Emitter`/`Base`/`Collector` as proper port names on both sides. No PNP model body needed (it's a black-box for LVS — model parameters are checked elsewhere). |
+| "device mismatch — resistor instance has positional `(1,2)`, `3` vs schematic stub's `r0`/`r1`/`b` with proxy pins on both sides" | Opposite trap to the PNP/NPN case. Magic extracts `res_xhigh_po` (and other PDK resistors) with **positional** pins `1, 2, 3` — there are no named pin labels in the `_core` resistor's `.mag`. If you add a named-pin stub (`.subckt sky130_fd_pr__res_xhigh_po_1p41 r0 r1 b`), netgen synthesises proxies on both sides (`proxy1/proxy2/proxy3` on schematic, `proxyr0/proxyr1/proxyb` on layout) and the instance pin counts diverge (5 vs 6) | **Remove the resistor stub entirely.** With no stub, netgen black-boxes the model and matches purely positionally — and `sky130B_setup.tcl` already declares `permute "-circuit2 $dev" 1 2` for the resistor device class, so R1/R2 commutativity is handled. Rule of thumb: PDK devices whose `_core` primitive uses **positional** terminal numbers (resistors, mim caps) → no stub. PDK devices whose `_core` carries **named** labels (BJTs, varactors) → named stub. Inspect `<primitive>.ext` for `port` lines if unsure. |
 
 **Iterate until match.** As with DRC, every LVS failure traces back
 to one of: a missing parent-paint connection, a mis-positioned
@@ -1355,6 +1635,37 @@ params → same digest → same content), but committing them means:
     burns N turns of unwinding.  Editing an existing block to
     fix a known bug is exempt; new layout-from-scratch is not.
     See **Placement review** above for the full procedure.
+
+13. **Bridge in-cluster pins on parent metal before dropping to a
+    trunk — never drop per-pin when a net touches multiple pins in
+    one cluster.** A "cluster" is a contiguous routing region: a
+    multi-finger primitive cell (`m>1`), the CS column(s) of one
+    DAC bit, a row of identical instances, etc.  When a net's
+    pin-set falls inside one cluster, paint **one parent met1
+    horizontal bar inside the cluster** that shorts the pin li1
+    strips (with mcons over each), then drop **one** met2 vertical
+    from the trunk to the bar.  Per-pin drops stack via1+via2
+    widening polygons 0–400 nm apart and cascade into mcon.2 /
+    via.5a / met1.2 violations — DRC fails by the hundreds.
+    Symptom in viz: multiple highlighted met2 verticals on the same
+    net dropping from one trunk to adjacent cell pins.
+
+14. **Plan drop-X uniqueness before painting met2 verticals — no
+    two distinct nets may drop at the same X (or closer than the
+    via2-widening pitch of ~510 nm).** Met2 verticals at the same
+    X merge into one polygon; at <510 nm pitch the via2-widening
+    rects at the trunk landing collide on met2.2 spacing.  Before
+    starting Phase 4, enumerate the natural drop X of every
+    multi-fanout net at every pin, sort by X, and check that any
+    two adjacent drops belong to the **same** net (merge OK) or
+    are ≥510 nm apart (different nets).  When two different nets
+    share a natural drop X (e.g. a 1-col bit's `MAG.G`, `DIR_L.G`,
+    `DIR_R.G` all sit at the cell-center X), insert a **met1
+    horizontal stub at the pin's Y** from the pin to a free X
+    slot, then drop from the slot.  Allocate per-cluster slot rows
+    at ≥600 nm pitch; if slot count exceeds what the cluster
+    width allows, widen BIT_GAP (or equivalent) before routing —
+    don't try to fit them into the no-man's-land.
 
 ---
 

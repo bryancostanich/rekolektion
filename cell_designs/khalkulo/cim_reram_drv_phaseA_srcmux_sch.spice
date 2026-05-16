@@ -1,0 +1,26 @@
+* Reference SPICE for cim_reram_drv_phaseA_srcmux (extracted from
+* khalkulo/source/cell_designs/reram_drv/cim_reram_drv_phaseA_sch.spice).
+* Hierarchical: includes the nand2_inv_lv and lshift_1v8_to_3v3
+* subckt definitions so netgen can match them against the layout's
+* SRef'd composite cells (which also extract as hierarchical
+* subckts since Magic preserves cell hierarchy).
+
+.include nand2_inv_lv_sch.spice
+.include lshift_1v8_to_3v3_sch.spice
+
+.subckt cim_reram_drv_phaseA_srcmux
++ VDDA1 VSL_DAC_IN SRC_RAIL
++ pulse_req_1v8 pulse_kind_form_1v8 pulse_kind_setrr_1v8
++ VDD VSS
+
+* FORM branch
+XAND_FORM    pulse_req_1v8 pulse_kind_form_1v8  form_active_1v8 VDD VSS nand2_inv_lv
+XLSH_FORM    form_active_1v8 lsh_form_n lsh_form VDD VDDA1 VSS lshift_1v8_to_3v3
+XPMOS_FORM   SRC_RAIL lsh_form VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=25.0 l=0.5
+
+* SETRR branch
+XAND_SETRR   pulse_req_1v8 pulse_kind_setrr_1v8 setrr_active_1v8 VDD VSS nand2_inv_lv
+XLSH_SETRR   setrr_active_1v8 lsh_setrr_n lsh_setrr VDD VDDA1 VSS lshift_1v8_to_3v3
+XPMOS_SETRR  SRC_RAIL lsh_setrr VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=25.0 l=0.5
+
+.ends cim_reram_drv_phaseA_srcmux

@@ -24,6 +24,8 @@
   <ItemGroup>
     <Compile Include="Model/Model.fs" />
     <Compile Include="Services/EditSession.fs" />
+    <Compile Include="Services/Logger.fs" />
+    <Compile Include="Services/SessionState.fs" />
     <Compile Include="Model/Msg.fs" />
     <Compile Include="Services/AppDispatch.fs" />
     <Compile Include="Services/Recents.fs" />

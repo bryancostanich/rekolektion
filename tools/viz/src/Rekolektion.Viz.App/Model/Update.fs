@@ -31,10 +31,22 @@ let private anchorMapForCell = Layout.Instances.anchorMapForCell
 let private elementBbox = Layout.Instances.elementBbox
 let private layerNumberOf = Layout.Instances.layerNumberOf
 
+/// Discriminated-union case name for an Elmish Msg, used for the
+/// `msg` log category so a user / agent can replay an action stream
+/// without paying for full payload serialisation. Reflection cost
+/// is negligible vs the dispatch + view diff that follows.
+let private msgCaseName (msg: Msg.Msg) : string =
+    let info, _ =
+        Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(
+            msg, msg.GetType())
+    info.Name
+
 let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model.Model * Cmd<Msg.Msg> =
+    Rekolektion.Viz.App.Services.Logger.log "msg" {| name = msgCaseName msg |}
     match msg with
     | Msg.OpenFile path ->
         eprintfn "[viz] OpenFile %s" path
+        Rekolektion.Viz.App.Services.Logger.log "load" {| op = "request"; path = path |}
         let cmd =
             Cmd.OfAsync.either backend.OpenGds path
                 (function
@@ -105,6 +117,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 if m.Path = path then { m with Nets = nets } else m)
         { model with OpenMacros = openMacros }, Cmd.none
     | Msg.LoadFailed (path, reason) ->
+        Rekolektion.Viz.App.Services.Logger.log "load"
+            {| op = "fail"; path = path; reason = reason |}
         appendLog (sprintf "load failed: %s — %s" path reason) model, Cmd.none
     | Msg.SetActiveMacro path ->
         // No-op if the requested path is already active — clicking
@@ -159,15 +173,33 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 InstanceSelection = Set.empty }
         model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
-        { model with Toggle = Visibility.toggleLayer key vis model.Toggle }, Cmd.none
+        let toggle' = Visibility.toggleLayer key vis model.Toggle
+        Rekolektion.Viz.App.Services.SessionState.save
+            { Layers =
+                toggle'.Layers
+                |> Map.toList
+                |> List.map (fun ((n, d), v) -> (n, d, v)) }
+        { model with Toggle = toggle' }, Cmd.none
     | Msg.FlipLayer key ->
         let cur = Visibility.isLayerVisible model.Toggle key
-        { model with Toggle = Visibility.toggleLayer key (not cur) model.Toggle }, Cmd.none
+        let toggle' = Visibility.toggleLayer key (not cur) model.Toggle
+        Rekolektion.Viz.App.Services.SessionState.save
+            { Layers =
+                toggle'.Layers
+                |> Map.toList
+                |> List.map (fun ((n, d), v) -> (n, d, v)) }
+        { model with Toggle = toggle' }, Cmd.none
     | Msg.SetAllLayers vis ->
         let keys =
             Layout.Layer.allDrawing
             |> List.map (fun l -> (l.Number, l.DataType))
-        { model with Toggle = Visibility.setAllLayers keys vis model.Toggle }, Cmd.none
+        let toggle' = Visibility.setAllLayers keys vis model.Toggle
+        Rekolektion.Viz.App.Services.SessionState.save
+            { Layers =
+                toggle'.Layers
+                |> Map.toList
+                |> List.map (fun ((n, d), v) -> (n, d, v)) }
+        { model with Toggle = toggle' }, Cmd.none
     | Msg.ToggleNet (name, vis) ->
         { model with Toggle = Visibility.toggleNet name vis model.Toggle }, Cmd.none
     | Msg.ToggleBlock (name, vis) ->
@@ -213,6 +245,99 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 | None -> Set.empty
                 | Some m -> m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
         { model with Toggle = Visibility.setVisibleRatlines nextSet model.Toggle }, Cmd.none
+    | Msg.RouteSlideCommit (cell, dxDbu, dyDbu, adjusts, extensions) ->
+        if (dxDbu = 0L && dyDbu = 0L)
+           || (List.isEmpty adjusts && List.isEmpty extensions) then
+            model, Cmd.none
+        else
+            match Model.activeMacro model with
+            | None -> model, Cmd.none
+            | Some mc ->
+                let bySource =
+                    adjusts
+                    |> List.map (fun (i, mx1x, mx1y, my1x, my1y,
+                                         mx2x, mx2y, my2x, my2y) ->
+                        i, (mx1x, mx1y, my1x, my1y, mx2x, mx2y, my2x, my2y))
+                    |> Map.ofList
+                let mutable changed = false
+                let cells' =
+                    mc.Document.Cells
+                    |> List.map (fun c ->
+                        if c.Name <> cell then c
+                        else
+                            let elems' =
+                                c.Elements
+                                |> List.mapi (fun i el ->
+                                    match Map.tryFind i bySource, el with
+                                    | Some (mx1x, mx1y, my1x, my1y,
+                                            mx2x, mx2y, my2x, my2y),
+                                      Rkt.Types.RectEl r ->
+                                        changed <- true
+                                        let r' =
+                                            { r with
+                                                X1 = r.X1 + mx1x * dxDbu + mx1y * dyDbu
+                                                Y1 = r.Y1 + my1x * dxDbu + my1y * dyDbu
+                                                X2 = r.X2 + mx2x * dxDbu + mx2y * dyDbu
+                                                Y2 = r.Y2 + my2x * dxDbu + my2y * dyDbu }
+                                        Rkt.Types.RectEl r'
+                                    | _ -> el)
+                            { c with Elements = elems' })
+                if not changed && extensions.IsEmpty then model, Cmd.none
+                else
+                    // Append extension rects to the target cell —
+                    // these are the new rail/strap rects emitted by
+                    // a track slide whose anchored endpoint moved
+                    // past the original anchor's bbox.
+                    let cells'' =
+                        if extensions.IsEmpty then cells'
+                        else
+                            cells'
+                            |> List.map (fun c ->
+                                if c.Name <> cell then c
+                                else
+                                    let extEls =
+                                        extensions
+                                        |> List.map Rkt.Types.RectEl
+                                    { c with Elements = c.Elements @ extEls })
+                    let lib' = { mc.Document with Cells = cells'' }
+                    let flat' = Layout.Flatten.flatten lib'
+                    let inst' = Layout.Instances.enumerate lib'
+                    Rekolektion.Viz.App.Services.Logger.log "route.emit"
+                        {| op = "slide-commit"
+                           cell = cell
+                           dxDbu = dxDbu
+                           dyDbu = dyDbu
+                           rectsChanged = adjusts.Length
+                           extensions = extensions.Length |}
+                    // Track the new active path: markDirty may
+                    // retarget Path from foo.rkt to foo_edited.rkt
+                    // on the first edit; without updating
+                    // ActiveMacroPath the active-macro lookup would
+                    // then fail and the canvas would render empty.
+                    let mutable activePath' = mc.Path
+                    let openMacros' =
+                        model.OpenMacros
+                        |> List.map (fun m ->
+                            if m.Path <> mc.Path then m
+                            else
+                                let mc' =
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun mc'' ->
+                                        { mc'' with
+                                            Document = lib'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
+                                    |> EditSession.markDirty
+                                activePath' <- mc'.Path
+                                mc')
+                    { model with
+                        OpenMacros = openMacros'
+                        ActiveMacroPath = Some activePath' }, Cmd.none
+    | Msg.ToggleEditRoutingMode ->
+        let next = not model.EditRoutingMode
+        Rekolektion.Viz.App.Services.Logger.log "route.tool"
+            {| op = "mode"; on = next |}
+        { model with EditRoutingMode = next }, Cmd.none
     | Msg.ToggleTightenMode ->
         // Toggle on / off. Entering with an empty selection is
         // a no-op (nothing to compute candidates against).
@@ -855,6 +980,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     ActiveMacroPath = activePath'
                     RenamingPath = None }, Cmd.none
     | Msg.SaveCompleted writtenPath ->
+        Rekolektion.Viz.App.Services.Logger.log "save"
+            {| op = "ok"; path = writtenPath |}
         // Update the active macro: Path moves to the saved file
         // (no-op when already pointing there), Dirty clears.
         let openMacros' =
@@ -884,4 +1011,6 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 ActiveMacroPath = activePath'
                 RecentFiles = recents' }, Cmd.none
     | Msg.SaveFailed reason ->
+        Rekolektion.Viz.App.Services.Logger.log "save"
+            {| op = "fail"; reason = reason |}
         appendLog (sprintf "save failed: %s" reason) model, Cmd.none

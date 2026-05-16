@@ -35,6 +35,7 @@
     <Compile Include="Sidecar/Loader.fs" />
     <Compile Include="Net/LabelFlood.fs" />
     <Compile Include="Net/Ratlines.fs" />
+    <Compile Include="Routing/Detect.fs" />
     <Compile Include="Drc/Rules.fs" />
     <Compile Include="Drc/Check.fs" />
     <Compile Include="Visibility.fs" />

@@ -95,8 +95,43 @@ let saveTo (mc: LoadedMacro) (targetPath: string) : string =
         let lib = Rkt.ToGds.toLibrary mc.Document
         Gds.Writer.writeGds targetPath lib
     | ".rkt" ->
-        // Canonical save: emit the in-memory Document directly.
-        let text = Rkt.Writer.write mc.Document
+        // Canonical save: emit the in-memory Document directly,
+        // BUT first rewrite each `(import …)` path so it still
+        // resolves from the new save location. Imports were stored
+        // verbatim from the source file and are typically relative
+        // (e.g. `../primitives/foo.rkt`) — saving to a different
+        // directory (Save As to /tmp/, etc.) would point them at
+        // bogus paths under the target's parent (`/tmp/../primitives`
+        // = `/primitives`), breaking the next load. We resolve each
+        // relative path against the ORIGINAL file's dir to get its
+        // absolute location, then re-express it relative to the
+        // target dir.
+        let docToWrite =
+            let srcDir =
+                let raw = Path.GetDirectoryName mc.OriginalPath
+                if System.String.IsNullOrEmpty raw then "." else raw
+            let tgtDir =
+                let raw = Path.GetDirectoryName targetPath
+                if System.String.IsNullOrEmpty raw then "." else raw
+            let srcFull = Path.GetFullPath srcDir
+            let tgtFull = Path.GetFullPath tgtDir
+            if srcFull = tgtFull then mc.Document
+            else
+                let imports' =
+                    mc.Document.Imports
+                    |> List.map (fun imp ->
+                        if Path.IsPathRooted imp.Path then imp
+                        else
+                            let absRef =
+                                Path.GetFullPath(Path.Combine(srcFull, imp.Path))
+                            let rel = Path.GetRelativePath(tgtFull, absRef)
+                            // Path.GetRelativePath uses the platform
+                            // separator on Windows; the .rkt format
+                            // is forward-slash everywhere.
+                            let normalised = rel.Replace('\\', '/')
+                            { imp with Path = normalised })
+                { mc.Document with Imports = imports' }
+        let text = Rkt.Writer.write docToWrite
         File.WriteAllText(targetPath, text)
     | _ ->
         // Magic writer reads the source file for line-level

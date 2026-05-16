@@ -100,9 +100,25 @@ let pickSavePath (win: Window) (suggestedPath: string)
             try System.IO.Path.GetFileNameWithoutExtension suggestedPath
             with _ -> "macro"
         opts.SuggestedFileName <- stem
-        let magFilter = FilePickerFileType("Magic files")
-        magFilter.Patterns <- List<string>([ "*.mag" ])
-        opts.FileTypeChoices <- List<FilePickerFileType>([ magFilter ])
+        // Filter MUST match the source format. macOS's NSSavePanel
+        // auto-appends the active filter's extension to whatever the
+        // user types; if the only filter is `*.mag` and the source
+        // is a `.rkt`, the panel mangles `foo.rkt` → `foo.rkt.mag`
+        // and the writer then sees a cross-format save mismatch.
+        let primaryExt =
+            try
+                let e = System.IO.Path.GetExtension suggestedPath
+                if System.String.IsNullOrEmpty e then ".mag"
+                else e.ToLowerInvariant()
+            with _ -> ".mag"
+        let label, pattern =
+            match primaryExt with
+            | ".rkt"          -> "Rekolektion files", "*.rkt"
+            | ".gds" | ".gds2" -> "GDS files",         "*.gds"
+            | _               -> "Magic files",       "*.mag"
+        let primaryFilter = FilePickerFileType(label)
+        primaryFilter.Patterns <- List<string>([ pattern ])
+        opts.FileTypeChoices <- List<FilePickerFileType>([ primaryFilter ])
         // Anchor the picker to the same folder as the source so
         // SaveAs lands beside the original by default.
         try
@@ -134,15 +150,17 @@ let dispatchSaveAs (source: obj) (suggestedPath: string)
                 let! picked = pickSavePath w suggestedPath
                 match picked with
                 | Some path ->
-                    // Auto-append `.mag` if the chosen path has
-                    // no extension. macOS's save panel is happy
-                    // to write a file without one when DefaultExtension
-                    // isn't set; we want the editor's invariant
-                    // "edited macros end in .mag" to hold so
-                    // round-trip reads still work.
+                    // Auto-append the source's extension if the
+                    // chosen path has none. macOS's save panel is
+                    // happy to write a file without one when
+                    // DefaultExtension isn't set; we want the file
+                    // to land with the same format it was loaded as.
+                    let srcExt =
+                        try System.IO.Path.GetExtension suggestedPath
+                        with _ -> ".mag"
                     let final =
                         if System.String.IsNullOrEmpty (System.IO.Path.GetExtension path) then
-                            path + ".mag"
+                            path + (if System.String.IsNullOrEmpty srcExt then ".mag" else srcExt)
                         else path
                     dispatch (Msg.SaveActiveMacroAs final)
                 | None -> ()

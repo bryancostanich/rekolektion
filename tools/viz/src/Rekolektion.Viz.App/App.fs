@@ -107,7 +107,24 @@ type MainWindow() as this =
         // future settings dialog can rewrite the file + reassign.
         Services.Config.current <- Services.Config.load ()
         let init () =
-            { Model.empty with RecentFiles = Services.Recents.load () }, Cmd.none
+            // Seed layer visibility from the persisted session state
+            // so a relaunch reopens with the same layers hidden /
+            // shown the user left. SessionState.load returns the
+            // entries the user explicitly toggled; everything else
+            // inherits the default (visible).
+            let sess = Services.SessionState.load ()
+            let toggle =
+                let baseToggle = Model.empty.Toggle
+                sess.Layers
+                |> List.fold (fun t (n, d, v) ->
+                    Rekolektion.Viz.Core.Visibility.toggleLayer (n, d) v t) baseToggle
+            Services.Logger.log "session"
+                {| op = "init"
+                   layersFromSession = sess.Layers.Length
+                   toggleLayerEntries = toggle.Layers.Count |}
+            { Model.empty with
+                RecentFiles = Services.Recents.load ()
+                Toggle = toggle }, Cmd.none
         let update = Update.update backend
         let view = AppView.view
 
@@ -166,6 +183,12 @@ type MainWindow() as this =
                 // dim arrows; clicking a number commits that
                 // single tighten and exits mode.
                 AppDispatch.send Msg.ToggleTightenMode
+                e.Handled <- true
+            | Key.E, KeyModifiers.None ->
+                // Toggle Edit Routing mode. While on, hovered routing
+                // geometry sprouts gizmo handles for drag-track /
+                // drag-post / Opt-drag-jog operations.
+                AppDispatch.send Msg.ToggleEditRoutingMode
                 e.Handled <- true
             | Key.Escape, KeyModifiers.None
               when (Services.AppDispatch.currentModel

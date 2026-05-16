@@ -177,7 +177,8 @@ let private handleClient
             async {
                 match methodAndPath with
                 | Some (m, p) when m.Equals("GET", StringComparison.OrdinalIgnoreCase)
-                                 && (p = "/instances" || p = "/macros" || p = "/selection") ->
+                                 && (p = "/instances" || p = "/macros"
+                                     || p = "/selection" || p = "/geometry/active") ->
                     let respBody = CommandListener.handleQuery p dispatch
                     let bytes = Encoding.UTF8.GetBytes respBody
                     return httpResponse "200 OK" "application/json; charset=utf-8" bytes

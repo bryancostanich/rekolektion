@@ -99,6 +99,75 @@ type private DragMode =
     | NoDrag
     | OrbitDrag
     | PanDrag
+    /// Pressing on a route's track handle in Edit Routing mode.
+    /// Suppresses orbit / pan so the cursor delta during the drag
+    /// can be interpreted as segment slide rather than camera
+    /// rotation.
+    | RouteTrackDrag
+
+/// Per-rect shift recipe used by a route-slide gesture. Each
+/// pair (MxxX, MxxY) is the gesture-delta multiplier for that
+/// coord: `r.X1' = r.X1 + Mx1X * dx + Mx1Y * dy` and so on. A
+/// track slide fills only the perp axis (1D); a post drag fills
+/// both axes (2D, no constraint).
+type private SlideAdjust = {
+    SourceIdx : int
+    Mx1X      : int64
+    Mx1Y      : int64
+    My1X      : int64
+    My1Y      : int64
+    Mx2X      : int64
+    Mx2Y      : int64
+    My2X      : int64
+    My2Y      : int64
+}
+
+/// Which kind of handle the user pressed — drives whether the
+/// gesture is 1D (track: snap one delta axis to 0) or 2D (post).
+type private SlideKind = TrackSlide | PostSlide
+
+/// One endpoint anchor for a track slide. The dragged beam's
+/// spine endpoint sits inside this anchor at press time; if the
+/// drag moves the endpoint outside the anchor's bbox, viz emits
+/// an extension rect on the anchor's layer to maintain the
+/// electrical connection. Captured once at press so we don't
+/// have to re-detect every frame.
+///
+/// Bbox + layer are stored directly rather than a Rectangle so
+/// SRef-internal anchors work the same as top-cell anchors —
+/// the anchor's source rect lives somewhere unmodifiable (inside
+/// a child cell), but we still know its world bbox via the flat
+/// poly walk, and that's all the extension generator needs.
+type private AnchorInfo = {
+    /// Beam endpoint at press time (one of seg.Start / seg.End).
+    OrigEndpoint : Rekolektion.Viz.Core.Rkt.Types.Point
+    /// Anchor's world-DBU bbox: (xMin, yMin, xMax, yMax).
+    BboxDbu      : int64 * int64 * int64 * int64
+    /// Layer to emit the extension rect on.
+    Layer        : Rekolektion.Viz.Core.Rkt.Types.Layer
+}
+
+/// In-flight slide state. Built on press, mutated each
+/// PointerMoved, consumed on release.
+type private RouteSlide = {
+    Cell           : string
+    Kind           : SlideKind
+    /// Spine of the dragged segment for track slides — used to
+    /// project the cursor delta onto the perp axis only.
+    /// PostSlide: irrelevant, store Axis.X as a placeholder.
+    Spine          : Rekolektion.Viz.Core.Routing.Detect.Axis
+    LayerZ         : float32
+    StartHitDbu    : Rekolektion.Viz.Core.Rkt.Types.Point
+    /// All rects that move with the gesture.
+    Adjusts        : SlideAdjust list
+    /// Per-endpoint rail anchors for track slides. Each entry's
+    /// extension rect re-emerges every move (size scales with the
+    /// cumulative delta), so we don't store the extension itself —
+    /// just the anchor it'll extend.
+    Anchors        : AnchorInfo list
+    mutable LastDxDbu : int64
+    mutable LastDyDbu : int64
+}
 
 /// Z exaggeration multiplier applied to vertex Z on upload.
 /// 1.0 = physical SKY130 stack heights (matches the legacy GLB
@@ -211,6 +280,25 @@ type StackCanvasControl() =
     let mutable depthRbo : uint32 = 0u
     let mutable depthRboW : int = 0
     let mutable depthRboH : int = 0
+    // Edit-routing hover state. Updated on PointerMoved while
+    // EditRoutingMode is on; cleared otherwise. Owned by the canvas
+    // (not the Elmish Model) because hover changes every pointer
+    // tick — round-tripping through Update.fs would re-render the
+    // whole view per tick, which is wasteful for purely visual
+    // overlay state.
+    let mutable hoveredRoute : Rekolektion.Viz.Core.Routing.Detect.Route option = None
+    let mutable hoveredRouteLayerZ : float32 = 0.0f
+    let mutable hoverVao : uint32 = 0u
+    let mutable hoverVbo : uint32 = 0u
+    // Track-slide drag state. `routeSlide` carries the immutable
+    // snapshot from press time + a mutable cumulative delta.
+    // `dragLiveDoc` / `dragLiveFlat` hold the speculative geometry
+    // so the renderer can paint the in-flight position each frame
+    // without round-tripping through the Elmish loop. Cleared on
+    // release once the commit Msg has updated the model.
+    let mutable routeSlide : RouteSlide option = None
+    let mutable dragLiveDoc : Rekolektion.Viz.Core.Rkt.Types.Document option = None
+    let mutable dragLiveFlat : Layout.Flatten.FlatPolygon array = [||]
     // Back-right isometric: camera in the (-X, -Y, +Z) octant
     // (yaw=135 rotated 90° CCW around the up axis — yaw
     // increases CW when viewed from above in this
@@ -227,6 +315,16 @@ type StackCanvasControl() =
     // assigned; defaults work if Library is never set.
     let mutable target : System.Numerics.Vector3 = System.Numerics.Vector3.Zero
     let mutable extent : float = 80.0
+    // Top cell name the camera was last fitted to. Used to skip
+    // refitting when the user is just editing the same file —
+    // refitting on every commit yanks the viewport and resets the
+    // ruler bounds.
+    let mutable lastFittedTopCell : string = ""
+    // Length of the FlatPolygons array used in the last FitCameraTo
+    // call. Used to detect "the first fit was against an empty
+    // array because LibraryProperty fired before FlatPolygons did"
+    // and force a refit once the geometry is actually available.
+    let mutable lastFittedFlatLen : int = 0
     // Drag state for pointer-driven orbit + pan. `Avalonia.Point` is
     // qualified because Rekolektion.Viz.Core.Gds.Types.Point is
     // also in scope and would otherwise shadow it. `dragMode` is
@@ -418,36 +516,1134 @@ type StackCanvasControl() =
         base.OnPropertyChanged e
         if e.Property = StackCanvasControl.LibraryProperty
            || e.Property = StackCanvasControl.FlatPolygonsProperty then
-            // Either a new GDS or a re-flatten — extruded mesh is
-            // stale, recompute on next render.
+            // Mesh is always stale on either change. The camera fit
+            // (which resets ruler bounds too) is much pickier: we
+            // only want it on a NEW FILE, not on every edit of the
+            // same file. Compare the top-cell NAME — that's stable
+            // across edits but changes between files.
             meshDirty <- true
             match this.Library with
-            | Some lib -> this.FitCameraTo lib this.FlatPolygons
-            | None -> ()
+            | Some lib ->
+                let topName =
+                    match lib.TopCell with
+                    | Some n -> n
+                    | None ->
+                        match lib.Cells with
+                        | c :: _ -> c.Name
+                        | _ -> ""
+                let flat = this.FlatPolygons
+                // Refit conditions:
+                //   1. Top-cell name changed → new file → fit it.
+                //   2. Last fit was against an empty FlatPolygons
+                //      (LibraryProperty fires before FlatPolygons
+                //      does on first load; the resulting fit has
+                //      bbox=0 + dead ruler). Force a refit once
+                //      real geometry shows up.
+                // Otherwise (same file, edit committed): leave
+                // camera + ruler alone so the user's view doesn't
+                // yank around mid-session.
+                let topChanged = topName <> lastFittedTopCell
+                let recoverFromEmpty =
+                    not topChanged
+                    && lastFittedFlatLen = 0
+                    && flat.Length > 0
+                if topChanged || recoverFromEmpty then
+                    lastFittedTopCell <- topName
+                    lastFittedFlatLen <- flat.Length
+                    this.FitCameraTo lib flat
+            | None ->
+                lastFittedTopCell <- ""
+                lastFittedFlatLen <- 0
             this.RequestNextFrameRendering()
         elif e.Property = StackCanvasControl.ToggleProperty then
             this.RequestNextFrameRendering()
 
     // ---- Pointer-driven orbit / pan + wheel zoom ----
 
+    /// Hit-test screen point against the rendered track handles for
+    /// `route` at `layerZ`. Each track handle is a perp-axis bar at
+    /// the segment midpoint (matches what the renderer draws).
+    /// Returns the segment index whose handle is closest to the
+    /// cursor in screen pixels, when within the snap radius.
+    /// Pure of canvas state besides MVP / bounds / Library — caller
+    /// passes the route explicitly so this can also serve as a
+    /// "stay hovering" check on the PRIOR route during pointer
+    /// move (otherwise the bar tips, which extend outside the
+    /// wire bbox, lose the hover and the click fails to capture).
+    member private this.HitTestTrackHandleFor
+            (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+            (layerZ: float32)
+            (screen: Avalonia.Point)
+            : int option =
+        match this.Library with
+        | Some lib ->
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if w < 1.0 || h < 1.0 then None
+            else
+                let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                let z = layerZ
+                let mvp =
+                    Matrix4x4Helpers.buildOrbitMvp
+                        yawDeg pitchDeg zoom target extent (w, h)
+                let projectToScreen (xUm: float32) (yUm: float32)
+                        : (float * float) option =
+                    let v =
+                        Vector4.Transform(
+                            Vector4(xUm, yUm, z, 1.0f),
+                            mvp)
+                    if v.W <= 1.0e-6f then None
+                    else
+                        let ndcX = float (v.X / v.W)
+                        let ndcY = float (v.Y / v.W)
+                        Some ((ndcX + 1.0) * 0.5 * w,
+                              (1.0 - ndcY) * 0.5 * h)
+                // Mirrors the renderer's track-bar geometry: bar
+                // perpendicular to spine, centered on segment midpoint,
+                // 0.50 µm half-length. Hit zone uses the bar's screen-
+                // projected line; a click within 12 px counts.
+                let trackHalfLenUm = 0.50f
+                let snapPx = 12.0
+                let mutable bestSeg : int option = None
+                let mutable bestDist = System.Double.MaxValue
+                for i in 0 .. route.Segments.Length - 1 do
+                    let s = route.Segments.[i]
+                    let p1Um, p2Um =
+                        match s.Spine with
+                        | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                            let midX =
+                                float32 ((float s.Start.X + float s.End.X) * 0.5 * umPerDbu)
+                            let cy = float32 (float s.Center * umPerDbu)
+                            (midX, cy - trackHalfLenUm), (midX, cy + trackHalfLenUm)
+                        | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                            let midY =
+                                float32 ((float s.Start.Y + float s.End.Y) * 0.5 * umPerDbu)
+                            let cx = float32 (float s.Center * umPerDbu)
+                            (cx - trackHalfLenUm, midY), (cx + trackHalfLenUm, midY)
+                    let p1Screen = projectToScreen (fst p1Um) (snd p1Um)
+                    let p2Screen = projectToScreen (fst p2Um) (snd p2Um)
+                    match p1Screen, p2Screen with
+                    | Some (x1, y1), Some (x2, y2) ->
+                        // Distance from screen.X/Y to the line segment
+                        // (x1,y1)-(x2,y2). Standard parametric form.
+                        let dx = x2 - x1
+                        let dy = y2 - y1
+                        let len2 = dx * dx + dy * dy
+                        let t =
+                            if len2 < 1.0e-6 then 0.0
+                            else
+                                let raw =
+                                    ((screen.X - x1) * dx + (screen.Y - y1) * dy) / len2
+                                max 0.0 (min 1.0 raw)
+                        let projX = x1 + dx * t
+                        let projY = y1 + dy * t
+                        let dCx = screen.X - projX
+                        let dCy = screen.Y - projY
+                        let dist = sqrt (dCx * dCx + dCy * dCy)
+                        if dist < snapPx && dist < bestDist then
+                            bestDist <- dist
+                            bestSeg <- Some i
+                    | _ -> ()
+                bestSeg
+        | _ -> None
+
+    /// Unproject a screen pixel onto the world plane at `zPlane`
+    /// (µm), returning DBU coords. Used by the route-slide drag to
+    /// convert cursor positions during the gesture into world-space
+    /// deltas. None when the canvas isn't sized, the MVP isn't
+    /// invertible, or the ray is parallel to / behind Z.
+    member private this.UnprojectAtZ
+            (screen: Avalonia.Point) (zPlane: float32)
+            : Rekolektion.Viz.Core.Rkt.Types.Point option =
+        match this.Library with
+        | None -> None
+        | Some lib ->
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if w < 1.0 || h < 1.0 then None
+            else
+                let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                let dbuPerUm = 1.0 / umPerDbu
+                let ndcX = float32 (2.0 * screen.X / w - 1.0)
+                let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
+                let mvp =
+                    Matrix4x4Helpers.buildOrbitMvp
+                        yawDeg pitchDeg zoom target extent (w, h)
+                match Matrix4x4.Invert(mvp) with
+                | false, _ -> None
+                | true, inv ->
+                    let unproj (z: float32) =
+                        let v = Vector4(ndcX, ndcY, z, 1.0f)
+                        let r = Vector4.Transform(v, inv)
+                        Vector3(r.X / r.W, r.Y / r.W, r.Z / r.W)
+                    let nearW = unproj -1.0f
+                    let farW = unproj 1.0f
+                    let rayO = nearW
+                    let rayD = Vector3.Normalize(farW - nearW)
+                    if MathF.Abs(rayD.Z) <= 1.0e-6f then None
+                    else
+                        let t = (zPlane - rayO.Z) / rayD.Z
+                        if t < 0.0f then None
+                        else
+                            let px = rayO.X + rayD.X * t
+                            let py = rayO.Y + rayD.Y * t
+                            Some
+                                ({ X = int64 (float px * dbuPerUm)
+                                   Y = int64 (float py * dbuPerUm) }
+                                 : Rekolektion.Viz.Core.Rkt.Types.Point)
+
+    /// Snap a DBU value to the SKY130 manufacturing grid (5 nm).
+    /// Round-half-to-zero so positive and negative values snap
+    /// symmetrically.
+    static member private SnapDbu (v: int64) : int64 =
+        let g = 5L
+        let off = if v >= 0L then g / 2L else -(g / 2L)
+        ((v + off) / g) * g
+
+    /// Apply a set of `SlideAdjust` recipes to `cellName`'s rects
+    /// in `doc`, shifting each rect's chosen coords by `(dx, dy)`.
+    /// Used by both the live preview (canvas-side speculative
+    /// state) and the commit Msg (Update.fs persistence).
+    static member private ApplyAdjustsToDoc
+            (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
+            (cellName: string)
+            (adjusts: SlideAdjust list)
+            (dx: int64)
+            (dy: int64)
+            : Rekolektion.Viz.Core.Rkt.Types.Document =
+        let bySource =
+            adjusts
+            |> List.map (fun a -> a.SourceIdx, a)
+            |> Map.ofList
+        let cells' =
+            doc.Cells
+            |> List.map (fun c ->
+                if c.Name <> cellName then c
+                else
+                    let elems' =
+                        c.Elements
+                        |> List.mapi (fun i el ->
+                            match Map.tryFind i bySource, el with
+                            | Some a, Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                let r' =
+                                    { r with
+                                        X1 = r.X1 + a.Mx1X * dx + a.Mx1Y * dy
+                                        Y1 = r.Y1 + a.My1X * dx + a.My1Y * dy
+                                        X2 = r.X2 + a.Mx2X * dx + a.Mx2Y * dy
+                                        Y2 = r.Y2 + a.My2X * dx + a.My2Y * dy }
+                                Rekolektion.Viz.Core.Rkt.Types.RectEl r'
+                            | _ -> el)
+                    { c with Elements = elems' })
+        { doc with Cells = cells' }
+
+    /// Zero recipe — coords don't move. Building block for the
+    /// per-handle adjust constructors below.
+    static member private ZeroAdjust (sourceIdx: int) : SlideAdjust =
+        { SourceIdx = sourceIdx
+          Mx1X = 0L; Mx1Y = 0L
+          My1X = 0L; My1Y = 0L
+          Mx2X = 0L; Mx2Y = 0L
+          My2X = 0L; My2Y = 0L }
+
+    /// Recipe for the dragged segment of a TRACK slide. Track
+    /// slides constrain motion to the perpendicular-to-spine axis,
+    /// so the dragged segment shifts both perp-axis coords only.
+    static member private TrackDraggedAdjust
+            (segSourceIdx: int)
+            (spine: Rekolektion.Viz.Core.Routing.Detect.Axis)
+            : SlideAdjust =
+        let z = StackCanvasControl.ZeroAdjust segSourceIdx
+        match spine with
+        | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+            // Spine X (horizontal) — slides Y, so Y1 and Y2 follow dy.
+            { z with My1Y = 1L; My2Y = 1L }
+        | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+            // Spine Y (vertical) — slides X, so X1 and X2 follow dx.
+            { z with Mx1X = 1L; Mx2X = 1L }
+
+    /// Recipe for a perpendicular-neighbor segment at a post the
+    /// dragged segment touches. Stretches/shrinks the neighbor's
+    /// single endpoint that meets the post so the corner stays
+    /// connected as the dragged segment slides. Returns None for
+    /// collinear neighbors (skipped for v1 — sliding through a
+    /// collinear chain would distort the chain's rects).
+    ///
+    /// We can't compare the neighbor's endpoint coord against the
+    /// post coord exactly: the SKY130 `place_wire` JOG fix extends
+    /// each rect a half-width past the L corner, so the neighbor's
+    /// rect boundary sits HALFWIDTH outside the centerline post.
+    /// Instead, pick the endpoint that falls INSIDE the dragged
+    /// segment's perp-axis extent — the other one is far away.
+    static member private NeighborAdjust
+            (neighbor: Rekolektion.Viz.Core.Routing.Detect.Segment)
+            (dragged: Rekolektion.Viz.Core.Routing.Detect.Segment)
+            : SlideAdjust option =
+        if neighbor.Spine = dragged.Spine then None
+        else
+            // L-corner discriminator: the neighbor is an L-corner
+            // (and should follow the slide) when ONE of its spine
+            // endpoints sits AT the dragged beam's centerline —
+            // within the JOG-fix overhang (= half the dragged
+            // beam's perp width). If NEITHER endpoint is "at" the
+            // centerline, the neighbor passes THROUGH (T-junction
+            // crosser) and stays put for the anchor / extension
+            // system to handle.
+            let z = StackCanvasControl.ZeroAdjust neighbor.SourceIndex
+            match dragged.Spine with
+            | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                // Dragged horizontal. Neighbor vertical. JOG-fix
+                // overhang is half the dragged horizontal's
+                // Y-extent (since the perp-axis here is Y).
+                let halfH =
+                    (dragged.YMax - dragged.YMin) / 2L
+                let nearMin =
+                    abs (neighbor.YMin - dragged.Center) <= halfH
+                let nearMax =
+                    abs (neighbor.YMax - dragged.Center) <= halfH
+                if nearMin then Some { z with My1Y = 1L }
+                elif nearMax then Some { z with My2Y = 1L }
+                else None
+            | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                // Dragged vertical. Neighbor horizontal. Overhang
+                // is half the dragged vertical's X-extent.
+                let halfV =
+                    (dragged.XMax - dragged.XMin) / 2L
+                let nearMin =
+                    abs (neighbor.XMin - dragged.Center) <= halfV
+                let nearMax =
+                    abs (neighbor.XMax - dragged.Center) <= halfV
+                if nearMin then Some { z with Mx1X = 1L }
+                elif nearMax then Some { z with Mx2X = 1L }
+                else None
+
+    /// Walk `route.Posts` for every post that the dragged segment
+    /// (by `route.Segments` index) touches, collect the
+    /// perpendicular-neighbor adjusts. Deduped by source index so a
+    /// neighbor reachable via multiple posts (rare) gets one entry.
+    static member private BuildSlideAdjusts
+            (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+            (draggedRouteIdx: int)
+            : SlideAdjust list =
+        let dragged = route.Segments.[draggedRouteIdx]
+        let head = StackCanvasControl.TrackDraggedAdjust
+                       dragged.SourceIndex dragged.Spine
+        let neighbors =
+            route.Posts
+            |> Array.toList
+            |> List.collect (fun p ->
+                if not (List.contains draggedRouteIdx p.AttachedSegments) then []
+                else
+                    p.AttachedSegments
+                    |> List.filter (fun i -> i <> draggedRouteIdx
+                                          && i < route.Segments.Length)
+                    |> List.choose (fun i ->
+                        StackCanvasControl.NeighborAdjust
+                            route.Segments.[i] dragged))
+            |> List.distinctBy (fun a -> a.SourceIdx)
+        head :: neighbors
+
+    /// Recipe for one segment attached to a POST being dragged.
+    /// PHASE A: terminus-only, spine-axis-only. The post moves
+    /// along the attached segment's spine, stretching/shrinking
+    /// the segment at the at-post endpoint. The non-spine axis
+    /// is locked at the move-handler level. No perp slide — that
+    /// would translate the whole rect and effectively move the
+    /// FAR endpoint too, breaking whatever's at the other end.
+    /// Corner/junction post drag waits for the #3 Opt-jog work.
+    static member private PostSegmentAdjust
+            (seg: Rekolektion.Viz.Core.Routing.Detect.Segment)
+            (post: Rekolektion.Viz.Core.Rkt.Types.Point)
+            : SlideAdjust =
+        let z = StackCanvasControl.ZeroAdjust seg.SourceIndex
+        match seg.Spine with
+        | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+            // Spine axis X: shift whichever X endpoint is nearest
+            // post.X. The JOG-fix overhang puts both ends a half-
+            // width away from post.X; nearer one is the at-post
+            // end.
+            let distMin = abs (seg.XMin - post.X)
+            let distMax = abs (seg.XMax - post.X)
+            if distMin <= distMax then { z with Mx1X = 1L }
+            else                       { z with Mx2X = 1L }
+        | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+            let distMin = abs (seg.YMin - post.Y)
+            let distMax = abs (seg.YMax - post.Y)
+            if distMin <= distMax then { z with My1Y = 1L }
+            else                       { z with My2Y = 1L }
+
+    /// Build the adjust list for a post drag — every segment
+    /// attached to `route.Posts.[postIdx]` gets a post-segment
+    /// recipe. Deduped by source index.
+    static member private BuildPostAdjusts
+            (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+            (postIdx: int)
+            : SlideAdjust list =
+        if postIdx < 0 || postIdx >= route.Posts.Length then []
+        else
+            let p = route.Posts.[postIdx]
+            p.AttachedSegments
+            |> List.choose (fun i ->
+                if i < 0 || i >= route.Segments.Length then None
+                else
+                    Some (StackCanvasControl.PostSegmentAdjust
+                            route.Segments.[i] p.Position))
+            |> List.distinctBy (fun a -> a.SourceIdx)
+
+    /// Find a same-layer rect anchor at the dragged beam's
+    /// `endpoint`. Walks the FlatPolygons array (which has SRef
+    /// transforms applied) so anchors INSIDE child cells (a power
+    /// rail buried in a FET subcell) are detected just as well
+    /// as top-cell rects.
+    ///
+    /// `topCellName` is the name of the cell containing the
+    /// dragged beam. Polys whose source cell IS the top cell
+    /// AND whose source index is in `excludeTopIds` are skipped
+    /// (the dragged beam itself + perp-neighbors already in the
+    /// slide-adjust list — they'd duplicate the extension).
+    /// SRef-internal polys are never excluded.
+    static member private FindAnchorAt
+            (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
+            (topCellName: string)
+            (beamLayer: int) (beamDataType: int)
+            (endpoint: Rekolektion.Viz.Core.Rkt.Types.Point)
+            (excludeTopIds: Set<int>)
+            : AnchorInfo option =
+        let flat = Layout.Flatten.flatten doc
+        flat
+        |> Array.tryPick (fun fp ->
+            if fp.Layer <> beamLayer || fp.DataType <> beamDataType then None
+            elif fp.SourceStructure = topCellName
+                 && excludeTopIds.Contains fp.SourceIndex then None
+            elif fp.Points.Length = 0 then None
+            else
+                let mutable xMin = System.Int64.MaxValue
+                let mutable yMin = System.Int64.MaxValue
+                let mutable xMax = System.Int64.MinValue
+                let mutable yMax = System.Int64.MinValue
+                for p in fp.Points do
+                    if p.X < xMin then xMin <- p.X
+                    if p.X > xMax then xMax <- p.X
+                    if p.Y < yMin then yMin <- p.Y
+                    if p.Y > yMax then yMax <- p.Y
+                if endpoint.X >= xMin && endpoint.X <= xMax
+                   && endpoint.Y >= yMin && endpoint.Y <= yMax then
+                    Some { OrigEndpoint = endpoint
+                           BboxDbu = (xMin, yMin, xMax, yMax)
+                           Layer =
+                               Rekolektion.Viz.Core.Rkt.OfGds.layerFromGds
+                                   beamLayer beamDataType }
+                else None)
+
+    /// Compute the extension rect for a track-slide anchor. The
+    /// dragged beam's spine endpoint was at `anchor.OrigEndpoint`
+    /// inside `anchor.BboxDbu` at press time; after a slide of
+    /// `(dx, dy)` the endpoint shifts on the beam's perpendicular
+    /// axis. When the new endpoint lands outside the anchor's
+    /// bbox, emit a rect covering the gap on the anchor's layer
+    /// (anchor's perp size preserved). Returns None when the new
+    /// endpoint still sits inside the anchor or when delta is 0.
+    static member private ComputeExtensionRect
+            (anchor: AnchorInfo)
+            (dx: int64) (dy: int64)
+            (beamSpine: Rekolektion.Viz.Core.Routing.Detect.Axis)
+            : Rekolektion.Viz.Core.Rkt.Types.Rectangle option =
+        let extDx, extDy =
+            match beamSpine with
+            | Rekolektion.Viz.Core.Routing.Detect.Axis.X -> 0L, dy
+            | Rekolektion.Viz.Core.Routing.Detect.Axis.Y -> dx, 0L
+        if extDx = 0L && extDy = 0L then None
+        else
+            let (aXMin, aYMin, aXMax, aYMax) = anchor.BboxDbu
+            let newX = anchor.OrigEndpoint.X + extDx
+            let newY = anchor.OrigEndpoint.Y + extDy
+            let stillInside =
+                newX >= aXMin && newX <= aXMax
+                && newY >= aYMin && newY <= aYMax
+            if stillInside then None
+            else
+                match beamSpine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    let yMin = min anchor.OrigEndpoint.Y newY
+                    let yMax = max anchor.OrigEndpoint.Y newY
+                    Some
+                        ({ Layer = anchor.Layer
+                           X1 = aXMin; Y1 = yMin
+                           X2 = aXMax; Y2 = yMax
+                           Net = None
+                           Props = []
+                           Comments = [] }
+                         : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    let xMin = min anchor.OrigEndpoint.X newX
+                    let xMax = max anchor.OrigEndpoint.X newX
+                    Some
+                        ({ Layer = anchor.Layer
+                           X1 = xMin; Y1 = aYMin
+                           X2 = xMax; Y2 = aYMax
+                           Net = None
+                           Props = []
+                           Comments = [] }
+                         : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+
+    /// Hit-test screen point against the rendered post handles for
+    /// `route` at `layerZ`. Each post is rendered as a small
+    /// square (~0.32 µm side) centered on the post position. Hit
+    /// zone projects each post center to screen, snap radius
+    /// 12 px. Returns the post index when within range.
+    member private this.HitTestPostHandleFor
+            (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+            (layerZ: float32)
+            (screen: Avalonia.Point)
+            : int option =
+        match this.Library with
+        | Some lib ->
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if w < 1.0 || h < 1.0 then None
+            else
+                let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                let z = layerZ
+                let mvp =
+                    Matrix4x4Helpers.buildOrbitMvp
+                        yawDeg pitchDeg zoom target extent (w, h)
+                let projectToScreen (xUm: float32) (yUm: float32)
+                        : (float * float) option =
+                    let v =
+                        Vector4.Transform(
+                            Vector4(xUm, yUm, z, 1.0f),
+                            mvp)
+                    if v.W <= 1.0e-6f then None
+                    else
+                        let ndcX = float (v.X / v.W)
+                        let ndcY = float (v.Y / v.W)
+                        Some ((ndcX + 1.0) * 0.5 * w,
+                              (1.0 - ndcY) * 0.5 * h)
+                let snapPx = 12.0
+                let mutable bestIdx : int option = None
+                let mutable bestDist = System.Double.MaxValue
+                for i in 0 .. route.Posts.Length - 1 do
+                    let p = route.Posts.[i]
+                    let cx = float32 (float p.Position.X * umPerDbu)
+                    let cy = float32 (float p.Position.Y * umPerDbu)
+                    match projectToScreen cx cy with
+                    | Some (sx, sy) ->
+                        let ddx = screen.X - sx
+                        let ddy = screen.Y - sy
+                        let dist = sqrt (ddx * ddx + ddy * ddy)
+                        if dist < snapPx && dist < bestDist then
+                            bestDist <- dist
+                            bestIdx <- Some i
+                    | None -> ()
+                bestIdx
+        | _ -> None
+
     override this.OnPointerPressed e =
         base.OnPointerPressed e
         let props = e.GetCurrentPoint(this).Properties
-        dragMode <-
-            if props.IsRightButtonPressed || props.IsMiddleButtonPressed then PanDrag
-            elif props.IsLeftButtonPressed then OrbitDrag
-            else NoDrag
-        pressedButton <- dragMode
-        if dragMode <> NoDrag then
-            lastPos <- e.GetPosition this
-            pressStart <- lastPos
-            e.Pointer.Capture this
-            this.Focus () |> ignore
+        // Edit Routing mode + left button + cursor over a route +
+        // press lands on a track handle → start a route slide drag.
+        // Suppresses the normal orbit-drag setup so the camera
+        // doesn't rotate. Drag math + live preview lands in the
+        // next slice; for now this just verifies the press is
+        // detected and stops orbit from interfering.
+        let editing =
+            match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+            | Some (m: Rekolektion.Viz.App.Model.Model.Model) -> m.EditRoutingMode
+            | None -> false
+        // Try TRACK hit first (more constrained / specific), then
+        // POST. Both run only in edit mode on left-button presses.
+        let trackHit =
+            if editing && props.IsLeftButtonPressed then
+                match hoveredRoute with
+                | Some r ->
+                    this.HitTestTrackHandleFor r hoveredRouteLayerZ
+                        (e.GetPosition this)
+                | None -> None
+            else None
+        let postHit =
+            if editing && props.IsLeftButtonPressed && trackHit.IsNone then
+                match hoveredRoute with
+                | Some r ->
+                    this.HitTestPostHandleFor r hoveredRouteLayerZ
+                        (e.GetPosition this)
+                | None -> None
+            else None
+        let beginSlide
+                (kind: SlideKind)
+                (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+                (lib: Rekolektion.Viz.Core.Rkt.Types.Document)
+                (spine: Rekolektion.Viz.Core.Routing.Detect.Axis)
+                (adjusts: SlideAdjust list)
+                (handleLabel: string)
+                (draggedSeg: Rekolektion.Viz.Core.Routing.Detect.Segment option) =
+            match this.UnprojectAtZ (e.GetPosition this) hoveredRouteLayerZ with
+            | None -> ()
+            | Some hitDbu ->
+                // For TRACK slides, detect rail/strap anchors at
+                // each spine endpoint so the commit can emit
+                // extensions if the endpoints leave the anchor
+                // bbox. Skip rects already being adjusted (perp
+                // neighbors at corners — their stretch already
+                // preserves the corner).
+                let anchors =
+                    match kind, draggedSeg with
+                    | TrackSlide, Some seg ->
+                        let excludeIds =
+                            adjusts
+                            |> List.map (fun a -> a.SourceIdx)
+                            |> Set.ofList
+                        [ seg.Start; seg.End ]
+                        |> List.choose (fun endpt ->
+                            StackCanvasControl.FindAnchorAt
+                                lib route.Cell seg.Layer seg.DataType
+                                endpt excludeIds)
+                    | _ -> []
+                dragMode <- RouteTrackDrag
+                pressedButton <- RouteTrackDrag
+                lastPos <- e.GetPosition this
+                pressStart <- lastPos
+                e.Pointer.Capture this
+                this.Focus () |> ignore
+                routeSlide <- Some {
+                    Cell = route.Cell
+                    Kind = kind
+                    Spine = spine
+                    LayerZ = hoveredRouteLayerZ
+                    StartHitDbu = hitDbu
+                    Adjusts = adjusts
+                    Anchors = anchors
+                    LastDxDbu = 0L
+                    LastDyDbu = 0L
+                }
+                // Seed the speculative document so the renderer
+                // immediately paints from it (covers any race
+                // between press and the first move tick).
+                dragLiveDoc <- Some lib
+                dragLiveFlat <- this.FlatPolygons
+                Rekolektion.Viz.App.Services.Logger.log "route.tool"
+                    {| op = "press"
+                       handle = handleLabel
+                       cell = route.Cell
+                       hitDbu = sprintf "%d,%d" hitDbu.X hitDbu.Y
+                       adjusts = adjusts.Length
+                       anchors = anchors.Length |}
+        match trackHit, postHit, hoveredRoute, this.Library with
+        | Some segIdx, _, Some route, Some lib
+                when segIdx < route.Segments.Length ->
+            let seg = route.Segments.[segIdx]
+            let adjusts = StackCanvasControl.BuildSlideAdjusts route segIdx
+            beginSlide TrackSlide route lib seg.Spine adjusts "track" (Some seg)
+        | None, Some postIdx, Some route, Some lib
+                when postIdx < route.Posts.Length ->
+            let adjusts = StackCanvasControl.BuildPostAdjusts route postIdx
+            beginSlide PostSlide route lib
+                Rekolektion.Viz.Core.Routing.Detect.Axis.X adjusts "post" None
+        | _ ->
+            // No track hit (or surrounding state missing) — fall
+            // through to the normal orbit / pan dispatch so the
+            // canvas stays usable.
+            dragMode <-
+                if props.IsRightButtonPressed || props.IsMiddleButtonPressed then PanDrag
+                elif props.IsLeftButtonPressed then OrbitDrag
+                else NoDrag
+            pressedButton <- dragMode
+            if dragMode <> NoDrag then
+                lastPos <- e.GetPosition this
+                pressStart <- lastPos
+                e.Pointer.Capture this
+                this.Focus () |> ignore
+
+    /// Routing-relevant drawing layers, ordered TOP-DOWN so the
+    /// raycast prefers the upper layer when a click would hit
+    /// stacked routing on multiple layers (e.g. met2 over met1).
+    /// Datatype 20 = drawing per the layer table.
+    static member private RoutingLayerKeys
+            : (int * int) array =
+        [| 72, 20  // met5
+           71, 20  // met4
+           70, 20  // met3
+           69, 20  // met2
+           68, 20  // met1
+           67, 20  // li1
+        |]
+
+    /// Raycast the cursor against each routing layer's slab and run
+    /// the route-detection module at the first hit. Updates
+    /// `hoveredRoute` + `hoveredRouteLayerZ` and returns whether the
+    /// hover changed (so the caller knows whether to redraw).
+    member private this.UpdateRoutingHover (screen: Avalonia.Point)
+            : bool =
+        match this.Library with
+        | None ->
+            let changed = hoveredRoute.IsSome
+            hoveredRoute <- None
+            changed
+        | Some lib ->
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if w < 1.0 || h < 1.0 then
+                let changed = hoveredRoute.IsSome
+                hoveredRoute <- None
+                changed
+            else
+                let ndcX = float32 (2.0 * screen.X / w - 1.0)
+                let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
+                let mvp =
+                    Matrix4x4Helpers.buildOrbitMvp
+                        yawDeg pitchDeg zoom target extent (w, h)
+                match Matrix4x4.Invert(mvp) with
+                | false, _ ->
+                    let changed = hoveredRoute.IsSome
+                    hoveredRoute <- None
+                    changed
+                | true, inv ->
+                    let unproj (z: float32) =
+                        let v = Vector4(ndcX, ndcY, z, 1.0f)
+                        let r = Vector4.Transform(v, inv)
+                        Vector3(r.X / r.W, r.Y / r.W, r.Z / r.W)
+                    let nearW = unproj -1.0f
+                    let farW = unproj 1.0f
+                    let rayO = nearW
+                    let rayD = Vector3.Normalize(farW - nearW)
+                    // Mesh world coords are in µm. Translate the
+                    // hit µm-coord to DBU so locateRoute (which keys
+                    // on the .rkt's native DBU integer coords) can
+                    // match.
+                    let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                    let dbuPerUm = 1.0 / umPerDbu
+                    let topCellName =
+                        match lib.TopCell with
+                        | Some n -> n
+                        | None ->
+                            // Fall back to first cell name if the
+                            // Document lacks an explicit `(top …)`.
+                            match lib.Cells with
+                            | c :: _ -> c.Name
+                            | _ -> ""
+                    let mutable found : Rekolektion.Viz.Core.Routing.Detect.Route option = None
+                    let mutable foundZ : float32 = 0.0f
+                    if topCellName <> "" then
+                        let doc = lib
+                        let toggle = this.Toggle
+                        let layerKeys = StackCanvasControl.RoutingLayerKeys
+                        let mutable i = 0
+                        while found.IsNone && i < layerKeys.Length do
+                            let (layerNum, layerDt) = layerKeys.[i]
+                            let key = (layerNum, layerDt)
+                            if Visibility.isLayerVisible toggle key then
+                                match Layout.Layer.bySky130Number layerNum layerDt with
+                                | None -> ()
+                                | Some layer ->
+                                    // Sample many Z planes through
+                                    // the slab. At 35° camera pitch
+                                    // the projected (X,Y) at the
+                                    // top vs bottom of a 0.36 µm
+                                    // metal slab differs by ~0.55 µm
+                                    // — much wider than a min-width
+                                    // wire (0.14 µm met1). With
+                                    // only 3 samples (top/mid/bot),
+                                    // only a thin Z slice maps to
+                                    // the wire's footprint and the
+                                    // user sees a "narrow stripe"
+                                    // of valid hover. Step through
+                                    // the slab in 0.05 µm increments
+                                    // so any cursor over the slab's
+                                    // visible screen footprint hits
+                                    // some interior wire pixel.
+                                    let zBot =
+                                        float32 (layer.StackZ * Z_EXAGGERATION)
+                                    let zTop =
+                                        float32 ((layer.StackZ + layer.Thickness)
+                                                 * Z_EXAGGERATION)
+                                    let stepUm = 0.05f
+                                    let nSamples =
+                                        max 3 (int (MathF.Ceiling((zTop - zBot) / stepUm)) + 1)
+                                    if MathF.Abs(rayD.Z) > 1.0e-6f then
+                                        let mutable k = 0
+                                        while found.IsNone && k < nSamples do
+                                            // Walk top -> bot so the
+                                            // first hit is the one
+                                            // nearest the camera at
+                                            // typical top-down-ish
+                                            // angles. Index 0 is top,
+                                            // index nSamples-1 is bot.
+                                            let frac =
+                                                if nSamples = 1 then 0.0f
+                                                else float32 k / float32 (nSamples - 1)
+                                            let zPlane =
+                                                zTop + (zBot - zTop) * frac
+                                            let t = (zPlane - rayO.Z) / rayD.Z
+                                            if t >= 0.0f then
+                                                let px = rayO.X + rayD.X * t
+                                                let py = rayO.Y + rayD.Y * t
+                                                let hit =
+                                                    ({ X = int64 (float px * dbuPerUm)
+                                                       Y = int64 (float py * dbuPerUm) }
+                                                     : Rekolektion.Viz.Core.Rkt.Types.Point)
+                                                match Rekolektion.Viz.Core.Routing.Detect.locateRoute
+                                                          doc topCellName layerNum layerDt hit with
+                                                | Some r ->
+                                                    found <- Some r
+                                                    // Sit overlay on the slab top, not above
+                                                    // it — depth-test is disabled when we draw
+                                                    // it so there's no z-fight to dodge, and
+                                                    // floating above the metal reads wrong.
+                                                    foundZ <- zTop
+                                                | None -> ()
+                                            k <- k + 1
+                            i <- i + 1
+                    let priorRoute = hoveredRoute
+                    let priorLayerZ = hoveredRouteLayerZ
+                    // Sticky hover: if the raycast missed but we
+                    // had a route, check whether the cursor is
+                    // still near one of that route's track handles.
+                    // The handles render OUTSIDE the wire's metal
+                    // bbox (perp-axis bars extend ±0.5 µm), so
+                    // moving onto a bar tip would otherwise drop
+                    // hover and the press would orbit instead of
+                    // capture.
+                    let stickyFound, stickyZ =
+                        match found, priorRoute with
+                        | Some _, _ -> found, foundZ
+                        | None, Some r ->
+                            match this.HitTestTrackHandleFor r priorLayerZ screen with
+                            | Some _ -> Some r, priorLayerZ
+                            | None -> None, 0.0f
+                        | None, None -> None, 0.0f
+                    hoveredRoute <- stickyFound
+                    hoveredRouteLayerZ <- stickyZ
+                    let found = stickyFound
+                    let changed =
+                        match priorRoute, found with
+                        | None, None -> false
+                        | Some a, Some b when a.Cell = b.Cell
+                                          && a.Segments.Length = b.Segments.Length ->
+                            // Cheap "different route" check: the
+                            // first segment's source index. Avoids
+                            // a deep struct compare per pointer move.
+                            (a.Segments.[0].SourceIndex
+                             <> b.Segments.[0].SourceIndex)
+                            || (a.Segments.[0].Layer <> b.Segments.[0].Layer)
+                        | _ -> true
+                    if changed then
+                        Rekolektion.Viz.App.Services.Logger.trace "route.tool"
+                            {| op = "hover"
+                               on = found.IsSome
+                               segments =
+                                   match found with
+                                   | Some r -> r.Segments.Length
+                                   | None -> 0
+                               cell =
+                                   match found with
+                                   | Some r -> r.Cell
+                                   | None -> ""
+                               layerZ = float foundZ |}
+                    changed
+
+    /// Diagnostic version of the hover hit-test: same raycast +
+    /// per-layer detection as `UpdateRoutingHover`, but builds a
+    /// JSON string with every intermediate value so an agent can
+    /// drive hit-test calibration via MCP without depending on the
+    /// OS cursor or a screenshot. Doesn't mutate `hoveredRoute` —
+    /// purely a probe.
+    member private this.DiagnoseRoutingHoverAt (screen: Avalonia.Point)
+            : string =
+        let escapeJson (s: string) = s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+        let sb = System.Text.StringBuilder()
+        let w = this.Bounds.Width
+        let h = this.Bounds.Height
+        sb.Append (sprintf "{\"screen\":{\"x\":%g,\"y\":%g}," screen.X screen.Y) |> ignore
+        sb.Append (sprintf "\"bounds\":{\"w\":%g,\"h\":%g}," w h) |> ignore
+        match this.Library with
+        | None ->
+            sb.Append "\"ok\":false,\"error\":\"no library loaded\"}" |> ignore
+            sb.ToString()
+        | Some lib ->
+            if w < 1.0 || h < 1.0 then
+                sb.Append "\"ok\":false,\"error\":\"canvas not sized\"}" |> ignore
+                sb.ToString()
+            else
+                let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                let dbuPerUm = 1.0 / umPerDbu
+                sb.Append (sprintf "\"umPerDbu\":%g," umPerDbu) |> ignore
+                let topCellName =
+                    match lib.TopCell with
+                    | Some n -> n
+                    | None ->
+                        match lib.Cells with
+                        | c :: _ -> c.Name
+                        | _ -> ""
+                sb.Append (sprintf "\"topCellName\":\"%s\"," (escapeJson topCellName)) |> ignore
+                let ndcX = float32 (2.0 * screen.X / w - 1.0)
+                let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
+                let mvp =
+                    Matrix4x4Helpers.buildOrbitMvp
+                        yawDeg pitchDeg zoom target extent (w, h)
+                match Matrix4x4.Invert(mvp) with
+                | false, _ ->
+                    sb.Append "\"ok\":false,\"error\":\"mvp not invertible\"}" |> ignore
+                    sb.ToString()
+                | true, inv ->
+                    let unproj (z: float32) =
+                        let v = Vector4(ndcX, ndcY, z, 1.0f)
+                        let r = Vector4.Transform(v, inv)
+                        Vector3(r.X / r.W, r.Y / r.W, r.Z / r.W)
+                    let nearW = unproj -1.0f
+                    let farW = unproj 1.0f
+                    let rayO = nearW
+                    let rayD = Vector3.Normalize(farW - nearW)
+                    sb.Append (sprintf "\"ndc\":{\"x\":%g,\"y\":%g}," ndcX ndcY) |> ignore
+                    sb.Append (sprintf "\"rayOrigin\":{\"x\":%g,\"y\":%g,\"z\":%g}," rayO.X rayO.Y rayO.Z) |> ignore
+                    sb.Append (sprintf "\"rayDir\":{\"x\":%g,\"y\":%g,\"z\":%g}," rayD.X rayD.Y rayD.Z) |> ignore
+                    let doc = lib
+                    let toggle = this.Toggle
+                    let layerKeys = StackCanvasControl.RoutingLayerKeys
+                    sb.Append "\"layers\":[" |> ignore
+                    let mutable firstLayer = true
+                    for (layerNum, layerDt) in layerKeys do
+                        let key = (layerNum, layerDt)
+                        let visible = Visibility.isLayerVisible toggle key
+                        if not firstLayer then sb.Append "," |> ignore
+                        firstLayer <- false
+                        sb.Append "{" |> ignore
+                        sb.Append (sprintf "\"number\":%d,\"datatype\":%d," layerNum layerDt) |> ignore
+                        match Layout.Layer.bySky130Number layerNum layerDt with
+                        | None ->
+                            sb.Append "\"name\":null,\"visible\":false,\"samples\":[]" |> ignore
+                        | Some layer ->
+                            sb.Append (sprintf "\"name\":\"%s\",\"visible\":%s,"
+                                        (escapeJson layer.Name)
+                                        (if visible then "true" else "false")) |> ignore
+                            let zBot = float32 (layer.StackZ * Z_EXAGGERATION)
+                            let zTop =
+                                float32 ((layer.StackZ + layer.Thickness) * Z_EXAGGERATION)
+                            let zMid = (zBot + zTop) * 0.5f
+                            let samples =
+                                [| ("top", zTop); ("mid", zMid); ("bot", zBot) |]
+                            sb.Append "\"samples\":[" |> ignore
+                            let mutable firstSample = true
+                            for (sName, zPlane) in samples do
+                                if not firstSample then sb.Append "," |> ignore
+                                firstSample <- false
+                                if MathF.Abs(rayD.Z) <= 1.0e-6f then
+                                    sb.Append (sprintf "{\"plane\":\"%s\",\"z\":%g,\"skipped\":\"ray parallel to z\"}" sName zPlane) |> ignore
+                                else
+                                    let t = (zPlane - rayO.Z) / rayD.Z
+                                    let px = rayO.X + rayD.X * t
+                                    let py = rayO.Y + rayD.Y * t
+                                    let dbuX = int64 (float px * dbuPerUm)
+                                    let dbuY = int64 (float py * dbuPerUm)
+                                    let routeRes =
+                                        if not visible || topCellName = "" || t < 0.0f then None
+                                        else
+                                            let hit =
+                                                ({ X = dbuX; Y = dbuY }
+                                                 : Rekolektion.Viz.Core.Rkt.Types.Point)
+                                            Rekolektion.Viz.Core.Routing.Detect.locateRoute
+                                                doc topCellName layerNum layerDt hit
+                                    let segCount =
+                                        match routeRes with
+                                        | Some r -> r.Segments.Length
+                                        | None -> 0
+                                    sb.Append
+                                        (sprintf
+                                            "{\"plane\":\"%s\",\"z\":%g,\"t\":%g,\"umX\":%g,\"umY\":%g,\"dbuX\":%d,\"dbuY\":%d,\"routeFound\":%s,\"routeSegments\":%d}"
+                                            sName zPlane t px py dbuX dbuY
+                                            (if routeRes.IsSome then "true" else "false")
+                                            segCount) |> ignore
+                            sb.Append "]" |> ignore
+                        sb.Append "}" |> ignore
+                    sb.Append "],\"ok\":true}" |> ignore
+                    sb.ToString()
+
+    /// Synthesize a full route-slide gesture without OS pointer
+    /// events: run hover detection at `start`, hit-test for a
+    /// handle, build the same RouteSlide state OnPointerPressed
+    /// would, compute the world-DBU delta from `start` → `end`,
+    /// apply it once, and dispatch the same commit Msg release
+    /// would. Returns a JSON description for the calling MCP tool.
+    /// Used to drive end-to-end edit tests from an agent without a
+    /// human at the cursor.
+    member private this.SimulateRouteDragAt
+            (startX: float) (startY: float)
+            (endX: float) (endY: float)
+            : string =
+        let escapeJson (s: string) =
+            s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+        let startPt = Avalonia.Point(startX, startY)
+        let endPt = Avalonia.Point(endX, endY)
+        // Re-run hover detection at the start position so
+        // `hoveredRoute` reflects what the user would have seen
+        // when they put the cursor over the handle.
+        this.UpdateRoutingHover startPt |> ignore
+        match hoveredRoute, this.Library with
+        | None, _ | _, None ->
+            "{\"ok\":false,\"reason\":\"no hovered route at start\"}"
+        | Some route, Some lib ->
+            let trackHit =
+                this.HitTestTrackHandleFor route hoveredRouteLayerZ startPt
+            let postHit =
+                if trackHit.IsNone then
+                    this.HitTestPostHandleFor route hoveredRouteLayerZ startPt
+                else None
+            let kindStr, adjusts, spine, anchors =
+                match trackHit, postHit with
+                | Some segIdx, _ when segIdx < route.Segments.Length ->
+                    let seg = route.Segments.[segIdx]
+                    let adj = StackCanvasControl.BuildSlideAdjusts route segIdx
+                    let excludeIds =
+                        adj |> List.map (fun a -> a.SourceIdx) |> Set.ofList
+                    let anchs =
+                        [ seg.Start; seg.End ]
+                        |> List.choose (fun endpt ->
+                            StackCanvasControl.FindAnchorAt
+                                lib route.Cell seg.Layer seg.DataType
+                                endpt excludeIds)
+                    "track", adj, seg.Spine, anchs
+                | None, Some postIdx when postIdx < route.Posts.Length ->
+                    "post",
+                    StackCanvasControl.BuildPostAdjusts route postIdx,
+                    Rekolektion.Viz.Core.Routing.Detect.Axis.X,
+                    []
+                | _ ->
+                    "none", [], Rekolektion.Viz.Core.Routing.Detect.Axis.X, []
+            if kindStr = "none" then
+                "{\"ok\":false,\"reason\":\"no handle under start point\"}"
+            else
+                match this.UnprojectAtZ startPt hoveredRouteLayerZ,
+                      this.UnprojectAtZ endPt hoveredRouteLayerZ with
+                | Some s, Some e ->
+                    let rawDx = e.X - s.X
+                    let rawDy = e.Y - s.Y
+                    let dx', dy' =
+                        match kindStr with
+                        | "track" ->
+                            match spine with
+                            | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                                0L, rawDy
+                            | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                                rawDx, 0L
+                        | _ -> rawDx, rawDy
+                    let snapDx = StackCanvasControl.SnapDbu dx'
+                    let snapDy = StackCanvasControl.SnapDbu dy'
+                    let payload =
+                        adjusts
+                        |> List.map (fun a ->
+                            a.SourceIdx,
+                            a.Mx1X, a.Mx1Y, a.My1X, a.My1Y,
+                            a.Mx2X, a.Mx2Y, a.My2X, a.My2Y)
+                    let extensions =
+                        anchors
+                        |> List.choose (fun a ->
+                            StackCanvasControl.ComputeExtensionRect
+                                a snapDx snapDy spine)
+                    if snapDx <> 0L || snapDy <> 0L then
+                        Rekolektion.Viz.App.Services.AppDispatch.send
+                            (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
+                                (route.Cell, snapDx, snapDy, payload, extensions))
+                    sprintf
+                        "{\"ok\":true,\"handle\":\"%s\",\"cell\":\"%s\",\"adjusts\":%d,\"anchors\":%d,\"extensions\":%d,\"startDbu\":[%d,%d],\"endDbu\":[%d,%d],\"snapDxDbu\":%d,\"snapDyDbu\":%d}"
+                        (escapeJson kindStr)
+                        (escapeJson route.Cell)
+                        adjusts.Length
+                        anchors.Length
+                        extensions.Length
+                        s.X s.Y e.X e.Y snapDx snapDy
+                | _ ->
+                    "{\"ok\":false,\"reason\":\"unproject failed\"}"
 
     override this.OnPointerMoved e =
         base.OnPointerMoved e
+        // Edit Routing mode: hover-detect the route under the cursor
+        // so the GL renderer can outline it. Only run when the user
+        // isn't mid-drag (orbit/pan) — the cursor isn't really
+        // hovering during a drag, and the per-tick raycast is the
+        // most expensive thing this handler does.
+        if dragMode = NoDrag then
+            let editing =
+                match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+                | Some (m: Rekolektion.Viz.App.Model.Model.Model) -> m.EditRoutingMode
+                | None -> false
+            if editing then
+                let p = e.GetPosition this
+                if this.UpdateRoutingHover(p) then
+                    this.RequestNextFrameRendering()
+            elif hoveredRoute.IsSome then
+                hoveredRoute <- None
+                this.RequestNextFrameRendering()
         match dragMode with
         | NoDrag -> ()
+        | RouteTrackDrag ->
+            match routeSlide, this.Library with
+            | Some slide, Some lib ->
+                let p = e.GetPosition this
+                lastPos <- p
+                match this.UnprojectAtZ p slide.LayerZ with
+                | None -> ()
+                | Some hitDbu ->
+                    let rawDx = hitDbu.X - slide.StartHitDbu.X
+                    let rawDy = hitDbu.Y - slide.StartHitDbu.Y
+                    // TrackSlide: zero out the axis we don't drag
+                    // along so the gesture stays axis-locked.
+                    let rawDx', rawDy' =
+                        match slide.Kind, slide.Spine with
+                        | TrackSlide,
+                          Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                            0L, rawDy
+                        | TrackSlide,
+                          Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                            rawDx, 0L
+                        | PostSlide, _ -> rawDx, rawDy
+                    let snapDx = StackCanvasControl.SnapDbu rawDx'
+                    let snapDy = StackCanvasControl.SnapDbu rawDy'
+                    if snapDx <> slide.LastDxDbu || snapDy <> slide.LastDyDbu then
+                        slide.LastDxDbu <- snapDx
+                        slide.LastDyDbu <- snapDy
+                        let docAfterAdjusts =
+                            StackCanvasControl.ApplyAdjustsToDoc
+                                lib slide.Cell slide.Adjusts snapDx snapDy
+                        // For track slides with anchored endpoints,
+                        // append any extension rects required to
+                        // bridge the gap from each anchor's
+                        // original endpoint to where it sits now.
+                        let extensions =
+                            slide.Anchors
+                            |> List.choose (fun a ->
+                                StackCanvasControl.ComputeExtensionRect
+                                    a snapDx snapDy slide.Spine)
+                        let docNew =
+                            if extensions.IsEmpty then docAfterAdjusts
+                            else
+                                let cells' =
+                                    docAfterAdjusts.Cells
+                                    |> List.map (fun c ->
+                                        if c.Name <> slide.Cell then c
+                                        else
+                                            let extEls =
+                                                extensions
+                                                |> List.map
+                                                    Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                            { c with
+                                                Elements = c.Elements @ extEls })
+                                { docAfterAdjusts with Cells = cells' }
+                        let flatNew = Layout.Flatten.flatten docNew
+                        dragLiveDoc <- Some docNew
+                        dragLiveFlat <- flatNew
+                        meshDirty <- true
+                        this.RequestNextFrameRendering()
+                        Rekolektion.Viz.App.Services.Logger.trace "route.tool"
+                            {| op = "slide"
+                               kind =
+                                   match slide.Kind with
+                                   | TrackSlide -> "track"
+                                   | PostSlide -> "post"
+                               dx = snapDx
+                               dy = snapDy
+                               cell = slide.Cell
+                               adjusts = slide.Adjusts.Length
+                               extensions = extensions.Length |}
+            | _ ->
+                lastPos <- e.GetPosition this
         | OrbitDrag ->
             let p = e.GetPosition this
             let dx = p.X - lastPos.X
@@ -499,11 +1695,54 @@ type StackCanvasControl() =
         let dy = release.Y - pressStart.Y
         let travel = sqrt (dx * dx + dy * dy)
         let wasOrbitClick = pressedButton = OrbitDrag && travel < 4.0
+        let wasRouteDrag  = pressedButton = RouteTrackDrag
         dragMode <- NoDrag
         pressedButton <- NoDrag
         e.Pointer.Capture null
         if wasOrbitClick then
             this.PickAt(release)
+        elif wasRouteDrag then
+            match routeSlide with
+            | Some slide when slide.LastDxDbu <> 0L || slide.LastDyDbu <> 0L ->
+                let payload =
+                    slide.Adjusts
+                    |> List.map (fun a ->
+                        a.SourceIdx,
+                        a.Mx1X, a.Mx1Y, a.My1X, a.My1Y,
+                        a.Mx2X, a.Mx2Y, a.My2X, a.My2Y)
+                let extensions =
+                    slide.Anchors
+                    |> List.choose (fun a ->
+                        StackCanvasControl.ComputeExtensionRect
+                            a slide.LastDxDbu slide.LastDyDbu slide.Spine)
+                Rekolektion.Viz.App.Services.AppDispatch.send
+                    (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
+                        (slide.Cell, slide.LastDxDbu, slide.LastDyDbu,
+                         payload, extensions))
+                Rekolektion.Viz.App.Services.Logger.log "route.tool"
+                    {| op = "release"
+                       handle =
+                           match slide.Kind with
+                           | TrackSlide -> "track"
+                           | PostSlide -> "post"
+                       travelPx = travel
+                       dx = slide.LastDxDbu
+                       dy = slide.LastDyDbu
+                       committed = true |}
+            | _ ->
+                Rekolektion.Viz.App.Services.Logger.log "route.tool"
+                    {| op = "release"
+                       handle = "route"
+                       travelPx = travel
+                       committed = false |}
+            // Clear speculative state — once the model commits the
+            // change above, the bound FlatPolygons updates and the
+            // renderer flips back to it.
+            routeSlide <- None
+            dragLiveDoc <- None
+            dragLiveFlat <- [||]
+            meshDirty <- true
+            this.RequestNextFrameRendering()
 
     /// Cast a ray from the camera through the screen point and find
     /// the closest visible polygon prism it pierces. Polygon storage
@@ -585,6 +1824,15 @@ type StackCanvasControl() =
         this.RequestNextFrameRendering()
 
     override this.OnOpenGlInit(gli) =
+        // Register the routing-hover diagnose callback now that the
+        // GL context exists (and therefore the canvas has a valid
+        // Bounds + camera state). Out-of-tree code (CommandListener
+        // → MCP) calls this to probe hit-test math at a given screen
+        // pixel without depending on the OS cursor.
+        Rekolektion.Viz.App.Services.AppDispatch.diagnoseRoutingHover <-
+            Some (fun (x, y) -> this.DiagnoseRoutingHoverAt(Avalonia.Point(x, y)))
+        Rekolektion.Viz.App.Services.AppDispatch.simulateRouteDrag <-
+            Some (fun (sx, sy, ex, ey) -> this.SimulateRouteDragAt sx sy ex ey)
         let g = GL.GetApi(fun n -> gli.GetProcAddress(n))
         gl <- Some g
         vbo <- g.GenBuffer()
@@ -738,6 +1986,11 @@ type StackCanvasControl() =
         // (x,y,z, r,g,b) Lines, same vertex layout.
         ratlineVao <- g.GenVertexArray()
         ratlineVbo <- g.GenBuffer()
+        // Edit-routing hover outline — same layout, rebuilt every
+        // frame the hover changes (cheap: at most a few hundred
+        // lines per route).
+        hoverVao <- g.GenVertexArray()
+        hoverVbo <- g.GenBuffer()
 
         // ---- Bitmap font ----
         let textVsSrc = "
@@ -846,7 +2099,14 @@ type StackCanvasControl() =
             hasUploadedAny <- false
             layerSlotMap.Clear()
         | Some g, Some lib ->
-            let flat = this.FlatPolygons
+            // Speculative geometry during a route slide drag —
+            // canvas-side override of the bound FlatPolygons so
+            // the in-flight position renders without a round-trip
+            // through the Elmish loop. Cleared on release.
+            let flat =
+                match dragLiveDoc with
+                | Some _ when dragLiveFlat.Length > 0 -> dragLiveFlat
+                | _ -> this.FlatPolygons
             let toggle = this.Toggle
             // (Re-)extrude only when geometry source changed.
             if meshDirty && flat.Length > 0 then
@@ -1374,6 +2634,232 @@ type StackCanvasControl() =
                 g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
                 g.LineWidth 2.0f
                 g.DrawArrays(GLEnum.Lines, 0, uint32 ratlineVertexCount)
+            // Edit-routing hover overlay: outline every segment in
+            // the hovered route. Built from `hoveredRoute` (set by
+            // UpdateRoutingHover on every PointerMoved tick when
+            // EditRoutingMode is on). Drawn slightly above the
+            // layer's top-of-slab z so it doesn't z-fight with the
+            // underlying metal.
+            // Suppress the gizmo overlay during a slide drag — the
+            // hovered route's segment positions are still the
+            // pre-drag coords, so painting them while the
+            // speculative metal sits at the new position would
+            // double-render. The user already has the metal moving
+            // visually; the handles return on release. A separate
+            // moving "you grabbed this" indicator is drawn below
+            // so the user has feedback during the drag.
+            let suppressOverlay = (dragMode = RouteTrackDrag)
+            // Draw a bright indicator at the cursor's current
+            // projected world position so the user can see the
+            // handle they're dragging. Uses the same hoverVbo —
+            // emit AFTER the per-route overlay block (or in its
+            // place when suppressed).
+            let drawDragIndicator () =
+                match routeSlide, this.Library with
+                | Some slide, Some lib when rulerProgram <> 0u ->
+                    let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                    let curX = slide.StartHitDbu.X + slide.LastDxDbu
+                    let curY = slide.StartHitDbu.Y + slide.LastDyDbu
+                    let cx = float32 (float curX * umPerDbu)
+                    let cy = float32 (float curY * umPerDbu)
+                    let z = slide.LayerZ
+                    // Color cues the handle kind. Same palette as
+                    // the static post handles so the moving glyph
+                    // reads as "the one you grabbed."
+                    let r, gC, bC =
+                        match slide.Kind with
+                        | TrackSlide -> 1.00f, 0.55f, 0.20f   // orange
+                        | PostSlide  -> 1.00f, 0.90f, 0.30f   // bright yellow
+                    let half = 0.16f
+                    let verts = ResizeArray<float32>()
+                    let pushV (x: float32) (y: float32) =
+                        verts.Add x; verts.Add y; verts.Add z
+                        verts.Add r; verts.Add gC; verts.Add bC
+                    // Filled axis-aligned square — same shape as
+                    // the static post handles so a post drag reads
+                    // as "the square moved with the cursor."
+                    pushV (cx - half) (cy - half)
+                    pushV (cx + half) (cy - half)
+                    pushV (cx + half) (cy + half)
+                    pushV (cx - half) (cy - half)
+                    pushV (cx + half) (cy + half)
+                    pushV (cx - half) (cy + half)
+                    let arr = verts.ToArray()
+                    g.BindVertexArray hoverVao
+                    g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
+                    g.BufferData(
+                        GLEnum.ArrayBuffer,
+                        ReadOnlySpan<float32>(arr),
+                        GLEnum.DynamicDraw)
+                    g.UseProgram rulerProgram
+                    let stride = uint32 (6 * sizeof<float32>)
+                    g.EnableVertexAttribArray 0u
+                    g.VertexAttribPointer(0u, 3, GLEnum.Float, false, stride, nativeint 0)
+                    g.EnableVertexAttribArray 1u
+                    g.VertexAttribPointer(1u, 3, GLEnum.Float, false, stride, nativeint (3 * sizeof<float32>))
+                    let loc = g.GetUniformLocation(rulerProgram, "uMVP")
+                    let mvpArr = Matrix4x4Helpers.toFloatArray mvp
+                    g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+                    g.Disable GLEnum.DepthTest
+                    g.DrawArrays(GLEnum.Triangles, 0, uint32 (arr.Length / 6))
+                    g.Enable GLEnum.DepthTest
+                | _ -> ()
+            match hoveredRoute with
+            | None -> drawDragIndicator ()
+            | Some _ when suppressOverlay -> drawDragIndicator ()
+            | Some route when this.Library.IsSome ->
+                let lib = this.Library.Value
+                let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                let z = hoveredRouteLayerZ
+                // Three overlay parts share the same vertex buffer
+                // since they all use rulerProgram (position + RGB,
+                // MVP-transformed). Lines first, then triangles —
+                // tracked separately so we can switch draw mode.
+                let lineVerts = ResizeArray<float32>()
+                let triVerts  = ResizeArray<float32>()
+                let pushLine
+                        (x1: float32) (y1: float32)
+                        (x2: float32) (y2: float32)
+                        (struct (rR, gG, bB)) =
+                    lineVerts.Add x1; lineVerts.Add y1; lineVerts.Add z
+                    lineVerts.Add rR; lineVerts.Add gG; lineVerts.Add bB
+                    lineVerts.Add x2; lineVerts.Add y2; lineVerts.Add z
+                    lineVerts.Add rR; lineVerts.Add gG; lineVerts.Add bB
+                let pushTriangle
+                        (x1: float32) (y1: float32)
+                        (x2: float32) (y2: float32)
+                        (x3: float32) (y3: float32)
+                        (struct (rR, gG, bB)) =
+                    triVerts.Add x1; triVerts.Add y1; triVerts.Add z
+                    triVerts.Add rR; triVerts.Add gG; triVerts.Add bB
+                    triVerts.Add x2; triVerts.Add y2; triVerts.Add z
+                    triVerts.Add rR; triVerts.Add gG; triVerts.Add bB
+                    triVerts.Add x3; triVerts.Add y3; triVerts.Add z
+                    triVerts.Add rR; triVerts.Add gG; triVerts.Add bB
+                // Subtle bbox outline per segment so the hovered route
+                // reads as one logical wire even before the user grabs
+                // any specific handle. Cyan, thin.
+                let outlineColor = struct (0.30f, 0.95f, 1.00f)
+                for s in route.Segments do
+                    let x1 = float32 (float s.XMin * umPerDbu)
+                    let y1 = float32 (float s.YMin * umPerDbu)
+                    let x2 = float32 (float s.XMax * umPerDbu)
+                    let y2 = float32 (float s.YMax * umPerDbu)
+                    pushLine x1 y1 x2 y1 outlineColor
+                    pushLine x2 y1 x2 y2 outlineColor
+                    pushLine x2 y2 x1 y2 outlineColor
+                    pushLine x1 y2 x1 y1 outlineColor
+                // Track handles: one bar per segment, perpendicular
+                // to the spine, drawn at the segment midpoint. The
+                // bar's axis IS the drag axis — pre-constrains the
+                // user gesture (no "is up Y or Z?" ambiguity).
+                let trackColor = struct (1.00f, 0.55f, 0.20f)   // orange
+                let trackHalfLenUm = 0.50f
+                let capHalfUm      = 0.10f
+                for s in route.Segments do
+                    match s.Spine with
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                        // Horizontal spine — bar runs along Y (the
+                        // drag axis). Midpoint X is the spine center.
+                        let midX =
+                            float32 ((float s.Start.X + float s.End.X) * 0.5 * umPerDbu)
+                        let cy = float32 (float s.Center * umPerDbu)
+                        pushLine midX (cy - trackHalfLenUm)
+                                 midX (cy + trackHalfLenUm)
+                                 trackColor
+                        // End caps (small perpendicular ticks) so the
+                        // bar reads as a "drag this" affordance, not
+                        // as part of the route geometry.
+                        pushLine (midX - capHalfUm) (cy - trackHalfLenUm)
+                                 (midX + capHalfUm) (cy - trackHalfLenUm)
+                                 trackColor
+                        pushLine (midX - capHalfUm) (cy + trackHalfLenUm)
+                                 (midX + capHalfUm) (cy + trackHalfLenUm)
+                                 trackColor
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                        // Vertical spine — bar runs along X.
+                        let midY =
+                            float32 ((float s.Start.Y + float s.End.Y) * 0.5 * umPerDbu)
+                        let cx = float32 (float s.Center * umPerDbu)
+                        pushLine (cx - trackHalfLenUm) midY
+                                 (cx + trackHalfLenUm) midY
+                                 trackColor
+                        pushLine (cx - trackHalfLenUm) (midY - capHalfUm)
+                                 (cx - trackHalfLenUm) (midY + capHalfUm)
+                                 trackColor
+                        pushLine (cx + trackHalfLenUm) (midY - capHalfUm)
+                                 (cx + trackHalfLenUm) (midY + capHalfUm)
+                                 trackColor
+                // Post handles: small filled square per post, on the
+                // layer plane. Color codes the kind so the user can
+                // tell at a glance: terminus / corner / junction.
+                // Sphere-shaped handles would read better but require
+                // a triangulated mesh program — a flat square gets
+                // the same affordance for v1.
+                let postHalfUm = 0.16f
+                for p in route.Posts do
+                    let cx = float32 (float p.Position.X * umPerDbu)
+                    let cy = float32 (float p.Position.Y * umPerDbu)
+                    let color =
+                        match p.Kind with
+                        | Rekolektion.Viz.Core.Routing.Detect.Terminus ->
+                            struct (0.95f, 0.85f, 0.20f)   // yellow
+                        | Rekolektion.Viz.Core.Routing.Detect.Corner ->
+                            struct (1.00f, 0.55f, 0.20f)   // orange
+                        | Rekolektion.Viz.Core.Routing.Detect.Junction ->
+                            struct (1.00f, 0.30f, 0.85f)   // magenta
+                    let x0 = cx - postHalfUm
+                    let x1 = cx + postHalfUm
+                    let y0 = cy - postHalfUm
+                    let y1 = cy + postHalfUm
+                    // Two triangles cover the quad.
+                    pushTriangle x0 y0 x1 y0 x1 y1 color
+                    pushTriangle x0 y0 x1 y1 x0 y1 color
+                let lineCount = lineVerts.Count / 6
+                let triCount  = triVerts.Count / 6
+                if (lineCount > 0 || triCount > 0) && rulerProgram <> 0u then
+                    g.UseProgram rulerProgram
+                    let loc = g.GetUniformLocation(rulerProgram, "uMVP")
+                    let mvpArr = Matrix4x4Helpers.toFloatArray mvp
+                    g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+                    let stride = uint32 (6 * sizeof<float32>)
+                    // Disable depth so handles are never occluded by
+                    // metal above them; the layer-plane Z lift is
+                    // unreliable across drivers / FBO depth precision.
+                    g.Disable GLEnum.DepthTest
+                    if lineCount > 0 then
+                        let arr = lineVerts.ToArray()
+                        g.BindVertexArray hoverVao
+                        g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
+                        g.BufferData(
+                            GLEnum.ArrayBuffer,
+                            ReadOnlySpan<float32>(arr),
+                            GLEnum.DynamicDraw)
+                        g.EnableVertexAttribArray 0u
+                        g.VertexAttribPointer(0u, 3, GLEnum.Float, false, stride, nativeint 0)
+                        g.EnableVertexAttribArray 1u
+                        g.VertexAttribPointer(1u, 3, GLEnum.Float, false, stride, nativeint (3 * sizeof<float32>))
+                        g.LineWidth 3.0f
+                        g.DrawArrays(GLEnum.Lines, 0, uint32 lineCount)
+                    if triCount > 0 then
+                        let arr = triVerts.ToArray()
+                        g.BindVertexArray hoverVao
+                        g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
+                        g.BufferData(
+                            GLEnum.ArrayBuffer,
+                            ReadOnlySpan<float32>(arr),
+                            GLEnum.DynamicDraw)
+                        g.EnableVertexAttribArray 0u
+                        g.VertexAttribPointer(0u, 3, GLEnum.Float, false, stride, nativeint 0)
+                        g.EnableVertexAttribArray 1u
+                        g.VertexAttribPointer(1u, 3, GLEnum.Float, false, stride, nativeint (3 * sizeof<float32>))
+                        g.DrawArrays(GLEnum.Triangles, 0, uint32 triCount)
+                    g.Enable GLEnum.DepthTest
+                    Rekolektion.Viz.App.Services.Logger.trace "route.tool"
+                        {| op = "handles"
+                           segments = route.Segments.Length
+                           posts = route.Posts.Length |}
+            | Some _ -> ()
             if textVertexCount > 0 && textProgram <> 0u && fontTex <> 0u then
                 g.UseProgram textProgram
                 g.BindVertexArray textVao

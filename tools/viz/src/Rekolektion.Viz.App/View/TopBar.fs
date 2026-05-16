@@ -89,6 +89,13 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     // Cyan accent matches Grid/Ruler/Snap; Tighten's keyboard
     // hotkey is T (see App.fs key handler).
     let tightenToggle = mkToggle "Tighten (T)"  model.TightenMode "#2c4b6f" Msg.ToggleTightenMode
+    // Edit Routing mode — hover existing routing geometry to get
+    // drag handles. Hotkey: E. Distinct accent (orange) so the
+    // mode reads at a glance and isn't visually confused with the
+    // visibility-style cyan toggles above.
+    let editRoutingToggle =
+        mkToggle "Edit Routing (E)" model.EditRoutingMode "#a85a1f"
+            Msg.ToggleEditRoutingMode
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -110,6 +117,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     rulerToggle
                                     gridToggle
                                     tightenToggle
+                                    editRoutingToggle
                                     ratlinesToggle
                                     drcToggle
                                     dimensionsToggle

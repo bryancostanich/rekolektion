@@ -78,6 +78,38 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
             let p = root.GetProperty("path").GetString()
             Dispatcher.UIThread.Post(fun () -> dispatch (Msg.SetActiveMacro p))
             "{\"ok\":true}"
+        | "/route/diagnose-hover" ->
+            // Probe the routing hover hit-test at a given screen pixel
+            // on the 3D canvas. body: { "x": <px>, "y": <px> }.
+            // Returns the canvas's diagnose JSON inline.
+            let x = root.GetProperty("x").GetDouble()
+            let y = root.GetProperty("y").GetDouble()
+            match AppDispatch.diagnoseRoutingHover with
+            | None ->
+                "{\"ok\":false,\"error\":\"3D canvas not ready (open a file and switch to 3D first)\"}"
+            | Some f ->
+                // Must run on the UI thread — the canvas reads
+                // Bounds + AvaloniaProperty values that are
+                // dispatcher-affined.
+                let resultRef = ref ""
+                Dispatcher.UIThread.Invoke(fun () -> resultRef.Value <- f (x, y))
+                resultRef.Value
+        | "/route/simulate-drag" ->
+            // Synthesize a route-handle drag from press at
+            // (startX, startY) to release at (endX, endY) on the
+            // 3D canvas. Body: { startX, startY, endX, endY }.
+            // Returns the canvas's simulator JSON inline.
+            let sx = root.GetProperty("startX").GetDouble()
+            let sy = root.GetProperty("startY").GetDouble()
+            let ex = root.GetProperty("endX").GetDouble()
+            let ey = root.GetProperty("endY").GetDouble()
+            match AppDispatch.simulateRouteDrag with
+            | None ->
+                "{\"ok\":false,\"error\":\"3D canvas not ready (open a file and switch to 3D first)\"}"
+            | Some f ->
+                let resultRef = ref ""
+                Dispatcher.UIThread.Invoke(fun () -> resultRef.Value <- f (sx, sy, ex, ey))
+                resultRef.Value
         | "/select" ->
             // Replace InstanceSelection with the given indices.
             // body: { "indices": [0, 2, ...] }
@@ -191,6 +223,79 @@ let handleQuery (path: string) (_dispatch: Msg.Msg -> unit) : string =
                             (if mc.Dirty then "true" else "false"))
                     |> String.concat ","
                 sprintf "{\"ok\":true,\"active\":%s,\"macros\":[%s]}" active macros
+        | "/geometry/active" ->
+            // Dump every element in the active macro's top cell so an
+            // agent can diff geometry before / after an edit without
+            // reading the .rkt off disk. Includes rects, polys, and
+            // paths with source index + layer + bbox; SRefs with
+            // their cell name + origin; labels with text + origin.
+            // Coords reported in DBU (raw .rkt frame) so they map
+            // 1:1 to anything else the agent grabs from the file.
+            match AppDispatch.currentModel with
+            | None -> "{\"ok\":false,\"error\":\"no model yet\"}"
+            | Some m ->
+                match Model.activeMacro m with
+                | None -> "{\"ok\":true,\"cell\":null,\"elements\":[]}"
+                | Some mc ->
+                    let topName =
+                        match mc.Document.TopCell with
+                        | Some n -> n
+                        | None ->
+                            match mc.Document.Cells with
+                            | c :: _ -> c.Name
+                            | _ -> ""
+                    match mc.Document.Cells |> List.tryFind (fun c -> c.Name = topName) with
+                    | None -> "{\"ok\":true,\"cell\":null,\"elements\":[]}"
+                    | Some cell ->
+                        let entries =
+                            cell.Elements
+                            |> List.mapi (fun i el ->
+                                let layerOf l =
+                                    let n, d = Rekolektion.Viz.Core.Rkt.ToGds.layerToGds l
+                                    n, d
+                                match el with
+                                | RectEl r ->
+                                    let n, d = layerOf r.Layer
+                                    sprintf
+                                        "{\"i\":%d,\"k\":\"rect\",\"l\":%d,\"dt\":%d,\"x1\":%d,\"y1\":%d,\"x2\":%d,\"y2\":%d}"
+                                        i n d r.X1 r.Y1 r.X2 r.Y2
+                                | PolyEl p ->
+                                    let n, d = layerOf p.Layer
+                                    let xs = p.Points |> List.map (fun pt -> pt.X)
+                                    let ys = p.Points |> List.map (fun pt -> pt.Y)
+                                    let xMin = if xs.IsEmpty then 0L else List.min xs
+                                    let xMax = if xs.IsEmpty then 0L else List.max xs
+                                    let yMin = if ys.IsEmpty then 0L else List.min ys
+                                    let yMax = if ys.IsEmpty then 0L else List.max ys
+                                    sprintf
+                                        "{\"i\":%d,\"k\":\"poly\",\"l\":%d,\"dt\":%d,\"x1\":%d,\"y1\":%d,\"x2\":%d,\"y2\":%d,\"pts\":%d}"
+                                        i n d xMin yMin xMax yMax p.Points.Length
+                                | PathEl p ->
+                                    let n, d = layerOf p.Layer
+                                    let xs = p.Points |> List.map (fun pt -> pt.X)
+                                    let ys = p.Points |> List.map (fun pt -> pt.Y)
+                                    let xMin = if xs.IsEmpty then 0L else List.min xs
+                                    let xMax = if xs.IsEmpty then 0L else List.max xs
+                                    let yMin = if ys.IsEmpty then 0L else List.min ys
+                                    let yMax = if ys.IsEmpty then 0L else List.max ys
+                                    sprintf
+                                        "{\"i\":%d,\"k\":\"path\",\"l\":%d,\"dt\":%d,\"x1\":%d,\"y1\":%d,\"x2\":%d,\"y2\":%d,\"w\":%d,\"pts\":%d}"
+                                        i n d xMin yMin xMax yMax p.Width p.Points.Length
+                                | SRefEl s ->
+                                    sprintf
+                                        "{\"i\":%d,\"k\":\"sref\",\"cell\":\"%s\",\"ox\":%d,\"oy\":%d}"
+                                        i (esc s.Cell) s.Origin.X s.Origin.Y
+                                | LabelEl l ->
+                                    let n, d = layerOf l.Layer
+                                    sprintf
+                                        "{\"i\":%d,\"k\":\"label\",\"l\":%d,\"dt\":%d,\"text\":\"%s\",\"ox\":%d,\"oy\":%d}"
+                                        i n d (esc l.Text) l.Origin.X l.Origin.Y
+                                | _ ->
+                                    sprintf "{\"i\":%d,\"k\":\"other\"}" i)
+                            |> String.concat ","
+                        sprintf
+                            "{\"ok\":true,\"cell\":\"%s\",\"dbuNm\":%d,\"elements\":[%s]}"
+                            (esc topName) mc.Document.Units.DbuNm entries
         | "/selection" ->
             match AppDispatch.currentModel with
             | None -> "{\"ok\":false,\"error\":\"no model yet\"}"

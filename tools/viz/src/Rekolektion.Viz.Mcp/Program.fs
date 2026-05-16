@@ -339,6 +339,141 @@ let private toolGetSelection (_args: JsonElement) : ToolResult =
     with ex ->
         toolError (sprintf "get_selection failed: %s" ex.Message)
 
+/// Tool: rekolektion_viz_hover_at { x, y } — probe the routing
+/// hover hit-test at a specific 3D-canvas screen pixel. Returns
+/// the canvas's full diagnose dump (ray, per-layer Z samples,
+/// world coords, route-detection results) so an agent can
+/// calibrate hit-test math without a screenshot. Requires the
+/// 3D canvas to have rendered at least once (open a file +
+/// switch to the 3D tab).
+let private toolHoverAt (args: JsonElement) : ToolResult =
+    try
+        let x = args.GetProperty("x").GetDouble()
+        let y = args.GetProperty("y").GetDouble()
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body = sprintf "{\"x\":%g,\"y\":%g}" x y
+            let resp = udsRequest "POST" "/route/diagnose-hover" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "hover_at failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_get_geometry — return every element in the
+/// active macro's top cell, in raw DBU coords. JSON shape:
+/// `{ cell, dbuNm, elements: [{i, k, l, dt, x1, y1, x2, y2, ...}] }`
+/// where `k` is the kind (rect / poly / path / sref / label / other),
+/// `i` is the cell.Elements source index, `l`/`dt` are the GDS
+/// layer pair. Bbox coords are the geometry's bbox in DBU. Used to
+/// diff geometry before / after an edit.
+let private toolGetGeometry (_args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let resp = udsRequest "GET" "/geometry/active" None
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "get_geometry failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_simulate_drag { startX, startY, endX, endY } —
+/// synthesize a full route-handle drag (press at start → release
+/// at end) on the 3D canvas. Returns JSON with the handle kind,
+/// adjusts count, world DBU start/end, and snapped delta that
+/// got committed. Lets an agent test the edit pipeline end to
+/// end without OS pointer events. Requires the 3D canvas to
+/// have rendered at least once + Edit Routing mode (no-op
+/// otherwise — the hover detection that gates this only fires
+/// when EditRoutingMode is on).
+let private toolSimulateDrag (args: JsonElement) : ToolResult =
+    try
+        let sx = args.GetProperty("startX").GetDouble()
+        let sy = args.GetProperty("startY").GetDouble()
+        let ex = args.GetProperty("endX").GetDouble()
+        let ey = args.GetProperty("endY").GetDouble()
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body =
+                sprintf
+                    "{\"startX\":%g,\"startY\":%g,\"endX\":%g,\"endY\":%g}"
+                    sx sy ex ey
+            let resp = udsRequest "POST" "/route/simulate-drag" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "simulate_drag failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_tail_log { sinceLine?, limit? } — read a
+/// trailing slice of the viz JSONL log at `~/.rekolektion/viz.log`.
+/// Reads the file directly (no UDS round-trip) since the MCP server
+/// shares the host filesystem with the viz app.
+///
+/// `sinceLine` (1-based) skips everything at or before that line
+/// number — letting an agent poll incrementally without re-reading
+/// the whole file. `limit` caps the returned line count (default
+/// 200, hard ceiling 5000 to keep payloads bounded). Returns
+/// `{ ok, totalLines, fromLine, toLine, lines: [<raw JSONL strings>] }`.
+let private toolTailLog (args: JsonElement) : ToolResult =
+    try
+        let logPath =
+            let home =
+                System.Environment.GetFolderPath(
+                    System.Environment.SpecialFolder.UserProfile)
+            Path.Combine(home, ".rekolektion", "viz.log")
+        if not (File.Exists logPath) then
+            TextResult
+                "{\"ok\":true,\"totalLines\":0,\"fromLine\":0,\"toLine\":0,\"lines\":[]}"
+        else
+            // Inline arg lookup — tryProp lives further down the
+            // file, and forward references aren't allowed in F#.
+            let intArg (name: string) (defaultValue: int) : int =
+                let mutable v = Unchecked.defaultof<JsonElement>
+                if args.ValueKind = JsonValueKind.Object
+                   && args.TryGetProperty(name, &v)
+                   && v.ValueKind = JsonValueKind.Number then
+                    v.GetInt32()
+                else defaultValue
+            let sinceLine = max 0 (intArg "sinceLine" 0)
+            let requested = intArg "limit" 200
+            let limit = max 1 (min 5000 requested)
+            // Read the whole file. For 10 MB cap that's bounded; we
+            // can revisit with a tail-seek if the file grows.
+            // FileShare.ReadWrite so concurrent writes from the viz
+            // app don't lock us out.
+            let lines =
+                use fs =
+                    new FileStream(logPath, FileMode.Open,
+                                   FileAccess.Read, FileShare.ReadWrite)
+                use sr = new StreamReader(fs)
+                let arr = ResizeArray<string>()
+                let mutable line = sr.ReadLine()
+                while not (isNull line) do
+                    arr.Add line
+                    line <- sr.ReadLine()
+                arr.ToArray()
+            let total = lines.Length
+            let startIdx = max sinceLine 0
+            let endIdx = total
+            let sliceStart = max startIdx (endIdx - limit)
+            let slice = lines.[sliceStart .. endIdx - 1]
+            // Each slice line is already JSON; concat into a JSON
+            // array verbatim (no re-encoding). Saves a parse step
+            // for the agent.
+            let body =
+                let sb = StringBuilder()
+                sb.Append "[" |> ignore
+                for i in 0 .. slice.Length - 1 do
+                    if i > 0 then sb.Append "," |> ignore
+                    sb.Append slice.[i] |> ignore
+                sb.Append "]" |> ignore
+                sb.ToString()
+            TextResult (
+                sprintf
+                    "{\"ok\":true,\"totalLines\":%d,\"fromLine\":%d,\"toLine\":%d,\"lines\":%s}"
+                    total (sliceStart + 1) endIdx body)
+    with ex ->
+        toolError (sprintf "tail_log failed: %s" ex.Message)
+
 /// Try a JsonElement property by name, returning Some if present
 /// AND a non-null value. Helps keep optional-arg parsing terse.
 let private tryProp (elem: JsonElement) (name: string) : JsonElement option =
@@ -485,6 +620,10 @@ let private toolHandlers
         "rekolektion_viz_list_macros",       toolListMacros
         "rekolektion_viz_set_active_macro",  toolSetActiveMacro
         "rekolektion_viz_get_selection",     toolGetSelection
+        "rekolektion_viz_hover_at",          toolHoverAt
+        "rekolektion_viz_simulate_drag",     toolSimulateDrag
+        "rekolektion_viz_get_geometry",      toolGetGeometry
+        "rekolektion_viz_tail_log",          toolTailLog
         "rekolektion_viz_render",            toolVizRender
         "rekolektion_viz_run_macro",         toolRunMacro
     ]
@@ -577,6 +716,73 @@ let private toolList : obj =
                inputSchema =
                    box {| ``type`` = "object"
                           properties = obj()
+                          additionalProperties = false |} |}
+        box {| name = "rekolektion_viz_hover_at"
+               description =
+                   "Probe the 3D-canvas routing hover hit-test at a \
+                    given screen pixel. Returns a JSON diagnostic \
+                    with the inverted MVP ray, every routing-layer \
+                    Z sample, the world (µm) and DBU coords each \
+                    sample lands at, and whether route detection \
+                    succeeded for that sample. Use to calibrate the \
+                    hit-test math without depending on the OS \
+                    cursor or a screenshot. Requires the 3D canvas \
+                    to have rendered at least once."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| x = box {| ``type`` = "number"
+                                            description = "Screen pixel X on the 3D canvas" |}
+                                 y = box {| ``type`` = "number"
+                                            description = "Screen pixel Y on the 3D canvas" |} |}
+                          required = [| "x"; "y" |] |} |}
+        box {| name = "rekolektion_viz_simulate_drag"
+               description =
+                   "Synthesize a full route-handle drag (press → \
+                    release) on the 3D canvas at the given screen \
+                    pixels. Returns JSON with the handle kind \
+                    (track / post / none), adjusts count, world \
+                    DBU start/end coords, and snapped delta. Used \
+                    to drive end-to-end edit tests from an agent. \
+                    Requires Edit Routing mode + a hovered route \
+                    at startX/startY."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| startX = box {| ``type`` = "number" |}
+                                 startY = box {| ``type`` = "number" |}
+                                 endX   = box {| ``type`` = "number" |}
+                                 endY   = box {| ``type`` = "number" |} |}
+                          required = [| "startX"; "startY"; "endX"; "endY" |] |} |}
+        box {| name = "rekolektion_viz_get_geometry"
+               description =
+                   "Return every element in the active macro's top \
+                    cell — rects, polys, paths, srefs, labels — with \
+                    source index, layer, and bbox in raw DBU. Use to \
+                    diff geometry before / after an edit (call once, \
+                    do the edit, call again, compare). Independent \
+                    of any visual rendering."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties = obj()
+                          additionalProperties = false |} |}
+        box {| name = "rekolektion_viz_tail_log"
+               description =
+                   "Read a trailing slice of the viz JSONL log at \
+                    ~/.rekolektion/viz.log. Each line is a JSON object \
+                    with at least { t, cat } fields plus a category-\
+                    specific payload. Use sinceLine to poll incrementally \
+                    (pass back the previous response's toLine). Returns \
+                    { totalLines, fromLine, toLine, lines[] }. The viz \
+                    app appends a 'msg' line per Elmish dispatch and \
+                    structured entries for save / load / route.* events."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| sinceLine = box {| ``type`` = "integer"
+                                                    description = "1-based; skip lines at or below this number" |}
+                                 limit     = box {| ``type`` = "integer"
+                                                    description = "Max lines returned (default 200, max 5000)" |} |}
                           additionalProperties = false |} |}
         box {| name = "rekolektion_viz_render"
                description =

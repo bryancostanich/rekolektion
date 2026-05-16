@@ -94,6 +94,12 @@ type Model = {
     /// committing. Computed from the active macro + selection
     /// each render.
     TightenMode : bool
+    /// Edit Routing mode: when active, the canvas hover-detects
+    /// existing routing geometry and overlays drag handles (track
+    /// arrows + post spheres). Toggled by E. Click-drag on a
+    /// handle reshapes the route; click-drag elsewhere still
+    /// orbits / pans. Mode persists across tab switches.
+    EditRoutingMode : bool
     /// Path of the tab currently in inline-rename mode (file-tab
     /// title swapped for a TextBox). None when no tab is being
     /// renamed. Cleared on Esc, on commit, or when the user
@@ -128,6 +134,7 @@ let empty : Model = {
     ShowRuler = true
     SnapEnabled = false
     TightenMode = false
+    EditRoutingMode = false
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }

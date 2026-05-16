@@ -138,6 +138,31 @@ type Msg =
     /// the current selection. When exiting, the candidates clear
     /// without committing.
     | ToggleTightenMode
+    /// Toggle Edit Routing mode on/off. While on, the canvas
+    /// hover-detects existing routing geometry and renders drag
+    /// handles whose orientation pre-constrains the drag axis.
+    /// Hotkey: E.
+    | ToggleEditRoutingMode
+    /// Commit a finished route-slide drag (track OR post). Each
+    /// entry in `adjusts` is
+    /// (sourceIndex, mx1X, mx1Y, my1X, my1Y, mx2X, mx2Y, my2X, my2Y) —
+    /// per-coord (dx, dy) multipliers (0 or 1) the handler
+    /// multiplies by the gesture's `dxDbu` / `dyDbu`:
+    /// `r.X1' = r.X1 + mx1X·dx + mx1Y·dy`, similarly for the
+    /// other three coords. Track slides fill only one delta axis;
+    /// post drags use both.
+    /// `extensions` is a list of NEW rects to append to the cell —
+    /// used by track slides whose anchored endpoints moved past
+    /// their anchor's bbox (rail extensions). One undo snapshot
+    /// covers everything.
+    | RouteSlideCommit of
+        cell: string
+        * dxDbu: int64
+        * dyDbu: int64
+        * adjusts:
+            (int * int64 * int64 * int64 * int64
+                 * int64 * int64 * int64 * int64) list
+        * extensions: Rekolektion.Viz.Core.Rkt.Types.Rectangle list
     /// Commit the i-th candidate (1-based) from the live
     /// Tighten-mode overlay, then exit mode. No-op if the index
     /// is out of range or mode is off.

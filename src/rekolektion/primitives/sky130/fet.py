@@ -132,6 +132,30 @@ def _add_multifinger_sd_ties(cell: rkt.Cell, nf: int) -> None:
     cell.elements.extend(_emit_strap(d_idx, d_strap_y))
     cell.elements.extend(_emit_strap(s_idx, s_strap_y))
 
+    # Consolidate the per-finger labels (D0/D2/D4/.../S1/S3/.../G0/.../G9)
+    # down to D/S/G so the cell exposes the conventional 4-port
+    # (D, G, S, well) interface at LVS time. Without this, Magic
+    # extracts the multifinger primitive as a 2N+1-pin subckt that
+    # the parent has to wire up pin-by-pin to satisfy LVS — no
+    # single-device schematic can match it.
+    li1_label_layer = rkt.named("sky130", "li1_label")
+    new_labels: list[rkt.Element] = []
+    for el in cell.elements:
+        if not isinstance(el, rkt.Label):
+            new_labels.append(el)
+            continue
+        if el.layer != li1_label_layer:
+            new_labels.append(el)
+            continue
+        # D0, D2, D4, ... → D. S1, S3, ... → S. G0..G9 → G.
+        if el.text and el.text[0] in ("D", "S", "G") and el.text[1:].isdigit():
+            new_labels.append(rkt.Label(
+                layer=el.layer, text=el.text[0], origin=el.origin,
+            ))
+        else:
+            new_labels.append(el)
+    cell.elements = new_labels
+
 
 def _fmt_um(value: float) -> str:
     """Format a micron value the way device names want it: `1.2` → `1p2`,

@@ -154,6 +154,12 @@ type private AnchorInfo = {
     EndpointMxY : int64
     EndpointMyX : int64
     EndpointMyY : int64
+    /// Half perp thickness of the segment this anchor anchors. Used
+    /// by `ComputeExtensionRect` to overhang the extension past the
+    /// new endpoint into the wire's body (JOG-fix). Without this the
+    /// extension stops at the wire's centerline and only the south /
+    /// west half of the wire connects.
+    DraggedSegHalfPerp : int64
 }
 
 /// In-flight slide state. Built on press, mutated each
@@ -570,6 +576,33 @@ type StackCanvasControl() =
                     lastFittedTopCell <- topName
                     lastFittedFlatLen <- flat.Length
                     this.FitCameraTo lib flat
+                // Ruler bbox tracks the CURRENT FlatPolygons every
+                // change, decoupled from the camera fit — otherwise
+                // a tab switch or reload that doesn't satisfy the
+                // refit gate leaves the ruler holding the previous
+                // file's bbox. Mirrors 2D's per-render bbox compute.
+                if flat.Length > 0 then
+                    let mutable xMin = System.Single.MaxValue
+                    let mutable xMax = System.Single.MinValue
+                    let mutable yMin = System.Single.MaxValue
+                    let mutable yMax = System.Single.MinValue
+                    let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                    for fp in flat do
+                        for p in fp.Points do
+                            let x = float32 (float p.X * umPerDbu)
+                            let y = float32 (float p.Y * umPerDbu)
+                            if x < xMin then xMin <- x
+                            if x > xMax then xMax <- x
+                            if y < yMin then yMin <- y
+                            if y > yMax then yMax <- y
+                    if xMin <= xMax && yMin <= yMax then
+                        if xMin <> rulerXMin || xMax <> rulerXMax
+                           || yMin <> rulerYMin || yMax <> rulerYMax then
+                            rulerXMin <- xMin
+                            rulerXMax <- xMax
+                            rulerYMin <- yMin
+                            rulerYMax <- yMax
+                            rulerDirty <- true
             | None ->
                 lastFittedTopCell <- ""
                 lastFittedFlatLen <- 0
@@ -1126,6 +1159,7 @@ type StackCanvasControl() =
             (endpoint: Rekolektion.Viz.Core.Rkt.Types.Point)
             (excludeTopIds: Set<int>)
             (mults: int64 * int64 * int64 * int64)
+            (draggedSegHalfPerp: int64)
             : AnchorInfo option =
         let (mxX, mxY, myX, myY) = mults
         let flat = Layout.Flatten.flatten doc
@@ -1155,7 +1189,8 @@ type StackCanvasControl() =
                            EndpointMxX = mxX
                            EndpointMxY = mxY
                            EndpointMyX = myX
-                           EndpointMyY = myY }
+                           EndpointMyY = myY
+                           DraggedSegHalfPerp = draggedSegHalfPerp }
                 else None)
 
     /// Compute the extension rect for a track-slide anchor. The
@@ -1201,13 +1236,22 @@ type StackCanvasControl() =
                 let bridgeProps =
                     StackCanvasControl.BridgePropsAt
                         anchor.OrigEndpoint.X anchor.OrigEndpoint.Y
+                // JOG-fix overhang: the extension's wire-side end is
+                // pulled past the new endpoint by the dragged segment's
+                // half perp thickness so it lands at the wire's far
+                // edge instead of its centerline. Otherwise only the
+                // half of the wire facing the anchor connects.
+                let half = anchor.DraggedSegHalfPerp
                 if endpointDx <> 0L && endpointDy = 0L then
                     let xMin = min anchor.OrigEndpoint.X newX
                     let xMax = max anchor.OrigEndpoint.X newX
+                    let xMinExt, xMaxExt =
+                        if newX > anchor.OrigEndpoint.X then xMin, xMax + half
+                        else xMin - half, xMax
                     Some
                         ({ Layer = anchor.Layer
-                           X1 = xMin; Y1 = aYMin
-                           X2 = xMax; Y2 = aYMax
+                           X1 = xMinExt; Y1 = aYMin
+                           X2 = xMaxExt; Y2 = aYMax
                            Net = None
                            Props = bridgeProps
                            Comments = [] }
@@ -1215,10 +1259,13 @@ type StackCanvasControl() =
                 elif endpointDy <> 0L && endpointDx = 0L then
                     let yMin = min anchor.OrigEndpoint.Y newY
                     let yMax = max anchor.OrigEndpoint.Y newY
+                    let yMinExt, yMaxExt =
+                        if newY > anchor.OrigEndpoint.Y then yMin, yMax + half
+                        else yMin - half, yMax
                     Some
                         ({ Layer = anchor.Layer
-                           X1 = aXMin; Y1 = yMin
-                           X2 = aXMax; Y2 = yMax
+                           X1 = aXMin; Y1 = yMinExt
+                           X2 = aXMax; Y2 = yMaxExt
                            Net = None
                            Props = bridgeProps
                            Comments = [] }
@@ -1232,10 +1279,16 @@ type StackCanvasControl() =
                     let xMax = max anchor.OrigEndpoint.X newX
                     let yMin = min anchor.OrigEndpoint.Y newY
                     let yMax = max anchor.OrigEndpoint.Y newY
+                    let xMinExt, xMaxExt =
+                        if newX > anchor.OrigEndpoint.X then xMin, xMax + half
+                        else xMin - half, xMax
+                    let yMinExt, yMaxExt =
+                        if newY > anchor.OrigEndpoint.Y then yMin, yMax + half
+                        else yMin - half, yMax
                     Some
                         ({ Layer = anchor.Layer
-                           X1 = xMin; Y1 = yMin
-                           X2 = xMax; Y2 = yMax
+                           X1 = xMinExt; Y1 = yMinExt
+                           X2 = xMaxExt; Y2 = yMaxExt
                            Net = None
                            Props = bridgeProps
                            Comments = [] }
@@ -1398,7 +1451,8 @@ type StackCanvasControl() =
                                 else
                                     StackCanvasControl.FindAnchorAt
                                         lib route.Cell seg.Layer seg.DataType
-                                        endpt excludeIds mults))
+                                        endpt excludeIds mults
+                                        (seg.Width / 2L)))
                 dragMode <- RouteTrackDrag
                 pressedButton <- RouteTrackDrag
                 lastPos <- e.GetPosition this
@@ -1855,7 +1909,8 @@ type StackCanvasControl() =
                             else
                                 StackCanvasControl.FindAnchorAt
                                     lib route.Cell seg.Layer seg.DataType
-                                    endpt excludeIds mults))
+                                    endpt excludeIds mults
+                                    (seg.Width / 2L)))
             if kindStr = "none" then
                 "{\"ok\":false,\"reason\":\"no handle under start point\"}"
             else

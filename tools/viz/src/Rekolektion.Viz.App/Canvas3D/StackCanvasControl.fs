@@ -967,6 +967,58 @@ type StackCanvasControl() =
             |> List.distinctBy (fun a -> a.SourceIdx)
         head :: neighbors
 
+    /// Return the spine-axis coordinates of every riser ("knuckle")
+    /// sitting on the dragged beam. For an X-spine beam these are
+    /// the via cuts' centerline X values; for Y-spine, the
+    /// centerline Y values. Used by the post-drag snap so the
+    /// beam's moving end can latch onto a riser when the user
+    /// drags through it. Detection mirrors `BuildRiserAdjusts`'s
+    /// via-anchored test: only datatype-44 cuts in-line with the
+    /// beam and centerlined near it count.
+    static member private RiserSpineCoordsOn
+            (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
+            (cellName: string)
+            (beam: Rekolektion.Viz.Core.Routing.Detect.Segment)
+            : int64 list =
+        match doc.Cells |> List.tryFind (fun c -> c.Name = cellName) with
+        | None -> []
+        | Some cell ->
+            let beamPerpExtent =
+                match beam.Spine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    beam.YMax - beam.YMin
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    beam.XMax - beam.XMin
+            let perpTol = beamPerpExtent
+            cell.Elements
+            |> List.choose (fun el ->
+                match el with
+                | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                    let _, dt =
+                        Rekolektion.Viz.Core.Rkt.ToGds.layerToGds r.Layer
+                    if dt <> 44 then None
+                    else
+                        let xMin = min r.X1 r.X2
+                        let xMax = max r.X1 r.X2
+                        let yMin = min r.Y1 r.Y2
+                        let yMax = max r.Y1 r.Y2
+                        match beam.Spine with
+                        | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                            let inLine =
+                                xMin >= beam.XMin && xMax <= beam.XMax
+                            let cy = (yMin + yMax) / 2L
+                            if inLine && abs (cy - beam.Center) <= perpTol then
+                                Some ((xMin + xMax) / 2L)
+                            else None
+                        | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                            let inLine =
+                                yMin >= beam.YMin && yMax <= beam.YMax
+                            let cx = (xMin + xMax) / 2L
+                            if inLine && abs (cx - beam.Center) <= perpTol then
+                                Some ((yMin + yMax) / 2L)
+                            else None
+                | _ -> None)
+
     /// Detect risers ("knuckles") sitting on the dragged beam and
     /// emit recipes that track the riser geometry + any wires
     /// connected to it on the OTHER metal layer.
@@ -2217,8 +2269,48 @@ type StackCanvasControl() =
                             else 0L, rawDy
                         | PostSlide, _ ->
                             rawDx, rawDy
-                    let snapDx = StackCanvasControl.SnapDbu rawDx'
-                    let snapDy = StackCanvasControl.SnapDbu rawDy'
+                    let snapDx0 = StackCanvasControl.SnapDbu rawDx'
+                    let snapDy0 = StackCanvasControl.SnapDbu rawDy'
+                    // Riser snap (PostSlide only): when the dragged
+                    // corner crosses near a riser sitting on one of
+                    // the attached beams, latch the moving end onto
+                    // the riser's spine coordinate. Snap window
+                    // ±250 DBU = ±0.25 µm — magnetic but not sticky.
+                    let snapDx, snapDy =
+                        match slide.Kind, slide.Route, slide.PostIdx with
+                        | PostSlide, Some route, Some pi
+                                when pi >= 0 && pi < route.Posts.Length ->
+                            let post = route.Posts.[pi]
+                            let snapWindow = 250L
+                            let mutable dx = snapDx0
+                            let mutable dy = snapDy0
+                            for segIdx in post.AttachedSegments do
+                                if segIdx >= 0 && segIdx < route.Segments.Length then
+                                    let seg = route.Segments.[segIdx]
+                                    let coords =
+                                        StackCanvasControl.RiserSpineCoordsOn
+                                            lib slide.Cell seg
+                                    match seg.Spine with
+                                    | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                                        let newPostX = post.Position.X + dx
+                                        let bestRiser =
+                                            coords
+                                            |> List.tryFind (fun rx ->
+                                                abs (rx - newPostX) <= snapWindow)
+                                        match bestRiser with
+                                        | Some rx -> dx <- rx - post.Position.X
+                                        | None -> ()
+                                    | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                                        let newPostY = post.Position.Y + dy
+                                        let bestRiser =
+                                            coords
+                                            |> List.tryFind (fun ry ->
+                                                abs (ry - newPostY) <= snapWindow)
+                                        match bestRiser with
+                                        | Some ry -> dy <- ry - post.Position.Y
+                                        | None -> ()
+                            dx, dy
+                        | _ -> snapDx0, snapDy0
                     if snapDx <> slide.LastDxDbu || snapDy <> slide.LastDyDbu then
                         slide.LastDxDbu <- snapDx
                         slide.LastDyDbu <- snapDy

@@ -89,6 +89,8 @@ let fromText (t: Gds.Types.TextLabel) : Element =
         Class = None
         Props = []
         Comments = []
+        IsInternal = false
+        Kind = NetName
     }
 
 let fromElement (e: Gds.Types.Element) : Element =

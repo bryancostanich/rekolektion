@@ -29,6 +29,8 @@ let private label (origin: Point) (text: string) : Element =
         Class = None
         Props = []
         Comments = []
+        IsInternal = false
+        Kind = NetName
     }
 
 let private docWith (elements: Element list) : Document =

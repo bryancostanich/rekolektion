@@ -739,6 +739,32 @@ let private analyzeLabel
                         match findChildProps path children with
                         | Error e -> Error e
                         | Ok props ->
+                            let isInternal =
+                                findForm "internal" children
+                                |> Option.bind childrenAfterHead
+                                |> Option.map (function
+                                    | [c] ->
+                                        match symbolText c |> Option.orElseWith (fun () -> stringText c) with
+                                        | Some s -> s = "#t" || s.ToLower() = "true"
+                                        | None -> false
+                                    | _ -> false)
+                                |> Option.defaultValue false
+                            // `(kind device-terminal)` marks the label as
+                            // a FET-port annotation, not a net. Missing
+                            // form defaults to `NetName` so legacy files
+                            // (and every hand-authored label) keep their
+                            // existing semantics.
+                            let kind =
+                                findForm "kind" children
+                                |> Option.bind childrenAfterHead
+                                |> Option.bind (function
+                                    | [c] -> symbolText c |> Option.orElseWith (fun () -> stringText c)
+                                    | _ -> None)
+                                |> Option.map (fun k ->
+                                    match k.ToLowerInvariant() with
+                                    | "device-terminal" -> DeviceTerminal
+                                    | _ -> NetName)
+                                |> Option.defaultValue NetName
                             Ok (LabelEl {
                                 Layer = layer
                                 Text = text
@@ -746,6 +772,8 @@ let private analyzeLabel
                                 Class = cls
                                 Props = props
                                 Comments = commentsOf s
+                                IsInternal = isInternal
+                                Kind = kind
                             })
                     | _ ->
                         Error (err path (Some (Cst.posOf s)) "(label ...) requires text + integer (origin X Y)")

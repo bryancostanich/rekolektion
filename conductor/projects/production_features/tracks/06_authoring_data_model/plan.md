@@ -112,3 +112,23 @@ Gated on decision 5 (regen verification mechanism).
 
 Track decisions made during the work here as they happen. Format:
 `YYYY-MM-DD — Decision N (spec.md): chose X because Y.`
+
+2026-05-16 — Decision 1 (F# representation): chose A — new
+`LabelKind = NetName | DeviceTerminal` DU on `Rkt.Types.Label`.
+Repurposing `Class` would overload one slot with two unrelated
+meanings (style hint vs. netlist role); a dedicated DU keeps the
+two axes structurally separate and lets the type system enforce
+the value space.
+
+2026-05-16 — Decision 2 (sexpr syntax): chose A — `(kind device-terminal)`.
+Pairs cleanly with Decision 1's separate field, avoids overloading
+the existing `(class …)` form which already lives on `Port` /
+`Net` with different meanings, and keeps the wire format
+self-documenting.
+
+2026-05-16 — Decision 3 (relationship to `IsInternal`): chose A —
+keep separate. `IsInternal` is the GDS-export filter; folding the
+two would suppress FET terminal labels from the GDS and break
+Magic's `port makeall` LVS extraction. They describe orthogonal
+axes (role-in-netlist vs. export-filter); divergent cases like
+"named internal net" need both flags settable independently.

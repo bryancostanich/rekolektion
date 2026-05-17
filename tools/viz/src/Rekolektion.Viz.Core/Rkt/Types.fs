@@ -89,6 +89,29 @@ type Port = {
     Comments: string list
 }
 
+/// Role of a `(label …)` in the netlist.
+///
+/// `NetName` — the label's text names a signal or power net. Any
+/// `NetName` label feeds the auto-derived `(nets …)` manifest at
+/// write time and contributes a pin to ratline / LabelFlood
+/// consumers. Default for hand-authored labels and any label
+/// without an explicit `(kind …)` annotation in the source file.
+///
+/// `DeviceTerminal` — the label is a FET port annotation
+/// (`D` / `G` / `S` / `B`) emitted by a primitive generator so
+/// Magic's `port makeall` sees it during LVS extraction. Net-level
+/// consumers must skip these; the text is a device-pin name, not
+/// a net name. Primitive generators tag them explicitly at emit
+/// time; nothing else should.
+///
+/// The kind is intrinsic to the label, not to its container — a
+/// custom primitive may mix device-terminal labels (FET pins) with
+/// net labels (internal bias rails). Per-cell granularity would
+/// mis-classify those cases.
+type LabelKind =
+    | NetName
+    | DeviceTerminal
+
 type Label = {
     Layer: Layer
     Text: string
@@ -96,6 +119,17 @@ type Label = {
     Class: string option
     Props: Property list
     Comments: string list
+    /// `IsInternal = true` marks the label as a viz/debug annotation
+    /// that ToGds.fs deliberately skips when exporting GDS.  Magic's
+    /// `port makeall` only sees GDS text records, so internal labels
+    /// never become subckt ports during LVS extraction.  Used for
+    /// naming internal nets without breaking LVS.
+    IsInternal: bool
+    /// Netlist role — see `LabelKind`. Orthogonal to `IsInternal`
+    /// (which controls GDS export). A `DeviceTerminal` label still
+    /// reaches GDS so Magic's port extraction can see it; it just
+    /// doesn't count as a net at any composition level.
+    Kind: LabelKind
 }
 
 type SRef = {

@@ -22,6 +22,8 @@ let ``Labels paint visible text`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          IsInternal = false
+                          Kind = NetName
                       }
                   ] }
             ] }

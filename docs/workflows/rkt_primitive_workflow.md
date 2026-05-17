@@ -1054,6 +1054,55 @@ ask the user "should I continue?" — that's the
 Otherwise: keep walking. Bugs, sizing tweaks, and natural pauses
 between phases are not stopping points.
 
+### Diagnosing met2 overlap conflicts before DRC
+
+Raw `verify_drc` output gives you tile counts per rule but **no
+spatial footprints** — when you see `met2.2: 24 tiles`, you have no
+idea which drops are colliding.  Iterating routing changes against
+unlocalized DRC counts is slow and blind.
+
+`khalkulo/scripts/diagnose_met2_overlaps.py` is a static analyzer
+that finds met2 overlap candidates from a viz geometry dump.  It:
+
+- Loads the JSON produced by
+  `mcp__rekolektion-viz__rekolektion_viz_get_geometry`.
+- Filters to met2 rects (GDS 69/20).
+- Reports pairs that **overlap in Y and have <140 nm gap in X**
+  (the met2.2 spacing rule), skipping same-X-center stacks (drop
+  wire + via2-widening on the same net).
+- Infers each rect's net from nearby labels in priority order:
+  met2_label inside bbox → met3_label at top/bottom Y (trunk
+  landing) → met1_label at top/bottom Y (intra-bit bar landing
+  per Hard Rule #13) → met1_label inside bbox → li1_label near
+  bbox.
+- Groups conflicts by net-pair so same-net intentional overlaps
+  collapse and only **different-net conflicts** stand out.
+
+Usage:
+
+```bash
+# 1. Snapshot geometry via the MCP tool. Output gets persisted to
+#    a tool-results file because it's large.
+# 2. Extract the inner JSON:
+jq -r '.[].text' <viz-mcp-output-file>.txt > geom.json
+# 3. Run the diagnostic:
+.venv/bin/python khalkulo/scripts/diagnose_met2_overlaps.py geom.json
+```
+
+**Required setup for net inference to work:** any intra-bit metal
+bar that ties multiple pins on the same net needs an
+`internal=True` label on its drawing layer (e.g.
+`rkt.Label(layer=met1_label_layer, text="cs_drain_0",
+origin=(...), internal=True)`).  Internal labels appear in viz and
+in the geometry dump but are not exported to GDS, so they don't
+become subckt ports at LVS extraction.  Without bar labels every
+intra-bit met2 vertical shows up as `?` and the conflict triage
+collapses to "we can't tell what shorts what."
+
+Run the diagnostic **after each routing iteration** that touched
+met2 verticals — much faster than a Magic DRC round-trip and far
+more actionable than tile-count summaries.
+
 ### NOT a valid pattern
 
 **Routing everything on met1.** Every wire on one layer collides
@@ -1667,6 +1716,38 @@ params → same digest → same content), but committing them means:
     at ≥600 nm pitch; if slot count exceeds what the cluster
     width allows, widen BIT_GAP (or equivalent) before routing —
     don't try to fit them into the no-man's-land.
+    Triage with `scripts/diagnose_met2_overlaps.py` (see
+    "Diagnosing met2 overlap conflicts before DRC") — it groups
+    by net-pair so different-net collisions surface even when
+    the raw `met2.2` tile count looks small.
+
+15. **Place each trunk near its pin-set, and trim it to its
+    outermost knuckles — don't park every trunk at the top of the
+    block and don't extend past the last drop.** Two halves:
+
+    (a) **Trunk-Y follows pin-set.** When a bus's drop endpoints
+    cluster in the south half of the cell band (e.g. CS gates
+    sitting near the rail), the trunk belongs in the **south
+    routing channel** just above the rail/tap row — drops go a
+    short distance UP to the trunk.  When the pin-set lives in
+    the north half (e.g. DIR drains at the top of stacked bit
+    columns), the trunk goes in the **north routing channel**
+    above the cell cluster — drops go DOWN.  Parking every trunk
+    at one end forces half the nets into a "way up north and
+    back down" round-trip, wastes met2, and crowds the routing
+    channel with overlapping verticals that wouldn't conflict if
+    each had its own short drop.
+
+    (b) **Trim trunk x to the outermost drop.**  The trunk's
+    `x1` / `x2` must end at the leftmost / rightmost drop X
+    (plus `VIA_OVERSHOOT` for the via2 widening enclosure).  Do
+    not paint a trunk that spans the entire block width when the
+    drops only live in a sub-span.  Excess trunk metal east of
+    the last knuckle picks up no signal, just consumes area and
+    can land in a met3-spacing conflict with neighboring trunks
+    at the same y-level.  Compute the drop x-range AFTER all
+    drop X positions are finalized (post Rule #14), then paint
+    the trunk to fit.
 
 ---
 

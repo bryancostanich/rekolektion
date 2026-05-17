@@ -28,14 +28,20 @@ let buildOrbitMvp
         : Matrix4x4 =
     let w, h = bounds
     let aspect = float32 (w / max h 1.0)
-    // Camera at 1.5× extent from target — close enough that
-    // perspective parallax across the bbox is visually obvious
-    // (the near edge is ~3× the size of the far edge at this
-    // distance with 60° FOV). At 2.5× radius the perspective ratio
-    // dropped to ~1.27× — barely perceptible, which is why the
-    // rendering looked like a flat 2D image rotating: there were
-    // no perspective cues differentiating angles.
-    let radius = float32 (extent * 1.5)
+    // Camera at 1.5× extent from target at zoom=1 — close enough
+    // that perspective parallax across the bbox is visually obvious
+    // (the near edge is ~3× the size of the far edge with 60° FOV).
+    // Wheel zoom scales RADIUS, not FOV: zoom>1 pulls the camera
+    // closer along the same view ray, zoom<1 pushes it back. FOV
+    // stays at a comfortable 60° at every zoom level, so a heavily
+    // zoomed-in view doesn't degenerate into a 1°-FOV telephoto
+    // cone. (Previous design narrowed FOV with zoom — fine for
+    // small zoom values on similar-sized cells, but on big cells
+    // the user had to scroll the wheel hard to compensate, driving
+    // FOV down to a few degrees and producing pathological
+    // perspective distortion.)
+    let radius =
+        float32 (extent * 1.5 / max zoom 0.05)
     let yaw = deg2rad yawDeg
     let pitch = deg2rad pitchDeg
     let camOffset =
@@ -43,13 +49,8 @@ let buildOrbitMvp
             radius * MathF.Cos(pitch) * MathF.Sin(yaw),
             radius * MathF.Cos(pitch) * MathF.Cos(yaw),
             radius * MathF.Sin(pitch))
-    // 60° vertical FOV at zoom=1 — typical for CAD/3D viewers.
-    // Wider than the previous 30° so perspective foreshortening
-    // is unambiguous. The cap at 170° keeps us safely under
-    // CreatePerspectiveFieldOfView's hard limit of π radians (180°);
-    // without it a zoom-out beyond ~0.33 throws ArgumentOutOfRange.
-    let fovDeg = min 170.0 (60.0 / max zoom 0.05)
-    let fovY = deg2rad fovDeg
+    // 60° vertical FOV — fixed regardless of zoom.
+    let fovY = deg2rad 60.0
     // Near tight enough to maximize depth-buffer precision; far
     // generous enough to never clip the bbox.
     let near = max 0.01f (radius * 0.05f)

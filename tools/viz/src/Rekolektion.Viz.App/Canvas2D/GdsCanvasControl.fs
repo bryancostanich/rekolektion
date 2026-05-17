@@ -81,6 +81,10 @@ type private SelectionOverlay = {
     /// Ruler overlay on/off. Independent from ShowGrid. Anchored
     /// at the doc's bbox bottom-left; ticks point outward.
     ShowRuler : bool
+    /// Layout label text rendering. When false, the LabelPainter
+    /// pass is skipped — net names and port markers stay in the
+    /// model but don't render. Default true.
+    ShowLabels : bool
 }
 
 /// One of eight resize handles around a single selected polygon's
@@ -171,13 +175,16 @@ type private SkiaDraw(bounds: Rect,
                         max 1L (int64 (Rekolektion.Viz.App.Services.Config.current.GridMajorUm / umPerDbu))
                     let minorDbu =
                         max 1L (int64 (Rekolektion.Viz.App.Services.Config.current.GridMinorUm / umPerDbu))
-                    // Dot screen-pixel spacing — skip the pass when
-                    // dots would crowd to < 3 px apart, which is
-                    // mush at high zoom-out.
+                    // Dot screen-pixel spacing — drop a pass when dots
+                    // would crowd closer than a few diameters apart.
+                    // Below ~10 px minor / ~6 px major the lattice
+                    // reads as fog instead of a grid; the 3 px we
+                    // used to pick was barely above the dot radius
+                    // and produced exactly that clutter.
                     let minorPx = float minorDbu * gsX
-                    let drawMinor = minorPx >= 3.0
+                    let drawMinor = minorPx >= 14.0
                     let majorPx = float majorDbu * gsX
-                    let drawMajor = majorPx >= 3.0
+                    let drawMajor = majorPx >= 9.0
                     let wxToScr (wx: int64) =
                         (float wx - float vb.MinX) * gsX |> float32
                     let wyToScr (wy: int64) =
@@ -234,7 +241,8 @@ type private SkiaDraw(bounds: Rect,
                             wx <- wx + majorDbu
 
                 LayerPainter.paintIn canvas vb lib flat toggle
-                LabelPainter.paintIn canvas vb lib toggle
+                if overlay.ShowLabels then
+                    LabelPainter.paintIn canvas vb lib toggle
 
                 let scaleX =
                     if vb.MaxX = vb.MinX then 1.0
@@ -574,12 +582,23 @@ type private SkiaDraw(bounds: Rect,
                                 Color = SKColor(0xE0uy, 0xE0uy, 0xE0uy, 0xE0uy),
                                 StrokeWidth = 1.0f,
                                 IsAntialias = true)
+                        // Ruler labels scale with world zoom — height
+                        // fixed in µm, converted to pixels via the
+                        // current screen-per-µm ratio so the labels
+                        // shrink with the geometry on zoom-out and
+                        // grow on zoom-in. Floor at 6 px so the
+                        // labels stay legible at extreme zoom-out
+                        // instead of vanishing entirely.
+                        let pxPerUm = gsX / umPerDbu
+                        let labelHeightUm = 0.35
+                        let labelPx =
+                            max 6.0 (labelHeightUm * pxPerUm) |> float32
                         use labelPaint =
                             new SKPaint(
                                 Style = SKPaintStyle.Fill,
                                 Color = SKColors.White,
                                 IsAntialias = true,
-                                TextSize = 10.0f)
+                                TextSize = labelPx)
                         // X spine along bbox bottom edge.
                         canvas.DrawLine(
                             SKPoint(origSx, origSy),
@@ -651,7 +670,10 @@ type private SkiaDraw(bounds: Rect,
                                 tickPaint)
                             if um > 1e-6 then
                                 let label = sprintf "%.0f" um
-                                canvas.DrawText(label, sx + 2.0f, origSy + tickLen + 11.0f, labelPaint)
+                                // Offset scales with label height so the
+                                // baseline drops below the tick by ~one
+                                // glyph height regardless of zoom.
+                                canvas.DrawText(label, sx + 2.0f, origSy + tickLen + labelPx + 1.0f, labelPaint)
                         // Y-axis sub-ticks.
                         for um in subTickUmsAlong yExtent do
                             let wy = byMin + int64 (um / umPerDbu)
@@ -670,7 +692,13 @@ type private SkiaDraw(bounds: Rect,
                                 tickPaint)
                             if um > 1e-6 then
                                 let label = sprintf "%.0f" um
-                                canvas.DrawText(label, origSx - tickLen - 18.0f, sy + 4.0f, labelPaint)
+                                // X offset scales with label width
+                                // estimate (≈ char-width × digit-count);
+                                // Y nudge scales with height so the
+                                // text sits centered on the tick.
+                                let approxCharW = labelPx * 0.55f
+                                let approxW = approxCharW * float32 label.Length
+                                canvas.DrawText(label, origSx - tickLen - approxW - 2.0f, sy + labelPx * 0.4f, labelPaint)
 
                 canvas.RestoreToCount saved
 
@@ -825,6 +853,9 @@ type GdsCanvasControl() as this =
     static member val ShowRulerProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowRuler", false)
         with get
+    static member val ShowLabelsProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowLabels", true)
+        with get
     static member val SnapEnabledProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("SnapEnabled", false)
         with get
@@ -956,6 +987,10 @@ type GdsCanvasControl() as this =
     member this.ShowRuler
         with get() : bool = this.GetValue(GdsCanvasControl.ShowRulerProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowRulerProperty, v) |> ignore
+
+    member this.ShowLabels
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowLabelsProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowLabelsProperty, v) |> ignore
 
     member this.SnapEnabled
         with get() : bool = this.GetValue(GdsCanvasControl.SnapEnabledProperty)
@@ -1090,6 +1125,7 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.SelectedPolygonsProperty
              || e.Property = GdsCanvasControl.ShowGridProperty
              || e.Property = GdsCanvasControl.ShowRulerProperty
+             || e.Property = GdsCanvasControl.ShowLabelsProperty
              || e.Property = GdsCanvasControl.SnapEnabledProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
@@ -2302,7 +2338,8 @@ type GdsCanvasControl() as this =
                   SelectedPolygons = this.SelectedPolygons
                   ResizeBbox = resizeBbox
                   ShowGrid = this.ShowGrid
-                  ShowRuler = this.ShowRuler }
+                  ShowRuler = this.ShowRuler
+                  ShowLabels = this.ShowLabels }
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits))
         | None ->
             // Closing the active tab leaves None for Library; without

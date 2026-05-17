@@ -450,6 +450,13 @@ type StackCanvasControl() =
               | None -> ()
         let zMin = zMinPhysical * Z_EXAGGERATION
         let zMax = zMaxPhysical * Z_EXAGGERATION
+        // Camera re-fit means re-frame from scratch — the user's
+        // accumulated wheel zoom from a different file (or session)
+        // would otherwise compound with the new extent and produce
+        // a tiny view of a tiny chunk, with perspective gone
+        // pathological. Reset to 1.0 here so the new file lands
+        // framed at its own bbox.
+        zoom <- 1.0
         if xMin > xMax then
             target <- System.Numerics.Vector3.Zero
             extent <- 80.0
@@ -959,6 +966,195 @@ type StackCanvasControl() =
                             route.Segments.[i] dragged))
             |> List.distinctBy (fun a -> a.SourceIdx)
         head :: neighbors
+
+    /// Detect risers ("knuckles") sitting on the dragged beam and
+    /// emit recipes that track the riser geometry + any wires
+    /// connected to it on the OTHER metal layer.
+    ///
+    /// A riser is a via stack: a small via cut on a contact/via
+    /// layer (datatype 44) sandwiched between metal pads on the
+    /// via's two connected metal layers (datatype 20). Detection
+    /// is VIA-ANCHORED: we only emit recipes for rects that are
+    /// demonstrably part of a via stack — preventing unrelated
+    /// rects that happen to overlap the beam's X range from getting
+    /// dragged along (the symptom of v1's looser heuristic).
+    ///
+    /// Cross-layer cascade: if a riser bottom (or top) pad sits at
+    /// the end of a longer wire on its layer, that wire's near-end
+    /// spine-stretches with the beam — same pattern as the
+    /// in-plane L-corner cascade but propagated through the via.
+    /// Example: met3 beam with a riser to a met2 vertical bus
+    /// below — drag met3 down, the met2 bus's top end (which was
+    /// at the riser pad) tracks the new pad position.
+    ///
+    /// Excludes the beam's own SourceIndex so the rigid-translate
+    /// recipe doesn't double-apply on top of `BuildSlideAdjusts`'s
+    /// beam recipe.
+    static member private BuildRiserAdjusts
+            (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
+            (cellName: string)
+            (beam: Rekolektion.Viz.Core.Routing.Detect.Segment)
+            : SlideAdjust list =
+        match doc.Cells |> List.tryFind (fun c -> c.Name = cellName) with
+        | None -> []
+        | Some cell ->
+            let beamPerpExtent =
+                match beam.Spine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    beam.YMax - beam.YMin
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    beam.XMax - beam.XMin
+            let perpTol = beamPerpExtent
+            // Index rects by (sourceIdx, gdsLayer, gdsDt, bbox).
+            let rects =
+                cell.Elements
+                |> List.mapi (fun i el -> i, el)
+                |> List.choose (fun (i, el) ->
+                    match el with
+                    | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                        let n, d =
+                            Rekolektion.Viz.Core.Rkt.ToGds.layerToGds r.Layer
+                        let xMin = min r.X1 r.X2
+                        let xMax = max r.X1 r.X2
+                        let yMin = min r.Y1 r.Y2
+                        let yMax = max r.Y1 r.Y2
+                        Some (i, n, d, xMin, yMin, xMax, yMax)
+                    | _ -> None)
+                |> List.toArray
+            // bbox-contains test: does outer fully contain inner?
+            let contains
+                    (oxMin, oyMin, oxMax, oyMax)
+                    (ixMin, iyMin, ixMax, iyMax) =
+                ixMin >= oxMin && iyMin >= oyMin
+                && ixMax <= oxMax && iyMax <= oyMax
+            // Vias: datatype 44 rects sitting in-line with the beam
+            // AND with their perp centerline near the beam centerline.
+            let perpCenter (xMin, yMin, xMax, yMax) =
+                match beam.Spine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    (yMin + yMax) / 2L
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    (xMin + xMax) / 2L
+            let inLine (xMin, yMin, xMax, yMax) =
+                match beam.Spine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    xMin >= beam.XMin && xMax <= beam.XMax
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    yMin >= beam.YMin && yMax <= beam.YMax
+            let viaCuts =
+                rects
+                |> Array.filter (fun (_, _, dt, xMin, yMin, xMax, yMax) ->
+                    let bbox = (xMin, yMin, xMax, yMax)
+                    dt = 44
+                    && inLine bbox
+                    && abs (perpCenter bbox - beam.Center) <= perpTol)
+            // For each via, its two connected metal layers (sky130
+            // convention: via on layer N/44 connects (N,20) + (N+1,20)).
+            // Adjacent-metal candidates come from those layer numbers.
+            let adjusts = ResizeArray<SlideAdjust>()
+            let addedIds =
+                System.Collections.Generic.HashSet<int>()
+            let add idx =
+                if idx <> beam.SourceIndex && addedIds.Add idx then
+                    adjusts.Add (StackCanvasControl.TrackDraggedAdjust
+                                     idx beam.Spine)
+            let spineStretchTowardPad
+                    (wireIdx: int)
+                    (wireBbox: int64 * int64 * int64 * int64)
+                    (padBbox: int64 * int64 * int64 * int64) =
+                // Wire is a longer rect on the same layer as `padBbox`
+                // with ONE of its spine ends sitting inside the pad.
+                // Emit a spine-stretch recipe whose moving end is
+                // whichever wire end is inside the pad bbox.
+                let (wxMin, wyMin, wxMax, wyMax) = wireBbox
+                let (pxMin, pyMin, pxMax, pyMax) = padBbox
+                let wPerpAxisIsX =
+                    (wxMax - wxMin) >= (wyMax - wyMin)
+                let z = StackCanvasControl.ZeroAdjust wireIdx
+                // beam.Spine is the BEAM's spine. The CROSS-LAYER
+                // wire's near-end follows the beam's perp axis
+                // (i.e. dy for X-spine beam, dx for Y-spine beam).
+                if wPerpAxisIsX then
+                    // Wire is horizontal (X-spine). Its end coord is
+                    // an X end; near-pad = whichever X end is inside
+                    // pad's X range.
+                    let nearMin =
+                        wxMin >= pxMin && wxMin <= pxMax
+                    let nearMax =
+                        wxMax >= pxMin && wxMax <= pxMax
+                    match beam.Spine with
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                        // Beam horizontal → perp is Y. Wire end moves
+                        // in Y to track pad's Y shift.
+                        if nearMin then
+                            { z with My1Y = 1L; My2Y = 1L }
+                            |> adjusts.Add
+                        elif nearMax then
+                            { z with My1Y = 1L; My2Y = 1L }
+                            |> adjusts.Add
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                        if nearMin then { z with Mx1X = 1L } |> adjusts.Add
+                        elif nearMax then { z with Mx2X = 1L } |> adjusts.Add
+                else
+                    // Wire is vertical (Y-spine). Its end coord is a
+                    // Y end.
+                    let nearMin =
+                        wyMin >= pyMin && wyMin <= pyMax
+                    let nearMax =
+                        wyMax >= pyMin && wyMax <= pyMax
+                    match beam.Spine with
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                        if nearMin then { z with My1Y = 1L } |> adjusts.Add
+                        elif nearMax then { z with My2Y = 1L } |> adjusts.Add
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                        if nearMin then
+                            { z with Mx1X = 1L; Mx2X = 1L } |> adjusts.Add
+                        elif nearMax then
+                            { z with Mx1X = 1L; Mx2X = 1L } |> adjusts.Add
+            for (vi, vn, _vd, vxMin, vyMin, vxMax, vyMax) in viaCuts do
+                add vi
+                let viaBbox = (vxMin, vyMin, vxMax, vyMax)
+                // Two metal layers connected by this via (sky130).
+                let metals = [| vn; vn + 1 |]
+                for (mi, mn, md, mxMin, myMin, mxMax, myMax) in rects do
+                    if md = 20 && Array.contains mn metals
+                       && mi <> beam.SourceIndex then
+                        let mBbox = (mxMin, myMin, mxMax, myMax)
+                        if contains mBbox viaBbox then
+                            // This is a riser pad: translate rigid.
+                            if addedIds.Add mi then
+                                adjusts.Add
+                                    (StackCanvasControl.TrackDraggedAdjust
+                                         mi beam.Spine)
+                            // Cross-layer cascade: wires on this layer
+                            // whose end touches THIS pad get spine-
+                            // stretched to follow.
+                            for (wi, wn, wd, wxMin, wyMin, wxMax, wyMax) in rects do
+                                if wd = 20 && wn = mn && wi <> mi
+                                   && wi <> beam.SourceIndex
+                                   && not (addedIds.Contains wi) then
+                                    let wBbox =
+                                        (wxMin, wyMin, wxMax, wyMax)
+                                    // Wire whose end is inside the
+                                    // pad's bbox (one end overlap is
+                                    // enough — wires that simply pass
+                                    // through the pad without ending
+                                    // there fail the end-check below).
+                                    let endInPad =
+                                        let endNearMinX =
+                                            wxMin >= mxMin && wxMin <= mxMax
+                                        let endNearMaxX =
+                                            wxMax >= mxMin && wxMax <= mxMax
+                                        let endNearMinY =
+                                            wyMin >= myMin && wyMin <= myMax
+                                        let endNearMaxY =
+                                            wyMax >= myMin && wyMax <= myMax
+                                        (endNearMinX || endNearMaxX)
+                                        && (endNearMinY || endNearMaxY)
+                                    if endInPad then
+                                        addedIds.Add wi |> ignore
+                                        spineStretchTowardPad wi wBbox mBbox
+            adjusts |> List.ofSeq
 
     /// Recipe for one segment attached to a POST being dragged.
     /// Spine-axis-only stretch — the segment's near-to-post endpoint
@@ -1496,7 +1692,12 @@ type StackCanvasControl() =
             // just at the press point.
             let cascaded =
                 StackCanvasControl.CascadeNeighborAdjusts route baseAdjusts None
-            let adjusts = baseAdjusts @ cascaded
+            // Risers (knuckles) sitting on the dragged beam translate
+            // with it as rigid bodies — pads + via cuts that bracket
+            // the beam centerline within its X range follow the dy.
+            let risers =
+                StackCanvasControl.BuildRiserAdjusts lib route.Cell seg
+            let adjusts = baseAdjusts @ cascaded @ risers
             beginSlide TrackSlide route lib seg.Spine adjusts "track"
                 (Some seg) None
         | None, Some postIdx, Some route, Some lib
@@ -1874,7 +2075,10 @@ type StackCanvasControl() =
                     let cascaded =
                         StackCanvasControl.CascadeNeighborAdjusts
                             route baseAdjusts None
-                    "track", baseAdjusts @ cascaded, seg.Spine, None
+                    let risers =
+                        StackCanvasControl.BuildRiserAdjusts
+                            lib route.Cell seg
+                    "track", baseAdjusts @ cascaded @ risers, seg.Spine, None
                 | None, Some postIdx when postIdx < route.Posts.Length ->
                     let adjusts =
                         StackCanvasControl.BuildPostAdjusts route postIdx
@@ -2284,6 +2488,7 @@ type StackCanvasControl() =
         let factor = if e.Delta.Y > 0.0 then 1.15 else 1.0 / 1.15
         zoom <- max 0.05 (min 50.0 (zoom * factor))
         this.RequestNextFrameRendering()
+
 
     override this.OnOpenGlInit(gli) =
         // Register the routing-hover diagnose callback now that the

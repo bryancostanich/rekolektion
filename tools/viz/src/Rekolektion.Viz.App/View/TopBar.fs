@@ -83,6 +83,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         ] :> IView
     let gridToggle    = mkToggle "Grid (G)"     model.ShowGrid    "#2c4b6f" Msg.ToggleGrid
     let rulerToggle   = mkToggle "Ruler (U)"    model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
+    let labelsToggle  = mkToggle "Labels"       model.ShowLabels  "#2c4b6f" Msg.ToggleLabels
     let snapToggle    = mkToggle "Snap (S)"     model.SnapEnabled "#2c4b6f" Msg.ToggleSnap
     // Tighten mode lives next to the editor-action toggles so the
     // mode-state indicator (filled = active) reads at a glance.
@@ -116,6 +117,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     snapToggle
                                     rulerToggle
                                     gridToggle
+                                    labelsToggle
                                     tightenToggle
                                     editRoutingToggle
                                     ratlinesToggle

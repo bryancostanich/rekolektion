@@ -82,6 +82,11 @@ type Model = {
     /// Toggled by U. Independent from ShowGrid so the user can
     /// pick the visual they want.
     ShowRuler : bool
+    /// Layout label text (net names, port markers — anything
+    /// emitted as a `(label …)` form in the .rkt). When off, the
+    /// 2D label painter is skipped so the canvas reads as pure
+    /// geometry. Toggled from the TopBar.
+    ShowLabels : bool
     /// Snap mode: when true, move/resize drags snap to the user
     /// grid (Config.SnapDefaultUm normally, Config.SnapAltUm
     /// when Alt is held). When false, drags go raw (1 DBU = 1 nm
@@ -132,6 +137,7 @@ let empty : Model = {
     ShowDrc = false
     ShowGrid = true
     ShowRuler = true
+    ShowLabels = true
     SnapEnabled = false
     TightenMode = false
     EditRoutingMode = false

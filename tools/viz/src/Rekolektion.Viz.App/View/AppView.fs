@@ -76,6 +76,10 @@ let private gds2DShowRulerAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowRulerProperty, v, ValueNone)
 
+let private gds2DShowLabelsAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowLabelsProperty, v, ValueNone)
+
 let private gds2DSnapEnabledAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.SnapEnabledProperty, v, ValueNone)
@@ -185,6 +189,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DShowDrcAttr model.ShowDrc
               gds2DShowGridAttr model.ShowGrid
               gds2DShowRulerAttr model.ShowRuler
+              gds2DShowLabelsAttr model.ShowLabels
               gds2DSnapEnabledAttr model.SnapEnabled
               gds2DVisibleRatlinesAttr model.Toggle.VisibleRatlines
               gds2DTightenModeAttr model.TightenMode

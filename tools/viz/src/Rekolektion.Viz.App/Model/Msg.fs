@@ -109,6 +109,8 @@ type Msg =
     | ToggleGrid
     /// Toggle the origin-anchored ruler overlay (U key).
     | ToggleRuler
+    /// Toggle layout label text rendering (all `(label …)` forms).
+    | ToggleLabels
     /// Toggle drag-snap (S key). When on, move + resize land on
     /// the user grid (Config.SnapDefaultUm, or Config.SnapAltUm
     /// with Alt held). When off, drags go raw.

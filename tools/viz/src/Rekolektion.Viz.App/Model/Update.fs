@@ -232,6 +232,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with ShowGrid = not model.ShowGrid }, Cmd.none
     | Msg.ToggleRuler ->
         { model with ShowRuler = not model.ShowRuler }, Cmd.none
+    | Msg.ToggleLabels ->
+        { model with ShowLabels = not model.ShowLabels }, Cmd.none
     | Msg.ToggleSnap ->
         { model with SnapEnabled = not model.SnapEnabled }, Cmd.none
     | Msg.ToggleRatlines ->

@@ -894,10 +894,52 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 FlatPolygons = flat'
                                 TopInstances = inst'
                                 UndoStack = rest
+                                // Push the CURRENT (pre-undo)
+                                // document onto the redo stack so
+                                // Cmd+Shift+Z can put it back.
+                                RedoStack = mc.Document :: mc.RedoStack
                                 Dirty = stillDirty
                                 Path = pathRestored })
                 let activePath' =
                     if model.ActiveMacroPath = Some mc.Path then Some pathRestored
+                    else model.ActiveMacroPath
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = activePath' }, Cmd.none
+    | Msg.RedoActiveMacro ->
+        match Model.activeMacro model with
+        | None -> model, Cmd.none
+        | Some mc ->
+            match mc.RedoStack with
+            | [] -> model, Cmd.none
+            | nextLib :: rest ->
+                let flat' = Layout.Flatten.flatten nextLib
+                let inst' = Layout.Instances.enumerate nextLib
+                // Re-applying a redone edit makes the doc dirty
+                // again. If the user undid all the way back to the
+                // load state (Path got restored to original), redo
+                // also re-applies the auto-suggested edited path.
+                let editedPath =
+                    if mc.Path = mc.OriginalPath then
+                        EditSession.suggestEditedPath mc.OriginalPath
+                    else mc.Path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun m ->
+                        if m.Path <> mc.Path then m
+                        else
+                            { m with
+                                Document = nextLib
+                                FlatPolygons = flat'
+                                TopInstances = inst'
+                                // Current doc goes back on the undo
+                                // stack so a follow-up Cmd+Z works.
+                                UndoStack = mc.Document :: mc.UndoStack
+                                RedoStack = rest
+                                Dirty = true
+                                Path = editedPath })
+                let activePath' =
+                    if model.ActiveMacroPath = Some mc.Path then Some editedPath
                     else model.ActiveMacroPath
                 { model with
                     OpenMacros = openMacros'

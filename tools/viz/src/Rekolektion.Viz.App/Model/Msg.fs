@@ -172,6 +172,7 @@ type Msg =
     /// Pop the active macro's undo stack and restore the
     /// previous library. No-op when the stack is empty.
     | UndoActiveMacro
+    | RedoActiveMacro
     /// Save the active macro to disk. On first save of an opened
     /// file, writes to `<base>_edited.mag` (auto-suffix on
     /// collision); subsequent saves overwrite that copy in place.

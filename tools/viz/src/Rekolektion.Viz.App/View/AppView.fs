@@ -140,6 +140,10 @@ let private stack3DVisibleRatlinesAttr (v: Set<string>) : IAttr<StackCanvasContr
     AttrBuilder<StackCanvasControl>.CreateProperty<Set<string>>(
         StackCanvasControl.VisibleRatlinesProperty, v, ValueNone)
 
+let private stack3DSelectedPolygonsAttr (v: Set<string * int>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Set<string * int>>(
+        StackCanvasControl.SelectedPolygonsProperty, v, ValueNone)
+
 /// Render the canvas (tab control wrapping the 2D + 3D views).
 /// Reads the active macro via Model.activeMacro so opening another
 /// tab swaps the canvas contents without touching the canvas
@@ -220,7 +224,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               stack3DFlatAttr    flat
               stack3DToggleAttr   model.Toggle
               stack3DPickedAttr  pickedHandler
-              stack3DVisibleRatlinesAttr model.Toggle.VisibleRatlines ]
+              stack3DVisibleRatlinesAttr model.Toggle.VisibleRatlines
+              stack3DSelectedPolygonsAttr model.Selection ]
 
     let activeIndex =
         match model.ActiveTab with

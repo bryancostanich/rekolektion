@@ -47,6 +47,7 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             OriginalPath = path
             Dirty = false
             UndoStack = []
+            RedoStack = []
         }
     with ex -> return Error ex.Message
 }

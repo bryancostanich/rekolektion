@@ -41,6 +41,11 @@ type LoadedMacro = {
     /// Cmd+Z pops and restores; the popped document replaces the
     /// current one and re-derives FlatPolygons / TopInstances.
     UndoStack : Document list
+    /// Redo stack — when Undo pops, the CURRENT document goes here
+    /// so Cmd+Shift+Z can put it back. Any new edit clears this
+    /// stack (standard undo/redo semantics: a new branch invalidates
+    /// the redo history).
+    RedoStack : Document list
 }
 
 type RunState =

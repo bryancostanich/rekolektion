@@ -166,10 +166,11 @@ let undoLimit = 200
 
 /// Push the current `Document` onto `mc.UndoStack` so a future Undo
 /// can restore it. Trims to `undoLimit` from the end. Used by
-/// Update.fs *before* applying any edit.
+/// Update.fs *before* applying any edit. Clears `RedoStack` —
+/// any new edit invalidates the redo history (standard undo/redo).
 let pushUndoSnapshot (mc: LoadedMacro) : LoadedMacro =
     let stack = mc.Document :: mc.UndoStack
     let trimmed =
         if stack.Length > undoLimit then List.truncate undoLimit stack
         else stack
-    { mc with UndoStack = trimmed }
+    { mc with UndoStack = trimmed; RedoStack = [] }

@@ -162,6 +162,27 @@ type private AnchorInfo = {
     DraggedSegHalfPerp : int64
 }
 
+/// Captured at press time for a riser that anchors to geometry we
+/// can't move (a lower via stack: FET diff/poly via mcon or another
+/// via cut on the layer below). On commit a duplicate via stack is
+/// emitted at `(orig + drag delta)` plus a bridge wire on the
+/// other-metal layer from old center → new center. The originals
+/// stay put so the anchor relationship with the lower stack
+/// survives the move.
+type private RiserDup = {
+    /// Center of the original via cut (DBU).
+    CenterX : int64
+    CenterY : int64
+    /// The three components that get duplicated, copied at emit
+    /// time with `(dx, dy)` shift applied.
+    BeamPad : Rekolektion.Viz.Core.Rkt.Types.Rectangle
+    Via     : Rekolektion.Viz.Core.Rkt.Types.Rectangle
+    OtherPad: Rekolektion.Viz.Core.Rkt.Types.Rectangle
+    /// Width of the bridge wire on the other-metal layer (sky130
+    /// per-layer min width).
+    BridgeWidth : int64
+}
+
 /// In-flight slide state. Built on press, mutated each
 /// PointerMoved, consumed on release.
 type private RouteSlide = {
@@ -190,6 +211,10 @@ type private RouteSlide = {
     /// (PostSlide). None for TrackSlide — track drags don't generate
     /// corner jogs at the dragged segment itself.
     PostIdx        : int option
+    /// Anchored risers on the dragged beam — each one emits a
+    /// duplicated via stack + bridge wire at commit time so the
+    /// original via stays connected to whatever's below.
+    RiserDups      : RiserDup list
     mutable LastDxDbu : int64
     mutable LastDyDbu : int64
 }
@@ -387,6 +412,17 @@ type StackCanvasControl() =
             "VisibleRatlines", Set.empty)
         with get
 
+    /// Mirror of GdsCanvasControl.SelectedPolygonsProperty: set of
+    /// (sourceStructure, sourceIndex) pairs identifying polygons the
+    /// user has selected. 3D renders an outline around each at the
+    /// polygon's top-of-slab Z so the selection reads through the
+    /// extruded geometry.
+    static member val SelectedPolygonsProperty
+            : StyledProperty<Set<string * int>> =
+        AvaloniaProperty.Register<StackCanvasControl, Set<string * int>>(
+            "SelectedPolygons", Set.empty)
+        with get
+
     member this.Library
         with get() : Document option = this.GetValue(StackCanvasControl.LibraryProperty)
         and set(v: Document option) = this.SetValue(StackCanvasControl.LibraryProperty, v) |> ignore
@@ -406,6 +442,13 @@ type StackCanvasControl() =
     member this.VisibleRatlines
         with get() : Set<string> = this.GetValue(StackCanvasControl.VisibleRatlinesProperty)
         and set(v: Set<string>) = this.SetValue(StackCanvasControl.VisibleRatlinesProperty, v) |> ignore
+
+    member this.SelectedPolygons
+        with get() : Set<string * int> =
+            this.GetValue(StackCanvasControl.SelectedPolygonsProperty)
+        and set(v: Set<string * int>) =
+            this.SetValue(StackCanvasControl.SelectedPolygonsProperty, v)
+            |> ignore
 
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
         yawDeg <- yaw
@@ -614,7 +657,8 @@ type StackCanvasControl() =
                 lastFittedTopCell <- ""
                 lastFittedFlatLen <- 0
             this.RequestNextFrameRendering()
-        elif e.Property = StackCanvasControl.ToggleProperty then
+        elif e.Property = StackCanvasControl.ToggleProperty
+             || e.Property = StackCanvasControl.SelectedPolygonsProperty then
             this.RequestNextFrameRendering()
 
     // ---- Pointer-driven orbit / pan + wheel zoom ----
@@ -812,6 +856,62 @@ type StackCanvasControl() =
                     (sprintf "%d,%d" ownerX ownerY) } ]
 
     /// Zero recipe — coords don't move. Building block for the
+    /// Emit the four bridge rects for one anchored-riser duplication
+    /// at the given drag delta: copies of (beam pad, via, other pad)
+    /// shifted by (dx, dy), plus a bridge wire on the other-pad's
+    /// layer spanning from the original via-center to the new
+    /// position. All rects carry the `viz:bridge` tag keyed on the
+    /// ORIGINAL via center so subsequent drags reap and re-emit
+    /// rather than accumulate.
+    static member private EmitRiserDup
+            (rd: RiserDup) (dx: int64) (dy: int64)
+            : Rekolektion.Viz.Core.Rkt.Types.Rectangle list =
+        if dx = 0L && dy = 0L then []
+        else
+            let tagProps =
+                StackCanvasControl.BridgePropsAt rd.CenterX rd.CenterY
+            let shift (r: Rekolektion.Viz.Core.Rkt.Types.Rectangle) =
+                ({ r with
+                    X1 = r.X1 + dx; Y1 = r.Y1 + dy
+                    X2 = r.X2 + dx; Y2 = r.Y2 + dy
+                    Net = None
+                    Props = tagProps
+                    Comments = [] }
+                 : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+            // Bridge wire on the OTHER-pad's layer from old center
+            // to new center, axis-aligned to whichever delta is
+            // dominant. Uses MinWireWidthFor for thickness.
+            let newCx = rd.CenterX + dx
+            let newCy = rd.CenterY + dy
+            let halfW = rd.BridgeWidth / 2L
+            let bridge =
+                if abs dx >= abs dy then
+                    // Horizontal bridge.
+                    ({ Layer = rd.OtherPad.Layer
+                       X1 = min rd.CenterX newCx
+                       Y1 = rd.CenterY - halfW
+                       X2 = max rd.CenterX newCx
+                       Y2 = rd.CenterY + halfW
+                       Net = None
+                       Props = tagProps
+                       Comments = [] }
+                     : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                else
+                    // Vertical bridge.
+                    ({ Layer = rd.OtherPad.Layer
+                       X1 = rd.CenterX - halfW
+                       Y1 = min rd.CenterY newCy
+                       X2 = rd.CenterX + halfW
+                       Y2 = max rd.CenterY newCy
+                       Net = None
+                       Props = tagProps
+                       Comments = [] }
+                     : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+            // No new beam-layer pad — the beam itself already covers
+            // the new position. Only the via, other-metal pad, and
+            // bridge wire are emitted as duplicates.
+            [ shift rd.Via; shift rd.OtherPad; bridge ]
+
     /// per-handle adjust constructors below.
     static member private ZeroAdjust (sourceIdx: int) : SlideAdjust =
         { SourceIdx = sourceIdx
@@ -1004,18 +1104,21 @@ type StackCanvasControl() =
                         let yMax = max r.Y1 r.Y2
                         match beam.Spine with
                         | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
-                            let inLine =
-                                xMin >= beam.XMin && xMax <= beam.XMax
+                            // Center-in-range, not full-bbox — so a
+                            // riser sitting exactly at the beam end
+                            // (post-snap) is still in-line.
+                            let cx = (xMin + xMax) / 2L
+                            let inLine = cx >= beam.XMin && cx <= beam.XMax
                             let cy = (yMin + yMax) / 2L
                             if inLine && abs (cy - beam.Center) <= perpTol then
-                                Some ((xMin + xMax) / 2L)
+                                Some cx
                             else None
                         | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
-                            let inLine =
-                                yMin >= beam.YMin && yMax <= beam.YMax
+                            let cy = (yMin + yMax) / 2L
+                            let inLine = cy >= beam.YMin && cy <= beam.YMax
                             let cx = (xMin + xMax) / 2L
                             if inLine && abs (cx - beam.Center) <= perpTol then
-                                Some ((yMin + yMax) / 2L)
+                                Some cy
                             else None
                 | _ -> None)
 
@@ -1042,13 +1145,24 @@ type StackCanvasControl() =
     /// Excludes the beam's own SourceIndex so the rigid-translate
     /// recipe doesn't double-apply on top of `BuildSlideAdjusts`'s
     /// beam recipe.
+    /// SKY130 min wire width per metal layer, in DBU.
+    static member private MinWireWidthFor (layerN: int) : int64 =
+        match layerN with
+        | 67 -> 170L  // li1
+        | 68 -> 140L  // met1
+        | 69 -> 140L  // met2
+        | 70 -> 300L  // met3
+        | 71 -> 300L  // met4
+        | 72 -> 1600L // met5 (thick)
+        | _  -> 140L
+
     static member private BuildRiserAdjusts
             (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
             (cellName: string)
             (beam: Rekolektion.Viz.Core.Routing.Detect.Segment)
-            : SlideAdjust list =
+            : SlideAdjust list * RiserDup list =
         match doc.Cells |> List.tryFind (fun c -> c.Name = cellName) with
-        | None -> []
+        | None -> [], []
         | Some cell ->
             let beamPerpExtent =
                 match beam.Spine with
@@ -1070,7 +1184,14 @@ type StackCanvasControl() =
                         let xMax = max r.X1 r.X2
                         let yMin = min r.Y1 r.Y2
                         let yMax = max r.Y1 r.Y2
-                        Some (i, n, d, xMin, yMin, xMax, yMax)
+                        // Track raw storage order so spine-stretch
+                        // recipes can target the correct coord (My1Y
+                        // vs My2Y, etc). Rects with X1>X2 or Y1>Y2
+                        // would otherwise have their recipe applied
+                        // to the wrong end, shortening from the wrong
+                        // side and breaking the connection.
+                        Some (i, n, d, xMin, yMin, xMax, yMax,
+                              r.X1, r.Y1, r.X2, r.Y2)
                     | _ -> None)
                 |> List.toArray
             // bbox-contains test: does outer fully contain inner?
@@ -1087,17 +1208,35 @@ type StackCanvasControl() =
                     (yMin + yMax) / 2L
                 | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
                     (xMin + xMax) / 2L
+            // CENTER-IN-RANGE, not full-bbox-in-range. A riser
+            // snapped to land exactly at the beam's end has half its
+            // bbox outside the beam's spine extent; using the
+            // CENTER lets it still count as in-line so subsequent
+            // track drags continue to pull it along instead of
+            // stranding it as an L-bend stub.
             let inLine (xMin, yMin, xMax, yMax) =
                 match beam.Spine with
                 | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
-                    xMin >= beam.XMin && xMax <= beam.XMax
+                    let cx = (xMin + xMax) / 2L
+                    cx >= beam.XMin && cx <= beam.XMax
                 | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
-                    yMin >= beam.YMin && yMax <= beam.YMax
+                    let cy = (yMin + yMax) / 2L
+                    cy >= beam.YMin && cy <= beam.YMax
+            // Stop at one knuckle: only follow vias whose two
+            // connected metal layers INCLUDE the beam's layer. For a
+            // met3 beam, that's via2 (connects met2+met3) and via3
+            // (connects met3+met4) — not via1 below or via4 above.
+            // Without this filter the cascade walks the full via
+            // stack down to li1, dragging FET diff/poly along.
+            let viaConnectsBeam (vn: int) =
+                vn = beam.Layer || vn + 1 = beam.Layer
             let viaCuts =
                 rects
-                |> Array.filter (fun (_, _, dt, xMin, yMin, xMax, yMax) ->
+                |> Array.filter (fun (_, n, dt, xMin, yMin, xMax, yMax,
+                                      _, _, _, _) ->
                     let bbox = (xMin, yMin, xMax, yMax)
                     dt = 44
+                    && viaConnectsBeam n
                     && inLine bbox
                     && abs (perpCenter bbox - beam.Center) <= perpTol)
             // For each via, its two connected metal layers (sky130
@@ -1113,16 +1252,32 @@ type StackCanvasControl() =
             let spineStretchTowardPad
                     (wireIdx: int)
                     (wireBbox: int64 * int64 * int64 * int64)
-                    (padBbox: int64 * int64 * int64 * int64) =
+                    (padBbox: int64 * int64 * int64 * int64)
+                    (wX1: int64) (wY1: int64) (wX2: int64) (wY2: int64) =
                 // Wire is a longer rect on the same layer as `padBbox`
                 // with ONE of its spine ends sitting inside the pad.
                 // Emit a spine-stretch recipe whose moving end is
                 // whichever wire end is inside the pad bbox.
+                // Uses raw (X1, Y1, X2, Y2) so recipe targets the
+                // correct storage coord even when the rect was
+                // authored with reversed-order ends (Y1 > Y2 etc).
                 let (wxMin, wyMin, wxMax, wyMax) = wireBbox
                 let (pxMin, pyMin, pxMax, pyMax) = padBbox
                 let wPerpAxisIsX =
                     (wxMax - wxMin) >= (wyMax - wyMin)
                 let z = StackCanvasControl.ZeroAdjust wireIdx
+                // Pick the SlideAdjust field corresponding to a
+                // particular raw coord (X1 vs X2 or Y1 vs Y2). Used
+                // to map "the world-coord end nearest the pad" onto
+                // the storage slot the recipe must move.
+                let setMyForY rawY =
+                    // Recipe field to move when the wire's Y end-at
+                    // `rawY` should follow dy.
+                    if rawY = wY1 then { z with My1Y = 1L }
+                    else { z with My2Y = 1L }
+                let setMxForX rawX =
+                    if rawX = wX1 then { z with Mx1X = 1L }
+                    else { z with Mx2X = 1L }
                 // beam.Spine is the BEAM's spine. The CROSS-LAYER
                 // wire's near-end follows the beam's perp axis
                 // (i.e. dy for X-spine beam, dx for Y-spine beam).
@@ -1136,17 +1291,18 @@ type StackCanvasControl() =
                         wxMax >= pxMin && wxMax <= pxMax
                     match beam.Spine with
                     | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
-                        // Beam horizontal → perp is Y. Wire end moves
-                        // in Y to track pad's Y shift.
-                        if nearMin then
-                            { z with My1Y = 1L; My2Y = 1L }
-                            |> adjusts.Add
-                        elif nearMax then
+                        // Beam horizontal → perp is Y. The HORIZONTAL
+                        // wire rigidly translates in Y to keep its
+                        // centerline through the pad.
+                        if nearMin || nearMax then
                             { z with My1Y = 1L; My2Y = 1L }
                             |> adjusts.Add
                     | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
-                        if nearMin then { z with Mx1X = 1L } |> adjusts.Add
-                        elif nearMax then { z with Mx2X = 1L } |> adjusts.Add
+                        // Perp is X. Wire's near-X end spine-stretches.
+                        if nearMin then
+                            setMxForX wxMin |> adjusts.Add
+                        elif nearMax then
+                            setMxForX wxMax |> adjusts.Add
                 else
                     // Wire is vertical (Y-spine). Its end coord is a
                     // Y end.
@@ -1156,57 +1312,147 @@ type StackCanvasControl() =
                         wyMax >= pyMin && wyMax <= pyMax
                     match beam.Spine with
                     | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
-                        if nearMin then { z with My1Y = 1L } |> adjusts.Add
-                        elif nearMax then { z with My2Y = 1L } |> adjusts.Add
-                    | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                        // Perp is Y. Wire's near-Y end spine-stretches.
                         if nearMin then
-                            { z with Mx1X = 1L; Mx2X = 1L } |> adjusts.Add
+                            setMyForY wyMin |> adjusts.Add
                         elif nearMax then
-                            { z with Mx1X = 1L; Mx2X = 1L } |> adjusts.Add
-            for (vi, vn, _vd, vxMin, vyMin, vxMax, vyMax) in viaCuts do
+                            setMyForY wyMax |> adjusts.Add
+                    | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                        // Beam vertical → perp is X. Vertical wire
+                        // rigidly translates in X.
+                        if nearMin || nearMax then
+                            { z with Mx1X = 1L; Mx2X = 1L }
+                            |> adjusts.Add
+            // Pads are concentric with their via by design. Require
+            // pad-center within `concentricTolDbu` of via-center so
+            // we don't pick up a different via's pad whose bbox
+            // happens to overlap our via (common in stacked riser
+            // designs where via1's pad and via2's pad both sit at
+            // the same X but offset Y).
+            let concentricTolDbu = 10L
+            // Precompute via centers (for "concentric with ANY via"
+            // checks). A small rect on a metal layer whose center
+            // coincides with a via that's NOT the one we're
+            // processing is some OTHER via's pad — not a wire — and
+            // the cross-layer cascade should leave it alone so the
+            // lower stack doesn't get dragged along.
+            let allViaCenters =
+                rects
+                |> Array.choose (fun (_, _, dt, xMin, yMin, xMax, yMax,
+                                      _, _, _, _) ->
+                    if dt = 44 then
+                        Some ((xMin + xMax) / 2L, (yMin + yMax) / 2L)
+                    else None)
+            let isConcentricWithAnyVia (rCx: int64) (rCy: int64) =
+                allViaCenters
+                |> Array.exists (fun (vx, vy) ->
+                    abs (vx - rCx) <= concentricTolDbu
+                    && abs (vy - rCy) <= concentricTolDbu)
+            for (vi, vn, _vd, vxMin, vyMin, vxMax, vyMax, _, _, _, _) in viaCuts do
                 add vi
-                let viaBbox = (vxMin, vyMin, vxMax, vyMax)
-                // Two metal layers connected by this via (sky130).
+                let vCx = (vxMin + vxMax) / 2L
+                let vCy = (vyMin + vyMax) / 2L
                 let metals = [| vn; vn + 1 |]
-                for (mi, mn, md, mxMin, myMin, mxMax, myMax) in rects do
+                for (mi, mn, md, mxMin, myMin, mxMax, myMax,
+                     _, _, _, _) in rects do
                     if md = 20 && Array.contains mn metals
                        && mi <> beam.SourceIndex then
-                        let mBbox = (mxMin, myMin, mxMax, myMax)
-                        if contains mBbox viaBbox then
-                            // This is a riser pad: translate rigid.
+                        let mCx = (mxMin + mxMax) / 2L
+                        let mCy = (myMin + myMax) / 2L
+                        let concentric =
+                            abs (mCx - vCx) <= concentricTolDbu
+                            && abs (mCy - vCy) <= concentricTolDbu
+                        if concentric then
                             if addedIds.Add mi then
                                 adjusts.Add
                                     (StackCanvasControl.TrackDraggedAdjust
                                          mi beam.Spine)
-                            // Cross-layer cascade: wires on this layer
-                            // whose end touches THIS pad get spine-
-                            // stretched to follow.
-                            for (wi, wn, wd, wxMin, wyMin, wxMax, wyMax) in rects do
+                            // Cross-layer cascade: wires on this
+                            // layer whose SPINE END-POINT lies inside
+                            // the pad get their near-end spine-
+                            // stretched. Exclude rects concentric
+                            // with ANY via (those are other vias'
+                            // pads, not wires).
+                            let padBbox =
+                                (mxMin, myMin, mxMax, myMax)
+                            for (wi, wn, wd, wxMin, wyMin, wxMax, wyMax,
+                                 wX1, wY1, wX2, wY2) in rects do
                                 if wd = 20 && wn = mn && wi <> mi
                                    && wi <> beam.SourceIndex
                                    && not (addedIds.Contains wi) then
-                                    let wBbox =
-                                        (wxMin, wyMin, wxMax, wyMax)
-                                    // Wire whose end is inside the
-                                    // pad's bbox (one end overlap is
-                                    // enough — wires that simply pass
-                                    // through the pad without ending
-                                    // there fail the end-check below).
-                                    let endInPad =
-                                        let endNearMinX =
-                                            wxMin >= mxMin && wxMin <= mxMax
-                                        let endNearMaxX =
-                                            wxMax >= mxMin && wxMax <= mxMax
-                                        let endNearMinY =
-                                            wyMin >= myMin && wyMin <= myMax
-                                        let endNearMaxY =
-                                            wyMax >= myMin && wyMax <= myMax
-                                        (endNearMinX || endNearMaxX)
-                                        && (endNearMinY || endNearMaxY)
-                                    if endInPad then
+                                    let wCx = (wxMin + wxMax) / 2L
+                                    let wCy = (wyMin + wyMax) / 2L
+                                    if isConcentricWithAnyVia wCx wCy then
+                                        ()       // Other stack's pad — skip.
+                                    else
+                                    let wPerpAxisIsX =
+                                        (wxMax - wxMin) >= (wyMax - wyMin)
+                                    // Spine endpoints (centerline ×
+                                    // each spine-axis extreme).
+                                    let endA, endB =
+                                        if wPerpAxisIsX then
+                                            (wxMin, wCy), (wxMax, wCy)
+                                        else
+                                            (wCx, wyMin), (wCx, wyMax)
+                                    let inPad (x, y) =
+                                        x >= mxMin && x <= mxMax
+                                        && y >= myMin && y <= myMax
+                                    // The endpoint "belongs to" the
+                                    // closest concentric-with-any-via
+                                    // pad on this layer. If that's
+                                    // NOT the pad we're processing,
+                                    // the end is part of a different
+                                    // via stack — exclude it from
+                                    // THIS cascade so the wire
+                                    // stretches instead of rigidly
+                                    // translating.
+                                    let belongsToCurrentPad (endX, endY) =
+                                        let dCur =
+                                            abs (endX - mCx)
+                                            + abs (endY - mCy)
+                                        let mutable closer = false
+                                        for (_, n2, dt2,
+                                             xMin2, yMin2, xMax2, yMax2,
+                                             _, _, _, _) in rects do
+                                            if dt2 = 20 && n2 = mn then
+                                                let oCx =
+                                                    (xMin2 + xMax2) / 2L
+                                                let oCy =
+                                                    (yMin2 + yMax2) / 2L
+                                                let isOther =
+                                                    not (oCx = mCx
+                                                         && oCy = mCy)
+                                                if isOther
+                                                   && isConcentricWithAnyVia
+                                                          oCx oCy then
+                                                    let d =
+                                                        abs (endX - oCx)
+                                                        + abs (endY - oCy)
+                                                    if d < dCur then
+                                                        closer <- true
+                                        not closer
+                                    let aIn =
+                                        inPad endA && belongsToCurrentPad endA
+                                    let bIn =
+                                        inPad endB && belongsToCurrentPad endB
+                                    if aIn && bIn then
+                                        // Internal — rigid translate.
                                         addedIds.Add wi |> ignore
-                                        spineStretchTowardPad wi wBbox mBbox
-            adjusts |> List.ofSeq
+                                        adjusts.Add
+                                            (StackCanvasControl.TrackDraggedAdjust
+                                                 wi beam.Spine)
+                                    elif aIn || bIn then
+                                        addedIds.Add wi |> ignore
+                                        let wBbox =
+                                            (wxMin, wyMin, wxMax, wyMax)
+                                        spineStretchTowardPad
+                                            wi wBbox padBbox
+                                            wX1 wY1 wX2 wY2
+            // RiserDups: no longer used — the upper stack now
+            // translates with the beam and the cross-layer cascade
+            // stretches the existing bridge wire. Issue 2 (multi-
+            // level decoupling with L-jog) would re-introduce this.
+            adjusts |> List.ofSeq, []
 
     /// Recipe for one segment attached to a POST being dragged.
     /// Spine-axis-only stretch — the segment's near-to-post endpoint
@@ -1651,7 +1897,8 @@ type StackCanvasControl() =
                 (adjusts: SlideAdjust list)
                 (handleLabel: string)
                 (draggedSeg: Rekolektion.Viz.Core.Routing.Detect.Segment option)
-                (postIdx: int option) =
+                (postIdx: int option)
+                (riserDups: RiserDup list) =
             match this.UnprojectAtZ (e.GetPosition this) hoveredRouteLayerZ with
             | None -> ()
             | Some hitDbu ->
@@ -1717,6 +1964,7 @@ type StackCanvasControl() =
                     Anchors = anchors
                     Route = Some route
                     PostIdx = postIdx
+                    RiserDups = riserDups
                     LastDxDbu = 0L
                     LastDyDbu = 0L
                 }
@@ -1747,11 +1995,11 @@ type StackCanvasControl() =
             // Risers (knuckles) sitting on the dragged beam translate
             // with it as rigid bodies — pads + via cuts that bracket
             // the beam centerline within its X range follow the dy.
-            let risers =
+            let risers, riserDups =
                 StackCanvasControl.BuildRiserAdjusts lib route.Cell seg
             let adjusts = baseAdjusts @ cascaded @ risers
             beginSlide TrackSlide route lib seg.Spine adjusts "track"
-                (Some seg) None
+                (Some seg) None riserDups
         | None, Some postIdx, Some route, Some lib
                 when postIdx < route.Posts.Length ->
             // No cascade for PostSlide: with spine-only stretch, no
@@ -1762,7 +2010,7 @@ type StackCanvasControl() =
             let adjusts = StackCanvasControl.BuildPostAdjusts route postIdx
             beginSlide PostSlide route lib
                 Rekolektion.Viz.Core.Routing.Detect.Axis.X adjusts "post"
-                None (Some postIdx)
+                None (Some postIdx) []
         | _ ->
             // No track hit (or surrounding state missing) — fall
             // through to the normal orbit / pan dispatch so the
@@ -2118,7 +2366,7 @@ type StackCanvasControl() =
                 if trackHit.IsNone then
                     this.HitTestPostHandleFor route hoveredRouteLayerZ startPt
                 else None
-            let kindStr, adjusts, spine, dragPostIdx =
+            let kindStr, adjusts, spine, dragPostIdx, riserDups =
                 match trackHit, postHit with
                 | Some segIdx, _ when segIdx < route.Segments.Length ->
                     let seg = route.Segments.[segIdx]
@@ -2127,20 +2375,22 @@ type StackCanvasControl() =
                     let cascaded =
                         StackCanvasControl.CascadeNeighborAdjusts
                             route baseAdjusts None
-                    let risers =
+                    let risers, rDups =
                         StackCanvasControl.BuildRiserAdjusts
                             lib route.Cell seg
-                    "track", baseAdjusts @ cascaded @ risers, seg.Spine, None
+                    "track", baseAdjusts @ cascaded @ risers, seg.Spine,
+                    None, rDups
                 | None, Some postIdx when postIdx < route.Posts.Length ->
                     let adjusts =
                         StackCanvasControl.BuildPostAdjusts route postIdx
                     "post",
                     adjusts,
                     Rekolektion.Viz.Core.Routing.Detect.Axis.X,
-                    Some postIdx
+                    Some postIdx,
+                    []
                 | _ ->
                     "none", [], Rekolektion.Viz.Core.Routing.Detect.Axis.X,
-                    None
+                    None, []
             let excludeIds =
                 adjusts |> List.map (fun a -> a.SourceIdx) |> Set.ofList
             let segBySource =
@@ -2203,7 +2453,12 @@ type StackCanvasControl() =
                             StackCanvasControl.ComputeCornerJogs
                                 route pi adjusts snapDx snapDy
                         | None -> []
-                    let extensions = anchorExts @ cornerJogs
+                    let riserDupExts =
+                        riserDups
+                        |> List.collect (fun rd ->
+                            StackCanvasControl.EmitRiserDup rd snapDx snapDy)
+                    let extensions =
+                        anchorExts @ cornerJogs @ riserDupExts
                     if snapDx <> 0L || snapDy <> 0L then
                         Rekolektion.Viz.App.Services.AppDispatch.send
                             (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
@@ -2332,7 +2587,13 @@ type StackCanvasControl() =
                                 StackCanvasControl.ComputeCornerJogs
                                     r pi slide.Adjusts snapDx snapDy
                             | _ -> []
-                        let extensions = anchorExts @ cornerJogs
+                        let riserDupExts =
+                            slide.RiserDups
+                            |> List.collect (fun rd ->
+                                StackCanvasControl.EmitRiserDup
+                                    rd snapDx snapDy)
+                        let extensions =
+                            anchorExts @ cornerJogs @ riserDupExts
                         // Reap only bridges whose tag matches this
                         // drag's new bridges (same owning post /
                         // endpoint). Mirrors the commit-time reap in
@@ -2472,7 +2733,13 @@ type StackCanvasControl() =
                             r pi slide.Adjusts
                             slide.LastDxDbu slide.LastDyDbu
                     | _ -> []
-                let extensions = anchorExts @ cornerJogs
+                let riserDupExts =
+                    slide.RiserDups
+                    |> List.collect (fun rd ->
+                        StackCanvasControl.EmitRiserDup
+                            rd slide.LastDxDbu slide.LastDyDbu)
+                let extensions =
+                    anchorExts @ cornerJogs @ riserDupExts
                 Rekolektion.Viz.App.Services.AppDispatch.send
                     (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
                         (slide.Cell, slide.LastDxDbu, slide.LastDyDbu,
@@ -3469,6 +3736,101 @@ type StackCanvasControl() =
                     g.DrawArrays(GLEnum.Lines, 0, uint32 (arr.Length / 6))
                     g.Enable GLEnum.DepthTest
                 | _ -> ()
+            // Selection halo: bright outline around every polygon in
+            // SelectedPolygons, drawn at the top of its layer's slab.
+            // Mirrors the 2D selection halo so the selection state
+            // reads in both views. Skipped during drag so the halo
+            // doesn't strobe with the live preview.
+            let drawSelectionHalo () =
+                if this.SelectedPolygons.IsEmpty then ()
+                elif rulerProgram = 0u then ()
+                else
+                    match this.Library with
+                    | None -> ()
+                    | Some lib ->
+                        let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                        let flat = this.FlatPolygons
+                        let verts = ResizeArray<float32>()
+                        // Bright cyan-white halo — high contrast on
+                        // the metal palette without colliding with
+                        // ratlines (yellow) or hover (cyan).
+                        let r, gC, bC = 0.40f, 1.00f, 1.00f
+                        let pushSeg
+                                (x1: float32) (y1: float32)
+                                (x2: float32) (y2: float32)
+                                (z: float32) =
+                            verts.Add x1; verts.Add y1; verts.Add z
+                            verts.Add r;  verts.Add gC; verts.Add bC
+                            verts.Add x2; verts.Add y2; verts.Add z
+                            verts.Add r;  verts.Add gC; verts.Add bC
+                        for fp in flat do
+                            let key = fp.SourceStructure, fp.SourceIndex
+                            if this.SelectedPolygons.Contains key
+                               && fp.Points.Length > 0 then
+                                let zBot, zTop =
+                                    match Layout.Layer.bySky130Number
+                                              fp.Layer fp.DataType with
+                                    | Some l ->
+                                        float32 (l.StackZ * Z_EXAGGERATION
+                                                 - 0.02),
+                                        float32 ((l.StackZ + l.Thickness)
+                                                 * Z_EXAGGERATION + 0.02)
+                                    | None -> 0.0f, 0.5f
+                                let toUm (p: Rekolektion.Viz.Core.Rkt.Types.Point) =
+                                    float32 (float p.X * umPerDbu),
+                                    float32 (float p.Y * umPerDbu)
+                                let pts = fp.Points
+                                let n = pts.Length
+                                // Top face edges.
+                                for i in 0 .. n - 1 do
+                                    let (x1, y1) = toUm pts.[i]
+                                    let (x2, y2) = toUm pts.[(i + 1) % n]
+                                    pushSeg x1 y1 x2 y2 zTop
+                                // Bottom face edges.
+                                for i in 0 .. n - 1 do
+                                    let (x1, y1) = toUm pts.[i]
+                                    let (x2, y2) = toUm pts.[(i + 1) % n]
+                                    pushSeg x1 y1 x2 y2 zBot
+                                // Vertical side edges connecting top
+                                // and bottom face vertices. Use the
+                                // same pushSeg by passing the same XY
+                                // but different Z — pushSeg writes Z
+                                // from its single argument, so we
+                                // emit the vertical leg directly.
+                                for i in 0 .. n - 1 do
+                                    let (x, y) = toUm pts.[i]
+                                    verts.Add x; verts.Add y; verts.Add zBot
+                                    verts.Add r; verts.Add gC; verts.Add bC
+                                    verts.Add x; verts.Add y; verts.Add zTop
+                                    verts.Add r; verts.Add gC; verts.Add bC
+                        if verts.Count > 0 then
+                            let arr = verts.ToArray()
+                            g.BindVertexArray hoverVao
+                            g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
+                            g.BufferData(
+                                GLEnum.ArrayBuffer,
+                                ReadOnlySpan<float32>(arr),
+                                GLEnum.DynamicDraw)
+                            g.UseProgram rulerProgram
+                            let stride = uint32 (6 * sizeof<float32>)
+                            g.EnableVertexAttribArray 0u
+                            g.VertexAttribPointer(0u, 3, GLEnum.Float, false,
+                                                  stride, nativeint 0)
+                            g.EnableVertexAttribArray 1u
+                            g.VertexAttribPointer(1u, 3, GLEnum.Float, false,
+                                                  stride,
+                                                  nativeint (3 * sizeof<float32>))
+                            let loc =
+                                g.GetUniformLocation(rulerProgram, "uMVP")
+                            let mvpArr = Matrix4x4Helpers.toFloatArray mvp
+                            g.UniformMatrix4(loc, 1u, false,
+                                             ReadOnlySpan<float32>(mvpArr))
+                            g.LineWidth 3.0f
+                            g.Disable GLEnum.DepthTest
+                            g.DrawArrays(GLEnum.Lines, 0,
+                                         uint32 (arr.Length / 6))
+                            g.Enable GLEnum.DepthTest
+            drawSelectionHalo ()
             match hoveredRoute with
             | None -> drawDragIndicator ()
             | Some _ when suppressOverlay -> drawDragIndicator ()

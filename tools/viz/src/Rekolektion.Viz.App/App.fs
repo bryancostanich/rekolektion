@@ -166,6 +166,9 @@ type MainWindow() as this =
             | Key.Z, KeyModifiers.Meta ->
                 AppDispatch.send Msg.UndoActiveMacro
                 e.Handled <- true
+            | Key.Z, mods when mods = (KeyModifiers.Meta ||| KeyModifiers.Shift) ->
+                AppDispatch.send Msg.RedoActiveMacro
+                e.Handled <- true
             | Key.Space, KeyModifiers.None ->
                 // Rotate selection 90° CCW around bbox centroid.
                 AppDispatch.send Msg.RotateSelection90
@@ -300,6 +303,13 @@ type App() =
         undoItem.Click.Add(fun _ ->
             AppDispatch.send Msg.UndoActiveMacro)
         fileSub.Items.Add(undoItem)
+
+        let redoItem = NativeMenuItem("Redo")
+        redoItem.Gesture <-
+            KeyGesture(Key.Z, KeyModifiers.Meta ||| KeyModifiers.Shift)
+        redoItem.Click.Add(fun _ ->
+            AppDispatch.send Msg.RedoActiveMacro)
+        fileSub.Items.Add(redoItem)
 
         let saveItem = NativeMenuItem("Save")
         saveItem.Gesture <- KeyGesture(Key.S, KeyModifiers.Meta)

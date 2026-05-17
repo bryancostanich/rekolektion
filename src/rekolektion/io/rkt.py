@@ -78,6 +78,31 @@ class PortDirection(str, Enum):
     UNSPECIFIED = "unspecified"
 
 
+class LabelKind(str, Enum):
+    """Role of a `(label …)` in the netlist.
+
+    `NET_NAME` — the label's text names a signal or power net.
+    Default for hand-authored labels and any label without an
+    explicit `(kind …)` annotation. Feeds the writer-derived
+    `(nets …)` manifest and contributes a pin to ratline /
+    LabelFlood consumers on the F# side.
+
+    `DEVICE_TERMINAL` — a FET port annotation (`D`/`G`/`S`/`B`)
+    emitted by a primitive generator so Magic's `port makeall`
+    sees it during LVS extraction. Net-level consumers skip these.
+    Primitive generators tag them at emit time; nothing else
+    should.
+
+    Wire format mirrors the F# DU (`LabelKind`): the string values
+    of this enum are exactly what gets written / parsed in `.rkt`.
+    `NetName` is the implicit default — never emitted, never
+    required on read.
+    """
+
+    NET_NAME = "net-name"
+    DEVICE_TERMINAL = "device-terminal"
+
+
 class PortFlag(str, Enum):
     SIGNAL = "signal"
     POWER = "power"
@@ -185,6 +210,20 @@ class Label:
     cls: str | None = None
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    # `internal=True` marks the label as a viz/debug annotation that
+    # should NOT be promoted to a GDS text record.  Magic's `port
+    # makeall` only sees GDS text labels, so internal labels never
+    # become subckt ports during LVS extraction.  Viz tools that read
+    # the .rkt directly still render them.  Used for naming internal
+    # nets (cs_drain_i, mag_drain_i, etc.) for traceability without
+    # affecting LVS.
+    internal: bool = False
+    # Netlist role — see `LabelKind`. Orthogonal to `internal` (which
+    # controls GDS export). A `DEVICE_TERMINAL` label still reaches
+    # GDS so Magic's port extraction sees it; it just doesn't count
+    # as a net at any composition level. Default `NET_NAME` matches
+    # the F# reader's default-on-missing behavior.
+    kind: LabelKind = LabelKind.NET_NAME
 
 
 @dataclass
@@ -460,6 +499,11 @@ def _emit_label(level: int, label: Label) -> str:
     ]
     if label.cls:
         parts.append(f"{_indent(level + 1)}(class {label.cls})")
+    if label.internal:
+        parts.append(f"{_indent(level + 1)}(internal #t)")
+    # `(kind …)` only emitted when not the implicit default.
+    if label.kind != LabelKind.NET_NAME:
+        parts.append(f"{_indent(level + 1)}(kind {label.kind.value})")
     pf = _props_form(level + 1, label.props)
     if pf:
         parts.append(pf)
@@ -599,6 +643,52 @@ def _emit_nets_block(level: int, nets: list[Net]) -> str | None:
     return f"{lead}(nets{body})"
 
 
+def _infer_domain(name: str) -> str:
+    """Heuristic net-domain classifier — mirrors the F# writer's
+    `deriveNetsFromLabels.domainOf`. VPWR/VDD → power, VSS/VGND/GND
+    → ground, CLK* → clock, everything else → signal."""
+
+    upper = name.upper()
+    if upper in ("VPWR", "VDD"):
+        return "power"
+    if upper in ("VGND", "VSS", "GND"):
+        return "ground"
+    if upper.startswith("CLK"):
+        return "clock"
+    return "signal"
+
+
+def _derive_nets_from_labels(doc: Document) -> list[Net]:
+    """Walk every `Kind = NET_NAME` label across every cell, dedupe by
+    text, infer domain heuristically, and merge in any metadata
+    (voltage, class) from a matching entry in `doc.nets` so
+    hand-authored details survive round-trip.
+
+    `DEVICE_TERMINAL` labels are excluded by construction. Mirrors
+    the F# writer's `deriveNetsFromLabels` so the two writers stay
+    in lock-step.
+    """
+
+    existing: dict[str, Net] = {n.name: n for n in doc.nets}
+    seen: set[str] = set()
+    out: list[Net] = []
+    for cell in doc.cells:
+        for el in cell.elements:
+            if not isinstance(el, Label):
+                continue
+            if el.kind != LabelKind.NET_NAME:
+                continue
+            if not el.text or el.text in seen:
+                continue
+            seen.add(el.text)
+            preserved = existing.get(el.text)
+            if preserved is not None:
+                out.append(preserved)
+            else:
+                out.append(Net(name=el.text, domain=_infer_domain(el.text)))
+    return out
+
+
 def _emit_import(level: int, imp: Import) -> str:
     return f"{_leading(level, imp.comments)}(import {_string(imp.path)})"
 
@@ -624,7 +714,11 @@ def write(doc: Document) -> str:
         parts.append(_emit_import(1, imp))
     if doc.top_cell is not None:
         parts.append(f"{_indent(1)}(top {doc.top_cell})")
-    nb = _emit_nets_block(1, doc.nets)
+    # `(nets …)` is **derived from labels**, not read from `doc.nets`.
+    # Source of truth for nets is the label set (Kind = NET_NAME);
+    # the manifest is a writer-emitted summary for tools that want a
+    # quick net list without scanning labels.
+    nb = _emit_nets_block(1, _derive_nets_from_labels(doc))
     if nb:
         parts.append(nb)
     for cell in doc.cells:

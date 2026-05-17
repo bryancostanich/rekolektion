@@ -1,6 +1,6 @@
 # Track 06: Authoring Data Model — Plan
 
-Status: `pending`
+Status: `done` (2026-05-16) — push pending user approval.
 
 Spec: [spec.md](spec.md)
 Continuation prompt: [continuation_prompt.md](continuation_prompt.md)

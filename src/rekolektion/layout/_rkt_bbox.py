@@ -43,13 +43,20 @@ _POINT_RE = re.compile(r"\(\s*(-?\d+)\s+(-?\d+)\s*\)")
 _GENERATOR_RE = re.compile(r'\(generator\s+"([^"]+)"\)')
 _CELL_DECL_RE = re.compile(r"\(cell\s+(\S+?)\b")
 
-# (label (layer <layer>) (text "<text>") (origin <x> <y>))
+# (label (layer <layer>) (text "<text>") (origin <x> <y>) <extras...>)
 # The text may be quoted (string lit) or bare (symbol) per the .rkt
-# canonical writer. We accept either form.
+# canonical writer. We accept either form. Trailing sub-forms like
+# `(kind device-terminal)` or `(internal #t)` may follow the origin;
+# we stop at the origin's closing paren and ignore everything after
+# (this reader only needs layer/text/origin from labels — kind is
+# the F# reader's concern). The label's outer closing `)` is matched
+# *if present immediately* (the legacy single-line form), otherwise
+# we just take what we need and let the extras dangle in the
+# remaining input; subsequent regex passes ignore them.
 _LABEL_RE = re.compile(
     r"\(label\s+\(layer\s+([^)\s]+)\)\s+"
     r"\(text\s+(?:\"([^\"]+)\"|(\S+?))\)\s+"
-    r"\(origin\s+(-?\d+)\s+(-?\d+)\)\)"
+    r"\(origin\s+(-?\d+)\s+(-?\d+)\)"
 )
 
 

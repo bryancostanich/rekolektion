@@ -35,6 +35,33 @@ from rekolektion.primitives._cache import (
 from rekolektion.primitives.sky130._gds_to_rkt import read_gds
 
 
+def _tag_fet_port_labels(cell: rkt.Cell) -> None:
+    """Mark every `li1_label`-layered label inside the FET cell as
+    `LabelKind.DEVICE_TERMINAL`.
+
+    This is the generator-intrinsic assertion that lives at the
+    heart of track-06: the FET generator emits these labels via
+    Magic's `mos_draw` with `doports=1` precisely so `port makeall`
+    sees them during LVS. They are device-terminal annotations, not
+    net names — independent of what string Magic put in their text.
+
+    Per the spec, **kind is intrinsic to the label, not to its
+    container.** That's still true here: the generator is asserting
+    a role at emit time. Downstream consumers don't infer kind from
+    container; they read `Kind` from the label itself. A future
+    primitive that legitimately wants a net-name label on
+    `li1_label` simply wouldn't go through this generator path.
+    """
+
+    li1_label_layer = rkt.named("sky130", "li1_label")
+    for i, el in enumerate(cell.elements):
+        if not isinstance(el, rkt.Label):
+            continue
+        if el.layer != li1_label_layer:
+            continue
+        el.kind = rkt.LabelKind.DEVICE_TERMINAL
+
+
 def _add_multifinger_sd_ties(cell: rkt.Cell, nf: int) -> None:
     """Add internal met2 D-strap + S-strap with via1 stacks tying
     alternate-finger S/D contact strips.
@@ -271,6 +298,12 @@ def _build_fet(
                 # of one. Inject D and S met2 straps to fix that.
                 if nf > 1:
                     _add_multifinger_sd_ties(cell, nf)
+                # Tag every li1_label-layered label inside this cell
+                # as DeviceTerminal. mos_draw's `doports 1` emits
+                # them; they're FET port annotations, not nets. Runs
+                # AFTER multifinger consolidation so the consolidated
+                # D/G/S labels get the same tag.
+                _tag_fet_port_labels(cell)
                 # If the caller asked for abut padding (typically because
                 # this device family has implant overhang too tight to
                 # satisfy diff/tap.3 at bbox-edge abutment), inject a

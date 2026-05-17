@@ -284,21 +284,43 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             { c with Elements = elems' })
                 if not changed && extensions.IsEmpty then model, Cmd.none
                 else
-                    // Append extension rects to the target cell —
-                    // these are the new rail/strap rects emitted by
-                    // a track slide whose anchored endpoint moved
-                    // past the original anchor's bbox.
+                    // Reap stale `viz:bridge`-tagged rects ONLY when
+                    // their tag value matches one of this commit's
+                    // new bridges (same owning position). A drag at
+                    // the top corner shouldn't wipe bridges at the
+                    // bottom corner.
+                    let bridgeTagOf (r: Rkt.Types.Rectangle) : string option =
+                        r.Props
+                        |> List.tryPick (fun p ->
+                            if p.Key = "viz:bridge" then
+                                match p.Value with
+                                | Rkt.Types.PvString s -> Some s
+                                | Rkt.Types.PvAtom s -> Some s
+                                | _ -> None
+                            else None)
+                    let newTags =
+                        extensions
+                        |> List.choose bridgeTagOf
+                        |> Set.ofList
                     let cells'' =
-                        if extensions.IsEmpty then cells'
-                        else
-                            cells'
-                            |> List.map (fun c ->
-                                if c.Name <> cell then c
-                                else
-                                    let extEls =
-                                        extensions
-                                        |> List.map Rkt.Types.RectEl
-                                    { c with Elements = c.Elements @ extEls })
+                        cells'
+                        |> List.map (fun c ->
+                            if c.Name <> cell then c
+                            else
+                                let kept =
+                                    c.Elements
+                                    |> List.filter (fun el ->
+                                        match el with
+                                        | Rkt.Types.RectEl r ->
+                                            match bridgeTagOf r with
+                                            | Some tag when newTags.Contains tag ->
+                                                false
+                                            | _ -> true
+                                        | _ -> true)
+                                let extEls =
+                                    extensions
+                                    |> List.map Rkt.Types.RectEl
+                                { c with Elements = kept @ extEls })
                     let lib' = { mc.Document with Cells = cells'' }
                     let flat' = Layout.Flatten.flatten lib'
                     let inst' = Layout.Instances.enumerate lib'

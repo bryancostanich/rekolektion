@@ -139,12 +139,21 @@ type private SlideKind = TrackSlide | PostSlide
 /// a child cell), but we still know its world bbox via the flat
 /// poly walk, and that's all the extension generator needs.
 type private AnchorInfo = {
-    /// Beam endpoint at press time (one of seg.Start / seg.End).
+    /// Endpoint at press time (one of a moved segment's spine ends).
     OrigEndpoint : Rekolektion.Viz.Core.Rkt.Types.Point
     /// Anchor's world-DBU bbox: (xMin, yMin, xMax, yMax).
     BboxDbu      : int64 * int64 * int64 * int64
     /// Layer to emit the extension rect on.
     Layer        : Rekolektion.Viz.Core.Rkt.Types.Layer
+    /// How this endpoint moves under the drag delta `(dx, dy)`.
+    /// new_endpoint.X = OrigEndpoint.X + EndpointMx * dx + EndpointMxY * dy
+    /// new_endpoint.Y = OrigEndpoint.Y + EndpointMyX * dx + EndpointMy * dy
+    /// For the dragged beam's spine endpoints these are derived from
+    /// the segment's SlideAdjust + which end (Start / End) it is.
+    EndpointMxX : int64
+    EndpointMxY : int64
+    EndpointMyX : int64
+    EndpointMyY : int64
 }
 
 /// In-flight slide state. Built on press, mutated each
@@ -165,6 +174,16 @@ type private RouteSlide = {
     /// cumulative delta), so we don't store the extension itself —
     /// just the anchor it'll extend.
     Anchors        : AnchorInfo list
+    /// Route geometry frozen at press time. PostSlide commit + live
+    /// preview re-walk it to emit L-jog bridge rects at the dragged
+    /// corner when attached segments' spine-only stretch leaves a
+    /// perpendicular gap. None for synthetic slides built outside the
+    /// detector (none currently).
+    Route          : Rekolektion.Viz.Core.Routing.Detect.Route option
+    /// Index into `Route.Posts` for the post being dragged
+    /// (PostSlide). None for TrackSlide — track drags don't generate
+    /// corner jogs at the dragged segment itself.
+    PostIdx        : int option
     mutable LastDxDbu : int64
     mutable LastDyDbu : int64
 }
@@ -736,6 +755,22 @@ type StackCanvasControl() =
                     { c with Elements = elems' })
         { doc with Cells = cells' }
 
+    /// Property list stamped on every viz-emitted bridge / anchor-
+    /// extension rect. The Value encodes the OWNING POSITION (post
+    /// for PostSlide L-jog, anchor endpoint for TrackSlide extension)
+    /// as `"x,y"`. The reaper in `Msg.RouteSlideCommit` matches new
+    /// extensions' tag values against existing rects' tags and reaps
+    /// only the matching ones — so a drag at the top corner doesn't
+    /// wipe out a prior drag's bridges at the bottom corner. Tag is
+    /// a no-op semantically — Magic / LVS / DRC ignore unknown props.
+    static member private BridgePropsAt
+            (ownerX: int64) (ownerY: int64)
+            : Rekolektion.Viz.Core.Rkt.Types.Property list =
+        [ { Key = "viz:bridge"
+            Value =
+                Rekolektion.Viz.Core.Rkt.Types.PvString
+                    (sprintf "%d,%d" ownerX ownerY) } ]
+
     /// Zero recipe — coords don't move. Building block for the
     /// per-handle adjust constructors below.
     static member private ZeroAdjust (sourceIdx: int) : SlideAdjust =
@@ -816,6 +851,56 @@ type StackCanvasControl() =
                 elif nearMax then Some { z with Mx2X = 1L }
                 else None
 
+    /// Cascade NeighborAdjusts across the route: for each segment
+    /// already in `baseAdjusts`, walk every post it's attached to
+    /// (except `originPostIdx`, the post the user dragged from —
+    /// neighbors there are already in `baseAdjusts`), find
+    /// perpendicular L-corner segments at those posts, and add
+    /// their NeighborAdjust recipes too. Without this cascade, a
+    /// beam slide propagates its corner-trim only at the press
+    /// point — anything attached to the FAR end of the beam (a
+    /// rail at the top of a vertical beam, etc) stays put and the
+    /// route visibly "T-junctions" with a stub where the corner
+    /// used to align. Deduped by source index against the existing
+    /// adjusts so we don't double-stretch a neighbor.
+    static member private CascadeNeighborAdjusts
+            (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+            (baseAdjusts: SlideAdjust list)
+            (originPostIdx: int option)
+            : SlideAdjust list =
+        let baseIds =
+            baseAdjusts
+            |> List.map (fun a -> a.SourceIdx)
+            |> Set.ofList
+        let segByRouteIdx (i: int) = route.Segments.[i]
+        let routeIdxBySource =
+            route.Segments
+            |> Array.mapi (fun i s -> s.SourceIndex, i)
+            |> Map.ofArray
+        let addedIds =
+            System.Collections.Generic.HashSet<int>(baseIds)
+        let additions = ResizeArray<SlideAdjust>()
+        for a in baseAdjusts do
+            match Map.tryFind a.SourceIdx routeIdxBySource with
+            | None -> ()
+            | Some myRouteIdx ->
+                let mySeg = segByRouteIdx myRouteIdx
+                for postIdx in 0 .. route.Posts.Length - 1 do
+                    if Some postIdx <> originPostIdx then
+                        let p = route.Posts.[postIdx]
+                        if List.contains myRouteIdx p.AttachedSegments then
+                            for otherRouteIdx in p.AttachedSegments do
+                                if otherRouteIdx <> myRouteIdx then
+                                    let other = segByRouteIdx otherRouteIdx
+                                    if not (addedIds.Contains other.SourceIndex) then
+                                        match StackCanvasControl.NeighborAdjust
+                                                  other mySeg with
+                                        | Some adj ->
+                                            additions.Add adj
+                                            addedIds.Add other.SourceIndex |> ignore
+                                        | None -> ()
+        additions |> List.ofSeq
+
     /// Walk `route.Posts` for every post that the dragged segment
     /// (by `route.Segments` index) touches, collect the
     /// perpendicular-neighbor adjusts. Deduped by source index so a
@@ -843,24 +928,21 @@ type StackCanvasControl() =
         head :: neighbors
 
     /// Recipe for one segment attached to a POST being dragged.
-    /// PHASE A: terminus-only, spine-axis-only. The post moves
-    /// along the attached segment's spine, stretching/shrinking
-    /// the segment at the at-post endpoint. The non-spine axis
-    /// is locked at the move-handler level. No perp slide — that
-    /// would translate the whole rect and effectively move the
-    /// FAR endpoint too, breaking whatever's at the other end.
-    /// Corner/junction post drag waits for the #3 Opt-jog work.
+    /// Spine-axis-only stretch — the segment's near-to-post endpoint
+    /// follows the gesture along the segment's own axis; perpendicular
+    /// motion is absorbed by the OTHER attached segment at the corner
+    /// plus an L-jog bridge rect emitted by `ComputeCornerJogs` to
+    /// fill the resulting gap. Perp-sliding the whole segment was the
+    /// prior behavior and broke far-end anchors (the bbox-extension
+    /// "giant box" bug).
     static member private PostSegmentAdjust
             (seg: Rekolektion.Viz.Core.Routing.Detect.Segment)
             (post: Rekolektion.Viz.Core.Rkt.Types.Point)
+            (_postAttachedCount: int)
             : SlideAdjust =
         let z = StackCanvasControl.ZeroAdjust seg.SourceIndex
         match seg.Spine with
         | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
-            // Spine axis X: shift whichever X endpoint is nearest
-            // post.X. The JOG-fix overhang puts both ends a half-
-            // width away from post.X; nearer one is the at-post
-            // end.
             let distMin = abs (seg.XMin - post.X)
             let distMax = abs (seg.XMax - post.X)
             if distMin <= distMax then { z with Mx1X = 1L }
@@ -881,13 +963,149 @@ type StackCanvasControl() =
         if postIdx < 0 || postIdx >= route.Posts.Length then []
         else
             let p = route.Posts.[postIdx]
+            let attachedCount = p.AttachedSegments.Length
             p.AttachedSegments
             |> List.choose (fun i ->
                 if i < 0 || i >= route.Segments.Length then None
                 else
                     Some (StackCanvasControl.PostSegmentAdjust
-                            route.Segments.[i] p.Position))
+                            route.Segments.[i] p.Position attachedCount))
             |> List.distinctBy (fun a -> a.SourceIdx)
+
+    /// Build L-jog bridge rects at a dragged corner post. After a
+    /// PostSlide, each attached segment's near-to-post end has shifted
+    /// only along its OWN spine — H seg corner moves in X by dx,
+    /// V seg corner moves in Y by dy. The "new corner location" is
+    /// `post + (dx, dy)`; the two attached segments don't reach it
+    /// because spine-only stretch keeps each on its original perp
+    /// axis (V seg's centerline X stays fixed, H seg's centerline Y
+    /// stays fixed). The bridge is an L meeting at the new corner.
+    ///
+    /// For each H/V pair attached at the dragged post we emit:
+    /// - A vertical leg centered at `newCornerX`, width = V seg's
+    ///   perp thickness, spanning Y from H seg's centerline to
+    ///   `newCornerY`.
+    /// - A horizontal leg centered at `newCornerY`, height = H seg's
+    ///   perp thickness, spanning X from V seg's centerline to
+    ///   `newCornerX`.
+    /// Either leg is skipped when its axis component is zero, so a
+    /// pure-Y drag emits only the vertical leg and pure-X emits only
+    /// the horizontal one. The legs intentionally overlap each
+    /// attached segment at the corner-overhang region — those
+    /// overlaps are hidden under the existing rects on screen, but
+    /// they keep the bridge electrically continuous through the new
+    /// corner area.
+    static member private ComputeCornerJogs
+            (route: Rekolektion.Viz.Core.Routing.Detect.Route)
+            (postIdx: int)
+            (_adjusts: SlideAdjust list)
+            (dx: int64) (dy: int64)
+            : Rekolektion.Viz.Core.Rkt.Types.Rectangle list =
+        if postIdx < 0 || postIdx >= route.Posts.Length then []
+        elif dx = 0L && dy = 0L then []
+        else
+            let post = route.Posts.[postIdx]
+            let newCornerX = post.Position.X + dx
+            let newCornerY = post.Position.Y + dy
+            let validIdxs =
+                post.AttachedSegments
+                |> List.filter (fun i ->
+                    i >= 0 && i < route.Segments.Length)
+            let spineOf i = route.Segments.[i].Spine
+            let hIdxs =
+                validIdxs
+                |> List.filter (fun i ->
+                    spineOf i = Rekolektion.Viz.Core.Routing.Detect.Axis.X)
+            let vIdxs =
+                validIdxs
+                |> List.filter (fun i ->
+                    spineOf i = Rekolektion.Viz.Core.Routing.Detect.Axis.Y)
+            let jogs = ResizeArray<Rekolektion.Viz.Core.Rkt.Types.Rectangle>()
+            for hi in hIdxs do
+                for vi in vIdxs do
+                    let h = route.Segments.[hi]
+                    let v = route.Segments.[vi]
+                    // H seg centerline Y, V seg centerline X — these
+                    // are the original corner coords. The new corner
+                    // sits at (newCornerX, newCornerY).
+                    let hCenterY = h.Center
+                    let vCenterX = v.Center
+                    let hHalfY = (h.YMax - h.YMin) / 2L
+                    let vHalfX = (v.XMax - v.XMin) / 2L
+                    let layer =
+                        Rekolektion.Viz.Core.Rkt.OfGds.layerFromGds
+                            h.Layer h.DataType
+                    // Vertical leg: only when the corner moved in Y.
+                    // Y extends past BOTH endpoints by H seg's half-
+                    // height so the leg fully overlaps H stub at the
+                    // bottom (proper JOG-fix corner) and fully
+                    // overlaps the horizontal leg at the top.
+                    if dy <> 0L then
+                        let yLo = (min hCenterY newCornerY) - hHalfY
+                        let yHi = (max hCenterY newCornerY) + hHalfY
+                        jogs.Add
+                            ({ Layer = layer
+                               X1 = newCornerX - vHalfX
+                               Y1 = yLo
+                               X2 = newCornerX + vHalfX
+                               Y2 = yHi
+                               Net = None
+                               Props =
+                                   StackCanvasControl.BridgePropsAt
+                                       post.Position.X post.Position.Y
+                               Comments = [] }
+                             : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                    // Horizontal leg: only when the corner moved in X.
+                    // X extends past BOTH endpoints by V seg's half-
+                    // width for the matching JOG-fix overhang at the
+                    // V seg meeting and at the corner.
+                    if dx <> 0L then
+                        let xLo = (min vCenterX newCornerX) - vHalfX
+                        let xHi = (max vCenterX newCornerX) + vHalfX
+                        jogs.Add
+                            ({ Layer = layer
+                               X1 = xLo
+                               Y1 = newCornerY - hHalfY
+                               X2 = xHi
+                               Y2 = newCornerY + hHalfY
+                               Net = None
+                               Props =
+                                   StackCanvasControl.BridgePropsAt
+                                       post.Position.X post.Position.Y
+                               Comments = [] }
+                             : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+            jogs |> List.ofSeq
+
+    /// Compute the (mx_x, mx_y, my_x, my_y) endpoint-motion
+    /// multipliers for a segment under its SlideAdjust recipe.
+    /// `whichEndIsStart`: true for the Start endpoint (X1 or Y1
+    /// of the bbox depending on spine), false for End. The
+    /// perp-axis coordinate is the segment's centerline, so it
+    /// averages the two perp multipliers. In well-formed adjusts
+    /// the two perp multipliers are equal (or both zero) — perp
+    /// slide moves the whole rect, not just one corner.
+    static member private EndpointMultipliers
+            (seg: Rekolektion.Viz.Core.Routing.Detect.Segment)
+            (adjust: SlideAdjust)
+            (whichEndIsStart: bool)
+            : int64 * int64 * int64 * int64 =
+        match seg.Spine with
+        | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+            // Endpoint X = X1 (start) or X2 (end). Endpoint Y =
+            // centerline, depends on both Y1 and Y2.
+            let mxX, mxY =
+                if whichEndIsStart then adjust.Mx1X, adjust.Mx1Y
+                else adjust.Mx2X, adjust.Mx2Y
+            let myX = (adjust.My1X + adjust.My2X) / 2L
+            let myY = (adjust.My1Y + adjust.My2Y) / 2L
+            mxX, mxY, myX, myY
+        | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+            let mxX = (adjust.Mx1X + adjust.Mx2X) / 2L
+            let mxY = (adjust.Mx1Y + adjust.Mx2Y) / 2L
+            let myX, myY =
+                if whichEndIsStart then adjust.My1X, adjust.My1Y
+                else adjust.My2X, adjust.My2Y
+            mxX, mxY, myX, myY
 
     /// Find a same-layer rect anchor at the dragged beam's
     /// `endpoint`. Walks the FlatPolygons array (which has SRef
@@ -907,7 +1125,9 @@ type StackCanvasControl() =
             (beamLayer: int) (beamDataType: int)
             (endpoint: Rekolektion.Viz.Core.Rkt.Types.Point)
             (excludeTopIds: Set<int>)
+            (mults: int64 * int64 * int64 * int64)
             : AnchorInfo option =
+        let (mxX, mxY, myX, myY) = mults
         let flat = Layout.Flatten.flatten doc
         flat
         |> Array.tryPick (fun fp ->
@@ -931,7 +1151,11 @@ type StackCanvasControl() =
                            BboxDbu = (xMin, yMin, xMax, yMax)
                            Layer =
                                Rekolektion.Viz.Core.Rkt.OfGds.layerFromGds
-                                   beamLayer beamDataType }
+                                   beamLayer beamDataType
+                           EndpointMxX = mxX
+                           EndpointMxY = mxY
+                           EndpointMyX = myX
+                           EndpointMyY = myY }
                 else None)
 
     /// Compute the extension rect for a track-slide anchor. The
@@ -942,38 +1166,42 @@ type StackCanvasControl() =
     /// bbox, emit a rect covering the gap on the anchor's layer
     /// (anchor's perp size preserved). Returns None when the new
     /// endpoint still sits inside the anchor or when delta is 0.
+    /// Compute the extension rect needed at an anchored endpoint
+    /// that has moved past the anchor's bbox. Uses the endpoint's
+    /// motion multipliers (captured at press) so this works for
+    /// the dragged beam's endpoints AND for far ends of other
+    /// segments adjusted in a corner-style post drag. The
+    /// extension preserves the anchor's perp size and covers the
+    /// gap from the original endpoint to the new one along
+    /// whichever axis actually moved.
     static member private ComputeExtensionRect
             (anchor: AnchorInfo)
             (dx: int64) (dy: int64)
-            (beamSpine: Rekolektion.Viz.Core.Routing.Detect.Axis)
             : Rekolektion.Viz.Core.Rkt.Types.Rectangle option =
-        let extDx, extDy =
-            match beamSpine with
-            | Rekolektion.Viz.Core.Routing.Detect.Axis.X -> 0L, dy
-            | Rekolektion.Viz.Core.Routing.Detect.Axis.Y -> dx, 0L
-        if extDx = 0L && extDy = 0L then None
+        let endpointDx = anchor.EndpointMxX * dx + anchor.EndpointMxY * dy
+        let endpointDy = anchor.EndpointMyX * dx + anchor.EndpointMyY * dy
+        if endpointDx = 0L && endpointDy = 0L then None
         else
             let (aXMin, aYMin, aXMax, aYMax) = anchor.BboxDbu
-            let newX = anchor.OrigEndpoint.X + extDx
-            let newY = anchor.OrigEndpoint.Y + extDy
+            let newX = anchor.OrigEndpoint.X + endpointDx
+            let newY = anchor.OrigEndpoint.Y + endpointDy
             let stillInside =
                 newX >= aXMin && newX <= aXMax
                 && newY >= aYMin && newY <= aYMax
             if stillInside then None
             else
-                match beamSpine with
-                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
-                    let yMin = min anchor.OrigEndpoint.Y newY
-                    let yMax = max anchor.OrigEndpoint.Y newY
-                    Some
-                        ({ Layer = anchor.Layer
-                           X1 = aXMin; Y1 = yMin
-                           X2 = aXMax; Y2 = yMax
-                           Net = None
-                           Props = []
-                           Comments = [] }
-                         : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
-                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                // Extension bridges the gap on whichever axis the
+                // endpoint actually moved. Anchor's perp extent on
+                // the OTHER axis is preserved so the new rect reads
+                // as "more rail."
+                // Owner position for the tag: the endpoint that this
+                // anchor extension is anchored to — pre-drag location,
+                // so a subsequent drag at the SAME endpoint reaps the
+                // prior bridge while drags at other corners leave it.
+                let bridgeProps =
+                    StackCanvasControl.BridgePropsAt
+                        anchor.OrigEndpoint.X anchor.OrigEndpoint.Y
+                if endpointDx <> 0L && endpointDy = 0L then
                     let xMin = min anchor.OrigEndpoint.X newX
                     let xMax = max anchor.OrigEndpoint.X newX
                     Some
@@ -981,7 +1209,35 @@ type StackCanvasControl() =
                            X1 = xMin; Y1 = aYMin
                            X2 = xMax; Y2 = aYMax
                            Net = None
-                           Props = []
+                           Props = bridgeProps
+                           Comments = [] }
+                         : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                elif endpointDy <> 0L && endpointDx = 0L then
+                    let yMin = min anchor.OrigEndpoint.Y newY
+                    let yMax = max anchor.OrigEndpoint.Y newY
+                    Some
+                        ({ Layer = anchor.Layer
+                           X1 = aXMin; Y1 = yMin
+                           X2 = aXMax; Y2 = yMax
+                           Net = None
+                           Props = bridgeProps
+                           Comments = [] }
+                         : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                else
+                    // Endpoint moved diagonally — anchor extension
+                    // would need to be an L-shape. v1: just emit a
+                    // bbox covering both axes; clean L-shape is a
+                    // follow-up.
+                    let xMin = min anchor.OrigEndpoint.X newX
+                    let xMax = max anchor.OrigEndpoint.X newX
+                    let yMin = min anchor.OrigEndpoint.Y newY
+                    let yMax = max anchor.OrigEndpoint.Y newY
+                    Some
+                        ({ Layer = anchor.Layer
+                           X1 = xMin; Y1 = yMin
+                           X2 = xMax; Y2 = yMax
+                           Net = None
+                           Props = bridgeProps
                            Comments = [] }
                          : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
 
@@ -1018,7 +1274,14 @@ type StackCanvasControl() =
                         let ndcY = float (v.Y / v.W)
                         Some ((ndcX + 1.0) * 0.5 * w,
                               (1.0 - ndcY) * 0.5 * h)
-                let snapPx = 12.0
+                // Snap radius matches the rendered square's actual
+                // on-screen size (half-diagonal of the 0.32 µm
+                // square) instead of a fixed pixel value. With a
+                // fixed 12 px snap, zooming in made the square
+                // bigger than the hit zone and the visible corners
+                // became dead pixels. Floor at 12 px so the handle
+                // stays clickable at low zoom.
+                let postHalfUm = 0.16f
                 let mutable bestIdx : int option = None
                 let mutable bestDist = System.Double.MaxValue
                 for i in 0 .. route.Posts.Length - 1 do
@@ -1027,6 +1290,17 @@ type StackCanvasControl() =
                     let cy = float32 (float p.Position.Y * umPerDbu)
                     match projectToScreen cx cy with
                     | Some (sx, sy) ->
+                        // Project a corner of the visual square; its
+                        // screen distance from the center is the
+                        // half-diagonal at the current view.
+                        let snapPx =
+                            match projectToScreen
+                                      (cx + postHalfUm) (cy + postHalfUm) with
+                            | Some (cornerX, cornerY) ->
+                                let cdx = cornerX - sx
+                                let cdy = cornerY - sy
+                                max 12.0 (sqrt (cdx * cdx + cdy * cdy))
+                            | None -> 12.0
                         let ddx = screen.X - sx
                         let ddy = screen.Y - sy
                         let dist = sqrt (ddx * ddx + ddy * ddy)
@@ -1075,7 +1349,8 @@ type StackCanvasControl() =
                 (spine: Rekolektion.Viz.Core.Routing.Detect.Axis)
                 (adjusts: SlideAdjust list)
                 (handleLabel: string)
-                (draggedSeg: Rekolektion.Viz.Core.Routing.Detect.Segment option) =
+                (draggedSeg: Rekolektion.Viz.Core.Routing.Detect.Segment option)
+                (postIdx: int option) =
             match this.UnprojectAtZ (e.GetPosition this) hoveredRouteLayerZ with
             | None -> ()
             | Some hitDbu ->
@@ -1085,19 +1360,45 @@ type StackCanvasControl() =
                 // bbox. Skip rects already being adjusted (perp
                 // neighbors at corners — their stretch already
                 // preserves the corner).
+                // Walk EVERY adjusted segment, not just the dragged
+                // beam, and check both of its spine endpoints for
+                // an anchor. This makes the cascade case work — if
+                // a post drag perp-slides a neighbor and the
+                // neighbor's far end was on a rail, we emit an
+                // extension to bridge that far end back too.
+                // Exclude rects already in the adjust list so the
+                // dragged geometry doesn't anchor against itself.
+                let excludeIds =
+                    adjusts
+                    |> List.map (fun a -> a.SourceIdx)
+                    |> Set.ofList
+                let segBySource =
+                    route.Segments
+                    |> Array.map (fun s -> s.SourceIndex, s)
+                    |> Map.ofArray
                 let anchors =
-                    match kind, draggedSeg with
-                    | TrackSlide, Some seg ->
-                        let excludeIds =
-                            adjusts
-                            |> List.map (fun a -> a.SourceIdx)
-                            |> Set.ofList
-                        [ seg.Start; seg.End ]
-                        |> List.choose (fun endpt ->
-                            StackCanvasControl.FindAnchorAt
-                                lib route.Cell seg.Layer seg.DataType
-                                endpt excludeIds)
-                    | _ -> []
+                    adjusts
+                    |> List.collect (fun a ->
+                        match Map.tryFind a.SourceIdx segBySource with
+                        | None -> []
+                        | Some seg ->
+                            let multsStart =
+                                StackCanvasControl.EndpointMultipliers seg a true
+                            let multsEnd =
+                                StackCanvasControl.EndpointMultipliers seg a false
+                            [ seg.Start, multsStart; seg.End, multsEnd ]
+                            |> List.choose (fun (endpt, mults) ->
+                                let (mxX, mxY, myX, myY) = mults
+                                if mxX = 0L && mxY = 0L
+                                   && myX = 0L && myY = 0L then
+                                    // Endpoint doesn't move under
+                                    // the recipe — no anchor work
+                                    // needed there.
+                                    None
+                                else
+                                    StackCanvasControl.FindAnchorAt
+                                        lib route.Cell seg.Layer seg.DataType
+                                        endpt excludeIds mults))
                 dragMode <- RouteTrackDrag
                 pressedButton <- RouteTrackDrag
                 lastPos <- e.GetPosition this
@@ -1112,6 +1413,8 @@ type StackCanvasControl() =
                     StartHitDbu = hitDbu
                     Adjusts = adjusts
                     Anchors = anchors
+                    Route = Some route
+                    PostIdx = postIdx
                     LastDxDbu = 0L
                     LastDyDbu = 0L
                 }
@@ -1131,13 +1434,28 @@ type StackCanvasControl() =
         | Some segIdx, _, Some route, Some lib
                 when segIdx < route.Segments.Length ->
             let seg = route.Segments.[segIdx]
-            let adjusts = StackCanvasControl.BuildSlideAdjusts route segIdx
-            beginSlide TrackSlide route lib seg.Spine adjusts "track" (Some seg)
+            let baseAdjusts =
+                StackCanvasControl.BuildSlideAdjusts route segIdx
+            // Cascade L-corner neighbor trims through every
+            // ADJUSTED segment's other posts so the corner-stretch
+            // propagates across the whole connected route, not
+            // just at the press point.
+            let cascaded =
+                StackCanvasControl.CascadeNeighborAdjusts route baseAdjusts None
+            let adjusts = baseAdjusts @ cascaded
+            beginSlide TrackSlide route lib seg.Spine adjusts "track"
+                (Some seg) None
         | None, Some postIdx, Some route, Some lib
                 when postIdx < route.Posts.Length ->
+            // No cascade for PostSlide: with spine-only stretch, no
+            // segment translates in its perpendicular axis, so no
+            // perpendicular neighbor anywhere in the route graph
+            // needs to follow. Cascade stays for TrackSlide where the
+            // dragged segment really does translate.
             let adjusts = StackCanvasControl.BuildPostAdjusts route postIdx
             beginSlide PostSlide route lib
-                Rekolektion.Viz.Core.Routing.Detect.Axis.X adjusts "post" None
+                Rekolektion.Viz.Core.Routing.Detect.Axis.X adjusts "post"
+                None (Some postIdx)
         | _ ->
             // No track hit (or surrounding state missing) — fall
             // through to the normal orbit / pan dispatch so the
@@ -1306,9 +1624,16 @@ type StackCanvasControl() =
                         match found, priorRoute with
                         | Some _, _ -> found, foundZ
                         | None, Some r ->
+                            // Symmetric sticky for post handles too —
+                            // the corner squares extend past the metal
+                            // and were dropping hover on the overhang.
                             match this.HitTestTrackHandleFor r priorLayerZ screen with
                             | Some _ -> Some r, priorLayerZ
-                            | None -> None, 0.0f
+                            | None ->
+                                match this.HitTestPostHandleFor
+                                          r priorLayerZ screen with
+                                | Some _ -> Some r, priorLayerZ
+                                | None -> None, 0.0f
                         | None, None -> None, 0.0f
                     hoveredRoute <- stickyFound
                     hoveredRouteLayerZ <- stickyZ
@@ -1486,27 +1811,51 @@ type StackCanvasControl() =
                 if trackHit.IsNone then
                     this.HitTestPostHandleFor route hoveredRouteLayerZ startPt
                 else None
-            let kindStr, adjusts, spine, anchors =
+            let kindStr, adjusts, spine, dragPostIdx =
                 match trackHit, postHit with
                 | Some segIdx, _ when segIdx < route.Segments.Length ->
                     let seg = route.Segments.[segIdx]
-                    let adj = StackCanvasControl.BuildSlideAdjusts route segIdx
-                    let excludeIds =
-                        adj |> List.map (fun a -> a.SourceIdx) |> Set.ofList
-                    let anchs =
-                        [ seg.Start; seg.End ]
-                        |> List.choose (fun endpt ->
-                            StackCanvasControl.FindAnchorAt
-                                lib route.Cell seg.Layer seg.DataType
-                                endpt excludeIds)
-                    "track", adj, seg.Spine, anchs
+                    let baseAdjusts =
+                        StackCanvasControl.BuildSlideAdjusts route segIdx
+                    let cascaded =
+                        StackCanvasControl.CascadeNeighborAdjusts
+                            route baseAdjusts None
+                    "track", baseAdjusts @ cascaded, seg.Spine, None
                 | None, Some postIdx when postIdx < route.Posts.Length ->
+                    let adjusts =
+                        StackCanvasControl.BuildPostAdjusts route postIdx
                     "post",
-                    StackCanvasControl.BuildPostAdjusts route postIdx,
+                    adjusts,
                     Rekolektion.Viz.Core.Routing.Detect.Axis.X,
-                    []
+                    Some postIdx
                 | _ ->
-                    "none", [], Rekolektion.Viz.Core.Routing.Detect.Axis.X, []
+                    "none", [], Rekolektion.Viz.Core.Routing.Detect.Axis.X,
+                    None
+            let excludeIds =
+                adjusts |> List.map (fun a -> a.SourceIdx) |> Set.ofList
+            let segBySource =
+                route.Segments
+                |> Array.map (fun s -> s.SourceIndex, s)
+                |> Map.ofArray
+            let anchors =
+                adjusts
+                |> List.collect (fun a ->
+                    match Map.tryFind a.SourceIdx segBySource with
+                    | None -> []
+                    | Some seg ->
+                        let multsStart =
+                            StackCanvasControl.EndpointMultipliers seg a true
+                        let multsEnd =
+                            StackCanvasControl.EndpointMultipliers seg a false
+                        [ seg.Start, multsStart; seg.End, multsEnd ]
+                        |> List.choose (fun (endpt, mults) ->
+                            let (mxX, mxY, myX, myY) = mults
+                            if mxX = 0L && mxY = 0L
+                               && myX = 0L && myY = 0L then None
+                            else
+                                StackCanvasControl.FindAnchorAt
+                                    lib route.Cell seg.Layer seg.DataType
+                                    endpt excludeIds mults))
             if kindStr = "none" then
                 "{\"ok\":false,\"reason\":\"no handle under start point\"}"
             else
@@ -1532,11 +1881,18 @@ type StackCanvasControl() =
                             a.SourceIdx,
                             a.Mx1X, a.Mx1Y, a.My1X, a.My1Y,
                             a.Mx2X, a.Mx2Y, a.My2X, a.My2Y)
-                    let extensions =
+                    let anchorExts =
                         anchors
                         |> List.choose (fun a ->
                             StackCanvasControl.ComputeExtensionRect
-                                a snapDx snapDy spine)
+                                a snapDx snapDy)
+                    let cornerJogs =
+                        match dragPostIdx with
+                        | Some pi ->
+                            StackCanvasControl.ComputeCornerJogs
+                                route pi adjusts snapDx snapDy
+                        | None -> []
+                    let extensions = anchorExts @ cornerJogs
                     if snapDx <> 0L || snapDy <> 0L then
                         Rekolektion.Viz.App.Services.AppDispatch.send
                             (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
@@ -1583,8 +1939,12 @@ type StackCanvasControl() =
                 | Some hitDbu ->
                     let rawDx = hitDbu.X - slide.StartHitDbu.X
                     let rawDy = hitDbu.Y - slide.StartHitDbu.Y
-                    // TrackSlide: zero out the axis we don't drag
-                    // along so the gesture stays axis-locked.
+                    // TrackSlide: axis-locked to the perp axis.
+                    // PostSlide: free 2D by default; Shift to
+                    // ortho-lock (snap to whichever axis the cursor
+                    // moved farther on).
+                    let shiftHeld =
+                        e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift)
                     let rawDx', rawDy' =
                         match slide.Kind, slide.Spine with
                         | TrackSlide,
@@ -1593,7 +1953,11 @@ type StackCanvasControl() =
                         | TrackSlide,
                           Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
                             rawDx, 0L
-                        | PostSlide, _ -> rawDx, rawDy
+                        | PostSlide, _ when shiftHeld ->
+                            if abs rawDx >= abs rawDy then rawDx, 0L
+                            else 0L, rawDy
+                        | PostSlide, _ ->
+                            rawDx, rawDy
                     let snapDx = StackCanvasControl.SnapDbu rawDx'
                     let snapDy = StackCanvasControl.SnapDbu rawDy'
                     if snapDx <> slide.LastDxDbu || snapDy <> slide.LastDyDbu then
@@ -1606,26 +1970,61 @@ type StackCanvasControl() =
                         // append any extension rects required to
                         // bridge the gap from each anchor's
                         // original endpoint to where it sits now.
-                        let extensions =
+                        let anchorExts =
                             slide.Anchors
                             |> List.choose (fun a ->
                                 StackCanvasControl.ComputeExtensionRect
-                                    a snapDx snapDy slide.Spine)
+                                    a snapDx snapDy)
+                        let cornerJogs =
+                            match slide.Route, slide.PostIdx with
+                            | Some r, Some pi ->
+                                StackCanvasControl.ComputeCornerJogs
+                                    r pi slide.Adjusts snapDx snapDy
+                            | _ -> []
+                        let extensions = anchorExts @ cornerJogs
+                        // Reap only bridges whose tag matches this
+                        // drag's new bridges (same owning post /
+                        // endpoint). Mirrors the commit-time reap in
+                        // Update.fs so the live preview stays in sync.
+                        let bridgeTagOf
+                                (r: Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                                : string option =
+                            r.Props
+                            |> List.tryPick (fun p ->
+                                if p.Key = "viz:bridge" then
+                                    match p.Value with
+                                    | Rekolektion.Viz.Core.Rkt.Types.PvString s ->
+                                        Some s
+                                    | Rekolektion.Viz.Core.Rkt.Types.PvAtom s ->
+                                        Some s
+                                    | _ -> None
+                                else None)
+                        let newTags =
+                            extensions
+                            |> List.choose bridgeTagOf
+                            |> Set.ofList
                         let docNew =
-                            if extensions.IsEmpty then docAfterAdjusts
-                            else
-                                let cells' =
-                                    docAfterAdjusts.Cells
-                                    |> List.map (fun c ->
-                                        if c.Name <> slide.Cell then c
-                                        else
-                                            let extEls =
-                                                extensions
-                                                |> List.map
-                                                    Rekolektion.Viz.Core.Rkt.Types.RectEl
-                                            { c with
-                                                Elements = c.Elements @ extEls })
-                                { docAfterAdjusts with Cells = cells' }
+                            let cells' =
+                                docAfterAdjusts.Cells
+                                |> List.map (fun c ->
+                                    if c.Name <> slide.Cell then c
+                                    else
+                                        let kept =
+                                            c.Elements
+                                            |> List.filter (fun el ->
+                                                match el with
+                                                | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                                    match bridgeTagOf r with
+                                                    | Some tag when newTags.Contains tag ->
+                                                        false
+                                                    | _ -> true
+                                                | _ -> true)
+                                        let extEls =
+                                            extensions
+                                            |> List.map
+                                                Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                        { c with Elements = kept @ extEls })
+                            { docAfterAdjusts with Cells = cells' }
                         let flatNew = Layout.Flatten.flatten docNew
                         dragLiveDoc <- Some docNew
                         dragLiveFlat <- flatNew
@@ -1710,11 +2109,19 @@ type StackCanvasControl() =
                         a.SourceIdx,
                         a.Mx1X, a.Mx1Y, a.My1X, a.My1Y,
                         a.Mx2X, a.Mx2Y, a.My2X, a.My2Y)
-                let extensions =
+                let anchorExts =
                     slide.Anchors
                     |> List.choose (fun a ->
                         StackCanvasControl.ComputeExtensionRect
-                            a slide.LastDxDbu slide.LastDyDbu slide.Spine)
+                            a slide.LastDxDbu slide.LastDyDbu)
+                let cornerJogs =
+                    match slide.Route, slide.PostIdx with
+                    | Some r, Some pi ->
+                        StackCanvasControl.ComputeCornerJogs
+                            r pi slide.Adjusts
+                            slide.LastDxDbu slide.LastDyDbu
+                    | _ -> []
+                let extensions = anchorExts @ cornerJogs
                 Rekolektion.Viz.App.Services.AppDispatch.send
                     (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
                         (slide.Cell, slide.LastDxDbu, slide.LastDyDbu,
@@ -2671,19 +3078,24 @@ type StackCanvasControl() =
                         | TrackSlide -> 1.00f, 0.55f, 0.20f   // orange
                         | PostSlide  -> 1.00f, 0.90f, 0.30f   // bright yellow
                     let half = 0.16f
+                    let crossHalf = half * 0.35f
                     let verts = ResizeArray<float32>()
-                    let pushV (x: float32) (y: float32) =
-                        verts.Add x; verts.Add y; verts.Add z
-                        verts.Add r; verts.Add gC; verts.Add bC
-                    // Filled axis-aligned square — same shape as
-                    // the static post handles so a post drag reads
-                    // as "the square moved with the cursor."
-                    pushV (cx - half) (cy - half)
-                    pushV (cx + half) (cy - half)
-                    pushV (cx + half) (cy + half)
-                    pushV (cx - half) (cy - half)
-                    pushV (cx + half) (cy + half)
-                    pushV (cx - half) (cy + half)
+                    let pushSeg
+                            (x1: float32) (y1: float32)
+                            (x2: float32) (y2: float32) =
+                        verts.Add x1; verts.Add y1; verts.Add z
+                        verts.Add r;  verts.Add gC; verts.Add bC
+                        verts.Add x2; verts.Add y2; verts.Add z
+                        verts.Add r;  verts.Add gC; verts.Add bC
+                    // Outline square + center cross — no fill, so
+                    // the user can see the metal under the cursor
+                    // while dragging.
+                    pushSeg (cx - half) (cy - half) (cx + half) (cy - half)
+                    pushSeg (cx + half) (cy - half) (cx + half) (cy + half)
+                    pushSeg (cx + half) (cy + half) (cx - half) (cy + half)
+                    pushSeg (cx - half) (cy + half) (cx - half) (cy - half)
+                    pushSeg (cx - crossHalf) cy (cx + crossHalf) cy
+                    pushSeg cx (cy - crossHalf) cx (cy + crossHalf)
                     let arr = verts.ToArray()
                     g.BindVertexArray hoverVao
                     g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
@@ -2700,8 +3112,9 @@ type StackCanvasControl() =
                     let loc = g.GetUniformLocation(rulerProgram, "uMVP")
                     let mvpArr = Matrix4x4Helpers.toFloatArray mvp
                     g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+                    g.LineWidth 2.0f
                     g.Disable GLEnum.DepthTest
-                    g.DrawArrays(GLEnum.Triangles, 0, uint32 (arr.Length / 6))
+                    g.DrawArrays(GLEnum.Lines, 0, uint32 (arr.Length / 6))
                     g.Enable GLEnum.DepthTest
                 | _ -> ()
             match hoveredRoute with
@@ -2793,10 +3206,12 @@ type StackCanvasControl() =
                 // Post handles: small filled square per post, on the
                 // layer plane. Color codes the kind so the user can
                 // tell at a glance: terminus / corner / junction.
-                // Sphere-shaped handles would read better but require
-                // a triangulated mesh program — a flat square gets
-                // the same affordance for v1.
+                // Rendered as an OUTLINE square + small center
+                // cross — no fill — so the underlying metal stays
+                // visible. Filled gizmos hide the geometry the
+                // user is trying to edit.
                 let postHalfUm = 0.16f
+                let crossHalfUm = postHalfUm * 0.35f
                 for p in route.Posts do
                     let cx = float32 (float p.Position.X * umPerDbu)
                     let cy = float32 (float p.Position.Y * umPerDbu)
@@ -2812,9 +3227,15 @@ type StackCanvasControl() =
                     let x1 = cx + postHalfUm
                     let y0 = cy - postHalfUm
                     let y1 = cy + postHalfUm
-                    // Two triangles cover the quad.
-                    pushTriangle x0 y0 x1 y0 x1 y1 color
-                    pushTriangle x0 y0 x1 y1 x0 y1 color
+                    // Outline square (4 edges).
+                    pushLine x0 y0 x1 y0 color
+                    pushLine x1 y0 x1 y1 color
+                    pushLine x1 y1 x0 y1 color
+                    pushLine x0 y1 x0 y0 color
+                    // Small center cross so the post location reads
+                    // even when the square overlaps something busy.
+                    pushLine (cx - crossHalfUm) cy (cx + crossHalfUm) cy color
+                    pushLine cx (cy - crossHalfUm) cx (cy + crossHalfUm) color
                 let lineCount = lineVerts.Count / 6
                 let triCount  = triVerts.Count / 6
                 if (lineCount > 0 || triCount > 0) && rulerProgram <> 0u then

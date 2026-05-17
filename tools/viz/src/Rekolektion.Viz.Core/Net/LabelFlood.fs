@@ -52,7 +52,10 @@ let derive (doc: Document) : Map<string, NetEntry> =
 
     labels
     |> Array.fold (fun (acc: Map<string, NetEntry>) (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel) ->
-        if lbl.Text = "" then acc else
+        // Skip DeviceTerminal labels — those are FET port annotations
+        // (D / G / S / B), not net names. Treating them as nets would
+        // collapse every device's gate into one fake "G" entry.
+        if lbl.Text = "" || lbl.Kind <> NetName then acc else
         let seedIdx =
             polys
             |> Array.tryFindIndex (fun p ->

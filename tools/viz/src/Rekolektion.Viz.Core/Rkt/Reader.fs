@@ -1025,78 +1025,6 @@ let private analyzeCell
         | [] ->
             Error (err path (Some (Cst.posOf s)) "(cell ...) needs a name")
 
-let private analyzeNet
-    (path: string option)
-    (s: Sexp)
-    : Result<Net, ReaderError> =
-    match childrenAfterHead s with
-    | None -> Error (err path (Some (Cst.posOf s)) "empty (net ...)")
-    | Some (nameAtom :: rest) ->
-        match symbolText nameAtom with
-        | None -> Error (err path (Some (Cst.posOf nameAtom)) "net name must be a symbol")
-        | Some name ->
-            let domain =
-                findForm "domain" rest
-                |> Option.bind childrenAfterHead
-                |> Option.bind (function [a] -> symbolText a | _ -> None)
-                |> Option.defaultValue "signal"
-            let voltage =
-                findForm "voltage" rest
-                |> Option.bind childrenAfterHead
-                |> Option.bind (function [a] -> floatValue a | _ -> None)
-            let cls =
-                findForm "class" rest
-                |> Option.bind childrenAfterHead
-                |> Option.bind (function [a] -> symbolText a |> Option.orElseWith (fun () -> stringText a) | _ -> None)
-            // Anything we don't recognise lands in Props for round-trip
-            // fidelity at the AST layer.
-            let known = Set.ofList [ "domain"; "voltage"; "class" ]
-            let extras =
-                rest
-                |> List.choose (fun c ->
-                    match head c with
-                    | Some h when not (Set.contains h known) -> Some c
-                    | _ -> None)
-            let propsResult =
-                extras
-                |> List.fold (fun acc form ->
-                    match acc with
-                    | Error e -> Error e
-                    | Ok lst ->
-                        match analyzeProperty path form with
-                        | Error e -> Error e
-                        | Ok p -> Ok (p :: lst))
-                    (Ok [])
-            match propsResult with
-            | Error e -> Error e
-            | Ok ps ->
-                Ok { Name = name
-                     Domain = domain
-                     Voltage = voltage
-                     NetClass = cls
-                     Props = List.rev ps
-                     Comments = commentsOf s }
-    | Some [] ->
-        Error (err path (Some (Cst.posOf s)) "(net ...) requires a name")
-
-let private analyzeNetsForm
-    (path: string option)
-    (s: Sexp)
-    : Result<Net list, ReaderError> =
-    match childrenAfterHead s with
-    | None -> Ok []
-    | Some children ->
-        let rec walk acc = function
-            | [] -> Ok (List.rev acc)
-            | c :: rest ->
-                match head c with
-                | Some "net" ->
-                    match analyzeNet path c with
-                    | Error e -> Error e
-                    | Ok n -> walk (n :: acc) rest
-                | _ -> walk acc rest
-        walk [] children
-
 let private analyzeUnits (s: Sexp) : Units =
     let mutable u = Types.Defaults.units
     match childrenAfterHead s with
@@ -1162,32 +1090,28 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
                         { Path = p; Comments = commentsOf f } : Import)
                 | _ -> None)
 
-        let netsResult =
-            match findForm "nets" layoutChildren with
-            | None -> Ok []
-            | Some f -> analyzeNetsForm path f
-
-        match netsResult with
+        // The `(nets …)` block is no longer part of the schema —
+        // labels with `Kind = NetName` are the source of truth for the
+        // net set. If a legacy file still has a `(nets …)` block, it's
+        // silently ignored (the form isn't in any of our recognized
+        // findForm calls).
+        let cellForms = findForms "cell" layoutChildren
+        let rec walk acc = function
+            | [] -> Ok (List.rev acc)
+            | c :: rest ->
+                match analyzeCell path pdk c with
+                | Error e -> Error e
+                | Ok cell -> walk (cell :: acc) rest
+        match walk [] cellForms with
         | Error e -> Error e
-        | Ok nets ->
-            let cellForms = findForms "cell" layoutChildren
-            let rec walk acc = function
-                | [] -> Ok (List.rev acc)
-                | c :: rest ->
-                    match analyzeCell path pdk c with
-                    | Error e -> Error e
-                    | Ok cell -> walk (cell :: acc) rest
-            match walk [] cellForms with
-            | Error e -> Error e
-            | Ok cells ->
-                Ok { Version = version
-                     Pdk = pdk
-                     Units = units
-                     Imports = imports
-                     Nets = nets
-                     Cells = cells
-                     TopCell = topCell
-                     HeaderComments = commentsOf layout }
+        | Ok cells ->
+            Ok { Version = version
+                 Pdk = pdk
+                 Units = units
+                 Imports = imports
+                 Cells = cells
+                 TopCell = topCell
+                 HeaderComments = commentsOf layout }
 
 // ─── Public file API + library / import resolver ─────────────────────────
 

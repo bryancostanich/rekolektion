@@ -132,3 +132,19 @@ two would suppress FET terminal labels from the GDS and break
 Magic's `port makeall` LVS extraction. They describe orthogonal
 axes (role-in-netlist vs. export-filter); divergent cases like
 "named internal net" need both flags settable independently.
+
+2026-05-16 — Decision 5 (regen verification): chose A — a
+diff-aware comparator that parses old vs. new `.rkt`, ignores the
+new `(kind …)` annotation, and reports element-level
+discrepancies. When something does go wrong on a future
+tag-only schema change, "which rect moved" is the diagnostic we
+actually want; hash-only loses that signal.
+
+2026-05-16 — Decision 4 (in-memory doc.Nets): chose C — **delete
+the `(nets …)` block entirely**, not A (purge field) or B (keep
+as cache) from the original spec. An audit found that no consumer
+reads `Net.Voltage`, `Net.Domain`, or `Net.NetClass`; the whole
+block round-trip exists to preserve metadata that has zero
+observable effect. Cleaner to remove the apparatus (reader,
+writer, `Document.Nets`, `Net` record / dataclass) than to ship
+a dead-letter format feature. Spec.md updated to reflect.

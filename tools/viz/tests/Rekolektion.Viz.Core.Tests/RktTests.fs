@@ -236,20 +236,23 @@ let ``bare layer name picks up file default pdk`` () =
     p.Layer |> should equal (Named ("sky130", "met1"))
 
 [<Fact>]
-let ``analyzes nets block with domain and voltage`` () =
+let ``legacy (nets …) block is silently ignored`` () =
+    // Track 06 Decision 4 = C: the `(nets …)` block is no longer
+    // part of the schema. If a legacy file still has one, the
+    // reader drops it on the floor and parses everything else
+    // normally. (No file in cell_designs/ has a (nets …) block,
+    // but the format must still tolerate one without erroring.)
     let src =
         "(layout (version 1) (pdk sky130)\n"
         + "  (nets\n"
         + "    (net BL (domain signal))\n"
-        + "    (net VPWR (domain power) (voltage 1.8))))\n"
+        + "    (net VPWR (domain power) (voltage 1.8)))\n"
+        + "  (cell c))\n"
     let ast = analyzeOk src
-    ast.Nets |> List.length |> should equal 2
-    let bl = ast.Nets |> List.find (fun n -> n.Name = "BL")
-    bl.Domain |> should equal "signal"
-    bl.Voltage |> should equal None
-    let vpwr = ast.Nets |> List.find (fun n -> n.Name = "VPWR")
-    vpwr.Domain |> should equal "power"
-    vpwr.Voltage |> should equal (Some 1.8)
+    // No Nets field exists anymore; document parses cleanly with
+    // just the cell.
+    ast.Cells |> List.length |> should equal 1
+    (List.head ast.Cells).Name |> should equal "c"
 
 [<Fact>]
 let ``analyzes a port with flags and shape`` () =
@@ -292,22 +295,14 @@ let ``analyzes sref and aref defaults`` () =
 [<Fact>]
 let ``synthesize then parse yields the same AST`` () =
     // Under the post-track-06 contract, `(nets …)` is **derived from
-    // labels** at write time, not taken verbatim from `doc.Nets`. So a
-    // doc with named nets needs corresponding `(label …)` elements to
-    // round-trip those names through the manifest. The `doc.Nets`
-    // entries below are still useful — they carry voltage metadata
-    // that the writer merges in when a matching label exists.
+    // labels** (Kind = NetName), no separate (nets …) block. The
+    // writer no longer emits anything net-manifest-shaped; the
+    // round-trip just verifies that polys/ports/labels survive.
     let original : Document = {
         Version = 1
         Pdk = "sky130"
         Units = Defaults.units
         Imports = []
-        Nets = [
-            { Name = "BL"; Domain = "signal"; Voltage = None
-              NetClass = None; Props = []; Comments = [] }
-            { Name = "VPWR"; Domain = "power"; Voltage = Some 1.8
-              NetClass = None; Props = []; Comments = [] }
-        ]
         Cells = [
             { Name = "c"
               Meta = None
@@ -335,8 +330,6 @@ let ``synthesize then parse yields the same AST`` () =
                       Props = []
                       Comments = []
                   }
-                  // Labels that anchor the BL / VPWR nets so the
-                  // writer-derived (nets …) manifest includes them.
                   LabelEl {
                       Layer = Named ("sky130", "met1_label")
                       Text = "BL"
@@ -366,12 +359,13 @@ let ``synthesize then parse yields the same AST`` () =
     let ast = analyzeOk text
     ast.Pdk |> should equal original.Pdk
     ast.TopCell |> should equal original.TopCell
-    ast.Nets |> List.length |> should equal 2
     ast.Cells |> List.length |> should equal 1
     let cell = List.head ast.Cells
     cell.Name |> should equal "c"
     // 2 geometry/port + 2 labels = 4 elements
     cell.Elements |> List.length |> should equal 4
+    // No (nets …) block in output — labels are the net set.
+    text.Contains "(nets" |> should equal false
 
 [<Fact>]
 let ``synthesize emits floats with at least one decimal`` () =
@@ -501,7 +495,11 @@ let ``writer emits (kind device-terminal) and round-trips`` () =
     Map.find "VDD" byText |> should equal NetName
 
 [<Fact>]
-let ``writer auto-derives (nets …) from NetName labels and skips DeviceTerminal`` () =
+let ``writer emits no (nets …) block — labels are the net set`` () =
+    // Track 06 Decision 4 = C: the (nets …) block is gone. Labels
+    // with Kind = NetName are the sole source of truth for the net
+    // set. The writer never emits a (nets …) form regardless of
+    // what labels exist.
     let doc : Document = {
         emptyDocument with
             Cells = [
@@ -529,58 +527,19 @@ let ``writer auto-derives (nets …) from NetName labels and skips DeviceTermina
                           IsInternal = false
                           Kind = NetName
                       }
-                      LabelEl {
-                          Layer = Named ("sky130", "met1_label")
-                          Text = "OUT"
-                          Origin = { X = 100L; Y = 0L }
-                          Class = None
-                          Props = []
-                          Comments = []
-                          IsInternal = false
-                          Kind = NetName
-                      }
                   ] }
             ]
     }
     let text = Writer.write doc
+    text.Contains "(nets" |> should equal false
+    // Both labels survive the round-trip, kinds preserved.
     let ast = analyzeOk text
-    let netNames = ast.Nets |> List.map (fun n -> n.Name) |> Set.ofList
-    // NetName labels become net entries; DeviceTerminal does not.
-    netNames |> should equal (Set.ofList [ "VDD"; "OUT" ])
-    // Domain inferred from name pattern.
-    let vdd = ast.Nets |> List.find (fun n -> n.Name = "VDD")
-    vdd.Domain |> should equal "power"
-
-[<Fact>]
-let ``writer-derived nets preserve voltage from doc.Nets entries`` () =
-    let doc : Document = {
-        emptyDocument with
-            Nets = [
-                { Name = "VDD"; Domain = "power"; Voltage = Some 5.0
-                  NetClass = None; Props = []; Comments = [] }
-            ]
-            Cells = [
-                { Name = "c"
-                  Meta = None
-                  Comments = []
-                  Elements = [
-                      LabelEl {
-                          Layer = Named ("sky130", "met1_label")
-                          Text = "VDD"
-                          Origin = { X = 0L; Y = 0L }
-                          Class = None
-                          Props = []
-                          Comments = []
-                          IsInternal = false
-                          Kind = NetName
-                      }
-                  ] }
-            ]
-    }
-    let text = Writer.write doc
-    let ast = analyzeOk text
-    let vdd = ast.Nets |> List.find (fun n -> n.Name = "VDD")
-    vdd.Voltage |> should equal (Some 5.0)
+    let labels =
+        (List.head ast.Cells).Elements
+        |> List.choose (function LabelEl l -> Some l | _ -> None)
+    let byText = labels |> List.map (fun l -> l.Text, l.Kind) |> Map.ofList
+    Map.find "D" byText |> should equal DeviceTerminal
+    Map.find "VDD" byText |> should equal NetName
 
 // ─── Import resolution + cycle detection ────────────────────────────────
 

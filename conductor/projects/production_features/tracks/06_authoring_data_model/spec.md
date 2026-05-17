@@ -46,25 +46,27 @@ need to be regenerated to carry the explicit tag.
 
 ### Source of truth for nets
 
-`doc.Nets` (the parsed `(nets ...)` block) stops being read by
-in-memory consumers. The authoritative source is the label set itself,
-filtered by `Kind = NetName`. The `(nets ...)` block becomes a
-writer-emitted manifest: useful as human-readable summary on disk and
-for external tooling that wants a quick net list without scanning all
-labels, but never trusted as primary by the viz tool or any other
-in-process consumer.
+Labels with `Kind = NetName` ARE the net set. There is no separate
+`(nets ...)` block, no `doc.Nets` field, no `Net` record. Consumers
+that want to know "what nets exist in this document" walk the label
+set, filtered by `Kind = NetName`. No intermediate manifest.
+
+Decision-4 revision (2026-05-16): the original spec proposed keeping
+`(nets ...)` as a writer-emitted "human-readable summary on disk."
+On audit, the only readers of `Net.Voltage`, `Net.Domain`, and
+`Net.NetClass` turned out to be the writer itself — round-tripping
+metadata that no downstream consumer used. Rather than ship a dead-
+letter block, we delete the entire `(nets ...)` apparatus: reader,
+writer, `Document.Nets`, `Net` record/dataclass. The format gets
+smaller; the round-trip stays correct because labels carry all the
+information that matters.
+
+If a future consumer needs net metadata (voltage, class, …), it
+goes on the `(label …)` form itself, not on a separate manifest.
 
 This resolves the "loaded doc with empty `doc.Nets`" problem — a
 fresh load of a regenerated `.rkt` immediately renders ratlines
-because Ratlines walks labels, not the manifest block.
-
-### Writer-time derivation
-
-At serialization, the writer walks the document's labels with
-`Kind = NetName`, dedupes by text, and emits the `(nets ...)` block
-in the canonical place in the file. Build scripts no longer pass
-`nets=[...]` explicitly; the writer derives it. Hand-authored .rkt
-files get the same treatment on round-trip.
+because Ratlines walks labels.
 
 ### Primitive generators
 
@@ -129,9 +131,12 @@ not pick unilaterally.
    strictly separate (role vs. export-filter, this spec's default),
    or fold the FET-terminal case into `IsInternal` and not introduce
    a new field at all.
-4. **In-memory `doc.Nets` after the refactor.** Purge it (reader
-   discards, writer derives), or keep it populated as a cache that
-   consumers may optionally read.
+4. **In-memory `doc.Nets` after the refactor.** RESOLVED 2026-05-16
+   as **C: delete the `(nets ...)` block entirely** (purge from
+   reader, writer, AST). Original A/B options (purge field vs. keep
+   as cache) both assumed the block had downstream value; an audit
+   found that no consumer reads Net.Voltage/Domain/NetClass, so the
+   block is dead weight.
 5. **Regeneration verification.** Mechanism to confirm a primitive
    regeneration diff contains only `(kind ...)` additions and no
    geometric drift — diff-aware test, or before/after geometry hash,

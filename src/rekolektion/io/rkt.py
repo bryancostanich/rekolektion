@@ -294,16 +294,6 @@ class Cell:
 
 
 @dataclass
-class Net:
-    name: str
-    domain: str = "signal"
-    voltage: float | None = None
-    cls: str | None = None
-    props: list[Property] = field(default_factory=list)
-    comments: list[str] = field(default_factory=list)
-
-
-@dataclass
 class Units:
     dbu_nm: int = 1
     uu_um: int = 1
@@ -318,7 +308,6 @@ class Import:
 @dataclass
 class Document:
     cells: list[Cell] = field(default_factory=list)
-    nets: list[Net] = field(default_factory=list)
     imports: list[Import] = field(default_factory=list)
     pdk: str = "sky130"
     version: int = 1
@@ -619,76 +608,6 @@ def _emit_cell(level: int, cell: Cell) -> str:
     return "".join(parts)
 
 
-def _emit_net(level: int, net: Net) -> str:
-    parts = [
-        _leading(level, net.comments),
-        f"(net {net.name} (domain {net.domain})",
-    ]
-    if net.voltage is not None:
-        parts.append(f" (voltage {_float(net.voltage)})")
-    if net.cls:
-        parts.append(f" (class {net.cls})")
-    for p in net.props:
-        parts.append(" ")
-        parts.append(_prop(p))
-    parts.append(")")
-    return "".join(parts)
-
-
-def _emit_nets_block(level: int, nets: list[Net]) -> str | None:
-    if not nets:
-        return None
-    lead = _indent(level)
-    body = "".join(_emit_net(level + 1, n) for n in nets)
-    return f"{lead}(nets{body})"
-
-
-def _infer_domain(name: str) -> str:
-    """Heuristic net-domain classifier — mirrors the F# writer's
-    `deriveNetsFromLabels.domainOf`. VPWR/VDD → power, VSS/VGND/GND
-    → ground, CLK* → clock, everything else → signal."""
-
-    upper = name.upper()
-    if upper in ("VPWR", "VDD"):
-        return "power"
-    if upper in ("VGND", "VSS", "GND"):
-        return "ground"
-    if upper.startswith("CLK"):
-        return "clock"
-    return "signal"
-
-
-def _derive_nets_from_labels(doc: Document) -> list[Net]:
-    """Walk every `Kind = NET_NAME` label across every cell, dedupe by
-    text, infer domain heuristically, and merge in any metadata
-    (voltage, class) from a matching entry in `doc.nets` so
-    hand-authored details survive round-trip.
-
-    `DEVICE_TERMINAL` labels are excluded by construction. Mirrors
-    the F# writer's `deriveNetsFromLabels` so the two writers stay
-    in lock-step.
-    """
-
-    existing: dict[str, Net] = {n.name: n for n in doc.nets}
-    seen: set[str] = set()
-    out: list[Net] = []
-    for cell in doc.cells:
-        for el in cell.elements:
-            if not isinstance(el, Label):
-                continue
-            if el.kind != LabelKind.NET_NAME:
-                continue
-            if not el.text or el.text in seen:
-                continue
-            seen.add(el.text)
-            preserved = existing.get(el.text)
-            if preserved is not None:
-                out.append(preserved)
-            else:
-                out.append(Net(name=el.text, domain=_infer_domain(el.text)))
-    return out
-
-
 def _emit_import(level: int, imp: Import) -> str:
     return f"{_leading(level, imp.comments)}(import {_string(imp.path)})"
 
@@ -714,13 +633,10 @@ def write(doc: Document) -> str:
         parts.append(_emit_import(1, imp))
     if doc.top_cell is not None:
         parts.append(f"{_indent(1)}(top {doc.top_cell})")
-    # `(nets …)` is **derived from labels**, not read from `doc.nets`.
-    # Source of truth for nets is the label set (Kind = NET_NAME);
-    # the manifest is a writer-emitted summary for tools that want a
-    # quick net list without scanning labels.
-    nb = _emit_nets_block(1, _derive_nets_from_labels(doc))
-    if nb:
-        parts.append(nb)
+    # No `(nets …)` block. Labels with `Kind = NET_NAME` are the
+    # source of truth for the net set; downstream consumers walk
+    # labels directly. See spec.md "Source of truth for nets" and
+    # track 06 Decision 4 = C in plan.md.
     for cell in doc.cells:
         parts.append(_emit_cell(1, cell))
     parts.append(")\n")

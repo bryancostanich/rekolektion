@@ -118,75 +118,35 @@ def test_sref_rotation_emits_with_decimal_point():
     assert "(rot 90.0)" in text
 
 
-def test_nets_block_emits_when_label_anchors_present():
-    # Post-track-06: (nets …) is derived from labels. doc.nets entries
-    # only survive round-trip when a matching label exists; they then
-    # contribute metadata (voltage, class) the heuristic can't infer.
+def test_writer_emits_no_nets_block():
+    # Track 06 Decision 4 = C: the (nets …) block is gone from the
+    # schema. Labels with Kind = NET_NAME are the sole source of truth
+    # for the net set. The writer never emits a (nets …) form.
     doc = rkt.Document(
-        nets=[
-            rkt.Net(name="VPWR", domain="power", voltage=1.8),
-        ],
         cells=[
             rkt.Cell(
                 name="c",
                 elements=[
                     rkt.Label(
                         layer=rkt.named("sky130", "met1_label"),
-                        text="BL",
+                        text="VDD",
                         origin=(0, 0),
                     ),
-                    rkt.Label(
-                        layer=rkt.named("sky130", "met1_label"),
-                        text="VPWR",
-                        origin=(100, 0),
-                    ),
-                ],
-            ),
-        ],
-    )
-    text = rkt.write(doc)
-    assert "(nets" in text
-    # Domain inferred from name for BL (no doc.nets entry).
-    assert "(net BL (domain signal))" in text
-    # Voltage preserved from doc.nets for VPWR.
-    assert "(net VPWR (domain power) (voltage 1.8))" in text
-
-
-def test_nets_block_omitted_when_no_net_name_labels():
-    # doc.nets entries with no matching labels don't survive — the
-    # writer treats labels as the source of truth.
-    doc = rkt.Document(
-        nets=[rkt.Net(name="BL")],
-    )
-    text = rkt.write(doc)
-    assert "(nets" not in text
-
-
-def test_device_terminal_labels_excluded_from_derived_nets():
-    doc = rkt.Document(
-        cells=[
-            rkt.Cell(
-                name="c",
-                elements=[
                     rkt.Label(
                         layer=rkt.named("sky130", "li1_label"),
                         text="D",
                         origin=(-395, 0),
                         kind=rkt.LabelKind.DEVICE_TERMINAL,
                     ),
-                    rkt.Label(
-                        layer=rkt.named("sky130", "met1_label"),
-                        text="OUT",
-                        origin=(100, 0),
-                    ),
                 ],
             ),
         ],
     )
     text = rkt.write(doc)
-    # DEVICE_TERMINAL labels don't seed nets; NET_NAME ones do.
-    assert "(net OUT (domain signal))" in text
-    assert "(net D " not in text
+    assert "(nets" not in text
+    # Both labels still emit; kind annotations preserved per-label.
+    assert '(label (layer sky130:met1_label) (text "VDD")' in text
+    assert "(kind device-terminal)" in text
 
 
 def test_kind_device_terminal_emits_in_label_form():

@@ -105,3 +105,71 @@ let ``isLikelyPowerNet matches power patterns`` (name: string) =
 [<InlineData "GNDLY">]    // ditto
 let ``isLikelyPowerNet rejects signal nets`` (name: string) =
     Ratlines.isLikelyPowerNet name |> should equal false
+
+// ─── compute: kind-filtered net-pin extraction ─────────────────────────
+
+let private mkLabel (text: string) (origin: Point) (kind: LabelKind) : Element =
+    LabelEl {
+        Layer = Named ("sky130", "met1_label")
+        Text = text
+        Origin = origin
+        Class = None
+        Props = []
+        Comments = []
+        IsInternal = false
+        Kind = kind
+    }
+
+let private docWithLabels (labels: Element list) : Document =
+    { emptyDocument with
+        Cells = [
+            { Name = "top"; Meta = None; Comments = []; Elements = labels }
+        ]
+        TopCell = Some "top" }
+
+[<Fact>]
+let ``compute counts NetName labels as ratline pins`` () =
+    // Two separate top-level labels with the same net name produce
+    // one route with two pins (and one MST edge between them).
+    let doc =
+        docWithLabels [
+            mkLabel "VDD" { X = 0L; Y = 0L } NetName
+            mkLabel "VDD" { X = 1000L; Y = 0L } NetName
+        ]
+    let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+    let routes = Ratlines.compute doc flat
+    routes |> Array.length |> should equal 1
+    let route = routes.[0]
+    route.Name |> should equal "VDD"
+    route.Pins |> Array.length |> should equal 2
+
+[<Fact>]
+let ``compute skips DeviceTerminal labels`` () =
+    // FET port labels never become ratline routes — they're device
+    // pin annotations, not nets. This is the bug track 06 fixes.
+    let doc =
+        docWithLabels [
+            mkLabel "G" { X = 0L; Y = 0L } DeviceTerminal
+            mkLabel "G" { X = 1000L; Y = 0L } DeviceTerminal
+            mkLabel "D" { X = 0L; Y = 500L } DeviceTerminal
+            mkLabel "D" { X = 1000L; Y = 500L } DeviceTerminal
+        ]
+    let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+    let routes = Ratlines.compute doc flat
+    routes |> Array.length |> should equal 0
+
+[<Fact>]
+let ``compute mixes filters NetName in, DeviceTerminal out`` () =
+    // Three labels: one VDD net (NetName), two G device terminals.
+    // Only VDD should produce a route; G labels are excluded.
+    let doc =
+        docWithLabels [
+            mkLabel "VDD" { X = 0L; Y = 0L } NetName
+            mkLabel "VDD" { X = 2000L; Y = 0L } NetName
+            mkLabel "G" { X = 500L; Y = 0L } DeviceTerminal
+            mkLabel "G" { X = 1500L; Y = 0L } DeviceTerminal
+        ]
+    let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+    let routes = Ratlines.compute doc flat
+    routes |> Array.length |> should equal 1
+    routes.[0].Name |> should equal "VDD"

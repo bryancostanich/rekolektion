@@ -356,72 +356,6 @@ let private synthesizeCell (i: int) (c: Cell) : Sexp =
         :: (metaKid @ elementKids)
     mkList lead kids ""
 
-let private synthesizeNet (i: int) (n: Net) : Sexp =
-    let lead = leading i n.Comments
-    let kids = ResizeArray<Sexp>()
-    kids.Add (sym "" "net")
-    kids.Add (sym " " n.Name)
-    kids.Add (mkList " " [ sym "" "domain"; sym " " n.Domain ] "")
-    match n.Voltage with
-    | Some v -> kids.Add (mkList " " [ sym "" "voltage"; floatAtom " " v ] "")
-    | None -> ()
-    match n.NetClass with
-    | Some c -> kids.Add (mkList " " [ sym "" "class"; sym " " c ] "")
-    | None -> ()
-    for p in n.Props do
-        kids.Add (propForm " " p)
-    mkList lead (List.ofSeq kids) ""
-
-let private synthesizeNetsBlock (i: int) (nets: Net list) : Sexp option =
-    if List.isEmpty nets then None
-    else
-        let lead = indent i
-        let kids = sym "" "nets" :: (nets |> List.map (synthesizeNet (i + 1)))
-        Some (mkList lead kids "")
-
-/// Derive a `(nets …)` manifest from the document's labels. Walks
-/// every `Kind = NetName` label across every cell, dedupes by text,
-/// classifies the domain heuristically (VPWR/VDD → power, VSS/GND
-/// → ground, CLK* → clock, else signal), and merges in any
-/// metadata (voltage, class hint) from a matching entry in
-/// `doc.Nets` so hand-authored details survive round-trip.
-///
-/// `DeviceTerminal` labels are excluded by construction — they're
-/// FET port annotations, not net names.
-let private deriveNetsFromLabels (doc: Document) : Net list =
-    let domainOf (name: string) : string =
-        let upper = name.ToUpperInvariant()
-        if upper = "VPWR" || upper = "VDD" then "power"
-        elif upper = "VGND" || upper = "VSS" || upper = "GND" then "ground"
-        elif upper.StartsWith "CLK" then "clock"
-        else "signal"
-    // Existing entries by name — preserves voltage / class hints
-    // authored by hand on the input side.
-    let existing =
-        doc.Nets
-        |> List.map (fun n -> n.Name, n)
-        |> Map.ofList
-    let seen = System.Collections.Generic.HashSet<string>()
-    let nets = ResizeArray<Net>()
-    for cell in doc.Cells do
-        for el in cell.Elements do
-            match el with
-            | LabelEl l when l.Kind = NetName && l.Text <> "" ->
-                if seen.Add l.Text then
-                    let net =
-                        match Map.tryFind l.Text existing with
-                        | Some n -> n
-                        | None ->
-                            { Name = l.Text
-                              Domain = domainOf l.Text
-                              Voltage = None
-                              NetClass = None
-                              Props = []
-                              Comments = [] }
-                    nets.Add net
-            | _ -> ()
-    List.ofSeq nets
-
 let private synthesizeImport (i: int) (imp: Import) : Sexp =
     let lead = leading i imp.Comments
     mkList lead [ sym "" "import"; stringAtom " " imp.Path ] ""
@@ -442,13 +376,10 @@ let private synthesizeLayoutForm (doc: Document) : Sexp =
     match doc.TopCell with
     | Some t -> kids.Add (mkList (indent 1) [ sym "" "top"; sym " " t ] "")
     | None -> ()
-    // The `(nets …)` manifest is **derived** from labels, not read
-    // from `doc.Nets`. Source of truth for nets is the label set
-    // (Kind = NetName); the manifest is just a writer-emitted
-    // summary for external tooling that wants a quick net list.
-    match synthesizeNetsBlock 1 (deriveNetsFromLabels doc) with
-    | Some n -> kids.Add n
-    | None -> ()
+    // No `(nets …)` block. Labels with `Kind = NetName` are the
+    // source of truth for the net set; downstream consumers walk
+    // labels directly. See spec.md "Source of truth for nets" and
+    // Decision 4 = C in plan.md.
     for c in doc.Cells do
         kids.Add (synthesizeCell 1 c)
     // HeaderComments precede the `(layout ...)` form itself. The

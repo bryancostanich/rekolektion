@@ -29,6 +29,10 @@ type FlatLabel = {
     TextType: int
     Origin: Point
     Text: string
+    /// Netlist role inherited from the source `Rkt.Types.Label`. Net
+    /// consumers (Ratlines, LabelFlood) skip `DeviceTerminal` labels;
+    /// otherwise treat as net name. See spec.md for the full model.
+    Kind: LabelKind
 }
 
 /// 2D affine in homogenous form: [A B Tx; C D Ty]. Avoids carrying
@@ -202,7 +206,8 @@ let flattenLabels (doc: Document) : FlatLabel array =
                         Layer = n
                         TextType = d
                         Origin = apply xform l.Origin
-                        Text = l.Text }
+                        Text = l.Text
+                        Kind = l.Kind }
                 | SRefEl sr ->
                     match Map.tryFind sr.Cell byName with
                     | None -> ()
@@ -249,7 +254,8 @@ let flattenLabelsTagged (doc: Document) : (int option * FlatLabel) array =
                         Layer = n
                         TextType = d
                         Origin = apply xform l.Origin
-                        Text = l.Text }
+                        Text = l.Text
+                        Kind = l.Kind }
                     result.Add((topIdx, fl))
                 | SRefEl sr ->
                     match Map.tryFind sr.Cell byName with
@@ -285,7 +291,8 @@ let flattenLabelsTagged (doc: Document) : (int option * FlatLabel) array =
                     Layer = n
                     TextType = d
                     Origin = l.Origin
-                    Text = l.Text }
+                    Text = l.Text
+                    Kind = l.Kind }
                 result.Add((None, fl))
             | SRefEl sr ->
                 match Map.tryFind sr.Cell byName with

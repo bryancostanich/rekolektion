@@ -122,7 +122,6 @@ let fromLibrary (lib: Gds.Types.Library) : Document =
       Pdk = defaultPdk
       Units = units
       Imports = []
-      Nets = []
       Cells = lib.Structures |> List.map fromStructure
       TopCell = topCell
       HeaderComments = [] }

@@ -369,22 +369,16 @@ let compute
             string * PinKey,
             int64 * int64 * float * int * int option * int option>()
     let mutable unanchoredCounter = 0
-    // Canonical net rule: only labels whose text matches a net
-    // declared in the document's `(nets)` block contribute. Labels
-    // without a declaration are ANNOTATIONS — device-terminal
-    // markers (D / G / S / B inside FET primitives), probe
-    // markers, scratch notes — and treating them as nets would
-    // collapse every device's gate into one fake "G" net with
-    // ratlines between every FET. The workflow doc
-    // (`docs/workflows/rkt_primitive_workflow.md`) makes the
-    // declaration mandatory at block level. A document with NO
-    // `(nets)` block produces no ratlines by construction.
-    let declaredNets =
-        doc.Nets
-        |> List.map (fun n -> n.Name)
-        |> Set.ofList
+    // Net-name filter: only labels with `Kind = NetName` contribute
+    // ratline pins. `DeviceTerminal` labels (D / G / S / B emitted
+    // by the FET generator's `port makeall` path) are device-pin
+    // annotations, not nets — treating them as nets would collapse
+    // every device's gate into one fake "G" net with ratlines
+    // between every FET. The role lives on the label itself; no
+    // external `(nets …)` block declaration is required (none
+    // exists — the block was removed per track 06 Decision 4).
     for (topIdx, label) in tagged do
-        if label.Text <> "" && declaredNets.Contains label.Text then
+        if label.Text <> "" && label.Kind = NetName then
             let (anchorX, anchorY, anchorZ, anchorFlat) =
                 match anchorForLabel polyIdx label with
                 | Some a ->

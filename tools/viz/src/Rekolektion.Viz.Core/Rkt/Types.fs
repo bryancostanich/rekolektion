@@ -226,15 +226,6 @@ type Cell = {
     Comments: string list
 }
 
-type Net = {
-    Name: string
-    Domain: string
-    Voltage: float option
-    NetClass: string option
-    Props: Property list
-    Comments: string list
-}
-
 type Units = {
     DbuNm: int
     UuUm: int
@@ -259,7 +250,6 @@ type Document = {
     Pdk: string
     Units: Units
     Imports: Import list
-    Nets: Net list
     Cells: Cell list
     TopCell: string option
     HeaderComments: string list
@@ -276,7 +266,6 @@ let emptyDocument : Document = {
     Pdk = Defaults.pdk
     Units = Defaults.units
     Imports = []
-    Nets = []
     Cells = []
     TopCell = None
     HeaderComments = []

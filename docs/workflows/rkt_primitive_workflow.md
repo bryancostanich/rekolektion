@@ -1119,36 +1119,49 @@ net view, the ratline overlay, the LVS flow, and the sidecar JSON
 all key off **labels** to figure out which polygons belong to which
 electrical net. Without labels:
 
-- The ratline view shows the FETs' inherited port labels (`D`, `G`,
-  `S`, `B`) and treats every `G` as the same net — visually
-  misleading.
 - The power rails you painted at the top and bottom of the block
   have no name and don't appear as nets at all.
 - LVS will fail port matching against the reference SPICE.
 
-### The D/G/S/B gotcha
+### Label kinds — `NetName` (default) and `DeviceTerminal`
 
-Every primitive minted by `gen_nfet_hv` / `gen_pfet_hv` carries four
-port labels baked in by Magic's `mos_draw` (with `doports=1`):
+Every label carries an intrinsic **kind**:
 
-| Label | Meaning             |
-| ----- | ------------------- |
-| `D`   | drain               |
-| `G`   | gate                |
-| `S`   | source              |
-| `B`   | bulk / body / tap   |
+| Kind             | Meaning                                                | Who sets it                |
+| ---------------- | ------------------------------------------------------ | -------------------------- |
+| `NetName`        | The label's text is a signal or power net name.        | Default for any new label  |
+| `DeviceTerminal` | The label is a FET port annotation (`D`/`G`/`S`/`B`).  | FET generator at mint time |
 
-These are **device-terminal labels**, not net names. They're useful
-inside the primitive (the LVS extractor uses them to identify the
-FET's terminals), but at the block level they're meaningless —
-every SRef'd nfet has its own `G` label, but those gates are NOT
-all the same net. They're four different nets that happen to share
-a string.
+In the `.rkt` source, the annotation looks like:
 
-**Rule:** never use `D`/`G`/`S`/`B` as net names in your block.
-Always override them by placing a parent-level `(label …)` with the
-real signal name on top of the routing wire that connects to that
-terminal.
+```scheme
+(label (layer sky130:li1_label) (text "D") (origin -395 0)
+  (kind device-terminal))     ;; emitted by gen_nfet_hv
+(label (layer sky130:met1_label) (text "VDD") (origin 7995 5870))
+                              ;; no (kind …) → defaults to net-name
+```
+
+**Hand-authoring rule:** never write `(kind device-terminal)`
+yourself. The primitive generators handle it automatically. Every
+label you paint at the block level is a `NetName` by default —
+which is what you want.
+
+**The benefit:** the ratline view, LabelFlood, and any net-aware
+consumer **skip every `DeviceTerminal` label**. The FETs' own `D` /
+`G` / `S` annotations never collapse into fake nets at the block
+level, no matter how many primitives you SRef.
+
+### What still requires you to label something
+
+The kind model fixes the *spurious* nets (FET terminals showing up
+as if they were signals). It doesn't conjure *real* nets out of
+nothing — those still need parent-painted labels:
+
+| Net the block needs | What you do |
+| ------------------- | ----------- |
+| Power rail (VDD/VSS) | Paint a label on the rail's met1 — see below |
+| Internal signal (cross-FET wire) | Paint a label on the parent-paint routing wire |
+| Reusing a FET pin as a named net | Paint a `NetName` label at the pin location (won't collide with the primitive's `DeviceTerminal` label — different kind, same string is fine) |
 
 ### How to label power rails
 
@@ -1245,33 +1258,18 @@ y-offset.  The `.ext` is the ground truth.
 The D/S ports usually coincide with the cell's label position for
 HV FETs; G ports for wider devices are the ones to watch.
 
-### Declaring net semantics (optional but recommended)
+### No `(nets …)` block — labels are the net set
 
-The document-level `(nets …)` block lets you declare a net's
-domain (`power`, `ground`, `signal`, `clock`, `analog`) and
-voltage. This information is what the viz tool uses to classify
-rails as power for the ratline view's `IsPower` flag, what LVS
-uses for power-net checks, and what the SoC integrator reads to
-hook up your block.
+The `.rkt` format has **no separate net declaration block**. Don't
+write `(nets …)` blocks at the top of your file; the parser
+silently ignores them and the format has no field to land them in.
+The label set IS the net set. Power classification is heuristic
+(VPWR/VDD → power, VSS/GND → ground, CLK* → clock, else signal)
+based on the label's text.
 
-```scheme
-(layout (version 1)
-  (pdk sky130)
-  (units (dbu_nm 1) (uu_um 1))
-  …
-  (nets
-    (net VDD (domain power)  (voltage 5.0))
-    (net VSS (domain ground))
-    (net IN_P    (domain signal))
-    (net IN_N    (domain signal))
-    (net OUT     (domain signal))
-    (net VBIAS_P (domain analog)))
-  (cell my_block …))
-```
-
-`(nets …)` is optional — the viz tool's `isLikelyPowerNet`
-heuristic catches the common cases by name pattern — but adding it
-makes the block self-documenting and removes guesswork.
+If you previously wrote a `(nets …)` block by hand, delete it —
+the file is shorter, the format is simpler, and downstream
+consumers find the same nets via labels.
 
 ### Sanity check
 
@@ -1281,11 +1279,14 @@ that:
 
 1. Power rails show up as named nets (`VDD`, `VSS`, …).
 2. Each signal you intended exists with the expected pin count.
-3. No FETs have a gate showing up only as `G` — every gate should
-   either connect to a named signal or be flagged as floating in
-   the inspector.
+3. **No nets named `D`, `G`, `S`, or `B`** — the kind filter
+   should drop those FET-terminal labels. If you see one of those
+   in the Nets list, either: a primitive was generated with an
+   old generator that didn't tag, or a hand-authored label uses
+   that single letter as a real net name (rare but legal — kind
+   defaults to NetName).
 
-If any of these fail, the labeling is incomplete. Fix and re-check
+If 1 or 2 fail, the labeling is incomplete. Fix and re-check
 before declaring the block done.
 
 ## Verifying your block

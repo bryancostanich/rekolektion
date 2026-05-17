@@ -244,6 +244,8 @@ let private synthesizeLabel (i: int) (l: Label) : Sexp =
     | NetName -> ()
     | DeviceTerminal ->
         kids.Add (mkList inner [ sym "" "kind"; sym " " "device-terminal" ] "")
+    | PortName ->
+        kids.Add (mkList inner [ sym "" "kind"; sym " " "port-name" ] "")
     match propsForm inner l.Props with
     | Some f -> kids.Add f
     | None -> ()

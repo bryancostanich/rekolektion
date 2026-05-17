@@ -91,18 +91,26 @@ type Port = {
 
 /// Role of a `(label …)` in the netlist.
 ///
-/// `NetName` — the label's text names a signal or power net. Any
-/// `NetName` label feeds the auto-derived `(nets …)` manifest at
-/// write time and contributes a pin to ratline / LabelFlood
-/// consumers. Default for hand-authored labels and any label
-/// without an explicit `(kind …)` annotation in the source file.
+/// `NetName` — the label's text names a signal or power net.
+/// Contributes a pin to ratline / LabelFlood consumers. Default for
+/// hand-authored labels and any label without an explicit
+/// `(kind …)` annotation in the source file.
 ///
 /// `DeviceTerminal` — the label is a FET port annotation
 /// (`D` / `G` / `S` / `B`) emitted by a primitive generator so
 /// Magic's `port makeall` sees it during LVS extraction. Net-level
-/// consumers must skip these; the text is a device-pin name, not
-/// a net name. Primitive generators tag them explicitly at emit
+/// consumers skip these. Primitive generators tag them at emit
 /// time; nothing else should.
+///
+/// `PortName` — the label names a sub-block's external port (e.g.
+/// `A` / `B` / `Y` on a hand-authored `nand2`). Reaches GDS for
+/// LVS port extraction (like `DeviceTerminal`), but net-level
+/// consumers skip it at the parent level so two SRefs of the same
+/// sub-block don't alias their port labels into one fake net.
+/// Sub-block authors tag port labels explicitly with
+/// `(kind port-name)`; the FET-style generator pattern works the
+/// same way (`gen_nand2` etc. would tag at emit, mirroring how
+/// `gen_nfet_hv` tags `DeviceTerminal`).
 ///
 /// The kind is intrinsic to the label, not to its container — a
 /// custom primitive may mix device-terminal labels (FET pins) with
@@ -111,6 +119,7 @@ type Port = {
 type LabelKind =
     | NetName
     | DeviceTerminal
+    | PortName
 
 type Label = {
     Layer: Layer

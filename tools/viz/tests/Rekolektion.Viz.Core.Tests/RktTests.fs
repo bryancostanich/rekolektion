@@ -451,6 +451,50 @@ let ``label with (kind device-terminal) parses as DeviceTerminal`` () =
     lbl.Kind |> should equal DeviceTerminal
 
 [<Fact>]
+let ``label with (kind port-name) parses as PortName`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (label (layer sky130:met1_label) (text \"A\") (origin 0 0)\n"
+        + "      (kind port-name))))\n"
+    let ast = analyzeOk src
+    let lbl =
+        match (List.head ast.Cells).Elements with
+        | [ LabelEl l ] -> l
+        | _ -> failwith "label"
+    lbl.Kind |> should equal PortName
+
+[<Fact>]
+let ``writer emits (kind port-name) and round-trips`` () =
+    let doc : Document = {
+        emptyDocument with
+            Cells = [
+                { Name = "nand2"
+                  Meta = None
+                  Comments = []
+                  Elements = [
+                      LabelEl {
+                          Layer = Named ("sky130", "met1_label")
+                          Text = "A"
+                          Origin = { X = 0L; Y = 0L }
+                          Class = None
+                          Props = []
+                          Comments = []
+                          IsInternal = false
+                          Kind = PortName
+                      }
+                  ] }
+            ]
+    }
+    let text = Writer.write doc
+    text.Contains "(kind port-name)" |> should equal true
+    let ast = analyzeOk text
+    let labels =
+        (List.head ast.Cells).Elements
+        |> List.choose (function LabelEl l -> Some l | _ -> None)
+    (List.head labels).Kind |> should equal PortName
+
+[<Fact>]
 let ``writer emits (kind device-terminal) and round-trips`` () =
     let doc : Document = {
         emptyDocument with

@@ -763,6 +763,7 @@ let private analyzeLabel
                                 |> Option.map (fun k ->
                                     match k.ToLowerInvariant() with
                                     | "device-terminal" -> DeviceTerminal
+                                    | "port-name" -> PortName
                                     | _ -> NetName)
                                 |> Option.defaultValue NetName
                             Ok (LabelEl {

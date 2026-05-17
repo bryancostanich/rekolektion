@@ -173,3 +173,35 @@ let ``compute mixes filters NetName in, DeviceTerminal out`` () =
     let routes = Ratlines.compute doc flat
     routes |> Array.length |> should equal 1
     routes.[0].Name |> should equal "VDD"
+
+[<Fact>]
+let ``compute skips PortName labels`` () =
+    // Hand-authored sub-block port labels (A/B/Y on a nand2) get
+    // tagged PortName. Two SRefs of the same sub-block would alias
+    // their port labels into one fake net without this filter.
+    let doc =
+        docWithLabels [
+            mkLabel "A" { X = 0L; Y = 0L } PortName
+            mkLabel "B" { X = 0L; Y = 100L } PortName
+            mkLabel "Y" { X = 0L; Y = 200L } PortName
+        ]
+    let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+    let routes = Ratlines.compute doc flat
+    routes |> Array.length |> should equal 0
+
+[<Fact>]
+let ``compute admits NetName even when DeviceTerminal and PortName coexist`` () =
+    // Mixed: one real net + FET terminals + sub-block ports. Only
+    // the real net produces a route.
+    let doc =
+        docWithLabels [
+            mkLabel "pulse_req_1v8" { X = 0L; Y = 0L } NetName
+            mkLabel "pulse_req_1v8" { X = 5000L; Y = 0L } NetName
+            mkLabel "G" { X = 100L; Y = 0L } DeviceTerminal
+            mkLabel "B" { X = 200L; Y = 0L } PortName
+            mkLabel "B" { X = 4800L; Y = 0L } PortName
+        ]
+    let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+    let routes = Ratlines.compute doc flat
+    routes |> Array.length |> should equal 1
+    routes.[0].Name |> should equal "pulse_req_1v8"

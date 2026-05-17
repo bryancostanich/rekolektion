@@ -1172,45 +1172,147 @@ electrical net. Without labels:
   have no name and don't appear as nets at all.
 - LVS will fail port matching against the reference SPICE.
 
-### Label kinds — `NetName` (default) and `DeviceTerminal`
+### Label kinds — `NetName`, `DeviceTerminal`, `PortName`
 
 Every label carries an intrinsic **kind**:
 
-| Kind             | Meaning                                                | Who sets it                |
-| ---------------- | ------------------------------------------------------ | -------------------------- |
-| `NetName`        | The label's text is a signal or power net name.        | Default for any new label  |
-| `DeviceTerminal` | The label is a FET port annotation (`D`/`G`/`S`/`B`).  | FET generator at mint time |
+| Kind             | Meaning                                                   | Who sets it                                          |
+| ---------------- | --------------------------------------------------------- | ---------------------------------------------------- |
+| `NetName`        | The label's text is a signal or power net name.           | Default for any new label                            |
+| `DeviceTerminal` | A FET port annotation (`D`/`G`/`S`/`B`).                  | FET generator (`gen_nfet_hv` / `gen_pfet_hv`) at mint time |
+| `PortName`       | A hand-authored sub-block's external port (e.g. `A`/`B`/`Y` on `nand2`). | Sub-block author tags explicitly via `port_label(…)` or `(kind port-name)` |
 
-In the `.rkt` source, the annotation looks like:
+In the `.rkt` source the three look like:
 
 ```scheme
 (label (layer sky130:li1_label) (text "D") (origin -395 0)
   (kind device-terminal))     ;; emitted by gen_nfet_hv
+(label (layer sky130:met1_label) (text "A") (origin 120 80)
+  (kind port-name))           ;; emitted by sub-block builder
 (label (layer sky130:met1_label) (text "VDD") (origin 7995 5870))
                               ;; no (kind …) → defaults to net-name
 ```
 
-**Hand-authoring rule:** never write `(kind device-terminal)`
-yourself. The primitive generators handle it automatically. Every
-label you paint at the block level is a `NetName` by default —
-which is what you want.
+**Why three kinds?** Net-level consumers (ratlines, LabelFlood)
+skip both `DeviceTerminal` AND `PortName`. The difference is
+*who tags*:
 
-**The benefit:** the ratline view, LabelFlood, and any net-aware
-consumer **skip every `DeviceTerminal` label**. The FETs' own `D` /
-`G` / `S` annotations never collapse into fake nets at the block
-level, no matter how many primitives you SRef.
+- FET primitives → tagged by the generator. You never write
+  `(kind device-terminal)` yourself.
+- Hand-authored sub-blocks (`nand2`, `lshift_1v8_to_3v3`, etc.) →
+  tagged by **you** when you author the sub-block. Use the
+  `port_label(…)` Python sugar, or write `(kind port-name)` if
+  you're hand-authoring `.rkt` text.
+
+Without `PortName`, sub-block port labels default to `NetName`,
+and the second you SRef the sub-block twice you get two
+instances'-worth of "A" labels aliasing into one fake "A" net
+with a spurious ratline between them. Tagging port labels fixes
+it the same way `DeviceTerminal` fixed it for FETs.
+
+**Hand-authoring rules:**
+
+- Never write `(kind device-terminal)`. The FET generator does it.
+- Always tag a sub-block's external port labels (`port_label(…)`
+  in Python, or `(kind port-name)` in raw text). One tag per port,
+  once, when you author the cell.
+- Every other label you paint at the block level is `NetName` by
+  default — which is what you want.
+
+### Composing hand-authored sub-blocks
+
+When you build a sub-block (a `nand2`, an inverter chain, a level
+shifter, whatever), the labels you place at its external pins are
+its public interface. The block above will SRef this cell and
+expect to connect to "A", "B", "Y" by position. Two patterns to
+follow:
+
+**Pattern 1: Python builder script.**
+
+```python
+from rekolektion.io import rkt
+
+doc = rkt.Document(
+    cells=[
+        rkt.Cell(name="nand2", elements=[
+            # Port labels — tagged PortName so they don't alias.
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="A", origin=(120, 80)),
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="B", origin=(120, 240)),
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="Y", origin=(400, 160)),
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="VDD", origin=(0, 320)),
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="VSS", origin=(0, 0)),
+
+            # Optional: an internal net for traceability. Default
+            # NetName + internal=True keeps it visible in viz but
+            # absent from the GDS Magic reads (so LVS doesn't see
+            # a spurious 6th port).
+            rkt.Label(layer=rkt.named("sky130", "met1_label"),
+                      text="nand_mid", origin=(260, 160),
+                      internal=True),
+            # … geometry rects, SRefs, etc. …
+        ]),
+    ],
+)
+```
+
+**Pattern 2: hand-authored `.rkt` text.** Same idea, but you write
+`(kind port-name)` on each port label by hand.
+
+```scheme
+(cell nand2
+  (label (layer sky130:met1_label) (text "A") (origin 120 80)
+    (kind port-name))
+  (label (layer sky130:met1_label) (text "B") (origin 120 240)
+    (kind port-name))
+  ;; …
+  (label (layer sky130:met1_label) (text "nand_mid") (origin 260 160)
+    (internal #t))
+  ;; …
+)
+```
+
+**The parent's view (after SRef'ing this `nand2` twice):**
+
+- Two `(sref (cell nand2) …)` instances at different origins.
+- Each instance's "A"/"B"/"Y"/"VDD"/"VSS" labels are `PortName` →
+  net consumers skip them entirely. No ratlines, no aliasing.
+- The parent paints its own `NetName` labels on the wires that
+  feed each instance (e.g. `pulse_kind_form_1v8` on the wire to
+  `nand2[0].A`). Those are the nets the viz / LVS sees.
+- `nand_mid` is `NetName` + `IsInternal` → visible in viz as
+  "this sub-block has an internal net `nand_mid`", but not in
+  GDS, so LVS doesn't extract it as a phantom port.
+
+### Migrating existing hand-authored sub-blocks
+
+Existing sub-blocks (`nand2`, `lshift_1v8_to_3v3`, anything else
+you built before `PortName` existed) have port labels defaulting
+to `NetName`. The fix is per-cell: edit the builder script to use
+`port_label(…)` for port labels, or hand-edit the `.rkt` to add
+`(kind port-name)` after the `(origin …)` form. Re-run any
+downstream blocks that SRef the updated cell — no other change
+required; the new format is backward-compatible (legacy `NetName`
+parses cleanly, just aliases the way it always did until you
+re-tag).
 
 ### What still requires you to label something
 
-The kind model fixes the *spurious* nets (FET terminals showing up
-as if they were signals). It doesn't conjure *real* nets out of
-nothing — those still need parent-painted labels:
+The kind model fixes the *spurious* nets (FET terminals and sub-
+block ports showing up as if they were nets). It doesn't conjure
+*real* nets out of nothing — those still need parent-painted
+labels:
 
 | Net the block needs | What you do |
 | ------------------- | ----------- |
 | Power rail (VDD/VSS) | Paint a label on the rail's met1 — see below |
-| Internal signal (cross-FET wire) | Paint a label on the parent-paint routing wire |
+| Internal signal (cross-FET, cross-sub-block wire) | Paint a label on the parent-paint routing wire. If the net is parent-private (doesn't escape to a port), add `(internal #t)` |
 | Reusing a FET pin as a named net | Paint a `NetName` label at the pin location (won't collide with the primitive's `DeviceTerminal` label — different kind, same string is fine) |
+| Reusing a sub-block port as a named net | Same — paint a `NetName` label at the SRef's port location; it overrides the sub-block's `PortName` for parent-level net visibility |
 
 ### How to label power rails
 
@@ -1329,14 +1431,20 @@ that:
 1. Power rails show up as named nets (`VDD`, `VSS`, …).
 2. Each signal you intended exists with the expected pin count.
 3. **No nets named `D`, `G`, `S`, or `B`** — the kind filter
-   should drop those FET-terminal labels. If you see one of those
-   in the Nets list, either: a primitive was generated with an
-   old generator that didn't tag, or a hand-authored label uses
-   that single letter as a real net name (rare but legal — kind
-   defaults to NetName).
+   should drop those FET-terminal labels. If you see one in the
+   Nets list, a primitive was generated with an old generator
+   that didn't tag.
+4. **No nets named after a sub-block's port** (`A`, `B`, `Y`,
+   etc. depending on the sub-block) — same idea but for
+   `PortName`-tagged labels. If you SRef a `nand2` twice and see
+   a net called `B` with pins at both instances, the sub-block's
+   port labels aren't tagged `PortName`. Fix by re-emitting the
+   sub-block with `port_label(…)` (or hand-editing its `.rkt` to
+   add `(kind port-name)`).
 
-If 1 or 2 fail, the labeling is incomplete. Fix and re-check
-before declaring the block done.
+If 1 or 2 fail, the labeling is incomplete. If 3 or 4 fail, a
+sub-block needs re-tagging. Fix and re-check before declaring
+the block done.
 
 ## Verifying your block
 

@@ -83,8 +83,7 @@ class LabelKind(str, Enum):
 
     `NET_NAME` — the label's text names a signal or power net.
     Default for hand-authored labels and any label without an
-    explicit `(kind …)` annotation. Feeds the writer-derived
-    `(nets …)` manifest and contributes a pin to ratline /
+    explicit `(kind …)` annotation. Contributes a pin to ratline /
     LabelFlood consumers on the F# side.
 
     `DEVICE_TERMINAL` — a FET port annotation (`D`/`G`/`S`/`B`)
@@ -93,14 +92,23 @@ class LabelKind(str, Enum):
     Primitive generators tag them at emit time; nothing else
     should.
 
+    `PORT_NAME` — a hand-authored sub-block's external port name
+    (e.g. `A`/`B`/`Y` on a `nand2`). Reaches GDS for LVS, but
+    net-level consumers skip it at the parent level so two SRefs
+    of the same sub-block don't alias their port labels into one
+    fake net. Sub-block authors tag explicitly via
+    `kind=LabelKind.PORT_NAME` (or the `port_label(…)` sugar
+    below).
+
     Wire format mirrors the F# DU (`LabelKind`): the string values
     of this enum are exactly what gets written / parsed in `.rkt`.
-    `NetName` is the implicit default — never emitted, never
+    `NET_NAME` is the implicit default — never emitted, never
     required on read.
     """
 
     NET_NAME = "net-name"
     DEVICE_TERMINAL = "device-terminal"
+    PORT_NAME = "port-name"
 
 
 class PortFlag(str, Enum):
@@ -224,6 +232,49 @@ class Label:
     # as a net at any composition level. Default `NET_NAME` matches
     # the F# reader's default-on-missing behavior.
     kind: LabelKind = LabelKind.NET_NAME
+
+
+def port_label(
+    layer: Layer,
+    text: str,
+    origin: Point,
+    *,
+    cls: str | None = None,
+    props: list[Property] | None = None,
+    comments: list[str] | None = None,
+    internal: bool = False,
+) -> Label:
+    """Build a `Label` with `kind=LabelKind.PORT_NAME` set.
+
+    Sugar for hand-authored sub-blocks: every port label gets this
+    instead of `Label(...)` so it doesn't alias across SRef
+    instances at the parent level (see `LabelKind.PORT_NAME` docs
+    for the full story). Same arguments as `Label` minus `kind`.
+
+    Example::
+
+        # Inside the nand2 builder:
+        elements = [
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="A", origin=(120, 80)),
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="B", origin=(120, 240)),
+            rkt.port_label(rkt.named("sky130", "met1_label"),
+                           text="Y", origin=(400, 160)),
+            # … rest of geometry …
+        ]
+    """
+
+    return Label(
+        layer=layer,
+        text=text,
+        origin=origin,
+        cls=cls,
+        props=props if props is not None else [],
+        comments=comments if comments is not None else [],
+        internal=internal,
+        kind=LabelKind.PORT_NAME,
+    )
 
 
 @dataclass

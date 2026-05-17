@@ -118,6 +118,57 @@ def test_sref_rotation_emits_with_decimal_point():
     assert "(rot 90.0)" in text
 
 
+def test_kind_port_name_emits_in_label_form():
+    # Hand-authored sub-block port labels emit (kind port-name).
+    # Pattern mirrors the FET generator's DEVICE_TERMINAL tagging
+    # but lives at the sub-block author's side (manual or via
+    # the `port_label` sugar — see next test).
+    doc = rkt.Document(
+        cells=[
+            rkt.Cell(
+                name="nand2",
+                elements=[
+                    rkt.Label(
+                        layer=rkt.named("sky130", "met1_label"),
+                        text="A",
+                        origin=(0, 0),
+                        kind=rkt.LabelKind.PORT_NAME,
+                    ),
+                ],
+            ),
+        ],
+    )
+    text = rkt.write(doc)
+    assert "(kind port-name)" in text
+    assert "(kind net-name)" not in text
+
+
+def test_port_label_sugar_sets_port_name_kind():
+    # Same emit as the explicit kind=PORT_NAME above, but built via
+    # the port_label() helper that defaults the kind so sub-block
+    # authors don't have to write it every time.
+    doc = rkt.Document(
+        cells=[
+            rkt.Cell(
+                name="nand2",
+                elements=[
+                    rkt.port_label(
+                        rkt.named("sky130", "met1_label"),
+                        text="B",
+                        origin=(0, 100),
+                    ),
+                ],
+            ),
+        ],
+    )
+    text = rkt.write(doc)
+    assert "(kind port-name)" in text
+    # And the label data on the in-memory object is correct.
+    lbl = doc.cells[0].elements[0]
+    assert isinstance(lbl, rkt.Label)
+    assert lbl.kind == rkt.LabelKind.PORT_NAME
+
+
 def test_writer_emits_no_nets_block():
     # Track 06 Decision 4 = C: the (nets …) block is gone from the
     # schema. Labels with Kind = NET_NAME are the sole source of truth

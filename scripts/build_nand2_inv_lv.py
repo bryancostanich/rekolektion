@@ -205,15 +205,23 @@ def enlarger_center(rect):
     return ((rect.x1 + rect.x2) // 2, (rect.y1 + rect.y2) // 2)
 
 port_labels = [
-    # CELL-LEVEL PORTS only. nand_out and nand_mid are internal
-    # nets — labeling them would promote them to subckt ports
-    # and fail LVS pin-matching against the schematic which
-    # declares only A, B, Y, VDD, VSS.
+    # External cell ports — exported to GDS so Magic's port_makeall
+    # promotes them to subckt ports for LVS pin-matching.
     rkt.Label(layer=rkt.named("sky130", "met1_label"), text="A",
               origin=enlarger_center(a_bridge.bot_in_cell_met1)),
     rkt.Label(layer=rkt.named("sky130", "met1_label"), text="B",
               origin=enlarger_center(b_bridge.bot_in_cell_met1)),
     rkt.Label(layer=rkt.named("sky130", "met2_label"), text="Y", origin=pip_d),
+    # Internal nets — labeled with internal=True so they're visible
+    # in viz / LabelFlood but NOT exported to GDS. Magic's
+    # port_makeall sees only GDS text records, so these never
+    # become subckt ports — LVS pin-matching unaffected.
+    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="nand_out",
+              origin=((min(trunk_xs) + max(trunk_xs)) // 2, NAND_OUT_TRACK_Y),
+              internal=True),
+    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="nand_mid",
+              origin=((nna_s[0] + nnb_d[0]) // 2, nna_s[1]),
+              internal=True),
 ]
 
 doc = rkt.Document(

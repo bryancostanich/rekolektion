@@ -45,10 +45,36 @@ let paintIn
     use normal = new SKPaint(Color = SKColors.White, IsAntialias = true, TextSize = 11.0f, IsStroke = false)
     use highlight = new SKPaint(Color = SKColor(0xffuy, 0xe0uy, 0x40uy, 0xffuy), IsAntialias = true, TextSize = 12.0f, IsStroke = false)
     use dimmed = new SKPaint(Color = SKColor(0xffuy, 0xffuy, 0xffuy, 0x40uy), IsAntialias = true, TextSize = 11.0f, IsStroke = false)
+    // NOTE: this loop iterates `doc.Cells` directly — top cell AND
+    // every imported primitive — and draws each label at its bare
+    // `Origin` with NO SRef transform applied. That's only correct
+    // for `NetName` labels in the TOP cell, where origins are
+    // already world coords (top-cell affine = identity).
+    //
+    // For labels authored INSIDE an SRef'd primitive (e.g.
+    // `DeviceTerminal` D/G/S labels emitted by the FET generator,
+    // or `PortName` labels on hand-authored sub-blocks), the
+    // stored `Origin` is in CELL-LOCAL coords. Drawing them here
+    // would put each one at primitive-local position in world
+    // space — e.g. a W12p5 pFET's `G` label at local (0, +6570)
+    // would render at world (0, 6570 nm), independent of where
+    // any SRef instance of that primitive actually sits. They'd
+    // appear as a phantom cluster of single-character labels near
+    // the world origin, untransformed by SRef rotation/offset.
+    //
+    // The `Kind = NetName` filter below excludes them for that
+    // reason. If you ever want to render device-terminal labels in
+    // the 2D canvas (e.g. a "show device pins" toggle), DO NOT
+    // remove the filter here — switch the whole loop over to
+    // `Flatten.flattenLabels doc`, which descends SRefs and
+    // applies the per-instance affine to each label's origin. Net
+    // resolution (Ratlines, LabelFlood) already takes that
+    // transformed path; the 2D painter is the lone codepath that
+    // reads raw `doc.Cells` for labels.
     for c in doc.Cells do
         for el in c.Elements do
             match el with
-            | LabelEl l ->
+            | LabelEl l when l.Kind = NetName ->
                 let key = layerPair l.Layer
                 if Visibility.isLayerVisible toggle key then
                     let x = float (l.Origin.X - vb.MinX) / dx * float vb.PixelW

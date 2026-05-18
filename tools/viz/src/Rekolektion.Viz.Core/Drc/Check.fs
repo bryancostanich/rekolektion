@@ -37,6 +37,43 @@ let private bboxOf (poly: FlatPolygon) : int64 * int64 * int64 * int64 =
         if p.Y > yMax then yMax <- p.Y
     xMin, yMin, xMax, yMax
 
+/// Orthogonal facing-edge gap: returns `Some d` when the two
+/// bboxes have a facing edge (one axis's projections overlap,
+/// the other axis's don't — so there's a clean perpendicular
+/// distance between them) and `None` for diagonal pairs (no
+/// projection overlap on either axis — only the corners face
+/// each other, governed by separate corner rules, not by per-
+/// layer spacing). Magic's spacing rules behave the same way.
+///
+/// Returns 0 when the projections overlap on BOTH axes (bboxes
+/// intersect) — caller decides whether to treat that as an
+/// overlap or as a zero-gap touch.
+let private bboxOrthoGap
+        ((ax1, ay1, ax2, ay2): int64 * int64 * int64 * int64)
+        ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
+        : int64 option =
+    let xOverlap = (min ax2 bx2) > (max ax1 bx1)
+    let yOverlap = (min ay2 by2) > (max ay1 by1)
+    if xOverlap && yOverlap then
+        Some 0L
+    elif xOverlap then
+        // X projections overlap: shapes are one-above-the-other;
+        // perpendicular gap is along Y.
+        let g =
+            if ay2 <= by1 then by1 - ay2
+            elif by2 <= ay1 then ay1 - by2
+            else 0L
+        Some g
+    elif yOverlap then
+        let g =
+            if ax2 <= bx1 then bx1 - ax2
+            elif bx2 <= ax1 then ax1 - bx2
+            else 0L
+        Some g
+    else
+        // Diagonal pair — no facing edge, no spacing rule fires.
+        None
+
 let private bboxGap
         ((ax1, ay1, ax2, ay2): int64 * int64 * int64 * int64)
         ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
@@ -146,6 +183,7 @@ let private condMatches
     | Rules.OverlapsPoly -> tags.OverlapsPoly
     | Rules.PsdmOverlaps -> tags.PsdmOverlaps
     | Rules.NsdmOverlaps -> tags.NsdmOverlaps
+    | Rules.NsdmNotInNwell -> tags.NsdmOverlaps && not tags.OverlapsNwell
 
 /// Run all rules in `Rules.allRules` against every polygon in
 /// `flat`, filtered by `disabledRules` (Magic-compatible rule
@@ -196,6 +234,14 @@ let checkWithToggles
                             BboxA = (x1, y1, x2, y2)
                             BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
+            // Orthogonal-only: spacing fires when the two
+            // polygons have a facing edge (one axis's
+            // projections overlap, the other axis's don't), and
+            // the perpendicular gap is below the limit. Diagonal
+            // pairs (no projection overlap on either axis) don't
+            // trigger spacing in Magic — corner-to-corner
+            // distance is governed by separate corner rules
+            // (rare in SKY130).
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let polys = polysOnLayer idx layer
@@ -203,8 +249,8 @@ let checkWithToggles
                     let (_, bbA, _) = polys.[i]
                     for j in i + 1 .. polys.Length - 1 do
                         let (_, bbB, _) = polys.[j]
-                        let g = bboxGap bbA bbB
-                        if g > 0L && g < limit then
+                        match bboxOrthoGap bbA bbB with
+                        | Some g when g > 0L && g < limit ->
                             result.Add {
                                 Rule = name
                                 LayerNumber = layer.Number
@@ -213,28 +259,36 @@ let checkWithToggles
                                 MeasuredDbu = g
                                 BboxA = bbA
                                 BboxB = Some bbB }
-        | Rules.CrossSpacing (name, layerA, layerB, minUm) ->
+                        | _ -> ()
+        | Rules.CrossSpacing (name, layerA, layerB, minUm, condA) ->
+            // Same orthogonal-only rule as same-layer Spacing.
+            // Overlap = same net at this layer pair (e.g. poly
+            // contact on diff is legal); skip to avoid false-
+            // firing on intentional crossings.
+            //
+            // `condA` filters the source layer to typed subsets
+            // (e.g. diff/tap.9 only fires on n-diff outside
+            // nwell — NsdmNotInNwell tag).
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let polysA = polysOnLayer idx layerA
                 let polysB = polysOnLayer idx layerB
-                for (_, bbA, _) in polysA do
-                    for (_, bbB, _) in polysB do
-                        // Overlap = same net at this layer pair
-                        // (e.g. poly contact on diff is legal);
-                        // skip to avoid false-firing on intentional
-                        // crossings.
-                        if not (bboxOverlaps bbA bbB) then
-                            let g = bboxGap bbA bbB
-                            if g > 0L && g < limit then
-                                result.Add {
-                                    Rule = name
-                                    LayerNumber = layerA.Number
-                                    LayerType   = layerA.DataType
-                                    LimitDbu    = limit
-                                    MeasuredDbu = g
-                                    BboxA = bbA
-                                    BboxB = Some bbB }
+                for (_, bbA, aIdx) in polysA do
+                    let aTags = Implant.tagOf tags aIdx
+                    if condMatches condA aTags then
+                        for (_, bbB, _) in polysB do
+                            if not (bboxOverlaps bbA bbB) then
+                                match bboxOrthoGap bbA bbB with
+                                | Some g when g > 0L && g < limit ->
+                                    result.Add {
+                                        Rule = name
+                                        LayerNumber = layerA.Number
+                                        LayerType   = layerA.DataType
+                                        LimitDbu    = limit
+                                        MeasuredDbu = g
+                                        BboxA = bbA
+                                        BboxB = Some bbB }
+                                | _ -> ()
         | Rules.Enclosure (name, outer, inner, minUm, cond) ->
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then

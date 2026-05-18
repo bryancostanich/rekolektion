@@ -87,9 +87,15 @@ type InnerCondition =
     /// p-diff. Used to scope `difftap.8a` (nwell encloses p-diff).
     | PsdmOverlaps
     /// Inner polygon overlaps an NSDM (93/44) marker — marks
-    /// n-diff. Will be used for `difftap.9` (n-diff to nwell
-    /// spacing) in a later step.
+    /// n-diff. Used by `nsdm.5a` (nsdm encloses n-diff).
     | NsdmOverlaps
+    /// Inner polygon overlaps NSDM AND does NOT overlap NWELL —
+    /// marks "n-diff outside any well". Used by `difftap.9`
+    /// (n-diff to nwell spacing): the rule only fires on
+    /// outside-well n-diff; n-diff entirely inside an nwell is
+    /// a separate geometry issue with its own rule, not a
+    /// spacing case.
+    | NsdmNotInNwell
 
 /// Rule kinds. Each variant carries a Magic-compatible name (used
 /// as `Violation.Rule`) plus the parameters its check algorithm
@@ -101,10 +107,19 @@ type Rule =
     /// ≥ MinUm between any two same-layer polygons.
     | Spacing  of name: string * layer: LayerKey * minUm: float
     /// Cross-layer min spacing: bbox-edge gap ≥ MinUm between any
-    /// polygon on `layerA` and any polygon on `layerB`. Used for
-    /// rules like `poly.4` (poly edge to diff edge).
+    /// polygon on `layerA` (matching `condA` if provided) and any
+    /// polygon on `layerB`. Used for rules like `poly.4` (poly
+    /// edge to diff edge) and the implant-aware `difftap.9`
+    /// (n-diff outside nwell to nwell).
+    ///
+    /// `condA` filters which `layerA` polygons the rule applies
+    /// to. Use `Always` for rules with no type filtering.
     | CrossSpacing of
-        name: string * layerA: LayerKey * layerB: LayerKey * minUm: float
+        name: string
+        * layerA: LayerKey
+        * layerB: LayerKey
+        * minUm: float
+        * condA: InnerCondition
     /// Symmetric enclosure: `outer` must contain `inner` with at
     /// least MinUm margin on every side. A violation fires for
     /// any `inner` polygon (matching `cond`) whose enclosing
@@ -171,7 +186,7 @@ let nameOf (rule: Rule) : string =
     match rule with
     | Width (n, _, _) -> n
     | Spacing (n, _, _) -> n
-    | CrossSpacing (n, _, _, _) -> n
+    | CrossSpacing (n, _, _, _, _) -> n
     | Enclosure (n, _, _, _, _) -> n
     | Endcap (n, _, _, _) -> n
     | MinArea (n, _, _) -> n
@@ -232,7 +247,13 @@ let allRules : Rule list = [
     Spacing  ("poly.2",     poly,  0.21)
     Endcap   ("poly.8",     poly,  diff, 0.13)    // poly overhangs gate edge
     Endcap   ("poly.7",     diff,  poly, 0.25)    // diff overhangs source/drain
-    CrossSpacing("poly.4",  poly,  diff, 0.075)   // poly edge to diff (non-gate)
+    CrossSpacing("poly.4",  poly,  diff, 0.075, Always)
+                                                  // poly edge to diff (non-gate)
+    // difftap.9 — n-diff outside any nwell must be ≥ 0.34 µm
+    // from any nwell edge. NsdmNotInNwell selects "n-diff
+    // outside an nwell" by combining the NSDM marker (= n-type)
+    // with the absence of NWELL overlap.
+    CrossSpacing("diff/tap.9", diff, nwell, 0.34, NsdmNotInNwell)
 
     // --- LICON1 (contact: diff/poly to li1) ---
     // Licon contacts are typed by what's BELOW them: diff for

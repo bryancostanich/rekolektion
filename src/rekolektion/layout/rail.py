@@ -163,6 +163,7 @@ def place_rail(
     label: str | None = None,
     label_origin: tuple[int, int] | None = None,
     stitch_li1_straps: list[rkt.Rect] | None = None,
+    port: bool = False,
     dbu_nm: int = 1,
 ) -> list[rkt.Element]:
     """Paint a rail rectangle on `layer`, label it, and stitch any
@@ -223,8 +224,9 @@ def place_rail(
             (rail_bbox[0] + rail_bbox[2]) // 2,
             (rail_bbox[1] + rail_bbox[3]) // 2,
         )
+        make_label = rkt.port_label if port else rkt.Label
         elements.append(
-            rkt.Label(
+            make_label(
                 layer=rkt.named("sky130", f"{layer}_label"),
                 text=label,
                 origin=origin,

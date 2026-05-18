@@ -120,9 +120,9 @@ vss_y1, vss_y2 = vss_strap.y1 - 30, vss_strap.y2 + 30
 vdda1_y1, vdda1_y2 = vdda1_strap.y1 - 30, vdda1_strap.y2 + 30
 
 vss_rail = place_rail((cell_x1, vss_y1, cell_x2, vss_y2),
-                      label='VSS', stitch_li1_straps=[vss_strap])
+                      label='VSS', stitch_li1_straps=[vss_strap], port=True)
 vdda1_rail = place_rail((cell_x1, vdda1_y1, cell_x2, vdda1_y2),
-                        label='VDDA1', stitch_li1_straps=[vdda1_strap])
+                        label='VDDA1', stitch_li1_straps=[vdda1_strap], port=True)
 
 # VDD (1.8 V): a small met1 pin patch directly above the LV INV
 # PMOS source. The LV INV source connects met1-north to this pin —
@@ -134,8 +134,8 @@ vdd_pin = [
     rkt.Rect(layer=rkt.named("sky130", "met1"),
              x1=inv_p_s_x_pin - 160, y1=vdd_y - 160,
              x2=inv_p_s_x_pin + 160, y2=vdd_y + 160),
-    rkt.Label(layer=rkt.named("sky130", "met1_label"),
-              text="VDD", origin=(inv_p_s_x_pin, vdd_y)),
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"),
+                   text="VDD", origin=(inv_p_s_x_pin, vdd_y)),
 ]
 
 # ─── Pin-coord helper ────────────────────────────────────────────────
@@ -359,10 +359,15 @@ gate_routes.extend(place_wire(
 gate_routes.extend(place_via(pu_outn_ext.center, "met1", "met2"))
 
 port_labels = [
-    rkt.Label(layer=rkt.named("sky130", "met1_label"),
-              text="VDDA1", origin=(cell_x1 + 200, (vdda1_y1+vdda1_y2)//2)),
-    rkt.Label(layer=rkt.named("sky130", "met1_label"),
-              text="VSS", origin=(cell_x1 + 200, (vss_y1+vss_y2)//2)),
+    # Extra VDDA1/VSS port labels at the LEFT edge of the rails so
+    # parent SRefs can tap either end of the rail. PortName so they
+    # don't alias across instances.
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"),
+                   text="VDDA1",
+                   origin=(cell_x1 + 200, (vdda1_y1+vdda1_y2)//2)),
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"),
+                   text="VSS",
+                   origin=(cell_x1 + 200, (vss_y1+vss_y2)//2)),
 ]
 # Cell-port labels. The input net is named 'IN' (not 'D') to
 # avoid collision with the FET primitives' built-in li1_label="D"
@@ -375,23 +380,27 @@ in_label_pt = (
 out_n_x, out_n_y = pin_xy(npd_outn, "D", mv_n_info)
 out_x, out_y = pin_xy(npd_out, "D", mv_n_info)
 port_labels.extend([
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="IN", origin=in_label_pt),
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"),
+                   text="IN", origin=in_label_pt),
     # IN_n is an INTERNAL net (LV INV output drives MV1 NFET gate).
-    # Labeled with internal=True so it's visible in viz / LabelFlood
-    # but NOT exported to GDS — Magic's port_makeall never sees it
-    # → not promoted to a subckt port → LVS pin-match unaffected.
+    # internal=True → visible in viz, NOT exported to GDS, so Magic
+    # never promotes it to a port. NetName (default) is fine —
+    # internal labels are per-cell and don't alias up.
     rkt.Label(layer=rkt.named("sky130", "met2_label"), text="IN_n",
               origin=((INV_DRAIN_WIRE_X + pd_out_ext.center[0]) // 2, NMOS_EXT_Y_HI),
               internal=True),
-    rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT_N", origin=(out_n_x, out_n_y)),
-    rkt.Label(layer=rkt.named("sky130", "li1_label"), text="OUT", origin=(out_x, out_y)),
+    rkt.port_label(layer=rkt.named("sky130", "li1_label"),
+                   text="OUT_N", origin=(out_n_x, out_n_y)),
+    rkt.port_label(layer=rkt.named("sky130", "li1_label"),
+                   text="OUT", origin=(out_x, out_y)),
     # Belt & suspenders: also label the parent-paint met1 verticals
     # so the OUT/OUT_N net polygons carry the name even when label
-    # propagation through subckt boundaries is finicky.
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="OUT_N",
-              origin=(OUT_N_VERT_X, (npd_outn_d[1] + ppu_outn_d[1]) // 2)),
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="OUT",
-              origin=(OUT_VERT_X, (npd_out_d[1] + ppu_out_d[1]) // 2)),
+    # propagation through subckt boundaries is finicky. Also PortName
+    # to keep parent-level net derivation clean.
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"), text="OUT_N",
+                   origin=(OUT_N_VERT_X, (npd_outn_d[1] + ppu_outn_d[1]) // 2)),
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"), text="OUT",
+                   origin=(OUT_VERT_X, (npd_out_d[1] + ppu_out_d[1]) // 2)),
 ])
 
 doc = rkt.Document(

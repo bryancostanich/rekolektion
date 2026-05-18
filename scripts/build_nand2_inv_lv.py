@@ -102,18 +102,45 @@ cell_x1 = min(nfet_xs1, pfet_xs1) - 200
 cell_x2 = max(nfet_xs2, pfet_xs2) + 200
 
 vss_strap = pwell_taps.li1_straps_by_side['bottom'][0]
-vdd_strap = nwell_taps.li1_straps_by_side['top'][0]
+vdda1_strap = nwell_taps.li1_straps_by_side['top'][0]  # nwell tap → VDDA1
 vss_y1, vss_y2 = vss_strap.y1 - 30, vss_strap.y2 + 30
-vdd_y1, vdd_y2 = vdd_strap.y1 - 30, vdd_strap.y2 + 30
+vdda1_y1, vdda1_y2 = vdda1_strap.y1 - 30, vdda1_strap.y2 + 30
 vss_rail = place_rail((cell_x1, vss_y1, cell_x2, vss_y2),
-                      label='VSS', stitch_li1_straps=[vss_strap])
-vdd_rail = place_rail((cell_x1, vdd_y1, cell_x2, vdd_y2),
-                      label='VDD', stitch_li1_straps=[vdd_strap])
+                      label='VSS', stitch_li1_straps=[vss_strap], port=True)
+vdda1_rail = place_rail((cell_x1, vdda1_y1, cell_x2, vdda1_y2),
+                        label='VDDA1', stitch_li1_straps=[vdda1_strap], port=True)
+# VDD (1.8V PFET source) is a separate net from VDDA1 (3.3V nwell
+# bulk). Paint a horizontal met1 VDD strap in the empty band between
+# the PFET primitive's met1 S/D strap tops (global y=4030) and the
+# VDDA1 rail bottom (y≈4665). Strap min Y = 4030 + 140 (met1.2) =
+# 4170 to keep clear of the primitive met1 D-strap top at y=4030 (D
+# is on nand_out, not VDD — must NOT touch).
+VDD_STRAP_Y1 = 4170
+VDD_STRAP_Y2 = 4310
+vdd_rail = [
+    rkt.Rect(layer=rkt.named("sky130", "met1"),
+             x1=cell_x1, y1=VDD_STRAP_Y1,
+             x2=cell_x2, y2=VDD_STRAP_Y2),
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"),
+                   text="VDD",
+                   origin=((cell_x1 + cell_x2) // 2,
+                           (VDD_STRAP_Y1 + VDD_STRAP_Y2) // 2)),
+]
 
 # ─── Phase 1 — Power ─────────────────────────────────────────────────
 power_routes = []
+# Per-PFET met1 extension: bridge from primitive S-strap top (y=4030)
+# up to VDD strap bottom (y=4170). Width matches primitive met1
+# (230 nm, x = source_x ± 115).
+SRC_STRAP_HALF_X = 115
 for pfet_sref in pfet_row:
-    power_routes.extend(pin_to_rail(pfet_sref, "S", vdd_strap))
+    s_pin = p_info.pin("S")
+    px = pfet_sref.origin[0] + s_pin.origin[0]
+    power_routes.append(rkt.Rect(
+        layer=rkt.named("sky130", "met1"),
+        x1=px - SRC_STRAP_HALF_X, y1=4020,  # 10 nm overlap with primitive top
+        x2=px + SRC_STRAP_HALF_X, y2=VDD_STRAP_Y1 + 10,  # 10 nm overlap w/ strap
+    ))
 power_routes.extend(pin_to_rail(nfet_row[1], "S", vss_strap))
 power_routes.extend(pin_to_rail(nfet_row[2], "S", vss_strap))
 
@@ -205,13 +232,17 @@ def enlarger_center(rect):
     return ((rect.x1 + rect.x2) // 2, (rect.y1 + rect.y2) // 2)
 
 port_labels = [
-    # External cell ports — exported to GDS so Magic's port_makeall
-    # promotes them to subckt ports for LVS pin-matching.
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="A",
-              origin=enlarger_center(a_bridge.bot_in_cell_met1)),
-    rkt.Label(layer=rkt.named("sky130", "met1_label"), text="B",
-              origin=enlarger_center(b_bridge.bot_in_cell_met1)),
-    rkt.Label(layer=rkt.named("sky130", "met2_label"), text="Y", origin=pip_d),
+    # External cell ports — tagged PortName so they don't alias
+    # across SRef instances at the parent (else two nand2 instances'
+    # "B" labels would collapse into one fake net via the viz's
+    # label-name net derivation). PortName labels still reach GDS,
+    # so Magic's port_makeall promotes them to subckt ports for LVS.
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"), text="A",
+                   origin=enlarger_center(a_bridge.bot_in_cell_met1)),
+    rkt.port_label(layer=rkt.named("sky130", "met1_label"), text="B",
+                   origin=enlarger_center(b_bridge.bot_in_cell_met1)),
+    rkt.port_label(layer=rkt.named("sky130", "met2_label"), text="Y",
+                   origin=pip_d),
     # Internal nets — labeled with internal=True so they're visible
     # in viz / LabelFlood but NOT exported to GDS. Magic's
     # port_makeall sees only GDS text records, so these never
@@ -238,6 +269,7 @@ doc = rkt.Document(
                 *pwell_taps.elements,
                 *nwell_taps.elements,
                 *vss_rail,
+                *vdda1_rail,
                 *vdd_rail,
                 *power_routes,
                 *sig_routes,
@@ -253,4 +285,4 @@ out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(rkt.write(doc))
 print(f"wrote {out}")
 print(f"cell extent x: {cell_x1} to {cell_x2}")
-print(f"cell extent y: {vss_y1} to {vdd_y2}")
+print(f"cell extent y: {vss_y1} to {vdda1_y2}")

@@ -2399,9 +2399,47 @@ type GdsCanvasControl() as this =
                             Layout.Flatten.flattenInstance (renderLib) inst.Index)
                         |> Map.ofArray
                     let disabled = this.DisabledDrcRules
+                    // Implant tags computed from the FULL flat —
+                    // a top-cell-direct licon needs to know whether
+                    // a diff polygon from an SRef'd cell sits
+                    // under it (a foundry-FET gate). Tagging the
+                    // top-direct array alone would miss those.
+                    let tagsFull =
+                        Drc.Implant.tagAll this.FlatPolygons
+                    // Translate tag indices from full-flat to
+                    // top-direct: the rule check is run with the
+                    // top-direct polygon array, so its tag array
+                    // must be parallel to top-direct. Build a map
+                    // (Layer, DataType, bbox) -> tagsIdx via
+                    // identity on the full array.
+                    let bboxKey (p: Layout.Flatten.FlatPolygon) =
+                        let mutable xMin = System.Int64.MaxValue
+                        let mutable yMin = System.Int64.MaxValue
+                        let mutable xMax = System.Int64.MinValue
+                        let mutable yMax = System.Int64.MinValue
+                        for pt in p.Points do
+                            if pt.X < xMin then xMin <- pt.X
+                            if pt.X > xMax then xMax <- pt.X
+                            if pt.Y < yMin then yMin <- pt.Y
+                            if pt.Y > yMax then yMax <- pt.Y
+                        p.Layer, p.DataType, xMin, yMin, xMax, yMax
+                    let tagByKey =
+                        let d =
+                            System.Collections.Generic.Dictionary<
+                                int * int * int64 * int64 * int64 * int64,
+                                Drc.Implant.ImplantTags>()
+                        for i in 0 .. this.FlatPolygons.Length - 1 do
+                            d.[bboxKey this.FlatPolygons.[i]] <- tagsFull.[i]
+                        d
+                    let tagsTopDirect =
+                        topDirect
+                        |> Array.map (fun p ->
+                            match tagByKey.TryGetValue (bboxKey p) with
+                            | true, t -> t
+                            | _ -> Drc.Implant.emptyTags)
                     Array.append
                         (Drc.Check.checkWithToggles
-                            renderLib.Units topDirect disabled)
+                            renderLib.Units topDirect tagsTopDirect disabled)
                         (Drc.Check.checkInterInstance
                             renderLib.Units perInstance)
                 else

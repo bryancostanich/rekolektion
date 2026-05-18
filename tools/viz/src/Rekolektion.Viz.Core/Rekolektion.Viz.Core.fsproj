@@ -37,6 +37,7 @@
     <Compile Include="Net/Ratlines.fs" />
     <Compile Include="Routing/Detect.fs" />
     <Compile Include="Drc/Rules.fs" />
+    <Compile Include="Drc/Implant.fs" />
     <Compile Include="Drc/Check.fs" />
     <Compile Include="Visibility.fs" />
     <Compile Include="Placeholder.fs" />

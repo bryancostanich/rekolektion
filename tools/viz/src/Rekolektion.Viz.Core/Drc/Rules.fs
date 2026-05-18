@@ -64,6 +64,33 @@ let met2   = layer 69 20
 let via2   = layer 69 44
 let met3   = layer 70 20
 
+/// Filter predicate on the *inner* polygon of an Enclosure rule
+/// (or analogous "subject" polygon of other rule kinds). Lets a
+/// single rule apply only to a typed subset of polygons —
+/// crucial for SKY130 rules that distinguish diff-contacts from
+/// poly-contacts, or p-diff from n-diff.
+///
+/// Magic does this via implant boolean operations (e.g.
+/// `licon.5a` only fires on licons that touch diff). Viz
+/// approximates with bbox-overlap pre-pass results — see
+/// `Implant.tagAll`.
+type InnerCondition =
+    /// Always applies. Default for rules with no implant typing.
+    | Always
+    /// Inner polygon overlaps a DIFF (65/20) polygon. Used to
+    /// scope `licon.5a` / `licon.5c` to diff-contact licons.
+    | OverlapsDiff
+    /// Inner polygon overlaps a POLY (66/20) polygon. Used to
+    /// scope `licon.8` to poly-contact licons.
+    | OverlapsPoly
+    /// Inner polygon overlaps a PSDM (94/20) marker — marks
+    /// p-diff. Used to scope `difftap.8a` (nwell encloses p-diff).
+    | PsdmOverlaps
+    /// Inner polygon overlaps an NSDM (93/44) marker — marks
+    /// n-diff. Will be used for `difftap.9` (n-diff to nwell
+    /// spacing) in a later step.
+    | NsdmOverlaps
+
 /// Rule kinds. Each variant carries a Magic-compatible name (used
 /// as `Violation.Rule`) plus the parameters its check algorithm
 /// needs. `Check.fs` dispatches on the case.
@@ -78,17 +105,24 @@ type Rule =
     /// rules like `poly.4` (poly edge to diff edge).
     | CrossSpacing of
         name: string * layerA: LayerKey * layerB: LayerKey * minUm: float
-    /// Asymmetric enclosure: `outer` must contain `inner` with at
-    /// least MinUm margin on every side. A violation fires for any
-    /// `inner` polygon whose enclosing `outer` polygon (if one
-    /// exists at all) leaves an edge with < MinUm margin. Inner
-    /// polygons with no covering outer at all are reported too
-    /// (zero margin).
+    /// Symmetric enclosure: `outer` must contain `inner` with at
+    /// least MinUm margin on every side. A violation fires for
+    /// any `inner` polygon (matching `cond`) whose enclosing
+    /// `outer` polygon leaves an edge with < MinUm margin. Inner
+    /// polygons matching `cond` with no covering outer are
+    /// reported too (zero margin).
+    ///
+    /// `cond` filters which inner polygons the rule applies to
+    /// based on implant tags — e.g. `licon.5a` only fires on
+    /// licons that overlap diff (`OverlapsDiff`), not on
+    /// poly-contact licons. Use `Always` for rules that apply to
+    /// every inner polygon.
     | Enclosure of
         name: string
         * outer: LayerKey
         * inner: LayerKey
         * minUm: float
+        * cond: InnerCondition
     /// `source` must extend past the `reference` polygon's bbox by
     /// at least MinUm in BOTH directions of one axis (auto-picked:
     /// the axis where source is the longer dimension). Used for
@@ -112,7 +146,7 @@ let nameOf (rule: Rule) : string =
     | Width (n, _, _) -> n
     | Spacing (n, _, _) -> n
     | CrossSpacing (n, _, _, _) -> n
-    | Enclosure (n, _, _, _) -> n
+    | Enclosure (n, _, _, _, _) -> n
     | Endcap (n, _, _, _) -> n
     | MinArea (n, _, _) -> n
 
@@ -137,7 +171,10 @@ let allRules : Rule list = [
     // --- Diffusion (active area) ---
     Width    ("difftap.1",  diff,  0.15)
     Spacing  ("difftap.3",  diff,  0.27)
-    Enclosure("difftap.8a", nwell, diff,  0.18)   // nwell overlap of p-diff
+    // difftap.8a — nwell encloses p-diff. p-diff identified via
+    // PSDM overlap; without that filter the rule would fire on
+    // every n-diff (which legitimately sits outside any nwell).
+    Enclosure("difftap.8a", nwell, diff,  0.18, PsdmOverlaps)
 
     // --- Tap (substrate/well contacts) ---
     Width    ("difftap.2",  tap,   0.26)
@@ -148,15 +185,20 @@ let allRules : Rule list = [
     Spacing  ("nwell.2a",   nwell, 1.27)
     // NWELL_TO_NWELL_SAME (0.60) — same-net relaxation, can't model
     // without net awareness; the stricter 1.27 is the safe default.
-    Enclosure("nwell.5",    nwell, psdm,  0.18)   // nwell encloses psdm
+    Enclosure("nwell.5",    nwell, psdm, 0.18, Always)  // nwell encloses psdm
 
     // --- Implants ---
     Width    ("nsdm.1",     nsdm,  0.38)
     Spacing  ("nsdm.2",     nsdm,  0.38)
-    Enclosure("nsdm.5a",    nsdm,  diff, 0.125)   // nsdm encloses (n-)diff
+    // nsdm.5a — nsdm encloses n-diff. n-diff identified via
+    // NSDM overlap (the inner must already overlap nsdm for nsdm
+    // to be considered "the" implant for that diff).
+    Enclosure("nsdm.5a",    nsdm,  diff, 0.125, NsdmOverlaps)
     Width    ("psdm.1",     psdm,  0.38)
     Spacing  ("psdm.2",     psdm,  0.38)
-    Enclosure("psdm.5a",    psdm,  diff, 0.125)   // psdm encloses (p-)diff
+    // psdm.5a — psdm encloses p-diff. Same logic as nsdm.5a but
+    // with PSDM as the type marker.
+    Enclosure("psdm.5a",    psdm,  diff, 0.125, PsdmOverlaps)
 
     // --- Polysilicon ---
     Width    ("poly.1a",    poly,  0.15)
@@ -166,15 +208,26 @@ let allRules : Rule list = [
     CrossSpacing("poly.4",  poly,  diff, 0.075)   // poly edge to diff (non-gate)
 
     // --- LICON1 (contact: diff/poly to li1) ---
+    // Licon contacts are typed by what's BELOW them: diff for
+    // licon-to-diff, poly for licon-to-poly. Enclosure rules below
+    // are scoped accordingly — `licon.5a` (diff encloses licon)
+    // only fires on diff-contact licons; `licon.8` (poly
+    // encloses licon) only on poly-contacts. `li.5` (li1
+    // encloses licon) fires on both because li1 always sits on
+    // top of a licon regardless of what's below.
     Width    ("licon.1",    licon1, 0.17)
     Spacing  ("licon.2",    licon1, 0.17)
-    Enclosure("licon.5a",   diff,   licon1, 0.04) // diff overlap of licon
+    Enclosure("licon.5a",   diff,   licon1, 0.04, OverlapsDiff)
+                                                  // diff overlap of licon
                                                   // (one direction — symmetric
                                                   // 0.04 is conservative; the
                                                   // 0.06 other-direction
-                                                  // variant needs orientation)
-    Enclosure("licon.8",    poly,   licon1, 0.05) // poly overlap of licon
-    Enclosure("li.5",       li1,    licon1, 0.08) // li1 encloses licon
+                                                  // variant lands in step 2
+                                                  // when AsymEnclosure exists)
+    Enclosure("licon.8",    poly,   licon1, 0.05, OverlapsPoly)
+                                                  // poly overlap of licon
+    Enclosure("li.5",       li1,    licon1, 0.08, Always)
+                                                  // li1 encloses every licon
 
     // --- LI1 (local interconnect) ---
     Width    ("li.1",       li1,   0.17)
@@ -184,7 +237,8 @@ let allRules : Rule list = [
     // --- MCON (contact: li1 to met1) ---
     Width    ("mcon.1",     mcon,  0.17)
     Spacing  ("mcon.2",     mcon,  0.19)
-    Enclosure("met1.5",     met1,  mcon, 0.03)    // met1 encloses mcon
+    Enclosure("met1.5",     met1,  mcon, 0.03, Always)
+                                                  // met1 encloses every mcon
 
     // --- Metal 1 ---
     Width    ("met1.1",     met1,  0.14)
@@ -194,8 +248,8 @@ let allRules : Rule list = [
     // --- VIA (met1 to met2) ---
     Width    ("via.1",      via,   0.15)
     Spacing  ("via.2",      via,   0.17)
-    Enclosure("via.4a",     met1,  via,  0.055)   // met1 encloses via
-    Enclosure("via.5a",     met2,  via,  0.055)   // met2 encloses via
+    Enclosure("via.4a",     met1,  via, 0.055, Always)  // met1 encloses via
+    Enclosure("via.5a",     met2,  via, 0.055, Always)  // met2 encloses via
 
     // --- Metal 2 ---
     Width    ("met2.1",     met2,  0.14)
@@ -205,8 +259,8 @@ let allRules : Rule list = [
     // --- VIA2 (met2 to met3) ---
     Width    ("via2.1",     via2,  0.20)
     Spacing  ("via2.2",     via2,  0.20)
-    Enclosure("via2.4",     met2,  via2, 0.04)    // met2 encloses via2
-    Enclosure("via2.5",     met3,  via2, 0.065)   // met3 encloses via2
+    Enclosure("via2.4",     met2,  via2, 0.04, Always)   // met2 encloses via2
+    Enclosure("via2.5",     met3,  via2, 0.065, Always)  // met3 encloses via2
 
     // --- Metal 3 ---
     Width    ("met3.1",     met3,  0.30)

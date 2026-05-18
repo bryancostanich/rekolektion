@@ -89,19 +89,23 @@ let private bboxOverlaps
     ax1 < bx2 && bx1 < ax2 && ay1 < by2 && by1 < ay2
 
 /// Index polygons by (Layer, DataType) once so each rule lookup
-/// is O(1) instead of re-scanning the whole flat array.
+/// is O(1) instead of re-scanning the whole flat array. Each
+/// entry pairs the polygon with its bbox AND its position in the
+/// original `flat` array, so the caller can look up implant tags
+/// (which are indexed parallel to `flat`).
 let private indexByLayer
         (flat: FlatPolygon array)
         : System.Collections.Generic.Dictionary<int * int,
-            (FlatPolygon * (int64 * int64 * int64 * int64)) array> =
+            (FlatPolygon * (int64 * int64 * int64 * int64) * int) array> =
     let dict =
         System.Collections.Generic.Dictionary<int * int,
-            (FlatPolygon * (int64 * int64 * int64 * int64)) array>()
+            (FlatPolygon * (int64 * int64 * int64 * int64) * int) array>()
     flat
-    |> Array.groupBy (fun p -> p.Layer, p.DataType)
-    |> Array.iter (fun (key, polys) ->
+    |> Array.mapi (fun i p -> i, p)
+    |> Array.groupBy (fun (_, p) -> p.Layer, p.DataType)
+    |> Array.iter (fun (key, items) ->
         let withBboxes =
-            polys |> Array.map (fun p -> p, bboxOf p)
+            items |> Array.map (fun (i, p) -> p, bboxOf p, i)
         dict.[key] <- withBboxes)
     dict
 
@@ -109,11 +113,26 @@ let private layerKey (l: Rules.LayerKey) = l.Number, l.DataType
 
 let private polysOnLayer
         (idx: System.Collections.Generic.Dictionary<int * int,
-                (FlatPolygon * (int64 * int64 * int64 * int64)) array>)
+                (FlatPolygon * (int64 * int64 * int64 * int64) * int) array>)
         (key: Rules.LayerKey) =
     match idx.TryGetValue (layerKey key) with
     | true, arr -> arr
     | _ -> [||]
+
+/// Test an `InnerCondition` against the implant tags of a single
+/// polygon. Used by Enclosure to skip inner polygons that don't
+/// match the rule's type filter (e.g. licon.5a only checks
+/// diff-contact licons).
+let private condMatches
+        (cond: Rules.InnerCondition)
+        (tags: Implant.ImplantTags)
+        : bool =
+    match cond with
+    | Rules.Always -> true
+    | Rules.OverlapsDiff -> tags.OverlapsDiff
+    | Rules.OverlapsPoly -> tags.OverlapsPoly
+    | Rules.PsdmOverlaps -> tags.PsdmOverlaps
+    | Rules.NsdmOverlaps -> tags.NsdmOverlaps
 
 /// Run all rules in `Rules.allRules` against every polygon in
 /// `flat`, filtered by `disabledRules` (Magic-compatible rule
@@ -133,6 +152,7 @@ let private polysOnLayer
 let checkWithToggles
         (units: Units)
         (flat: FlatPolygon array)
+        (tags: Implant.ImplantTags array)
         (disabledRules: Set<string>)
         : Violation array =
     let umPerDbu = umPerDbuOf units
@@ -146,7 +166,7 @@ let checkWithToggles
         | Rules.Width (name, layer, minUm) ->
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
-                for (_, (x1, y1, x2, y2)) in polysOnLayer idx layer do
+                for (_, (x1, y1, x2, y2), _) in polysOnLayer idx layer do
                     let m = min (x2 - x1) (y2 - y1)
                     if m < limit then
                         result.Add {
@@ -162,9 +182,9 @@ let checkWithToggles
             if limit > 0L then
                 let polys = polysOnLayer idx layer
                 for i in 0 .. polys.Length - 1 do
-                    let (_, bbA) = polys.[i]
+                    let (_, bbA, _) = polys.[i]
                     for j in i + 1 .. polys.Length - 1 do
-                        let (_, bbB) = polys.[j]
+                        let (_, bbB, _) = polys.[j]
                         let g = bboxGap bbA bbB
                         if g > 0L && g < limit then
                             result.Add {
@@ -180,8 +200,8 @@ let checkWithToggles
             if limit > 0L then
                 let polysA = polysOnLayer idx layerA
                 let polysB = polysOnLayer idx layerB
-                for (_, bbA) in polysA do
-                    for (_, bbB) in polysB do
+                for (_, bbA, _) in polysA do
+                    for (_, bbB, _) in polysB do
                         // Overlap = same net at this layer pair
                         // (e.g. poly contact on diff is legal);
                         // skip to avoid false-firing on intentional
@@ -197,55 +217,62 @@ let checkWithToggles
                                     MeasuredDbu = g
                                     BboxA = bbA
                                     BboxB = Some bbB }
-        | Rules.Enclosure (name, outer, inner, minUm) ->
+        | Rules.Enclosure (name, outer, inner, minUm, cond) ->
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let outers = polysOnLayer idx outer
                 let inners = polysOnLayer idx inner
-                for (_, ibb) in inners do
-                    // The innermost-margin outer is the one whose
-                    // bbox contains the inner. If multiple outers
-                    // cover (rare), the largest margin wins —
-                    // a generously-enclosing outer doesn't fail
-                    // because another smaller outer also covers
-                    // and trims tight. Concentric same-layer
-                    // shapes aren't checked here either way.
-                    let mutable bestMargin : int64 voption = ValueNone
-                    let mutable bestOuter = ibb
-                    for (_, obb) in outers do
-                        if bboxOverlaps obb ibb then
-                            let m = bboxContainsMargin ibb obb
-                            match bestMargin with
-                            | ValueNone ->
-                                bestMargin <- ValueSome m
-                                bestOuter <- obb
-                            | ValueSome cur when m > cur ->
-                                bestMargin <- ValueSome m
-                                bestOuter <- obb
-                            | _ -> ()
-                    match bestMargin with
-                    | ValueNone ->
-                        // No outer covers this inner at all.
-                        // Report as zero-margin enclosure failure
-                        // — the inner is fully outside any outer.
-                        result.Add {
-                            Rule = name
-                            LayerNumber = inner.Number
-                            LayerType   = inner.DataType
-                            LimitDbu    = limit
-                            MeasuredDbu = 0L
-                            BboxA = ibb
-                            BboxB = None }
-                    | ValueSome m when m < limit ->
-                        result.Add {
-                            Rule = name
-                            LayerNumber = inner.Number
-                            LayerType   = inner.DataType
-                            LimitDbu    = limit
-                            MeasuredDbu = m
-                            BboxA = ibb
-                            BboxB = Some bestOuter }
-                    | _ -> ()
+                for (_, ibb, iIdx) in inners do
+                    // Skip inner polygons whose implant tags
+                    // don't match the rule's condition (e.g.
+                    // licon.5a only applies to diff-contact
+                    // licons, which have OverlapsDiff = true).
+                    let iTags = Implant.tagOf tags iIdx
+                    if condMatches cond iTags then
+                        // The innermost-margin outer is the one
+                        // whose bbox contains the inner. If
+                        // multiple outers cover (rare), the
+                        // largest margin wins — a generously-
+                        // enclosing outer doesn't fail because
+                        // another smaller outer also covers and
+                        // trims tight.
+                        let mutable bestMargin : int64 voption = ValueNone
+                        let mutable bestOuter = ibb
+                        for (_, obb, _) in outers do
+                            if bboxOverlaps obb ibb then
+                                let m = bboxContainsMargin ibb obb
+                                match bestMargin with
+                                | ValueNone ->
+                                    bestMargin <- ValueSome m
+                                    bestOuter <- obb
+                                | ValueSome cur when m > cur ->
+                                    bestMargin <- ValueSome m
+                                    bestOuter <- obb
+                                | _ -> ()
+                        match bestMargin with
+                        | ValueNone ->
+                            // No outer covers this inner at all.
+                            // Report as zero-margin enclosure
+                            // failure — the inner is fully
+                            // outside any outer.
+                            result.Add {
+                                Rule = name
+                                LayerNumber = inner.Number
+                                LayerType   = inner.DataType
+                                LimitDbu    = limit
+                                MeasuredDbu = 0L
+                                BboxA = ibb
+                                BboxB = None }
+                        | ValueSome m when m < limit ->
+                            result.Add {
+                                Rule = name
+                                LayerNumber = inner.Number
+                                LayerType   = inner.DataType
+                                LimitDbu    = limit
+                                MeasuredDbu = m
+                                BboxA = ibb
+                                BboxB = Some bestOuter }
+                        | _ -> ()
         | Rules.Endcap (name, source, reference, minUm) ->
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
@@ -258,19 +285,15 @@ let checkWithToggles
                 // source is longer than the reference (gate-axis
                 // for poly past diff; channel-axis for diff past
                 // poly).
-                for (_, sBb) in sources do
+                for (_, sBb, _) in sources do
                     let (sx1, sy1, sx2, sy2) = sBb
                     let sW = sx2 - sx1
                     let sH = sy2 - sy1
-                    for (_, rBb) in refs do
+                    for (_, rBb, _) in refs do
                         if bboxOverlaps sBb rBb then
                             let (rx1, ry1, rx2, ry2) = rBb
                             let rW = rx2 - rx1
                             let rH = ry2 - ry1
-                            // Pick the axis where source is longer
-                            // than ref (= the extension axis).
-                            // Tie-break to whichever has more
-                            // overhang past the reference.
                             let extX = (rx1 - sx1) + (sx2 - rx2)
                             let extY = (ry1 - sy1) + (sy2 - ry2)
                             let useX = sW >= rW && extX > 0L
@@ -312,7 +335,7 @@ let checkWithToggles
             if scale > 0.0 then
                 let limit = max 0L (int64 (System.Math.Round (minUm2 / scale)))
                 if limit > 0L then
-                    for (_, (x1, y1, x2, y2)) in polysOnLayer idx layer do
+                    for (_, (x1, y1, x2, y2), _) in polysOnLayer idx layer do
                         let a = (x2 - x1) * (y2 - y1)
                         if a < limit then
                             result.Add {
@@ -330,10 +353,13 @@ let checkWithToggles
     result.ToArray()
 
 /// Backward-compatible entry point: same signature as before, no
-/// toggles. The viz canvas + tests call this when they don't
-/// have a disabled-rules set to forward.
+/// toggles, no implant tags. Computes implant tags internally.
+/// Tests + callers without a tag pipeline call this; the canvas
+/// uses `checkWithToggles` directly so the tag computation is
+/// shared with other consumers.
 let check (units: Units) (flat: FlatPolygon array) : Violation array =
-    checkWithToggles units flat Set.empty
+    let tags = Implant.tagAll flat
+    checkWithToggles units flat tags Set.empty
 
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),

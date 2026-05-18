@@ -31,6 +31,16 @@ let private anchorMapForCell = Layout.Instances.anchorMapForCell
 let private elementBbox = Layout.Instances.elementBbox
 let private layerNumberOf = Layout.Instances.layerNumberOf
 
+/// PolyKey carries (cell, element-index, top-instance-index) so the
+/// UI can distinguish two SRef instances of the same cell. Instances.fs
+/// mutation ops address an AST element by (cell, index) — modifying
+/// the underlying element changes every instance visually anyway, so
+/// TopInstance is dropped at the boundary.
+let private polyKeyTuples
+        (sel: Set<Layout.Flatten.PolyKey>)
+        : Set<string * int> =
+    sel |> Set.map (fun pk -> pk.Cell, pk.Index)
+
 /// Discriminated-union case name for an Elmish Msg, used for the
 /// `msg` log category so a user / agent can replay an action stream
 /// without paying for full payload serialisation. Reflection cost
@@ -111,6 +121,10 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
         // the user closed the tab while net derivation was in flight.
+        Rekolektion.Viz.App.Services.Logger.log "nets.loaded"
+            {| path = path
+               count = nets.Count
+               names = nets |> Map.toList |> List.map fst |> List.sort |}
         let openMacros =
             model.OpenMacros
             |> List.map (fun m ->
@@ -211,18 +225,39 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ToggleNetRatline name ->
         { model with Toggle = Visibility.toggleNetRatline name model.Toggle }, Cmd.none
     | Msg.SetVisibleRatlines nets ->
+        Rekolektion.Viz.App.Services.Logger.log "ratline.setvisible"
+            {| before = model.Toggle.VisibleRatlines.Count
+               after = nets.Count
+               sample = nets |> Seq.truncate 8 |> Seq.toList |}
         { model with Toggle = Visibility.setVisibleRatlines nets model.Toggle }, Cmd.none
+    | Msg.SetSelectedRatlines nets ->
+        // Log so the user can identify the just-clicked net even
+        // when the visual highlight isn't conclusive.
+        let newlySelected = Set.difference nets model.SelectedRatlines
+        for name in newlySelected do
+            Rekolektion.Viz.App.Services.Logger.log "ratline"
+                {| op = "select"; net = name |}
+        { model with SelectedRatlines = nets }, Cmd.none
     | Msg.IsolateBlock blk ->
         { model with Toggle = Visibility.isolateBlock blk model.Toggle }, Cmd.none
     | Msg.SetTab tab -> { model with ActiveTab = tab }, Cmd.none
-    | Msg.PolygonPicked (s, i) ->
+    | Msg.PolygonPicked key ->
         // Replace polygon selection with the single picked element.
         // Shift-click extension goes through SetPolygonSelection so
         // the canvas can compute the new set with the modifier in
-        // hand.
-        { model with Selection = Set.singleton (s, i) }, Cmd.none
+        // hand. Picking a polygon also drops any active ratline
+        // selection — only one selection genre is "current" at a
+        // time so the inspector and overlay stay coherent.
+        { model with
+            Selection = Set.singleton key
+            SelectedRatlines = Set.empty }, Cmd.none
     | Msg.SetPolygonSelection sel ->
-        { model with Selection = sel }, Cmd.none
+        let ratlines' =
+            if sel.IsEmpty then model.SelectedRatlines
+            else Set.empty
+        { model with
+            Selection = sel
+            SelectedRatlines = ratlines' }, Cmd.none
     | Msg.ClearSelection -> { model with Selection = Set.empty }, Cmd.none
     | Msg.ToggleDimensions ->
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
@@ -424,9 +459,24 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             | Some cand ->
                                 let dxDbu = int64 cand.DirX * cand.SlackDbu
                                 let dyDbu = int64 cand.DirY * cand.SlackDbu
+                                // Use the *WithLabels variant so any
+                                // top-cell label sitting inside a
+                                // moved SRef's pre-move bbox travels
+                                // with the SRef. Without this,
+                                // Tighten was the lone SRef-move
+                                // codepath that left labels behind —
+                                // a label initially on the edge of
+                                // its SRef's bbox could drift OUTSIDE
+                                // after one Tighten step and stay
+                                // permanently orphaned, since the
+                                // bbox-containment heuristic has no
+                                // memory of prior association.
                                 let lib' =
-                                    Layout.Instances.translateSelection
-                                        mc.Document model.InstanceSelection dxDbu dyDbu
+                                    Layout.Instances.translateSelectionsWithLabels
+                                        mc.Document
+                                        model.InstanceSelection
+                                        Set.empty
+                                        dxDbu dyDbu
                                 let flat' = Layout.Flatten.flatten lib'
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =
@@ -450,7 +500,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // the polygon selection around the same pivot (union bbox
         // centroid). A mixed selection rotates as one rigid group.
         let instSel = model.InstanceSelection
-        let polySel = model.Selection
+        let polySel = polyKeyTuples model.Selection
         if instSel.IsEmpty && polySel.IsEmpty then model, Cmd.none
         else
             match model.ActiveMacroPath with
@@ -500,7 +550,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.DuplicateSelection ->
         let instSel = model.InstanceSelection
-        let polySel = model.Selection
+        let polySel = polyKeyTuples model.Selection
         if instSel.IsEmpty && polySel.IsEmpty then model, Cmd.none
         else
             match model.ActiveMacroPath with
@@ -510,7 +560,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 // so clones land on-grid even if the source's bbox
                 // width doesn't divide evenly.
                 let mutable nextInstSel : Set<int> = instSel
-                let mutable nextPolySel : Set<string * int> = polySel
+                let mutable nextPolySel : Set<Layout.Flatten.PolyKey> =
+                    model.Selection
                 let mutable activePath' = path
                 let openMacros' =
                     model.OpenMacros
@@ -547,7 +598,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             let flat' = Layout.Flatten.flatten lib'
                             let inst' = Layout.Instances.enumerate lib'
                             nextInstSel <- instClones
-                            nextPolySel <- polyClones
+                            // duplicateSelections returns clones as
+                            // (cell, idx) tuples; wrap each in a
+                            // PolyKey (clones are direct top-cell
+                            // elements so TopInstance = None).
+                            nextPolySel <-
+                                polyClones
+                                |> Set.map (fun (c, i) ->
+                                    ({ Cell = c; Index = i; TopInstance = None }
+                                     : Layout.Flatten.PolyKey))
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun m ->
@@ -564,7 +623,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     InstanceSelection = nextInstSel
                     Selection = nextPolySel }, Cmd.none
     | Msg.SetInstanceSelection indices ->
-        { model with InstanceSelection = indices }, Cmd.none
+        let ratlines' =
+            if indices.IsEmpty then model.SelectedRatlines
+            else Set.empty
+        { model with
+            InstanceSelection = indices
+            SelectedRatlines = ratlines' }, Cmd.none
     | Msg.ClearInstanceSelection ->
         { model with InstanceSelection = Set.empty }, Cmd.none
     | Msg.MoveSelectionDbu (dxDbu, dyDbu) ->
@@ -575,7 +639,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // an SRef or a polygon dispatches this Msg via the
         // canvas, which always passes both sets through.
         let instSel = model.InstanceSelection
-        let polySel = model.Selection
+        let polySel = polyKeyTuples model.Selection
         if (dxDbu = 0L && dyDbu = 0L)
            || (instSel.IsEmpty && polySel.IsEmpty) then
             model, Cmd.none
@@ -616,7 +680,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // Combine polygon Selection (cell, idx) + InstanceSelection
         // (idx in top cell). Both sets are dropped post-delete.
         // No-op when nothing's selected.
-        let polySel = model.Selection
+        let polySel = polyKeyTuples model.Selection
         let instSel = model.InstanceSelection
         if polySel.IsEmpty && instSel.IsEmpty then model, Cmd.none
         else
@@ -698,7 +762,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     Selection = Set.empty
                     InstanceSelection = Set.empty }, Cmd.none
     | Msg.MovePolygonDbu (sname, idx, dxDbu, dyDbu) ->
-        model, Cmd.ofMsg (Msg.MovePolygonsDbu (Set.singleton (sname, idx), dxDbu, dyDbu))
+        let key : Layout.Flatten.PolyKey =
+            { Cell = sname; Index = idx; TopInstance = None }
+        model, Cmd.ofMsg (Msg.MovePolygonsDbu (Set.singleton key, dxDbu, dyDbu))
     | Msg.MovePolygonsDbu (sel, dxDbu, dyDbu) ->
         // Mixed-selection drag: also translate any selected SRefs
         // by the same delta so a poly+instance selection moves as
@@ -706,7 +772,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // either as a singleton (one poly clicked) or as the full
         // SelectedPolygons set; the InstanceSelection passenger
         // rides along.
-        let polySel = sel
+        let polySel = polyKeyTuples sel
         let instSel = model.InstanceSelection
         if (dxDbu = 0L && dyDbu = 0L)
            || (polySel.IsEmpty && instSel.IsEmpty) then
@@ -1004,9 +1070,28 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 { model with RenamingPath = None }, Cmd.none
         else
             let dir = System.IO.Path.GetDirectoryName oldPath
+            // Preserve the source's extension. The old code hardcoded
+            // `.mag` here from the days when Magic was the only
+            // supported layout format — renaming a `.rkt` tab would
+            // append `.mag` and produce `.rkt.mag` doubles on save.
+            // User-typed extensions are honored when they match the
+            // source format; cross-format renames are rejected
+            // (saveTo would error out anyway, and it's almost always
+            // a typo rather than an intentional format-convert).
+            let srcExt =
+                (System.IO.Path.GetExtension oldPath).ToLowerInvariant()
+            let typedExt =
+                (System.IO.Path.GetExtension trimmed).ToLowerInvariant()
+            if typedExt <> "" && typedExt <> srcExt then
+                appendLog
+                    (sprintf
+                        "rename: extension %s doesn't match source %s — use Save As to convert formats"
+                        typedExt srcExt)
+                    { model with RenamingPath = None }, Cmd.none
+            else
             let withExt =
-                if trimmed.EndsWith ".mag" then trimmed
-                else trimmed + ".mag"
+                if typedExt = "" then trimmed + srcExt
+                else trimmed
             let newPath = System.IO.Path.Combine(dir, withExt)
             if newPath = oldPath then
                 { model with RenamingPath = None }, Cmd.none

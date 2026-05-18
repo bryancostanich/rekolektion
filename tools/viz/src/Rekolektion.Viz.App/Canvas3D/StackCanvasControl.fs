@@ -365,16 +365,40 @@ type StackCanvasControl() =
     // assigned; defaults work if Library is never set.
     let mutable target : System.Numerics.Vector3 = System.Numerics.Vector3.Zero
     let mutable extent : float = 80.0
+    // World-space bbox center + half-extents. Passed into
+    // buildOrbitMvp so the near/far clip planes can be computed
+    // from the actual AABB instead of a zoom-scaled radius —
+    // prevents far-clip from slicing the macro at high zoom. The
+    // bbox CENTER is tracked separately from `target` because the
+    // user's pan drifts `target` away from the bbox center, but
+    // the macro itself stays put in world coords.
+    let mutable bboxCenter : System.Numerics.Vector3 = System.Numerics.Vector3.Zero
+    let mutable bboxHalf : System.Numerics.Vector3 =
+        System.Numerics.Vector3(40.0f, 40.0f, 5.0f)
+    // World-shift offset: every cell's bbox center is translated to
+    // world origin in the rendering pipeline so all cells appear at
+    // the same viewport position regardless of where they were
+    // authored. Z is left unshifted to keep the substrate plane at
+    // z=0. Updated in FitCameraTo per-file, passed into
+    // buildOrbitMvp where it's baked into the MVP via translate.
+    let mutable worldOffset : System.Numerics.Vector3 = System.Numerics.Vector3.Zero
+    // Cached render-state signature so the diagnostic log fires only
+    // when something changes between renders, not every frame.
+    let mutable lastRenderSig : string = ""
     // Top cell name the camera was last fitted to. Used to skip
     // refitting when the user is just editing the same file —
     // refitting on every commit yanks the viewport and resets the
     // ruler bounds.
     let mutable lastFittedTopCell : string = ""
-    // Length of the FlatPolygons array used in the last FitCameraTo
-    // call. Used to detect "the first fit was against an empty
-    // array because LibraryProperty fired before FlatPolygons did"
-    // and force a refit once the geometry is actually available.
-    let mutable lastFittedFlatLen : int = 0
+    // Set in OnPropertyChanged when the top cell name changes;
+    // consumed at the top of OnOpenGlRender, which runs the fit
+    // against the post-batch (Library + FlatPolygons consistent)
+    // state. Running the fit inside OnPropertyChanged would race —
+    // on tab switch Library fires before FlatPolygons, so this.FlatPolygons
+    // is still the previous file's polys at LibraryProperty time
+    // and the fit would compute worldOffset/extent from the wrong
+    // file (geometry then renders shifted by old_center − new_center).
+    let mutable fitDirty : bool = true
     // Drag state for pointer-driven orbit + pan. `Avalonia.Point` is
     // qualified because Rekolektion.Viz.Core.Gds.Types.Point is
     // also in scope and would otherwise shadow it. `dragMode` is
@@ -401,8 +425,8 @@ type StackCanvasControl() =
     /// Picking callback. The host wires this to dispatch a
     /// `PolygonPicked` Msg. Holds an Action(structure, index) — null
     /// means "no host listener", which silently no-ops on click.
-    static member val PolygonPickedHandlerProperty : StyledProperty<Action<string, int>> =
-        AvaloniaProperty.Register<StackCanvasControl, Action<string, int>>("PolygonPickedHandler", null)
+    static member val PolygonPickedHandlerProperty : StyledProperty<Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
+        AvaloniaProperty.Register<StackCanvasControl, Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>("PolygonPickedHandler", null)
         with get
     /// Set of net names whose ratlines render on the 3D canvas.
     /// Mirrors GdsCanvasControl.VisibleRatlinesProperty so 2D and
@@ -412,14 +436,26 @@ type StackCanvasControl() =
             "VisibleRatlines", Set.empty)
         with get
 
+    /// Dispatch the full selection set after a 3D click. Mirrors
+    /// `GdsCanvasControl.SetPolygonSelectionHandlerProperty`. Lets
+    /// the canvas compute add/remove/replace semantics from the
+    /// shift modifier in-place and hand the result back to the
+    /// model in one Msg.
+    static member val SetPolygonSelectionHandlerProperty
+            : StyledProperty<Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>> =
+        AvaloniaProperty.Register<StackCanvasControl,
+                                   Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>>(
+            "SetPolygonSelectionHandler", null)
+        with get
+
     /// Mirror of GdsCanvasControl.SelectedPolygonsProperty: set of
     /// (sourceStructure, sourceIndex) pairs identifying polygons the
     /// user has selected. 3D renders an outline around each at the
     /// polygon's top-of-slab Z so the selection reads through the
     /// extruded geometry.
     static member val SelectedPolygonsProperty
-            : StyledProperty<Set<string * int>> =
-        AvaloniaProperty.Register<StackCanvasControl, Set<string * int>>(
+            : StyledProperty<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
+        AvaloniaProperty.Register<StackCanvasControl, Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>(
             "SelectedPolygons", Set.empty)
         with get
 
@@ -436,18 +472,25 @@ type StackCanvasControl() =
         and set(v: Visibility.ToggleState) = this.SetValue(StackCanvasControl.ToggleProperty, v) |> ignore
 
     member this.PolygonPickedHandler
-        with get() : Action<string, int> = this.GetValue(StackCanvasControl.PolygonPickedHandlerProperty)
-        and set(v: Action<string, int>) = this.SetValue(StackCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
+        with get() : Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> = this.GetValue(StackCanvasControl.PolygonPickedHandlerProperty)
+        and set(v: Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>) = this.SetValue(StackCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
 
     member this.VisibleRatlines
         with get() : Set<string> = this.GetValue(StackCanvasControl.VisibleRatlinesProperty)
         and set(v: Set<string>) = this.SetValue(StackCanvasControl.VisibleRatlinesProperty, v) |> ignore
 
     member this.SelectedPolygons
-        with get() : Set<string * int> =
+        with get() : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> =
             this.GetValue(StackCanvasControl.SelectedPolygonsProperty)
-        and set(v: Set<string * int>) =
+        and set(v: Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>) =
             this.SetValue(StackCanvasControl.SelectedPolygonsProperty, v)
+            |> ignore
+
+    member this.SetPolygonSelectionHandler
+        with get() : Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
+            this.GetValue(StackCanvasControl.SetPolygonSelectionHandlerProperty)
+        and set(v: Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>) =
+            this.SetValue(StackCanvasControl.SetPolygonSelectionHandlerProperty, v)
             |> ignore
 
     member this.SetCamera (yaw: float) (pitch: float) (z: float) =
@@ -503,14 +546,24 @@ type StackCanvasControl() =
         if xMin > xMax then
             target <- System.Numerics.Vector3.Zero
             extent <- 80.0
+            bboxCenter <- System.Numerics.Vector3.Zero
+            bboxHalf <- System.Numerics.Vector3(40.0f, 40.0f, 5.0f)
+            worldOffset <- System.Numerics.Vector3.Zero
         else
             let zMid =
                 if zMin > zMax then 0.0
                 else (zMin + zMax) * 0.5
-            target <- System.Numerics.Vector3(
-                            (xMin + xMax) * 0.5f,
-                            (yMin + yMax) * 0.5f,
-                            float32 zMid)
+            // Original (pre-shift) world center of the cell. Used as
+            // worldOffset so the rendering pipeline shifts geometry
+            // to origin via the MVP translate. target/bboxCenter
+            // below are set to the POST-shift center so the camera
+            // looks at where the geometry actually lands after the
+            // shift.
+            let originalCenterX = (xMin + xMax) * 0.5f
+            let originalCenterY = (yMin + yMax) * 0.5f
+            worldOffset <- System.Numerics.Vector3(
+                                originalCenterX, originalCenterY, 0.0f)
+            target <- System.Numerics.Vector3(0.0f, 0.0f, float32 zMid)
             // Use the largest 3D dimension so the frustum encloses
             // the entire mesh at any rotation. Min 5 µm so a tiny
             // bitcell doesn't render at sub-pixel scale.
@@ -518,6 +571,17 @@ type StackCanvasControl() =
             let yExt = float (yMax - yMin)
             let zExt = if zMax > zMin then zMax - zMin else 0.0
             extent <- max xExt (max yExt zExt) |> max 5.0
+            // Bbox center + half-extents for the bbox-aware
+            // near/far computation in buildOrbitMvp. Center is the
+            // mid-point of the silicon AABB; pan drifts `target`
+            // but bboxCenter stays put. Half-axes are floored at
+            // 2.5µm so a planar macro doesn't collapse the
+            // frustum interval to zero.
+            bboxCenter <- target
+            bboxHalf <- System.Numerics.Vector3(
+                            max (float32 xExt * 0.5f) 2.5f,
+                            max (float32 yExt * 0.5f) 2.5f,
+                            max (float32 zExt * 0.5f) 2.5f)
             // Ruler spans the full silicon bbox — origin (0,0) is
             // marked but the rule itself runs from xMin..xMax /
             // yMin..yMax, so a cell centered around origin (e.g.
@@ -537,6 +601,17 @@ type StackCanvasControl() =
                     nonPhysCount <- nonPhysCount + 1
             eprintfn "[viz3d] FitCameraTo: silicon bbox %.3f x %.3f x %.3f µm (extent=%.3f); skipped %d non-physical polys"
                 xExt yExt zExt extent nonPhysCount
+            Rekolektion.Viz.App.Services.Logger.log "viz3d.fitcam"
+                {| xExtUm = xExt
+                   yExtUm = yExt
+                   zExtUm = zExt
+                   extent = extent
+                   bboxCenterX = float bboxCenter.X
+                   bboxCenterY = float bboxCenter.Y
+                   bboxCenterZ = float bboxCenter.Z
+                   bboxHalfX = float bboxHalf.X
+                   bboxHalfY = float bboxHalf.Y
+                   bboxHalfZ = float bboxHalf.Z |}
 
     /// Fill a transparent rect covering the control bounds so
     /// Avalonia's hit-test treats every point inside Bounds as a
@@ -607,25 +682,15 @@ type StackCanvasControl() =
                         | c :: _ -> c.Name
                         | _ -> ""
                 let flat = this.FlatPolygons
-                // Refit conditions:
-                //   1. Top-cell name changed → new file → fit it.
-                //   2. Last fit was against an empty FlatPolygons
-                //      (LibraryProperty fires before FlatPolygons
-                //      does on first load; the resulting fit has
-                //      bbox=0 + dead ruler). Force a refit once
-                //      real geometry shows up.
-                // Otherwise (same file, edit committed): leave
-                // camera + ruler alone so the user's view doesn't
-                // yank around mid-session.
-                let topChanged = topName <> lastFittedTopCell
-                let recoverFromEmpty =
-                    not topChanged
-                    && lastFittedFlatLen = 0
-                    && flat.Length > 0
-                if topChanged || recoverFromEmpty then
-                    lastFittedTopCell <- topName
-                    lastFittedFlatLen <- flat.Length
-                    this.FitCameraTo lib flat
+                // New file → mark the fit dirty. The actual
+                // FitCameraTo call runs at the top of
+                // OnOpenGlRender, by which point the Library +
+                // FlatPolygons property batch is fully settled
+                // (eager fit here would race — see fitDirty comment).
+                // Same-file edits leave fitDirty alone so the
+                // user's view doesn't yank around mid-session.
+                if topName <> lastFittedTopCell then
+                    fitDirty <- true
                 // Ruler bbox tracks the CURRENT FlatPolygons every
                 // change, decoupled from the camera fit — otherwise
                 // a tab switch or reload that doesn't satisfy the
@@ -655,7 +720,7 @@ type StackCanvasControl() =
                             rulerDirty <- true
             | None ->
                 lastFittedTopCell <- ""
-                lastFittedFlatLen <- 0
+                fitDirty <- true
             this.RequestNextFrameRendering()
         elif e.Property = StackCanvasControl.ToggleProperty
              || e.Property = StackCanvasControl.SelectedPolygonsProperty then
@@ -688,7 +753,7 @@ type StackCanvasControl() =
                 let z = layerZ
                 let mvp =
                     Matrix4x4Helpers.buildOrbitMvp
-                        yawDeg pitchDeg zoom target extent (w, h)
+                        yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
                 let projectToScreen (xUm: float32) (yUm: float32)
                         : (float * float) option =
                     let v =
@@ -771,7 +836,7 @@ type StackCanvasControl() =
                 let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
                 let mvp =
                     Matrix4x4Helpers.buildOrbitMvp
-                        yawDeg pitchDeg zoom target extent (w, h)
+                        yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
                 match Matrix4x4.Invert(mvp) with
                 | false, _ -> None
                 | true, inv ->
@@ -1808,7 +1873,7 @@ type StackCanvasControl() =
                 let z = layerZ
                 let mvp =
                     Matrix4x4Helpers.buildOrbitMvp
-                        yawDeg pitchDeg zoom target extent (w, h)
+                        yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
                 let projectToScreen (xUm: float32) (yUm: float32)
                         : (float * float) option =
                     let v =
@@ -2063,7 +2128,7 @@ type StackCanvasControl() =
                 let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
                 let mvp =
                     Matrix4x4Helpers.buildOrbitMvp
-                        yawDeg pitchDeg zoom target extent (w, h)
+                        yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
                 match Matrix4x4.Invert(mvp) with
                 | false, _ ->
                     let changed = hoveredRoute.IsSome
@@ -2258,7 +2323,7 @@ type StackCanvasControl() =
                 let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
                 let mvp =
                     Matrix4x4Helpers.buildOrbitMvp
-                        yawDeg pitchDeg zoom target extent (w, h)
+                        yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
                 match Matrix4x4.Invert(mvp) with
                 | false, _ ->
                     sb.Append "\"ok\":false,\"error\":\"mvp not invertible\"}" |> ignore
@@ -2711,7 +2776,9 @@ type StackCanvasControl() =
         pressedButton <- NoDrag
         e.Pointer.Capture null
         if wasOrbitClick then
-            this.PickAt(release)
+            let shift =
+                e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift)
+            this.PickAt(release, shift)
         elif wasRouteDrag then
             match routeSlide with
             | Some slide when slide.LastDxDbu <> 0L || slide.LastDyDbu <> 0L ->
@@ -2774,9 +2841,10 @@ type StackCanvasControl() =
     /// is in DBU; mesh world coords are µm = DBU × UserUnitsPerDbUnit
     /// with Z multiplied by Z_EXAGGERATION (matches what we upload to
     /// the VBO). Hit dispatches via PolygonPickedHandler.
-    member private this.PickAt (screen: Avalonia.Point) =
+    member private this.PickAt (screen: Avalonia.Point, shift: bool) =
         let handler = this.PolygonPickedHandler
-        if isNull (box handler) then () else
+        let setHandler = this.SetPolygonSelectionHandler
+        if isNull (box handler) && isNull (box setHandler) then () else
         match this.Library with
         | None -> ()
         | Some lib ->
@@ -2789,7 +2857,7 @@ type StackCanvasControl() =
             let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
             let mvp =
                 Matrix4x4Helpers.buildOrbitMvp
-                    yawDeg pitchDeg zoom target extent (w, h)
+                    yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
             match Matrix4x4.Invert(mvp) with
             | false, _ -> ()
             | true, inv ->
@@ -2803,7 +2871,7 @@ type StackCanvasControl() =
                 let rayD = Vector3.Normalize(farW - nearW)
                 let toggle = this.Toggle
                 let mutable bestT = System.Single.MaxValue
-                let mutable best : (string * int) option = None
+                let mutable best : Rekolektion.Viz.Core.Layout.Flatten.PolyKey option = None
                 for poly in flat do
                     let key = (poly.Layer, poly.DataType)
                     if Visibility.isLayerVisible toggle key then
@@ -2837,15 +2905,55 @@ type StackCanvasControl() =
                                                 hitT <- s
                                     if hitT < bestT then
                                         bestT <- hitT
-                                        best <- Some (poly.SourceStructure, poly.SourceIndex)
+                                        best <-
+                                            Some
+                                                ({ Cell = poly.SourceStructure
+                                                   Index = poly.SourceIndex
+                                                   TopInstance =
+                                                       poly.TopInstanceIndex }
+                                                 : Rekolektion.Viz.Core.Layout.Flatten.PolyKey)
                 match best with
-                | Some (s, i) -> handler.Invoke(s, i)
-                | None -> ()
+                | Some pk ->
+                    // Shift-click extends / toggles the existing set.
+                    // Bare click replaces. SetPolygonSelectionHandler
+                    // takes the FULL set so the canvas can compute
+                    // both semantics in one place; fall back to the
+                    // single-key handler when the set handler isn't
+                    // wired (legacy behavior).
+                    if shift && not (isNull (box setHandler)) then
+                        let prior = this.SelectedPolygons
+                        let next =
+                            if prior.Contains pk then prior.Remove pk
+                            else prior.Add pk
+                        setHandler.Invoke next
+                    elif not (isNull (box setHandler)) then
+                        setHandler.Invoke (Set.singleton pk)
+                    elif not (isNull (box handler)) then
+                        handler.Invoke pk
+                | None ->
+                    // Empty click in shift mode keeps the existing
+                    // selection; bare click clears it.
+                    if not shift && not (isNull (box setHandler)) then
+                        setHandler.Invoke Set.empty
 
     override this.OnPointerWheelChanged e =
         base.OnPointerWheelChanged e
-        let factor = if e.Delta.Y > 0.0 then 1.15 else 1.0 / 1.15
-        zoom <- max 0.05 (min 50.0 (zoom * factor))
+        // Delta-aware exponential zoom. Previous formula applied a
+        // flat 1.15× per event regardless of how far the wheel
+        // actually moved, which is fine for click-wheel mice
+        // (Delta.Y ≈ ±1) but ignores the trackpad's smaller
+        // fractional deltas — gestures registered as many small
+        // 1.15× steps instead of one big proportional jump, and
+        // deep zoom required spinning the wheel forever because
+        // each tick was only 15%. exp(Delta.Y * k) preserves
+        // proportionality for any input magnitude. k=0.4 gives
+        // ~1.5× per click-wheel tick (4× faster than 1.15) and
+        // accumulates trackpad gestures smoothly.
+        let factor = System.Math.Exp(e.Delta.Y * 0.4)
+        // No upper cap — the near/far frustum is bbox-aware so it
+        // stays valid at any zoom. Lower floor of 0.05 keeps the
+        // `radius = extent * 1.5 / zoom` division well-conditioned.
+        zoom <- max 0.05 (zoom * factor)
         this.RequestNextFrameRendering()
 
 
@@ -2905,6 +3013,10 @@ type StackCanvasControl() =
             out vec3 vWorldPos;
             out float vInNet;
             out float vInBlock;
+            // Slot forwarded so the fragment shader can look up
+            // per-layer material parameters (currently: metallic
+            // factor for Blinn-Phong specular).
+            flat out int vSlot;
             void main() {
                 gl_Position = uMVP * vec4(aPos, 1.0);
                 vColor = aColor;
@@ -2915,15 +3027,21 @@ type StackCanvasControl() =
                 vWorldPos = aPos;
                 vInNet = aInNet;
                 vInBlock = aInBlock;
+                vSlot = slot;
             }
         "
         // uLightDir is camera-forward (head-mounted light): faces
         // facing the camera light up, faces facing away dim. A
         // world-fixed light makes camera rotation read as flat
-        // because face brightness is invariant. uHighlightActive
-        // dims polygons whose source isn't part of the highlighted
-        // net so the matching geometry pops; matches the 2D net
-        // highlight behavior.
+        // because face brightness is invariant. uAmbientColor is a
+        // directionless fill light tinted to match the slate
+        // background — shadows pick up a cool cast instead of going
+        // to black, which keeps back-faces of the layer stack
+        // legible. uLightColor tints the key (slight warm cast)
+        // for chromatic separation against the cool ambient.
+        // uHighlightActive dims polygons whose source isn't part of
+        // the highlighted net so the matching geometry pops;
+        // matches the 2D net highlight behavior.
         let fsSrc = "
             #version 330 core
             in vec3 vColor;
@@ -2931,8 +3049,23 @@ type StackCanvasControl() =
             in vec3 vWorldPos;
             in float vInNet;
             in float vInBlock;
+            flat in int vSlot;
             out vec4 FragColor;
             uniform vec3 uLightDir;
+            uniform vec3 uLightColor;
+            uniform vec3 uAmbientColor;
+            // World-fixed sun light. Doesn't orbit with the camera,
+            // so it brightens faces by their world-space orientation
+            // instead of their angle to the viewer. Without this,
+            // every face that points at the camera gets identical
+            // shading and adjacent slabs lose contrast against each
+            // other.
+            uniform vec3 uSunDir;
+            uniform vec3 uSunColor;
+            // Per-layer metallic factor [0..1]. Metals (li1, met1-5)
+            // get specular sheen + rim; dielectrics/semiconductors
+            // (diff, poly, nwell, …) stay matte.
+            uniform float uLayerMetallic[32];
             uniform float uHighlightActive;
             uniform float uIsolateActive;
             void main() {
@@ -2941,13 +3074,52 @@ type StackCanvasControl() =
                 // — semantics of Visibility.isBlockVisible.
                 if (uIsolateActive > 0.5 && vInBlock < 0.5) discard;
                 vec3 n = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
-                float lambert = max(dot(n, -uLightDir), 0.0);
-                float intensity = 0.20 + 0.80 * lambert;
-                vec3 base = vColor * intensity;
+                // Head-mounted light: view dir == light dir from any
+                // surface point looking back at the camera. Half
+                // vector for Blinn-Phong collapses to the same dir,
+                // so spec peaks where lambert peaks (faces directly
+                // facing camera). Fresnel uses the same ndotv.
+                vec3 v = -uLightDir;
+                float ndotv = max(dot(n, v), 0.0);
+                float lambert = ndotv;
+                // World-fixed sun contribution — independent of
+                // camera orientation. Adds layer-stack
+                // discrimination that the head-mounted key can't
+                // provide.
+                float sun = max(dot(n, -uSunDir), 0.0);
+
+                vec3 lit = vColor * (uAmbientColor
+                                     + uLightColor * lambert
+                                     + uSunColor * sun);
+
+                float metallic = uLayerMetallic[vSlot];
+
+                // Blinn-Phong specular sheen. Highlight color is
+                // pulled toward the surface color so each metal's
+                // sheen matches its own hue (gold reflects gold,
+                // copper reflects copper) instead of every metal
+                // reading as warm-white plastic. The `+ vec3(0.3)`
+                // keeps a bit of broadband brightness so the sheen
+                // still reads as a highlight on darker metals.
+                // Shininess 48 gives a tight highlight that catches
+                // as you orbit.
+                vec3 specTint = vColor * 0.7 + vec3(0.3);
+                float spec = pow(lambert, 48.0) * metallic;
+                lit += specTint * spec * 0.55;
+
+                // Fresnel rim — grazing-angle glow at the silhouette.
+                // Mostly off on dielectrics/semiconductors (a tiny
+                // 0.05 base just keeps the silhouette readable
+                // without making poly/diff look glossy plastic), and
+                // boosted on metals where it sells the conductor
+                // look.
+                float rim = pow(1.0 - ndotv, 3.0);
+                lit += vColor * rim * (0.05 + 0.55 * metallic);
+
                 if (uHighlightActive > 0.5 && vInNet < 0.5) {
-                    base *= 0.25;
+                    lit *= 0.25;
                 }
-                FragColor = vec4(base, 1.0);
+                FragColor = vec4(lit, 1.0);
             }
         "
         let compile (src: string) (kind: ShaderType) =
@@ -3116,7 +3288,7 @@ type StackCanvasControl() =
             let fbH = max 1 (int (this.Bounds.Height * scale))
             g.BindFramebuffer(GLEnum.Framebuffer, uint32 fb)
             g.Viewport(0, 0, uint32 fbW, uint32 fbH)
-            g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f)
+            g.ClearColor(0.047f, 0.063f, 0.094f, 1.0f)
             g.Clear(uint32 (GLEnum.ColorBufferBit ||| GLEnum.DepthBufferBit))
             // Forget the cached mesh so reopening a file extrudes
             // afresh against the next library.
@@ -3134,6 +3306,22 @@ type StackCanvasControl() =
                 | Some _ when dragLiveFlat.Length > 0 -> dragLiveFlat
                 | _ -> this.FlatPolygons
             let toggle = this.Toggle
+            // Camera fit deferred from OnPropertyChanged so it sees
+            // the consistent (Library, FlatPolygons) pair after
+            // Avalonia finishes dispatching the property batch.
+            // Skip while a slide drag is in flight — refitting on
+            // dragLiveFlat would yank the camera mid-drag.
+            if fitDirty && flat.Length > 0 && dragLiveDoc.IsNone then
+                let topName =
+                    match lib.TopCell with
+                    | Some n -> n
+                    | None ->
+                        match lib.Cells with
+                        | c :: _ -> c.Name
+                        | _ -> ""
+                lastFittedTopCell <- topName
+                this.FitCameraTo lib flat
+                fitDirty <- false
             // (Re-)extrude only when geometry source changed.
             if meshDirty && flat.Length > 0 then
                 cachedMesh <- Some (Extruder.extrude (float lib.Units.DbuNm * 1.0e-3) flat)
@@ -3269,7 +3457,7 @@ type StackCanvasControl() =
                 GLEnum.Renderbuffer,
                 depthRbo)
             g.Viewport(0, 0, uint32 fbW, uint32 fbH)
-            g.ClearColor(0.0f, 0.0f, 0.0f, 1.0f)
+            g.ClearColor(0.047f, 0.063f, 0.094f, 1.0f)
             g.Clear(uint32 (GLEnum.ColorBufferBit ||| GLEnum.DepthBufferBit))
             g.Enable(GLEnum.DepthTest)
 
@@ -3291,10 +3479,64 @@ type StackCanvasControl() =
             g.EnableVertexAttribArray(4u)
             g.VertexAttribPointer(4u, 1, GLEnum.Float, false, uint32 sizeof<float32>, nativeint 0)
 
+            // Diagnostic: log target/camera state when it changes, so
+            // we can see exactly what the render is using per tab.
+            // Gated on actual change so the log doesn't flood per
+            // frame.
+            let curSig =
+                sprintf "%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.4f"
+                    target.X target.Y target.Z
+                    bboxCenter.X bboxCenter.Y bboxCenter.Z
+                    worldOffset.X worldOffset.Y worldOffset.Z zoom
+            if curSig <> lastRenderSig then
+                lastRenderSig <- curSig
+                Rekolektion.Viz.App.Services.Logger.log "viz3d.render"
+                    {| targetX = float target.X
+                       targetY = float target.Y
+                       targetZ = float target.Z
+                       bboxCenterX = float bboxCenter.X
+                       bboxCenterY = float bboxCenter.Y
+                       bboxCenterZ = float bboxCenter.Z
+                       bboxHalfX = float bboxHalf.X
+                       bboxHalfY = float bboxHalf.Y
+                       bboxHalfZ = float bboxHalf.Z
+                       worldOffsetX = float worldOffset.X
+                       worldOffsetY = float worldOffset.Y
+                       worldOffsetZ = float worldOffset.Z
+                       zoom = zoom
+                       yaw = yawDeg
+                       pitch = pitchDeg
+                       boundsW = this.Bounds.Width
+                       boundsH = this.Bounds.Height |}
             let mvp =
                 Matrix4x4Helpers.buildOrbitMvp
-                    yawDeg pitchDeg zoom target extent
-                    (this.Bounds.Width, this.Bounds.Height)
+                    yawDeg pitchDeg zoom target extent bboxCenter bboxHalf
+                    worldOffset (this.Bounds.Width, this.Bounds.Height)
+            // Sanity probe: multiply the cell's ORIGINAL world bbox
+            // center through MVP. If the world-shift is taking effect,
+            // the result NDC (after perspective divide) should be at
+            // (0, 0) — i.e., viewport center. If it's not, the shift
+            // isn't being applied and the cell will appear off-center.
+            let probe =
+                System.Numerics.Vector4(
+                    worldOffset.X, worldOffset.Y, target.Z, 1.0f)
+            let probeOut = System.Numerics.Vector4.Transform(probe, mvp)
+            let ndcX = if probeOut.W <> 0.0f then probeOut.X / probeOut.W else 999.0f
+            let ndcY = if probeOut.W <> 0.0f then probeOut.Y / probeOut.W else 999.0f
+            // Always log probe alongside render so we can compare NDC
+            // for the bbox-center probe against where the cell
+            // actually appears in the screenshot.
+            if curSig <> lastRenderSig then
+                Rekolektion.Viz.App.Services.Logger.log "viz3d.probe"
+                    {| probeWorldX = float worldOffset.X
+                       probeWorldY = float worldOffset.Y
+                       probeWorldZ = float target.Z
+                       resultX = float probeOut.X
+                       resultY = float probeOut.Y
+                       resultZ = float probeOut.Z
+                       resultW = float probeOut.W
+                       ndcX = float ndcX
+                       ndcY = float ndcY |}
             // Camera-forward direction in world space — used as the
             // light direction so faces facing the camera are lit
             // and faces facing away dim. Recomputed each frame from
@@ -3311,6 +3553,24 @@ type StackCanvasControl() =
                     -MathF.Sin(pitchRad))
             let lightLoc = g.GetUniformLocation(program, "uLightDir")
             g.Uniform3(lightLoc, camForward)
+            // Warm head-mounted key + cool slate ambient. Ambient is
+            // kept low so the world-fixed sun (below) has room to
+            // create inter-slab contrast; back-faces stay legible
+            // because the sun fills from a different angle than the
+            // head-mounted key.
+            let lightColorLoc = g.GetUniformLocation(program, "uLightColor")
+            g.Uniform3(lightColorLoc, System.Numerics.Vector3(0.75f, 0.72f, 0.65f))
+            let ambientLoc = g.GetUniformLocation(program, "uAmbientColor")
+            g.Uniform3(ambientLoc, System.Numerics.Vector3(0.20f, 0.23f, 0.28f))
+            // World-fixed sun pointing down + slightly off-axis. The
+            // off-axis tilt is what gives different side-faces of a
+            // slab different brightness, separating adjacent
+            // geometry as you orbit. Color is half-strength warm to
+            // tonally match the key without doubling its intensity.
+            let sunDirLoc = g.GetUniformLocation(program, "uSunDir")
+            g.Uniform3(sunDirLoc, System.Numerics.Vector3(0.304f, 0.405f, -0.862f))
+            let sunColorLoc = g.GetUniformLocation(program, "uSunColor")
+            g.Uniform3(sunColorLoc, System.Numerics.Vector3(0.45f, 0.40f, 0.32f))
             let highlightLoc = g.GetUniformLocation(program, "uHighlightActive")
             g.Uniform1(highlightLoc, if not toggle.HighlightedNets.IsEmpty then 1.0f else 0.0f)
             let isolateLoc = g.GetUniformLocation(program, "uIsolateActive")
@@ -3319,12 +3579,30 @@ type StackCanvasControl() =
             // (32 floats = 128 bytes) and runs every frame; toggle
             // changes show up next frame without touching the VBO.
             let visArr = Array.create 32 1.0f
+            // Per-layer metallic flag, parallel to visArr. li1 (67/20)
+            // and met1-met5 (68-72/20) get the metal shading; every
+            // other layer stays matte. Cheap to recompute each frame
+            // since layerSlotMap rarely exceeds ~20 entries.
+            let metalArr = Array.create 32 0.0f
             for KeyValue (layerKey, slot) in layerSlotMap do
                 if slot >= 0 && slot < 32 then
                     visArr.[slot] <-
                         if Visibility.isLayerVisible toggle layerKey then 1.0f else 0.0f
+                    let (num, dt) = layerKey
+                    metalArr.[slot] <-
+                        match num, dt with
+                        | 67, 20  // li1
+                        | 68, 20  // met1
+                        | 69, 20  // met2
+                        | 70, 20  // met3
+                        | 71, 20  // met4
+                        | 72, 20  // met5
+                            -> 1.0f
+                        | _ -> 0.0f
             let visLoc = g.GetUniformLocation(program, "uLayerVis")
             g.Uniform1(visLoc, ReadOnlySpan<float32>(visArr))
+            let metalLoc = g.GetUniformLocation(program, "uLayerMetallic")
+            g.Uniform1(metalLoc, ReadOnlySpan<float32>(metalArr))
             // transpose=FALSE is correct for System.Numerics matrices
             // here. .NET stores Matrix4x4 fields in row-major order
             // (M11, M12, M13, M14, M21, ...); GL with transpose=false
@@ -3611,10 +3889,13 @@ type StackCanvasControl() =
                     // polygon's layer, with a small lift so it doesn't
                     // Z-fight the metal. Cross-layer hops slant.
                     let zLift = 0.10f
-                    // amber, matches 2D ratline overlay color
+                    // bright red — high contrast against the metal
+                    // palette and the slate background; reads as a
+                    // dedicated "this is a connectivity hint, not
+                    // physical geometry" signal in 3D.
                     let r = 1.0f
-                    let g_ = 0.78f
-                    let b = 0.25f
+                    let g_ = 0.20f
+                    let b = 0.20f
                     let verts = System.Collections.Generic.List<float32>()
                     // Walk the pre-computed rectilinear MST instead
                     // of all pin pairs. Matches the 2D RatlineOverlay
@@ -3764,7 +4045,11 @@ type StackCanvasControl() =
                             verts.Add x2; verts.Add y2; verts.Add z
                             verts.Add r;  verts.Add gC; verts.Add bC
                         for fp in flat do
-                            let key = fp.SourceStructure, fp.SourceIndex
+                            let key =
+                                ({ Cell = fp.SourceStructure
+                                   Index = fp.SourceIndex
+                                   TopInstance = fp.TopInstanceIndex }
+                                 : Rekolektion.Viz.Core.Layout.Flatten.PolyKey)
                             if this.SelectedPolygons.Contains key
                                && fp.Points.Length > 0 then
                                 let zBot, zTop =

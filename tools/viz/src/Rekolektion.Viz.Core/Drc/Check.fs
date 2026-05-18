@@ -65,71 +65,275 @@ let private umToDbu (umPerDbu: float) (um: float) : int64 =
     if umPerDbu <= 0.0 then 0L
     else max 0L (int64 (System.Math.Round (um / umPerDbu)))
 
-/// Run min-width + min-spacing checks against every polygon in
-/// `lib.flat`. Quadratic per layer in the polygon count, so the
-/// caller is responsible for restricting the input to the edited
-/// neighborhood when working at production-scale macros.
-let check (units: Units) (flat: FlatPolygon array) : Violation array =
+/// Bbox containment with margin: does `outer` fully contain
+/// `inner` with at least `marginDbu` slack on every side? Returns
+/// the smallest of the four edge margins (the violating-edge
+/// distance). A negative-or-zero return means the inner pokes
+/// out (or has zero margin somewhere) and the rule fires.
+let private bboxContainsMargin
+        ((ix1, iy1, ix2, iy2): int64 * int64 * int64 * int64)
+        ((ox1, oy1, ox2, oy2): int64 * int64 * int64 * int64)
+        : int64 =
+    let leftM   = ix1 - ox1
+    let bottomM = iy1 - oy1
+    let rightM  = ox2 - ix2
+    let topM    = oy2 - iy2
+    min (min leftM bottomM) (min rightM topM)
+
+/// Bbox overlap (any shared interior, not just touching). True
+/// when the two rects share area > 0.
+let private bboxOverlaps
+        ((ax1, ay1, ax2, ay2): int64 * int64 * int64 * int64)
+        ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
+        : bool =
+    ax1 < bx2 && bx1 < ax2 && ay1 < by2 && by1 < ay2
+
+/// Index polygons by (Layer, DataType) once so each rule lookup
+/// is O(1) instead of re-scanning the whole flat array.
+let private indexByLayer
+        (flat: FlatPolygon array)
+        : System.Collections.Generic.Dictionary<int * int,
+            (FlatPolygon * (int64 * int64 * int64 * int64)) array> =
+    let dict =
+        System.Collections.Generic.Dictionary<int * int,
+            (FlatPolygon * (int64 * int64 * int64 * int64)) array>()
+    flat
+    |> Array.groupBy (fun p -> p.Layer, p.DataType)
+    |> Array.iter (fun (key, polys) ->
+        let withBboxes =
+            polys |> Array.map (fun p -> p, bboxOf p)
+        dict.[key] <- withBboxes)
+    dict
+
+let private layerKey (l: Rules.LayerKey) = l.Number, l.DataType
+
+let private polysOnLayer
+        (idx: System.Collections.Generic.Dictionary<int * int,
+                (FlatPolygon * (int64 * int64 * int64 * int64)) array>)
+        (key: Rules.LayerKey) =
+    match idx.TryGetValue (layerKey key) with
+    | true, arr -> arr
+    | _ -> [||]
+
+/// Run all rules in `Rules.allRules` against every polygon in
+/// `flat`, filtered by `disabledRules` (Magic-compatible rule
+/// names from `Rules.nameOf` — any rule whose name appears in the
+/// set is skipped).
+///
+/// Per-rule complexity:
+///   Width / MinArea     — O(N) over polys on the layer
+///   Spacing             — O(N²) within a layer
+///   CrossSpacing        — O(N×M) across two layers
+///   Enclosure / Endcap  — O(N×M) across two layers
+///
+/// At edit time the canvas restricts `flat` to the active macro's
+/// top cell + flattened instances; production-scale macros may
+/// want neighborhood-restriction further if any single layer
+/// crosses ~10k polys.
+let checkWithToggles
+        (units: Units)
+        (flat: FlatPolygon array)
+        (disabledRules: Set<string>)
+        : Violation array =
     let umPerDbu = umPerDbuOf units
     let result = System.Collections.Generic.List<Violation>()
+    let idx = indexByLayer flat
 
-    // Group polygons by (layer, datatype) so per-layer rules only
-    // see their own polys.
-    let byLayer =
-        flat
-        |> Array.groupBy (fun p -> p.Layer, p.DataType)
-
-    for ((layer, dt), polys) in byLayer do
-        match Rules.tryFind layer dt with
-        | None -> ()
-        | Some rule ->
-            let widthLimit = umToDbu umPerDbu rule.MinWidthUm
-            let spacingLimit = umToDbu umPerDbu rule.MinSpacingUm
-
-            let bboxes =
-                polys |> Array.map (fun p -> p, bboxOf p)
-
-            // Min width: for an axis-aligned bbox, both x-extent
-            // and y-extent must clear `widthLimit`. Polygons with
-            // notches will under-report, but we don't decompose to
-            // edges yet — bbox-width is a conservative first cut
-            // that catches the common case (whole shapes too narrow).
-            for (poly, (x1, y1, x2, y2)) in bboxes do
-                let w = x2 - x1
-                let h = y2 - y1
-                let m = min w h
-                if widthLimit > 0L && m < widthLimit then
-                    result.Add {
-                        Rule = sprintf "%s.width" rule.Layer
-                        LayerNumber = layer
-                        LayerType = dt
-                        LimitDbu = widthLimit
-                        MeasuredDbu = m
-                        BboxA = (x1, y1, x2, y2)
-                        BboxB = None }
-
-            // Min spacing: pairwise nearest-edge distance per
-            // layer. Skip overlapping bboxes — those are the
-            // same shape touching itself in the source data, or a
-            // genuine overlap which is an extraction problem, not
-            // spacing. Each unordered pair reports once.
-            if spacingLimit > 0L then
-                for i in 0 .. bboxes.Length - 1 do
-                    let (_, bbA) = bboxes.[i]
-                    for j in i + 1 .. bboxes.Length - 1 do
-                        let (_, bbB) = bboxes.[j]
+    let checkRule (rule: Rules.Rule) =
+        let ruleName = Rules.nameOf rule
+        if disabledRules.Contains ruleName then () else
+        match rule with
+        | Rules.Width (name, layer, minUm) ->
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                for (_, (x1, y1, x2, y2)) in polysOnLayer idx layer do
+                    let m = min (x2 - x1) (y2 - y1)
+                    if m < limit then
+                        result.Add {
+                            Rule = name
+                            LayerNumber = layer.Number
+                            LayerType   = layer.DataType
+                            LimitDbu    = limit
+                            MeasuredDbu = m
+                            BboxA = (x1, y1, x2, y2)
+                            BboxB = None }
+        | Rules.Spacing (name, layer, minUm) ->
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let polys = polysOnLayer idx layer
+                for i in 0 .. polys.Length - 1 do
+                    let (_, bbA) = polys.[i]
+                    for j in i + 1 .. polys.Length - 1 do
+                        let (_, bbB) = polys.[j]
                         let g = bboxGap bbA bbB
-                        if g > 0L && g < spacingLimit then
+                        if g > 0L && g < limit then
                             result.Add {
-                                Rule = sprintf "%s.spacing" rule.Layer
-                                LayerNumber = layer
-                                LayerType = dt
-                                LimitDbu = spacingLimit
+                                Rule = name
+                                LayerNumber = layer.Number
+                                LayerType   = layer.DataType
+                                LimitDbu    = limit
                                 MeasuredDbu = g
                                 BboxA = bbA
                                 BboxB = Some bbB }
+        | Rules.CrossSpacing (name, layerA, layerB, minUm) ->
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let polysA = polysOnLayer idx layerA
+                let polysB = polysOnLayer idx layerB
+                for (_, bbA) in polysA do
+                    for (_, bbB) in polysB do
+                        // Overlap = same net at this layer pair
+                        // (e.g. poly contact on diff is legal);
+                        // skip to avoid false-firing on intentional
+                        // crossings.
+                        if not (bboxOverlaps bbA bbB) then
+                            let g = bboxGap bbA bbB
+                            if g > 0L && g < limit then
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = layerA.Number
+                                    LayerType   = layerA.DataType
+                                    LimitDbu    = limit
+                                    MeasuredDbu = g
+                                    BboxA = bbA
+                                    BboxB = Some bbB }
+        | Rules.Enclosure (name, outer, inner, minUm) ->
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let outers = polysOnLayer idx outer
+                let inners = polysOnLayer idx inner
+                for (_, ibb) in inners do
+                    // The innermost-margin outer is the one whose
+                    // bbox contains the inner. If multiple outers
+                    // cover (rare), the largest margin wins —
+                    // a generously-enclosing outer doesn't fail
+                    // because another smaller outer also covers
+                    // and trims tight. Concentric same-layer
+                    // shapes aren't checked here either way.
+                    let mutable bestMargin : int64 voption = ValueNone
+                    let mutable bestOuter = ibb
+                    for (_, obb) in outers do
+                        if bboxOverlaps obb ibb then
+                            let m = bboxContainsMargin ibb obb
+                            match bestMargin with
+                            | ValueNone ->
+                                bestMargin <- ValueSome m
+                                bestOuter <- obb
+                            | ValueSome cur when m > cur ->
+                                bestMargin <- ValueSome m
+                                bestOuter <- obb
+                            | _ -> ()
+                    match bestMargin with
+                    | ValueNone ->
+                        // No outer covers this inner at all.
+                        // Report as zero-margin enclosure failure
+                        // — the inner is fully outside any outer.
+                        result.Add {
+                            Rule = name
+                            LayerNumber = inner.Number
+                            LayerType   = inner.DataType
+                            LimitDbu    = limit
+                            MeasuredDbu = 0L
+                            BboxA = ibb
+                            BboxB = None }
+                    | ValueSome m when m < limit ->
+                        result.Add {
+                            Rule = name
+                            LayerNumber = inner.Number
+                            LayerType   = inner.DataType
+                            LimitDbu    = limit
+                            MeasuredDbu = m
+                            BboxA = ibb
+                            BboxB = Some bestOuter }
+                    | _ -> ()
+        | Rules.Endcap (name, source, reference, minUm) ->
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let sources = polysOnLayer idx source
+                let refs    = polysOnLayer idx reference
+                // For each source polygon that crosses (overlaps)
+                // a reference polygon, measure how far the source
+                // extends past the reference's bbox edges. The
+                // extension axis is the one along which the
+                // source is longer than the reference (gate-axis
+                // for poly past diff; channel-axis for diff past
+                // poly).
+                for (_, sBb) in sources do
+                    let (sx1, sy1, sx2, sy2) = sBb
+                    let sW = sx2 - sx1
+                    let sH = sy2 - sy1
+                    for (_, rBb) in refs do
+                        if bboxOverlaps sBb rBb then
+                            let (rx1, ry1, rx2, ry2) = rBb
+                            let rW = rx2 - rx1
+                            let rH = ry2 - ry1
+                            // Pick the axis where source is longer
+                            // than ref (= the extension axis).
+                            // Tie-break to whichever has more
+                            // overhang past the reference.
+                            let extX = (rx1 - sx1) + (sx2 - rx2)
+                            let extY = (ry1 - sy1) + (sy2 - ry2)
+                            let useX = sW >= rW && extX > 0L
+                            let useY = sH >= rH && extY > 0L
+                            let axisX =
+                                if useX && useY then extX >= extY
+                                else useX
+                            if axisX then
+                                let extLeft  = rx1 - sx1
+                                let extRight = sx2 - rx2
+                                let m = min extLeft extRight
+                                if m < limit then
+                                    result.Add {
+                                        Rule = name
+                                        LayerNumber = source.Number
+                                        LayerType   = source.DataType
+                                        LimitDbu    = limit
+                                        MeasuredDbu = max 0L m
+                                        BboxA = sBb
+                                        BboxB = Some rBb }
+                            elif useY then
+                                let extBottom = ry1 - sy1
+                                let extTop    = sy2 - ry2
+                                let m = min extBottom extTop
+                                if m < limit then
+                                    result.Add {
+                                        Rule = name
+                                        LayerNumber = source.Number
+                                        LayerType   = source.DataType
+                                        LimitDbu    = limit
+                                        MeasuredDbu = max 0L m
+                                        BboxA = sBb
+                                        BboxB = Some rBb }
+        | Rules.MinArea (name, layer, minUm2) ->
+            // Compare areas in DBU² to avoid round-off near the
+            // limit. (umPerDbu)² scales the µm² threshold up to
+            // DBU² for one comparison per polygon.
+            let scale = umPerDbu * umPerDbu
+            if scale > 0.0 then
+                let limit = max 0L (int64 (System.Math.Round (minUm2 / scale)))
+                if limit > 0L then
+                    for (_, (x1, y1, x2, y2)) in polysOnLayer idx layer do
+                        let a = (x2 - x1) * (y2 - y1)
+                        if a < limit then
+                            result.Add {
+                                Rule = name
+                                LayerNumber = layer.Number
+                                LayerType   = layer.DataType
+                                LimitDbu    = limit
+                                MeasuredDbu = a
+                                BboxA = (x1, y1, x2, y2)
+                                BboxB = None }
+
+    for rule in Rules.allRules do
+        checkRule rule
 
     result.ToArray()
+
+/// Backward-compatible entry point: same signature as before, no
+/// toggles. The viz canvas + tests call this when they don't
+/// have a disabled-rules set to forward.
+let check (units: Units) (flat: FlatPolygon array) : Violation array =
+    checkWithToggles units flat Set.empty
 
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),

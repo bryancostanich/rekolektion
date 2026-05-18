@@ -62,11 +62,17 @@ type Model = {
     OpenMacros      : LoadedMacro list
     ActiveMacroPath : string option
     Toggle          : Visibility.ToggleState
-    Selection       : Set<string * int>        // top-cell polys: (structure, element index)
+    Selection       : Set<Layout.Flatten.PolyKey>  // (cell, element index, top-instance)
     /// Selected top-level SRef instances by their stable Index in
     /// the active macro's top structure. Empty set = nothing
     /// selected. Switching tabs / loading a new file clears this.
     InstanceSelection : Set<int>
+    /// Net names whose ratline overlay is currently selected.
+    /// Clicking a ratline in the canvas toggles membership; the
+    /// renderer paints these distinctly so the user can identify
+    /// which net a given MST edge represents (useful for diagnosing
+    /// suspect cross-net edges).
+    SelectedRatlines : Set<string>
     /// Whether the canvas draws the dimension overlay (arrows +
     /// µm labels between selected instances and their nearest
     /// in-radius neighbors). Toggleable via TopBar / D key. Off
@@ -79,6 +85,13 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Magic-compatible names of DRC rules the user has silenced
+    /// (e.g. "met1.6" to hide min-area complaints during a sketch
+    /// pass; "nwell.2a" to stop showing spacing errors that come
+    /// from a foundry-COREID-waivered cell). Passed straight into
+    /// `Drc.Check.checkWithToggles` — any rule whose name appears
+    /// here is skipped. Empty by default = run every rule.
+    DisabledDrcRules : Set<string>
     /// Grid overlay: major + minor dots. Toggled by G. Per-µm
     /// spacing comes from Services.Config.current. Persists
     /// across tab switches. Independent from ShowRuler.
@@ -138,8 +151,10 @@ let empty : Model = {
     Toggle = Visibility.empty
     Selection = Set.empty
     InstanceSelection = Set.empty
+    SelectedRatlines = Set.empty
     ShowDimensions = false
     ShowDrc = false
+    DisabledDrcRules = Set.empty
     ShowGrid = true
     ShowRuler = true
     ShowLabels = true

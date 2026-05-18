@@ -58,6 +58,9 @@ type private SelectionOverlay = {
     /// HighlightedNets — the user can light a net's polygons
     /// without showing its ratline and vice versa.
     VisibleRatlines : Set<string>
+    /// Net names whose ratline overlay is currently selected — the
+    /// renderer paints them in a brighter / thicker style.
+    SelectedRatlines : Set<string>
     /// Tighten mode candidates. Empty when mode is off. The
     /// renderer uses these to draw numbered candidate dim
     /// arrows + click targets; it returns the per-label hit
@@ -66,7 +69,7 @@ type private SelectionOverlay = {
     /// Picked top-cell polygon (struct name, element index).
     /// Drawn outlined in cyan so the user sees what they
     /// selected. None when nothing is picked.
-    SelectedPolygons : Set<string * int>
+    SelectedPolygons : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>
     /// World-DBU bbox of the single selected polygon (or the
     /// live-resized bbox during a ResizeDrag). When set AND no
     /// drag is happening, the renderer draws 8 resize handles
@@ -135,7 +138,7 @@ type private SkiaDraw(bounds: Rect,
                 let saved = canvas.Save ()
                 let clipRect = SKRect(0.0f, 0.0f, float32 w, float32 h)
                 canvas.ClipRect(clipRect, SKClipOperation.Intersect)
-                use bg = new SKPaint(Style = SKPaintStyle.Fill, Color = SKColors.Black)
+                use bg = new SKPaint(Style = SKPaintStyle.Fill, Color = SKColor(0x0Cuy, 0x10uy, 0x18uy, 0xFFuy))
                 canvas.DrawRect(clipRect, bg)
 
                 // Compute the flat-geometry bbox once — both the
@@ -377,7 +380,9 @@ type private SkiaDraw(bounds: Rect,
                         lib.Cells
                         |> List.map (fun s -> s.Name, s)
                         |> Map.ofList
-                    for (sname, idx) in overlay.SelectedPolygons do
+                    for pk in overlay.SelectedPolygons do
+                        let sname = pk.Cell
+                        let idx = pk.Index
                         match Map.tryFind sname structByName with
                         | Some s when idx >= 0 && idx < s.Elements.Length ->
                             let pts =
@@ -413,6 +418,7 @@ type private SkiaDraw(bounds: Rect,
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
                         overlay.Routes overlay.VisibleRatlines
+                        overlay.SelectedRatlines
 
                 // Tighten mode: numbered candidate dim arrows
                 // sit on top of all the other overlays. Capture
@@ -767,6 +773,10 @@ type GdsCanvasControl() as this =
     // cursor. None when no drag is active.
     let mutable dragLiveLib : Document option = None
     let mutable dragLiveFlat : FlatPolygon array = [||]
+    /// Snapshot of the last-rendered ratline routes. Computed in
+    /// SkiaDraw and stashed here so PointerPressed can hit-test
+    /// ratline edges (selection) without re-running the flood-fill.
+    let mutable lastRoutes : Net.Ratlines.NetRoute array = [||]
     // Tighten-mode state. `tightenHits` is overwritten by SkiaDraw
     // each render with the per-label click targets so
     // OnPointerPressed can map a click to a candidate index. The
@@ -862,6 +872,15 @@ type GdsCanvasControl() as this =
     static member val ShowDrcProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
         with get
+    /// Magic-compatible rule names the user has silenced. Passed
+    /// through to Drc.Check.checkWithToggles so violations of
+    /// listed rules don't render. Plumbing only — no UI yet; the
+    /// MCP command listener writes this set when a user disables
+    /// a rule via tooling.
+    static member val DisabledDrcRulesProperty : StyledProperty<Set<string>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Set<string>>(
+            "DisabledDrcRules", Set.empty)
+        with get
     /// Set of net names whose ratlines are drawn. Replaces the old
     /// boolean ShowRatlines — the master "all on/off" toggle now
     /// flips this set between full and empty in the Update layer.
@@ -883,24 +902,36 @@ type GdsCanvasControl() as this =
     /// `PolygonPicked (struct, index)`. Action(structure, index).
     /// Null = no-op listener.
     static member val PolygonPickedHandlerProperty
-            : StyledProperty<Action<string, int>> =
-        AvaloniaProperty.Register<GdsCanvasControl, Action<string, int>>(
+            : StyledProperty<Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>(
             "PolygonPickedHandler", null)
         with get
     /// Currently picked top-cell polygons: set of (struct name,
     /// element index). Drives the highlight outline. Empty when
     /// nothing is picked. Multi-select supported via shift-click.
     static member val SelectedPolygonsProperty
-            : StyledProperty<Set<string * int>> =
-        AvaloniaProperty.Register<GdsCanvasControl, Set<string * int>>(
+            : StyledProperty<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>(
             "SelectedPolygons", Set.empty)
         with get
     /// Replace the polygon selection (used by shift-click extend
     /// and marquee bulk-pick).
     static member val SetPolygonSelectionHandlerProperty
-            : StyledProperty<Action<Set<string * int>>> =
-        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<string * int>>>(
+            : StyledProperty<Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>>(
             "SetPolygonSelectionHandler", null)
+        with get
+    /// Set of net names whose ratline overlay is selected. Drives
+    /// the distinct ratline render.
+    static member val SelectedRatlinesProperty : StyledProperty<Set<string>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Set<string>>(
+            "SelectedRatlines", Set.empty)
+        with get
+    /// Replace the selected-ratline set after a ratline click.
+    static member val SetSelectedRatlinesHandlerProperty
+            : StyledProperty<Action<Set<string>>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<string>>>(
+            "SetSelectedRatlinesHandler", null)
         with get
     /// Translate the entire polygon selection by Δ DBU.
     /// Dispatched when a resize handle commit lands. Args:
@@ -913,8 +944,8 @@ type GdsCanvasControl() as this =
             "ResizePolygonHandler", null)
         with get
     static member val MovePolygonsHandlerProperty
-            : StyledProperty<Action<Set<string * int>, int64, int64>> =
-        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<string * int>, int64, int64>>(
+            : StyledProperty<Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>, int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>, int64, int64>>(
             "MovePolygonsHandler", null)
         with get
     /// Clear the polygon Selection (Esc / empty marquee).
@@ -980,6 +1011,10 @@ type GdsCanvasControl() as this =
         with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
 
+    member this.DisabledDrcRules
+        with get() : Set<string> = this.GetValue(GdsCanvasControl.DisabledDrcRulesProperty)
+        and set(v: Set<string>) = this.SetValue(GdsCanvasControl.DisabledDrcRulesProperty, v) |> ignore
+
     member this.ShowGrid
         with get() : bool = this.GetValue(GdsCanvasControl.ShowGridProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowGridProperty, v) |> ignore
@@ -1011,22 +1046,34 @@ type GdsCanvasControl() as this =
             this.SetValue(GdsCanvasControl.CommitTightenHandlerProperty, v) |> ignore
 
     member this.PolygonPickedHandler
-        with get() : Action<string, int> =
+        with get() : Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> =
             this.GetValue(GdsCanvasControl.PolygonPickedHandlerProperty)
-        and set(v: Action<string, int>) =
+        and set(v: Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>) =
             this.SetValue(GdsCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
 
     member this.SelectedPolygons
-        with get() : Set<string * int> =
+        with get() : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> =
             this.GetValue(GdsCanvasControl.SelectedPolygonsProperty)
-        and set(v: Set<string * int>) =
+        and set(v: Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>) =
             this.SetValue(GdsCanvasControl.SelectedPolygonsProperty, v) |> ignore
 
     member this.SetPolygonSelectionHandler
-        with get() : Action<Set<string * int>> =
+        with get() : Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
             this.GetValue(GdsCanvasControl.SetPolygonSelectionHandlerProperty)
-        and set(v: Action<Set<string * int>>) =
+        and set(v: Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>) =
             this.SetValue(GdsCanvasControl.SetPolygonSelectionHandlerProperty, v) |> ignore
+
+    member this.SelectedRatlines
+        with get() : Set<string> =
+            this.GetValue(GdsCanvasControl.SelectedRatlinesProperty)
+        and set(v: Set<string>) =
+            this.SetValue(GdsCanvasControl.SelectedRatlinesProperty, v) |> ignore
+
+    member this.SetSelectedRatlinesHandler
+        with get() : Action<Set<string>> =
+            this.GetValue(GdsCanvasControl.SetSelectedRatlinesHandlerProperty)
+        and set(v: Action<Set<string>>) =
+            this.SetValue(GdsCanvasControl.SetSelectedRatlinesHandlerProperty, v) |> ignore
 
     member this.ResizePolygonHandler
         with get() : Action<string, int, int64, int64, int64, int64> =
@@ -1035,9 +1082,9 @@ type GdsCanvasControl() as this =
             this.SetValue(GdsCanvasControl.ResizePolygonHandlerProperty, v) |> ignore
 
     member this.MovePolygonsHandler
-        with get() : Action<Set<string * int>, int64, int64> =
+        with get() : Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>, int64, int64> =
             this.GetValue(GdsCanvasControl.MovePolygonsHandlerProperty)
-        and set(v: Action<Set<string * int>, int64, int64>) =
+        and set(v: Action<Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>, int64, int64>) =
             this.SetValue(GdsCanvasControl.MovePolygonsHandlerProperty, v) |> ignore
 
     member this.ClearPolygonSelectionHandler
@@ -1120,12 +1167,14 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
              || e.Property = GdsCanvasControl.ShowDimensionsProperty
              || e.Property = GdsCanvasControl.ShowDrcProperty
+             || e.Property = GdsCanvasControl.DisabledDrcRulesProperty
              || e.Property = GdsCanvasControl.VisibleRatlinesProperty
              || e.Property = GdsCanvasControl.TightenModeProperty
              || e.Property = GdsCanvasControl.SelectedPolygonsProperty
              || e.Property = GdsCanvasControl.ShowGridProperty
              || e.Property = GdsCanvasControl.ShowRulerProperty
              || e.Property = GdsCanvasControl.ShowLabelsProperty
+             || e.Property = GdsCanvasControl.SelectedRatlinesProperty
              || e.Property = GdsCanvasControl.SnapEnabledProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
@@ -1198,7 +1247,9 @@ type GdsCanvasControl() as this =
                 |> Array.find (fun h ->
                     pxF >= h.Rect.Left && pxF <= h.Rect.Right
                     && pyF >= h.Rect.Top && pyF <= h.Rect.Bottom)
-            let (sname, idx) = this.SelectedPolygons.MinimumElement
+            let pk = this.SelectedPolygons.MinimumElement
+            let sname = pk.Cell
+            let idx = pk.Index
             // Snapshot the resting bbox so the move handler can
             // compute the in-flight bbox from cursor + anchor.
             let startBbox =
@@ -1244,9 +1295,76 @@ type GdsCanvasControl() as this =
             // selection-drag. If we hit empty space, clear the
             // selection and start a pan.
             let wx, wy = this.ScreenToWorld p
+            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
+            // Ratline hit-test FIRST so the user can click an MST
+            // edge that visually overlaps polygon geometry. Tolerance
+            // is in world DBU corresponding to ~6 px on screen, so
+            // the click target tracks the visual line width.
+            let ratlineHit : string option =
+                if lastRoutes.Length = 0 then None
+                else
+                    let tolPx = 6.0
+                    let dbuPerPxEst =
+                        if pixelsPerDbu > 1e-9 then 1.0 / pixelsPerDbu
+                        else 0.0
+                    let tolDbuF = tolPx * dbuPerPxEst
+                    let tolDbu = max 1L (int64 tolDbuF)
+                    let cx = int64 (System.Math.Round wx)
+                    let cy = int64 (System.Math.Round wy)
+                    let visibleSet = this.VisibleRatlines
+                    let segDist
+                            (ax: int64) (ay: int64)
+                            (bx: int64) (by: int64)
+                            : int64 =
+                        let dx = bx - ax
+                        let dy = by - ay
+                        let len2 = dx * dx + dy * dy
+                        if len2 = 0L then
+                            let px = cx - ax
+                            let py = cy - ay
+                            int64 (sqrt (float (px * px + py * py)))
+                        else
+                            let t =
+                                float ((cx - ax) * dx + (cy - ay) * dy)
+                                / float len2
+                            let tc = max 0.0 (min 1.0 t)
+                            let qx = float ax + tc * float dx
+                            let qy = float ay + tc * float dy
+                            let ddx = float cx - qx
+                            let ddy = float cy - qy
+                            int64 (sqrt (ddx * ddx + ddy * ddy))
+                    let mutable best : string option = None
+                    let mutable bestD = System.Int64.MaxValue
+                    for route in lastRoutes do
+                        if visibleSet.Contains route.Name then
+                            for edge in route.Mst do
+                                if edge.From >= 0
+                                   && edge.From < route.Pins.Length
+                                   && edge.To >= 0
+                                   && edge.To < route.Pins.Length then
+                                    let a = route.Pins.[edge.From].Position
+                                    let b = route.Pins.[edge.To].Position
+                                    let d = segDist a.X a.Y b.X b.Y
+                                    if d <= tolDbu && d < bestD then
+                                        bestD <- d
+                                        best <- Some route.Name
+                    best
+            match ratlineHit with
+            | Some name ->
+                let prior = this.SelectedRatlines
+                let next =
+                    if shift then
+                        if prior.Contains name then prior.Remove name
+                        else prior.Add name
+                    else Set.singleton name
+                let h = this.SetSelectedRatlinesHandler
+                if not (isNull h) then h.Invoke next
+                // Swallow — ratline click shouldn't initiate pan or
+                // polygon-selection drag.
+                ()
+            | None ->
             let hit =
                 Instances.hitTest this.Instances (int64 (System.Math.Round wx)) (int64 (System.Math.Round wy))
-            let shift = e.KeyModifiers.HasFlag KeyModifiers.Shift
             if hit.Length > 0 then
                 // Front-most under the cursor = the SMALLEST
                 // bbox containing the click. When a small cell
@@ -1343,7 +1461,8 @@ type GdsCanvasControl() as this =
                     // SetPolygonSelection. The drag operates on
                     // the resulting set.
                     let prior = this.SelectedPolygons
-                    let target = (sname, idx)
+                    let target : Rekolektion.Viz.Core.Layout.Flatten.PolyKey =
+                        { Cell = sname; Index = idx; TopInstance = None }
                     let next =
                         if shift then
                             if prior.Contains target then prior.Remove target
@@ -1378,7 +1497,9 @@ type GdsCanvasControl() as this =
                             for c in lib.Cells do
                                 c.Elements
                                 |> List.iteri (fun i el ->
-                                    if next.Contains (c.Name, i) then
+                                    let kk : Rekolektion.Viz.Core.Layout.Flatten.PolyKey =
+                                        { Cell = c.Name; Index = i; TopInstance = None }
+                                    if next.Contains kk then
                                         match el with
                                         | PolyEl pp when not pp.Points.IsEmpty ->
                                             let mutable xMin = System.Int64.MaxValue
@@ -1551,10 +1672,14 @@ type GdsCanvasControl() as this =
         if sel.IsEmpty then 0L, 0L
         else
             let bboxes = ResizeArray<int64 * int64 * int64 * int64>()
+            let selKeys =
+                sel
+                |> Set.map (fun (pk: Rekolektion.Viz.Core.Layout.Flatten.PolyKey) ->
+                    pk.Cell, pk.Index)
             for c in doc.Cells do
                 c.Elements
                 |> List.iteri (fun i el ->
-                    if sel.Contains (c.Name, i) then
+                    if selKeys.Contains (c.Name, i) then
                         match el with
                         | PolyEl p when not p.Points.IsEmpty ->
                             let mutable xMin = System.Int64.MaxValue
@@ -1581,13 +1706,14 @@ type GdsCanvasControl() as this =
     /// the in-flight PolygonDrag preview so the moved shapes track
     /// the cursor before the model commit lands.
     member private _.LibWithPolygonsShifted
-            (doc: Document) (sel: Set<string * int>)
+            (doc: Document) (sel: Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>)
             (dx: int64) (dy: int64) : Document =
         let perCell =
             sel
             |> Set.toList
-            |> List.groupBy fst
-            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> List.groupBy (fun (pk: Rekolektion.Viz.Core.Layout.Flatten.PolyKey) -> pk.Cell)
+            |> List.map (fun (s, items) ->
+                s, items |> List.map (fun pk -> pk.Index) |> Set.ofList)
             |> Map.ofList
         let translatePoly (pts: Point list) =
             pts |> List.map (fun p -> { X = p.X + dx; Y = p.Y + dy })
@@ -1677,9 +1803,13 @@ type GdsCanvasControl() as this =
                     // labels) in one composed pass. Same code path
                     // the Update commit uses, so post-release
                     // matches mid-drag.
+                    let selTuples =
+                        this.SelectedPolygons
+                        |> Set.map (fun (pk: Rekolektion.Viz.Core.Layout.Flatten.PolyKey) ->
+                            pk.Cell, pk.Index)
                     let lib' =
                         Instances.translateSelectionsWithLabels
-                            lib this.InstanceSelection this.SelectedPolygons
+                            lib this.InstanceSelection selTuples
                             dxSnap dySnap
                     dragLiveLib <- Some lib'
                     dragLiveFlat <- Layout.Flatten.flatten lib'
@@ -1716,10 +1846,14 @@ type GdsCanvasControl() as this =
                         // re-flatten — no SRef transforms to
                         // recompose. O(N_polys) per move tick.
                         let flat0 = this.FlatPolygons
+                        let polySelKeys =
+                            polySel
+                            |> Set.map (fun (pk: Rekolektion.Viz.Core.Layout.Flatten.PolyKey) ->
+                                pk.Cell, pk.Index)
                         let flat' =
                             flat0
                             |> Array.map (fun fp ->
-                                if polySel.Contains (fp.SourceStructure, fp.SourceIndex) then
+                                if polySelKeys.Contains (fp.SourceStructure, fp.SourceIndex) then
                                     { fp with
                                         Points =
                                             fp.Points
@@ -1734,9 +1868,13 @@ type GdsCanvasControl() as this =
                         // Re-flatten via the unified helper so SRefs
                         // and polys (each with anchored labels)
                         // shift together.
+                        let polySelTuples =
+                            polySel
+                            |> Set.map (fun (pk: Rekolektion.Viz.Core.Layout.Flatten.PolyKey) ->
+                                pk.Cell, pk.Index)
                         let lib' =
                             Instances.translateSelectionsWithLabels
-                                lib instSel polySel dxSnap dySnap
+                                lib instSel polySelTuples dxSnap dySnap
                         dragLiveLib <- Some lib'
                         dragLiveFlat <- Layout.Flatten.flatten lib'
                 | None ->
@@ -2040,6 +2178,9 @@ type GdsCanvasControl() as this =
                     if not this.SelectedPolygons.IsEmpty then
                         let h = this.ClearPolygonSelectionHandler
                         if not (isNull h) then h.Invoke ()
+                    if not this.SelectedRatlines.IsEmpty then
+                        let h = this.SetSelectedRatlinesHandler
+                        if not (isNull h) then h.Invoke Set.empty
             else
                 // CAD convention: drag left→right = enclose-only
                 // (bbox must lie fully inside marquee); drag
@@ -2102,16 +2243,28 @@ type GdsCanvasControl() as this =
                                 | PolyEl p ->
                                     polyBbox p.Points
                                     |> Option.bind (fun bb ->
-                                        if bboxFits bb then Some (top.Name, i) else None)
+                                        if bboxFits bb then
+                                            Some
+                                                ({ Cell = top.Name; Index = i; TopInstance = None }
+                                                 : Rekolektion.Viz.Core.Layout.Flatten.PolyKey)
+                                        else None)
                                 | PathEl p ->
                                     polyBbox p.Points
                                     |> Option.bind (fun bb ->
-                                        if bboxFits bb then Some (top.Name, i) else None)
+                                        if bboxFits bb then
+                                            Some
+                                                ({ Cell = top.Name; Index = i; TopInstance = None }
+                                                 : Rekolektion.Viz.Core.Layout.Flatten.PolyKey)
+                                        else None)
                                 | RectEl r ->
                                     let bb =
                                         (min r.X1 r.X2, min r.Y1 r.Y2,
                                          max r.X1 r.X2, max r.Y1 r.Y2)
-                                    if bboxFits bb then Some (top.Name, i) else None
+                                    if bboxFits bb then
+                                            Some
+                                                ({ Cell = top.Name; Index = i; TopInstance = None }
+                                                 : Rekolektion.Viz.Core.Layout.Flatten.PolyKey)
+                                        else None
                                 | _ -> None)
                             |> Set.ofList
                         let nextPoly =
@@ -2145,13 +2298,25 @@ type GdsCanvasControl() as this =
                 if not (isNull h) then
                     h.Invoke ()
                     e.Handled <- true
+            if not this.SelectedRatlines.IsEmpty then
+                let h = this.SetSelectedRatlinesHandler
+                if not (isNull h) then
+                    h.Invoke Set.empty
+                    e.Handled <- true
         | _ -> ()
 
     override this.OnPointerWheelChanged e =
         base.OnPointerWheelChanged e
         // Zoom about the pointer position so the world point under
         // the cursor stays put.
-        let factor = if e.Delta.Y > 0.0 then 1.15 else 1.0 / 1.15
+        // Delta-aware exponential zoom — mirrors the 3D wheel
+        // handler. A flat 1.15× per event ignored the trackpad's
+        // smaller fractional deltas (gestures registered as many
+        // tiny 1.15× steps) and required spinning the wheel forever
+        // to make a visible change at high zoom. exp(Delta.Y * 0.4)
+        // gives ~1.5× per click-wheel tick and accumulates trackpad
+        // gestures smoothly.
+        let factor = System.Math.Exp(e.Delta.Y * 0.4)
         let p = e.GetPosition this
         let cw = max this.Bounds.Width 1.0
         let ch = max this.Bounds.Height 1.0
@@ -2204,21 +2369,41 @@ type GdsCanvasControl() as this =
                     Map.empty
             let violations =
                 if this.ShowDrc then
-                    // Inter-instance only: DRCs entirely inside
-                    // one SRef are not editable from here (the
-                    // user can't reshape an SRef's polygons), so
-                    // we drop them. checkInterInstance also uses
-                    // the same orthogonal-only filter as the
-                    // dimension overlay so the canvas isn't a
-                    // hairball of diagonal violations.
+                    // Two complementary passes:
+                    //
+                    // (1) checkWithToggles on the TOP CELL DIRECT
+                    //     polygons — catches everything the user
+                    //     authored at this level (width, spacing,
+                    //     min-area, enclosure, endcap, cross-layer
+                    //     spacing). Excluding SRef-internal polys
+                    //     keeps the canvas from drowning in
+                    //     foundry-COREID-waivered intra-primitive
+                    //     errors the user can't fix without
+                    //     editing the primitive itself.
+                    //
+                    // (2) checkInterInstance — orthogonal-only
+                    //     spacing across SRefs. Same filter as
+                    //     the dimension overlay so the canvas
+                    //     isn't a hairball of diagonal arrows for
+                    //     shapes that don't share an axis.
+                    //
+                    // The two passes don't overlap: (1) checks
+                    // intra-top-cell only; (2) checks across
+                    // instances. Concatenation is the merge.
+                    let topDirect =
+                        Layout.Flatten.flattenTopCellDirect renderLib
                     let perInstance =
                         this.Instances
                         |> Array.map (fun inst ->
                             inst.Index,
                             Layout.Flatten.flattenInstance (renderLib) inst.Index)
                         |> Map.ofArray
-                    Drc.Check.checkInterInstance
-                        renderLib.Units perInstance
+                    let disabled = this.DisabledDrcRules
+                    Array.append
+                        (Drc.Check.checkWithToggles
+                            renderLib.Units topDirect disabled)
+                        (Drc.Check.checkInterInstance
+                            renderLib.Units perInstance)
                 else
                     [||]
             let marquee =
@@ -2237,6 +2422,10 @@ type GdsCanvasControl() as this =
                 if not visibleRatlines.IsEmpty then
                     Net.Ratlines.compute renderLib renderFlat
                 else [||]
+            // Stash for ratline hit-test on next PointerPressed —
+            // avoids re-running compute when the user just wants to
+            // click a visible MST edge to identify its net.
+            lastRoutes <- routes
             // Tighten-mode candidates: per-cardinal binding pair
             // for the current selection vs. every other top
             // instance. Empty when not in mode.
@@ -2295,7 +2484,9 @@ type GdsCanvasControl() as this =
                     match dragKind with
                     | ResizeDrag _ -> Some resizeLiveBbox
                     | _ ->
-                        let (sname, idx) = this.SelectedPolygons.MinimumElement
+                        let pk = this.SelectedPolygons.MinimumElement
+                        let sname = pk.Cell
+                        let idx = pk.Index
                         renderLib.Cells
                         |> List.tryFind (fun c -> c.Name = sname)
                         |> Option.bind (fun c ->
@@ -2334,6 +2525,7 @@ type GdsCanvasControl() as this =
                   MarqueeWorld = marquee
                   Routes = routes
                   VisibleRatlines = visibleRatlines
+                  SelectedRatlines = this.SelectedRatlines
                   TightenCandidates = tightenCands
                   SelectedPolygons = this.SelectedPolygons
                   ResizeBbox = resizeBbox
@@ -2346,4 +2538,4 @@ type GdsCanvasControl() as this =
             // an explicit fill the prior frame's polygons stay
             // painted on the shared SkSurface ('canvas closed but
             // view still shows the cell' bug).
-            context.FillRectangle(Avalonia.Media.Brushes.Black, bounds)
+            context.FillRectangle(SolidColorBrush(Color.FromArgb(0xFFuy, 0x0Cuy, 0x10uy, 0x18uy)), bounds)

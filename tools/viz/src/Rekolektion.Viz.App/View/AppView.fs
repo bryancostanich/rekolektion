@@ -68,6 +68,10 @@ let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowDrcProperty, v, ValueNone)
 
+let private gds2DDisabledDrcRulesAttr (v: Set<string>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string>>(
+        GdsCanvasControl.DisabledDrcRulesProperty, v, ValueNone)
+
 let private gds2DShowGridAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowGridProperty, v, ValueNone)
@@ -88,6 +92,15 @@ let private gds2DVisibleRatlinesAttr (v: Set<string>) : IAttr<GdsCanvasControl> 
     AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string>>(
         GdsCanvasControl.VisibleRatlinesProperty, v, ValueNone)
 
+let private gds2DSelectedRatlinesAttr (v: Set<string>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string>>(
+        GdsCanvasControl.SelectedRatlinesProperty, v, ValueNone)
+
+let private gds2DSetSelectedRatlinesHandlerAttr
+        (h: System.Action<Set<string>>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<string>>>(
+        GdsCanvasControl.SetSelectedRatlinesHandlerProperty, h, ValueNone)
+
 let private gds2DTightenModeAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.TightenModeProperty, v, ValueNone)
@@ -96,20 +109,20 @@ let private gds2DCommitTightenHandlerAttr (h: System.Action<int>) : IAttr<GdsCan
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int>>(
         GdsCanvasControl.CommitTightenHandlerProperty, h, ValueNone)
 
-let private gds2DPolygonPickedHandlerAttr (h: System.Action<string, int>) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<string, int>>(
+let private gds2DPolygonPickedHandlerAttr (h: System.Action<Layout.Flatten.PolyKey>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Layout.Flatten.PolyKey>>(
         GdsCanvasControl.PolygonPickedHandlerProperty, h, ValueNone)
 
-let private gds2DSelectedPolygonsAttr (v: Set<string * int>) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<string * int>>(
+let private gds2DSelectedPolygonsAttr (v: Set<Layout.Flatten.PolyKey>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Set<Layout.Flatten.PolyKey>>(
         GdsCanvasControl.SelectedPolygonsProperty, v, ValueNone)
 
-let private gds2DSetPolygonSelectionHandlerAttr (h: System.Action<Set<string * int>>) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<string * int>>>(
+let private gds2DSetPolygonSelectionHandlerAttr (h: System.Action<Set<Layout.Flatten.PolyKey>>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<Layout.Flatten.PolyKey>>>(
         GdsCanvasControl.SetPolygonSelectionHandlerProperty, h, ValueNone)
 
-let private gds2DMovePolygonsHandlerAttr (h: System.Action<Set<string * int>, int64, int64>) : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<string * int>, int64, int64>>(
+let private gds2DMovePolygonsHandlerAttr (h: System.Action<Set<Layout.Flatten.PolyKey>, int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Set<Layout.Flatten.PolyKey>, int64, int64>>(
         GdsCanvasControl.MovePolygonsHandlerProperty, h, ValueNone)
 
 let private gds2DResizePolygonHandlerAttr (h: System.Action<string, int, int64, int64, int64, int64>) : IAttr<GdsCanvasControl> =
@@ -132,17 +145,22 @@ let private stack3DToggleAttr (v: Visibility.ToggleState) : IAttr<StackCanvasCon
     AttrBuilder<StackCanvasControl>.CreateProperty<Visibility.ToggleState>(
         StackCanvasControl.ToggleProperty, v, ValueNone)
 
-let private stack3DPickedAttr (handler: System.Action<string, int>) : IAttr<StackCanvasControl> =
-    AttrBuilder<StackCanvasControl>.CreateProperty<System.Action<string, int>>(
+let private stack3DPickedAttr (handler: System.Action<Layout.Flatten.PolyKey>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<System.Action<Layout.Flatten.PolyKey>>(
         StackCanvasControl.PolygonPickedHandlerProperty, handler, ValueNone)
 
 let private stack3DVisibleRatlinesAttr (v: Set<string>) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Set<string>>(
         StackCanvasControl.VisibleRatlinesProperty, v, ValueNone)
 
-let private stack3DSelectedPolygonsAttr (v: Set<string * int>) : IAttr<StackCanvasControl> =
-    AttrBuilder<StackCanvasControl>.CreateProperty<Set<string * int>>(
+let private stack3DSelectedPolygonsAttr (v: Set<Layout.Flatten.PolyKey>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<Set<Layout.Flatten.PolyKey>>(
         StackCanvasControl.SelectedPolygonsProperty, v, ValueNone)
+
+let private stack3DSetPolygonSelectionHandlerAttr
+        (h: System.Action<Set<Layout.Flatten.PolyKey>>) : IAttr<StackCanvasControl> =
+    AttrBuilder<StackCanvasControl>.CreateProperty<System.Action<Set<Layout.Flatten.PolyKey>>>(
+        StackCanvasControl.SetPolygonSelectionHandlerProperty, h, ValueNone)
 
 /// Render the canvas (tab control wrapping the 2D + 3D views).
 /// Reads the active macro via Model.activeMacro so opening another
@@ -191,22 +209,28 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DShowDimensionsAttr model.ShowDimensions
               gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
               gds2DShowDrcAttr model.ShowDrc
+              gds2DDisabledDrcRulesAttr model.DisabledDrcRules
               gds2DShowGridAttr model.ShowGrid
               gds2DShowRulerAttr model.ShowRuler
               gds2DShowLabelsAttr model.ShowLabels
               gds2DSnapEnabledAttr model.SnapEnabled
               gds2DVisibleRatlinesAttr model.Toggle.VisibleRatlines
+              gds2DSelectedRatlinesAttr model.SelectedRatlines
+              gds2DSetSelectedRatlinesHandlerAttr
+                  (System.Action<Set<string>>(fun nets ->
+                      dispatch (Msg.SetSelectedRatlines nets)))
               gds2DTightenModeAttr model.TightenMode
               gds2DCommitTightenHandlerAttr
                   (System.Action<int>(fun i -> dispatch (Msg.CommitTighten i)))
               gds2DSelectedPolygonsAttr model.Selection
               gds2DPolygonPickedHandlerAttr
-                  (System.Action<string, int>(fun s i -> dispatch (Msg.PolygonPicked (s, i))))
+                  (System.Action<Layout.Flatten.PolyKey>(fun pk ->
+                      dispatch (Msg.PolygonPicked pk)))
               gds2DSetPolygonSelectionHandlerAttr
-                  (System.Action<Set<string * int>>(fun sel ->
+                  (System.Action<Set<Layout.Flatten.PolyKey>>(fun sel ->
                       dispatch (Msg.SetPolygonSelection sel)))
               gds2DMovePolygonsHandlerAttr
-                  (System.Action<Set<string * int>, int64, int64>(fun sel dx dy ->
+                  (System.Action<Set<Layout.Flatten.PolyKey>, int64, int64>(fun sel dx dy ->
                       dispatch (Msg.MovePolygonsDbu (sel, dx, dy))))
               gds2DResizePolygonHandlerAttr
                   (System.Action<string, int, int64, int64, int64, int64>(fun s i xMin yMin xMax yMax ->
@@ -215,8 +239,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                   (System.Action(fun () -> dispatch Msg.ClearSelection)) ]
 
     let pickedHandler =
-        System.Action<string, int>(fun s i ->
-            dispatch (Msg.PolygonPicked (s, i)))
+        System.Action<Layout.Flatten.PolyKey>(fun pk ->
+            dispatch (Msg.PolygonPicked pk))
 
     let canvas3D : IView =
         ViewBuilder.Create<StackCanvasControl>
@@ -225,7 +249,10 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               stack3DToggleAttr   model.Toggle
               stack3DPickedAttr  pickedHandler
               stack3DVisibleRatlinesAttr model.Toggle.VisibleRatlines
-              stack3DSelectedPolygonsAttr model.Selection ]
+              stack3DSelectedPolygonsAttr model.Selection
+              stack3DSetPolygonSelectionHandlerAttr
+                  (System.Action<Set<Layout.Flatten.PolyKey>>(fun sel ->
+                      dispatch (Msg.SetPolygonSelection sel))) ]
 
     let activeIndex =
         match model.ActiveTab with

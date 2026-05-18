@@ -183,6 +183,41 @@ type private RiserDup = {
     BridgeWidth : int64
 }
 
+/// Captured at press time for an end of the dragged beam that sits
+/// on a via stack reaching into fixed lower geometry (a FET tap, an
+/// SRef-internal contact). Detection: the beam's spine-endpoint via
+/// has a `dt=44` contact rect on the next-lower layer concentric
+/// with it (mcon below via1, licon1 below mcon). That deeper
+/// contact's existence means the stack continues into geometry the
+/// editor can't move, so translating the via off it would break
+/// the connection.
+///
+/// On commit / live preview, each anchored end emits TWO extra
+/// rects on the BEAM's layer:
+///   * STUB — square pad centered on the original via, beam-width
+///     on a side, holding the original via electrically connected
+///     to the (still-translating) lower metal pad.
+///   * BRIDGE — perpendicular wire on the beam's layer from the
+///     original anchor to the slid position, beam-width thick.
+///
+/// The beam itself still translates with the gesture; the via cut,
+/// the lower metal pad, and any wires whose endpoint is in the
+/// lower pad all stay put (excluded from the cascade in
+/// BuildRiserAdjusts).
+type private BeamAnchor = {
+    /// Beam's own Rkt layer (where stub + bridge are drawn).
+    BeamLayer  : Rekolektion.Viz.Core.Rkt.Types.Layer
+    /// Beam's spine axis. Y = vertical beam (slides X, bridge runs
+    /// in X). X = horizontal beam (slides Y, bridge runs in Y).
+    BeamSpine  : Rekolektion.Viz.Core.Routing.Detect.Axis
+    /// Beam's perpendicular extent in DBU — used as stub side
+    /// length and bridge width.
+    BeamPerp   : int64
+    /// Anchor center in DBU (the via cut's center).
+    AnchorX    : int64
+    AnchorY    : int64
+}
+
 /// In-flight slide state. Built on press, mutated each
 /// PointerMoved, consumed on release.
 type private RouteSlide = {
@@ -215,6 +250,11 @@ type private RouteSlide = {
     /// duplicated via stack + bridge wire at commit time so the
     /// original via stays connected to whatever's below.
     RiserDups      : RiserDup list
+    /// Beam-end anchors — via stacks at the dragged beam's spine
+    /// endpoints whose lower contact reaches into fixed geometry.
+    /// Each emits a stub + bridge on the beam's layer at commit
+    /// time. See BeamAnchor docs for the detection rule.
+    BeamAnchors    : BeamAnchor list
     mutable LastDxDbu : int64
     mutable LastDyDbu : int64
 }
@@ -977,6 +1017,56 @@ type StackCanvasControl() =
             // bridge wire are emitted as duplicates.
             [ shift rd.Via; shift rd.OtherPad; bridge ]
 
+    /// Emit the stub + bridge rects for one anchored beam end.
+    /// Both rects sit on the beam's own layer. The stub holds the
+    /// original via electrically connected to the unmoved lower
+    /// pad; the bridge runs perpendicular to the beam from the
+    /// anchor to the slid position. Tagged with `viz:bridge` keyed
+    /// on the original anchor center so subsequent drags reap and
+    /// re-emit instead of accumulating.
+    static member private EmitBeamAnchor
+            (a: BeamAnchor) (dx: int64) (dy: int64)
+            : Rekolektion.Viz.Core.Rkt.Types.Rectangle list =
+        if dx = 0L && dy = 0L then []
+        else
+            let tagProps =
+                StackCanvasControl.BridgePropsAt a.AnchorX a.AnchorY
+            let halfW = a.BeamPerp / 2L
+            let stub : Rekolektion.Viz.Core.Rkt.Types.Rectangle =
+                { Layer = a.BeamLayer
+                  X1 = a.AnchorX - halfW; Y1 = a.AnchorY - halfW
+                  X2 = a.AnchorX + halfW; Y2 = a.AnchorY + halfW
+                  Net = None
+                  Props = tagProps
+                  Comments = [] }
+            // Bridge runs along the beam's perp axis (the slide
+            // axis). The bridge crosses the full delta on that
+            // axis; the off-axis extent is the beam width centered
+            // on the anchor.
+            let bridge : Rekolektion.Viz.Core.Rkt.Types.Rectangle =
+                match a.BeamSpine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    // Vertical beam slides in X. Bridge horizontal.
+                    let xLo = min a.AnchorX (a.AnchorX + dx)
+                    let xHi = max a.AnchorX (a.AnchorX + dx)
+                    { Layer = a.BeamLayer
+                      X1 = xLo; Y1 = a.AnchorY - halfW
+                      X2 = xHi; Y2 = a.AnchorY + halfW
+                      Net = None
+                      Props = tagProps
+                      Comments = [] }
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    // Horizontal beam slides in Y. Bridge vertical.
+                    let yLo = min a.AnchorY (a.AnchorY + dy)
+                    let yHi = max a.AnchorY (a.AnchorY + dy)
+                    { Layer = a.BeamLayer
+                      X1 = a.AnchorX - halfW; Y1 = yLo
+                      X2 = a.AnchorX + halfW; Y2 = yHi
+                      Net = None
+                      Props = tagProps
+                      Comments = [] }
+            [ stub; bridge ]
+
     /// per-handle adjust constructors below.
     static member private ZeroAdjust (sourceIdx: int) : SlideAdjust =
         { SourceIdx = sourceIdx
@@ -1225,9 +1315,9 @@ type StackCanvasControl() =
             (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
             (cellName: string)
             (beam: Rekolektion.Viz.Core.Routing.Detect.Segment)
-            : SlideAdjust list * RiserDup list =
+            : SlideAdjust list * RiserDup list * BeamAnchor list =
         match doc.Cells |> List.tryFind (fun c -> c.Name = cellName) with
-        | None -> [], []
+        | None -> [], [], []
         | Some cell ->
             let beamPerpExtent =
                 match beam.Spine with
@@ -1395,6 +1485,59 @@ type StackCanvasControl() =
             // designs where via1's pad and via2's pad both sit at
             // the same X but offset Y).
             let concentricTolDbu = 10L
+            // Lower-contact index: every dt=44 rect grouped by GDS
+            // layer number. Used to detect "via has a concentric
+            // contact one layer below" → the stack reaches into
+            // deeper fixed geometry (FET tap, SRef-internal poly /
+            // diff), so dragging the via off the contact severs the
+            // electrical path. We skip those vias from the cascade
+            // and emit a stub + bridge on the beam's layer instead.
+            //
+            // sky130 convention: contact layer numbers are
+            // licon1=66 < mcon=67 < via=68 < via2=69 < via3=70. A
+            // via on layer V's lower contact lives on layer V-1.
+            let lowerContactsByLayer =
+                rects
+                |> Array.filter (fun (_, _, dt, _, _, _, _, _, _, _, _) ->
+                    dt = 44)
+                |> Array.map (fun (_, n, _, xMin, yMin, xMax, yMax,
+                                   _, _, _, _) ->
+                    n, ((xMin + xMax) / 2L, (yMin + yMax) / 2L))
+                |> Array.groupBy fst
+                |> Array.map (fun (n, arr) ->
+                    n, arr |> Array.map snd)
+                |> Map.ofArray
+            let isAnchoredVia (vn: int) (vCx: int64) (vCy: int64) =
+                match Map.tryFind (vn - 1) lowerContactsByLayer with
+                | None -> false
+                | Some centers ->
+                    centers
+                    |> Array.exists (fun (lcx, lcy) ->
+                        abs (lcx - vCx) <= concentricTolDbu
+                        && abs (lcy - vCy) <= concentricTolDbu)
+            // Beam's own Rkt.Types.Layer — captured from the beam's
+            // source rect. Used to stamp the stub + bridge rects so
+            // they live on the same layer + datatype as the beam.
+            let beamLayer =
+                cell.Elements
+                |> List.tryItem beam.SourceIndex
+                |> Option.bind (fun el ->
+                    match el with
+                    | Rekolektion.Viz.Core.Rkt.Types.RectEl r -> Some r.Layer
+                    | _ -> None)
+            let beamPerp =
+                match beam.Spine with
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
+                    beam.YMax - beam.YMin
+                | Rekolektion.Viz.Core.Routing.Detect.Axis.Y ->
+                    beam.XMax - beam.XMin
+            let beamAnchors = ResizeArray<BeamAnchor>()
+            // Indices of metal pads we must NOT add to adjusts
+            // (they sit on anchored vias and stay put). Populated
+            // in the via loop; consulted before the cross-layer
+            // cascade adds them.
+            let anchoredPadIds =
+                System.Collections.Generic.HashSet<int>()
             // Precompute via centers (for "concentric with ANY via"
             // checks). A small rect on a metal layer whose center
             // coincides with a via that's NOT the one we're
@@ -1414,9 +1557,28 @@ type StackCanvasControl() =
                     abs (vx - rCx) <= concentricTolDbu
                     && abs (vy - rCy) <= concentricTolDbu)
             for (vi, vn, _vd, vxMin, vyMin, vxMax, vyMax, _, _, _, _) in viaCuts do
-                add vi
                 let vCx = (vxMin + vxMax) / 2L
                 let vCy = (vyMin + vyMax) / 2L
+                let anchored = isAnchoredVia vn vCx vCy
+                if anchored then
+                    // Via has a concentric contact on the next-lower
+                    // layer → its lower stack continues into fixed
+                    // geometry. Don't translate the via (it stays
+                    // planted), and queue a stub+bridge emit on the
+                    // beam's layer. The cross-layer cascade below is
+                    // skipped via `anchoredPadIds` for the pads on
+                    // this via.
+                    match beamLayer with
+                    | Some bl ->
+                        beamAnchors.Add
+                            { BeamLayer = bl
+                              BeamSpine = beam.Spine
+                              BeamPerp  = beamPerp
+                              AnchorX   = vCx
+                              AnchorY   = vCy }
+                    | None -> ()
+                else
+                    add vi
                 let metals = [| vn; vn + 1 |]
                 for (mi, mn, md, mxMin, myMin, mxMax, myMax,
                      _, _, _, _) in rects do
@@ -1427,7 +1589,15 @@ type StackCanvasControl() =
                         let concentric =
                             abs (mCx - vCx) <= concentricTolDbu
                             && abs (mCy - vCy) <= concentricTolDbu
-                        if concentric then
+                        if concentric && anchored then
+                            // Pad on an anchored via stays put.
+                            // Remember it so the cross-layer wire
+                            // cascade below doesn't pull connected
+                            // wires either (their endpoints sit in
+                            // a now-immovable pad — they stretch /
+                            // translate would re-introduce the bug).
+                            anchoredPadIds.Add mi |> ignore
+                        elif concentric then
                             if addedIds.Add mi then
                                 adjusts.Add
                                     (StackCanvasControl.TrackDraggedAdjust
@@ -1513,11 +1683,14 @@ type StackCanvasControl() =
                                         spineStretchTowardPad
                                             wi wBbox padBbox
                                             wX1 wY1 wX2 wY2
-            // RiserDups: no longer used — the upper stack now
-            // translates with the beam and the cross-layer cascade
-            // stretches the existing bridge wire. Issue 2 (multi-
-            // level decoupling with L-jog) would re-introduce this.
-            adjusts |> List.ofSeq, []
+            // RiserDups: no longer used. Anchored ends of the
+            // dragged beam are now handled by BeamAnchor (stub +
+            // bridge on the beam's layer) — see EmitBeamAnchor.
+            // RiserDup's "duplicate the whole stack at the new
+            // position" model is the wrong shape for the case
+            // where the lower stack reaches into fixed geometry
+            // (the via must STAY, not duplicate).
+            adjusts |> List.ofSeq, [], beamAnchors |> List.ofSeq
 
     /// Recipe for one segment attached to a POST being dragged.
     /// Spine-axis-only stretch — the segment's near-to-post endpoint
@@ -1963,7 +2136,8 @@ type StackCanvasControl() =
                 (handleLabel: string)
                 (draggedSeg: Rekolektion.Viz.Core.Routing.Detect.Segment option)
                 (postIdx: int option)
-                (riserDups: RiserDup list) =
+                (riserDups: RiserDup list)
+                (beamAnchors: BeamAnchor list) =
             match this.UnprojectAtZ (e.GetPosition this) hoveredRouteLayerZ with
             | None -> ()
             | Some hitDbu ->
@@ -2030,6 +2204,7 @@ type StackCanvasControl() =
                     Route = Some route
                     PostIdx = postIdx
                     RiserDups = riserDups
+                    BeamAnchors = beamAnchors
                     LastDxDbu = 0L
                     LastDyDbu = 0L
                 }
@@ -2060,11 +2235,11 @@ type StackCanvasControl() =
             // Risers (knuckles) sitting on the dragged beam translate
             // with it as rigid bodies — pads + via cuts that bracket
             // the beam centerline within its X range follow the dy.
-            let risers, riserDups =
+            let risers, riserDups, beamAnchors =
                 StackCanvasControl.BuildRiserAdjusts lib route.Cell seg
             let adjusts = baseAdjusts @ cascaded @ risers
             beginSlide TrackSlide route lib seg.Spine adjusts "track"
-                (Some seg) None riserDups
+                (Some seg) None riserDups beamAnchors
         | None, Some postIdx, Some route, Some lib
                 when postIdx < route.Posts.Length ->
             // No cascade for PostSlide: with spine-only stretch, no
@@ -2075,7 +2250,7 @@ type StackCanvasControl() =
             let adjusts = StackCanvasControl.BuildPostAdjusts route postIdx
             beginSlide PostSlide route lib
                 Rekolektion.Viz.Core.Routing.Detect.Axis.X adjusts "post"
-                None (Some postIdx) []
+                None (Some postIdx) [] []
         | _ ->
             // No track hit (or surrounding state missing) — fall
             // through to the normal orbit / pan dispatch so the
@@ -2431,7 +2606,7 @@ type StackCanvasControl() =
                 if trackHit.IsNone then
                     this.HitTestPostHandleFor route hoveredRouteLayerZ startPt
                 else None
-            let kindStr, adjusts, spine, dragPostIdx, riserDups =
+            let kindStr, adjusts, spine, dragPostIdx, riserDups, beamAnchors =
                 match trackHit, postHit with
                 | Some segIdx, _ when segIdx < route.Segments.Length ->
                     let seg = route.Segments.[segIdx]
@@ -2440,11 +2615,11 @@ type StackCanvasControl() =
                     let cascaded =
                         StackCanvasControl.CascadeNeighborAdjusts
                             route baseAdjusts None
-                    let risers, rDups =
+                    let risers, rDups, bAnchors =
                         StackCanvasControl.BuildRiserAdjusts
                             lib route.Cell seg
                     "track", baseAdjusts @ cascaded @ risers, seg.Spine,
-                    None, rDups
+                    None, rDups, bAnchors
                 | None, Some postIdx when postIdx < route.Posts.Length ->
                     let adjusts =
                         StackCanvasControl.BuildPostAdjusts route postIdx
@@ -2452,10 +2627,10 @@ type StackCanvasControl() =
                     adjusts,
                     Rekolektion.Viz.Core.Routing.Detect.Axis.X,
                     Some postIdx,
-                    []
+                    [], []
                 | _ ->
                     "none", [], Rekolektion.Viz.Core.Routing.Detect.Axis.X,
-                    None, []
+                    None, [], []
             let excludeIds =
                 adjusts |> List.map (fun a -> a.SourceIdx) |> Set.ofList
             let segBySource =
@@ -2522,8 +2697,12 @@ type StackCanvasControl() =
                         riserDups
                         |> List.collect (fun rd ->
                             StackCanvasControl.EmitRiserDup rd snapDx snapDy)
+                    let beamAnchorExts =
+                        beamAnchors
+                        |> List.collect (fun ba ->
+                            StackCanvasControl.EmitBeamAnchor ba snapDx snapDy)
                     let extensions =
-                        anchorExts @ cornerJogs @ riserDupExts
+                        anchorExts @ cornerJogs @ riserDupExts @ beamAnchorExts
                     if snapDx <> 0L || snapDy <> 0L then
                         Rekolektion.Viz.App.Services.AppDispatch.send
                             (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
@@ -2657,8 +2836,13 @@ type StackCanvasControl() =
                             |> List.collect (fun rd ->
                                 StackCanvasControl.EmitRiserDup
                                     rd snapDx snapDy)
+                        let beamAnchorExts =
+                            slide.BeamAnchors
+                            |> List.collect (fun ba ->
+                                StackCanvasControl.EmitBeamAnchor
+                                    ba snapDx snapDy)
                         let extensions =
-                            anchorExts @ cornerJogs @ riserDupExts
+                            anchorExts @ cornerJogs @ riserDupExts @ beamAnchorExts
                         // Reap only bridges whose tag matches this
                         // drag's new bridges (same owning post /
                         // endpoint). Mirrors the commit-time reap in
@@ -2805,8 +2989,13 @@ type StackCanvasControl() =
                     |> List.collect (fun rd ->
                         StackCanvasControl.EmitRiserDup
                             rd slide.LastDxDbu slide.LastDyDbu)
+                let beamAnchorExts =
+                    slide.BeamAnchors
+                    |> List.collect (fun ba ->
+                        StackCanvasControl.EmitBeamAnchor
+                            ba slide.LastDxDbu slide.LastDyDbu)
                 let extensions =
-                    anchorExts @ cornerJogs @ riserDupExts
+                    anchorExts @ cornerJogs @ riserDupExts @ beamAnchorExts
                 Rekolektion.Viz.App.Services.AppDispatch.send
                     (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
                         (slide.Cell, slide.LastDxDbu, slide.LastDyDbu,

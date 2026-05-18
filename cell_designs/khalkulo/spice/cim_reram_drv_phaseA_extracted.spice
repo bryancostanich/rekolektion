@@ -1,0 +1,76 @@
+* NGSPICE file created from cim_reram_drv_phaseA.ext - technology: sky130B
+
+.subckt nfet_01v8_W1p0_L0p15_core_topgate D S G VSUBS
+X0 S G D VSUBS sky130_fd_pr__nfet_01v8 ad=0.29 pd=2.58 as=0.29 ps=2.58 w=1 l=0.15
+.ends
+
+.subckt pfet_01v8_W2p0_L0p15_core_botgate D S G w_n109_n264#
+X0 S G D w_n109_n264# sky130_fd_pr__pfet_01v8 ad=0.58 pd=4.58 as=0.58 ps=4.58 w=2 l=0.15
+.ends
+
+.subckt nand2_inv_lv VSS VDDA1 VDD B Y A
+Xnfet_01v8_W1p0_L0p15_core_topgate_0 Y VSS pfet_01v8_W2p0_L0p15_core_botgate_2/D VSS
++ nfet_01v8_W1p0_L0p15_core_topgate
+Xnfet_01v8_W1p0_L0p15_core_topgate_1 nfet_01v8_W1p0_L0p15_core_topgate_2/S VSS B VSS
++ nfet_01v8_W1p0_L0p15_core_topgate
+Xnfet_01v8_W1p0_L0p15_core_topgate_2 pfet_01v8_W2p0_L0p15_core_botgate_2/D nfet_01v8_W1p0_L0p15_core_topgate_2/S
++ A VSS nfet_01v8_W1p0_L0p15_core_topgate
+Xpfet_01v8_W2p0_L0p15_core_botgate_0 Y VDD pfet_01v8_W2p0_L0p15_core_botgate_2/D VDDA1
++ pfet_01v8_W2p0_L0p15_core_botgate
+Xpfet_01v8_W2p0_L0p15_core_botgate_1 pfet_01v8_W2p0_L0p15_core_botgate_2/D VDD B VDDA1
++ pfet_01v8_W2p0_L0p15_core_botgate
+Xpfet_01v8_W2p0_L0p15_core_botgate_2 pfet_01v8_W2p0_L0p15_core_botgate_2/D VDD A VDDA1
++ pfet_01v8_W2p0_L0p15_core_botgate
+.ends
+
+.subckt pfet_hv_W25p0_L0p5_nf10_core D G S w_n855_n2600#
+X0 S G D w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X1 D G S w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=7.25 pd=50.58 as=3.625 ps=25.29 w=25 l=0.5
+X2 D G S w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X3 S G D w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X4 S G D w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=7.25 ps=50.58 w=25 l=0.5
+X5 S G D w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X6 D G S w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X7 D G S w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X8 D G S w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+X9 S G D w_n855_n2600# sky130_fd_pr__pfet_g5v0d10v5 ad=3.625 pd=25.29 as=3.625 ps=25.29 w=25 l=0.5
+.ends
+
+.subckt pfet_hv_W2p0_L0p5_core_botgate D S G w_n144_n264#
+X0 S G D w_n144_n264# sky130_fd_pr__pfet_g5v0d10v5 ad=0.58 pd=4.58 as=0.58 ps=4.58 w=2 l=0.5
+.ends
+
+.subckt nfet_hv_W4p0_L0p5_core_topgate D S G VSUBS
+X0 S G D VSUBS sky130_fd_pr__nfet_g5v0d10v5 ad=1.16 pd=8.58 as=1.16 ps=8.58 w=4 l=0.5
+.ends
+
+.subckt lshift_1v8_to_3v3 VSS VDDA1 VDD IN OUT_N OUT
+Xpfet_hv_W2p0_L0p5_core_botgate_0 OUT VDDA1 OUT_N VDDA1 pfet_hv_W2p0_L0p5_core_botgate
+Xpfet_hv_W2p0_L0p5_core_botgate_1 OUT_N VDDA1 OUT VDDA1 pfet_hv_W2p0_L0p5_core_botgate
+Xnfet_hv_W4p0_L0p5_core_topgate_0 OUT VSS nfet_hv_W4p0_L0p5_core_topgate_0/G VSS nfet_hv_W4p0_L0p5_core_topgate
+Xnfet_hv_W4p0_L0p5_core_topgate_1 OUT_N VSS IN VSS nfet_hv_W4p0_L0p5_core_topgate
+Xnfet_01v8_W1p0_L0p15_core_topgate_0 nfet_hv_W4p0_L0p5_core_topgate_0/G VSS IN VSS
++ nfet_01v8_W1p0_L0p15_core_topgate
+Xpfet_01v8_W2p0_L0p15_core_botgate_0 nfet_hv_W4p0_L0p5_core_topgate_0/G VDD IN VDDA1
++ pfet_01v8_W2p0_L0p15_core_botgate
+.ends
+
+.subckt cim_reram_drv_phaseA_srcmux VDD VSS pulse_req_1v8 pulse_kind_form_1v8 pulse_kind_setrr_1v8
++ SRC_RAIL VDDA1
+Xnand2_inv_lv_0 VSS VDDA1 VDD pulse_kind_setrr_1v8 nand2_inv_lv_0/Y pulse_req_1v8
++ nand2_inv_lv
+Xnand2_inv_lv_1 VSS VDDA1 VDD pulse_kind_form_1v8 nand2_inv_lv_1/Y pulse_req_1v8 nand2_inv_lv
+Xpfet_hv_W25p0_L0p5_nf10_core_0 SRC_RAIL lshift_1v8_to_3v3_0/OUT_N VDDA1 VDDA1 pfet_hv_W25p0_L0p5_nf10_core
+Xpfet_hv_W25p0_L0p5_nf10_core_1 SRC_RAIL lshift_1v8_to_3v3_1/OUT_N VDDA1 VDDA1 pfet_hv_W25p0_L0p5_nf10_core
+Xlshift_1v8_to_3v3_0 VSS VDDA1 VDD nand2_inv_lv_0/Y lshift_1v8_to_3v3_0/OUT_N lshift_1v8_to_3v3_0/OUT
++ lshift_1v8_to_3v3
+Xlshift_1v8_to_3v3_1 VSS VDDA1 VDD nand2_inv_lv_1/Y lshift_1v8_to_3v3_1/OUT_N lshift_1v8_to_3v3_1/OUT
++ lshift_1v8_to_3v3
+.ends
+
+.subckt cim_reram_drv_phaseA VDDA1 VDD VSS SRC_RAIL pulse_req_1v8 pulse_kind_form_1v8
++ pulse_kind_setrr_1v8
+Xcim_reram_drv_phaseA_srcmux_0 VDD VSS pulse_req_1v8 pulse_kind_form_1v8 pulse_kind_setrr_1v8
++ SRC_RAIL VDDA1 cim_reram_drv_phaseA_srcmux
+.ends
+

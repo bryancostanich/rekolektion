@@ -137,6 +137,32 @@ type Rule =
     /// Single-polygon min area: bbox area ≥ MinUm². Catches tiny
     /// isolated fragments (`met1.6`, `met2.6`, `li.6`).
     | MinArea  of name: string * layer: LayerKey * minUm2: float
+    /// Asymmetric enclosure: `outer` must contain `inner` with
+    /// enclosure ≥ `oneDirUm` on one axis AND ≥ `otherDirUm` on
+    /// the other axis. The "one" axis is whichever (X or Y) has
+    /// more slack; the rule passes if both pairs of opposing
+    /// edges satisfy their axis's threshold.
+    ///
+    /// SKY130 uses asymmetric enclosure for many contact rules
+    /// (`licon.5a`/`licon.5c`, `li.5`/`li.5_2`, `met1.5`,
+    /// `via.4a`/`via.5a`, etc.) — a li1 strap on top of a licon
+    /// can have 0 enclosure on its long axis if it has ≥ 0.08 µm
+    /// on the short axis. Symmetric Enclosure (requiring N on
+    /// every side) would falsely fire on those.
+    ///
+    /// Convention: `oneDirUm` is the LARGER threshold (typically
+    /// the one Magic labels with the higher suffix letter — e.g.
+    /// licon.5c at 0.06 vs licon.5a at 0.04, the rule asks the
+    /// LONG axis ≥ 0.06 AND the SHORT axis ≥ 0.04). The check
+    /// determines which axis is which by measuring actual
+    /// enclosure per axis.
+    | AsymEnclosure of
+        name: string
+        * outer: LayerKey
+        * inner: LayerKey
+        * oneDirUm: float
+        * otherDirUm: float
+        * cond: InnerCondition
 
 /// Magic-compatible name of a rule. Used by the renderer (label
 /// next to the violation marker) and by toggle filters keyed on
@@ -149,6 +175,7 @@ let nameOf (rule: Rule) : string =
     | Enclosure (n, _, _, _, _) -> n
     | Endcap (n, _, _, _) -> n
     | MinArea (n, _, _) -> n
+    | AsymEnclosure (n, _, _, _, _, _) -> n
 
 // --- Rule table ---------------------------------------------------------
 // Ordering follows `sky130.py` top-to-bottom for ease of diffing,
@@ -217,17 +244,17 @@ let allRules : Rule list = [
     // top of a licon regardless of what's below.
     Width    ("licon.1",    licon1, 0.17)
     Spacing  ("licon.2",    licon1, 0.17)
-    Enclosure("licon.5a",   diff,   licon1, 0.04, OverlapsDiff)
-                                                  // diff overlap of licon
-                                                  // (one direction — symmetric
-                                                  // 0.04 is conservative; the
-                                                  // 0.06 other-direction
-                                                  // variant lands in step 2
-                                                  // when AsymEnclosure exists)
-    Enclosure("licon.8",    poly,   licon1, 0.05, OverlapsPoly)
-                                                  // poly overlap of licon
-    Enclosure("li.5",       li1,    licon1, 0.08, Always)
-                                                  // li1 encloses every licon
+    // licon.5a/5c — diff overlap of licon (one direction 0.04,
+    // other direction 0.06). The rule passes when both opposing
+    // pairs of edges satisfy their axis's threshold.
+    AsymEnclosure("licon.5a", diff, licon1, 0.06, 0.04, OverlapsDiff)
+    // licon.8 — poly overlap of licon (0.05 one dir, 0.08 other)
+    AsymEnclosure("licon.8",  poly, licon1, 0.08, 0.05, OverlapsPoly)
+    // li.5 — li1 encloses every licon. li1 straps are typically
+    // licon-width on one axis (0 enclosure there), so the rule
+    // is properly asymmetric: 0 in one direction, 0.08 in the
+    // other.
+    AsymEnclosure("li.5",     li1,  licon1, 0.08, 0.0,  Always)
 
     // --- LI1 (local interconnect) ---
     Width    ("li.1",       li1,   0.17)
@@ -237,8 +264,11 @@ let allRules : Rule list = [
     // --- MCON (contact: li1 to met1) ---
     Width    ("mcon.1",     mcon,  0.17)
     Spacing  ("mcon.2",     mcon,  0.19)
-    Enclosure("met1.5",     met1,  mcon, 0.03, Always)
-                                                  // met1 encloses every mcon
+    // met1.5 — met1 encloses every mcon. Asymmetric: 0.03 one
+    // dir, 0.06 other dir. A met1 wire that's 0.17 nm wide (=
+    // mcon width) on its short axis has 0 enclosure there;
+    // along the wire's length it has plenty.
+    AsymEnclosure("met1.5",   met1,  mcon, 0.06, 0.03, Always)
 
     // --- Metal 1 ---
     Width    ("met1.1",     met1,  0.14)
@@ -248,8 +278,12 @@ let allRules : Rule list = [
     // --- VIA (met1 to met2) ---
     Width    ("via.1",      via,   0.15)
     Spacing  ("via.2",      via,   0.17)
-    Enclosure("via.4a",     met1,  via, 0.055, Always)  // met1 encloses via
-    Enclosure("via.5a",     met2,  via, 0.055, Always)  // met2 encloses via
+    // via.4a/4b — met1 encloses via1. SKY130 is symmetric here:
+    // 0.055 both directions (different from licon/mcon).
+    Enclosure("via.4a",     met1,  via, 0.055, Always)
+    // via.5a — met2 encloses via1. Symmetric: 0.055 both
+    // directions.
+    Enclosure("via.5a",     met2,  via, 0.055, Always)
 
     // --- Metal 2 ---
     Width    ("met2.1",     met2,  0.14)
@@ -259,8 +293,12 @@ let allRules : Rule list = [
     // --- VIA2 (met2 to met3) ---
     Width    ("via2.1",     via2,  0.20)
     Spacing  ("via2.2",     via2,  0.20)
-    Enclosure("via2.4",     met2,  via2, 0.04, Always)   // met2 encloses via2
-    Enclosure("via2.5",     met3,  via2, 0.065, Always)  // met3 encloses via2
+    // via2.4 — met2 encloses via2. Asymmetric: 0.04 one dir,
+    // 0.085 other dir.
+    AsymEnclosure("via2.4", met2, via2, 0.085, 0.04, Always)
+    // via2.5 — met3 encloses via2. Asymmetric: 0.065 one dir,
+    // 0.095 other dir.
+    AsymEnclosure("via2.5", met3, via2, 0.095, 0.065, Always)
 
     // --- Metal 3 ---
     Width    ("met3.1",     met3,  0.30)

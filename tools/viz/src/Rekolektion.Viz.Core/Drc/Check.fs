@@ -80,6 +80,19 @@ let private bboxContainsMargin
     let topM    = oy2 - iy2
     min (min leftM bottomM) (min rightM topM)
 
+/// Per-axis enclosure margins. Returns the smaller of the two
+/// per-axis pairs: `xMargin` = min(left, right), `yMargin` =
+/// min(bottom, top). Asymmetric enclosure compares these against
+/// per-axis thresholds (one for the long-axis pair, one for the
+/// short).
+let private bboxContainsMarginAxis
+        ((ix1, iy1, ix2, iy2): int64 * int64 * int64 * int64)
+        ((ox1, oy1, ox2, oy2): int64 * int64 * int64 * int64)
+        : int64 * int64 =
+    let xMargin = min (ix1 - ox1) (ox2 - ix2)
+    let yMargin = min (iy1 - oy1) (oy2 - iy2)
+    xMargin, yMargin
+
 /// Bbox overlap (any shared interior, not just touching). True
 /// when the two rects share area > 0.
 let private bboxOverlaps
@@ -327,6 +340,71 @@ let checkWithToggles
                                         MeasuredDbu = max 0L m
                                         BboxA = sBb
                                         BboxB = Some rBb }
+        | Rules.AsymEnclosure (name, outer, inner, oneDirUm, otherDirUm, cond) ->
+            // Two thresholds, one per axis. The rule passes when
+            // EITHER (xMargin ≥ one AND yMargin ≥ other) OR
+            // (xMargin ≥ other AND yMargin ≥ one) — i.e. the
+            // larger threshold is satisfied on one axis and the
+            // smaller on the other.
+            let oneLim   = umToDbu umPerDbu oneDirUm
+            let otherLim = umToDbu umPerDbu otherDirUm
+            if oneLim > 0L || otherLim > 0L then
+                let outers = polysOnLayer idx outer
+                let inners = polysOnLayer idx inner
+                for (_, ibb, iIdx) in inners do
+                    let iTags = Implant.tagOf tags iIdx
+                    if condMatches cond iTags then
+                        // Find the covering outer with the best
+                        // (largest min-axis) per-axis margin.
+                        let mutable bestPair :
+                                (int64 * int64 *
+                                 (int64 * int64 * int64 * int64)) voption =
+                            ValueNone
+                        for (_, obb, _) in outers do
+                            if bboxOverlaps obb ibb then
+                                let xM, yM = bboxContainsMarginAxis ibb obb
+                                // Score = (min axis satisfied,
+                                // max axis satisfied). We keep
+                                // the pair that maximises the
+                                // smaller-axis margin (i.e.
+                                // closest to passing).
+                                let score = min xM yM
+                                match bestPair with
+                                | ValueNone ->
+                                    bestPair <- ValueSome (xM, yM, obb)
+                                | ValueSome (bx, by, _) when score > (min bx by) ->
+                                    bestPair <- ValueSome (xM, yM, obb)
+                                | _ -> ()
+                        match bestPair with
+                        | ValueNone ->
+                            result.Add {
+                                Rule = name
+                                LayerNumber = inner.Number
+                                LayerType   = inner.DataType
+                                LimitDbu    = max oneLim otherLim
+                                MeasuredDbu = 0L
+                                BboxA = ibb
+                                BboxB = None }
+                        | ValueSome (xM, yM, obb) ->
+                            // Try both axis assignments. Pass if
+                            // either works.
+                            let assignA =
+                                xM >= oneLim   && yM >= otherLim
+                            let assignB =
+                                xM >= otherLim && yM >= oneLim
+                            if not (assignA || assignB) then
+                                // Report the smaller actual margin
+                                // as the measured value — the
+                                // narrowest place the rule fails.
+                                let measured = min xM yM
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = inner.Number
+                                    LayerType   = inner.DataType
+                                    LimitDbu    = min oneLim otherLim
+                                    MeasuredDbu = max 0L measured
+                                    BboxA = ibb
+                                    BboxB = Some obb }
         | Rules.MinArea (name, layer, minUm2) ->
             // Compare areas in DBU² to avoid round-off near the
             // limit. (umPerDbu)² scales the µm² threshold up to

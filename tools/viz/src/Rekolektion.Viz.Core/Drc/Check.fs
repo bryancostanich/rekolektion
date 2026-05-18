@@ -169,8 +169,13 @@ let checkWithToggles
         (disabledRules: Set<string>)
         : Violation array =
     let umPerDbu = umPerDbuOf units
-    let result = System.Collections.Generic.List<Violation>()
+    let raw = System.Collections.Generic.List<Violation>()
+    let result = raw
     let idx = indexByLayer flat
+    // Collect COREID core areas once. Empty when there are no
+    // areaid_core polygons in the flat — no waivers fire and the
+    // post-pass filter is a no-op.
+    let coreAreas = Waiver.collectCoreAreas flat
 
     let checkRule (rule: Rules.Rule) =
         let ruleName = Rules.nameOf rule
@@ -428,7 +433,23 @@ let checkWithToggles
     for rule in Rules.allRules do
         checkRule rule
 
-    result.ToArray()
+    // Post-pass: drop COREID-waived violations. The waiver test
+    // unions BboxA and BboxB (when present) into a single test
+    // bbox — a spacing violation is waived only if BOTH polygons
+    // fall inside a COREID area, since spacing across a COREID
+    // boundary is a real bug.
+    let unionBbox
+            ((ax1, ay1, ax2, ay2): int64 * int64 * int64 * int64)
+            (b: (int64 * int64 * int64 * int64) option)
+            : int64 * int64 * int64 * int64 =
+        match b with
+        | None -> (ax1, ay1, ax2, ay2)
+        | Some (bx1, by1, bx2, by2) ->
+            (min ax1 bx1, min ay1 by1, max ax2 bx2, max ay2 by2)
+    result
+    |> Seq.filter (fun v ->
+        not (Waiver.isWaived coreAreas v.Rule (unionBbox v.BboxA v.BboxB)))
+    |> Array.ofSeq
 
 /// Backward-compatible entry point: same signature as before, no
 /// toggles, no implant tags. Computes implant tags internally.

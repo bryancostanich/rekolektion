@@ -73,38 +73,11 @@ let ``mstOf produces a connected tree`` () =
             | _ -> ()
     visited.Count |> should equal pins.Length
 
-// ─── isLikelyPowerNet heuristic ─────────────────────────────────────────
-
-[<Theory>]
-[<InlineData "VDD">]
-[<InlineData "VSS">]
-[<InlineData "GND">]
-[<InlineData "VPWR">]
-[<InlineData "VGND">]
-[<InlineData "VPB">]
-[<InlineData "VNB">]
-[<InlineData "vdd">]    // case-insensitive
-[<InlineData "AVDD">]
-[<InlineData "DVSS">]
-[<InlineData "VDD_1V8">]
-[<InlineData "VSS_CORE">]
-[<InlineData "GND_PAD">]
-let ``isLikelyPowerNet matches power patterns`` (name: string) =
-    Ratlines.isLikelyPowerNet name |> should equal true
-
-[<Theory>]
-[<InlineData "BL">]
-[<InlineData "WL">]
-[<InlineData "CLK">]
-[<InlineData "RESET_N">]
-[<InlineData "SEL[0]">]
-[<InlineData "GATE">]
-[<InlineData "">]
-[<InlineData " ">]
-[<InlineData "VDDISH">]   // VDD-prefix without separator → still a signal
-[<InlineData "GNDLY">]    // ditto
-let ``isLikelyPowerNet rejects signal nets`` (name: string) =
-    Ratlines.isLikelyPowerNet name |> should equal false
+// `isLikelyPowerNet` was removed when the (nets ...) block was
+// deleted (commit 2578e91 — track 06 step 6). Net classification
+// now flows from the label's `Kind` field directly, so the
+// name-heuristic is no longer needed. The Theory blocks that
+// exercised it have been removed with the function.
 
 // ─── compute: kind-filtered net-pin extraction ─────────────────────────
 

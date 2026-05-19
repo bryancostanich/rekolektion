@@ -305,6 +305,12 @@ type StackCanvasControl() =
     // tracks the cell's silicon bbox; rebuilt when FitCameraTo
     // sees new bounds.
     let mutable rulerProgram : uint32 = 0u
+    // Halo program — same vertex shader as rulerProgram but the
+    // fragment shader writes vec4(vColor, uAlpha). Used by the
+    // selection halo two-pass draw to layer a translucent wide
+    // band underneath the crisp inner edge, matching 2D's
+    // SKMaskFilter blur + stroke pattern.
+    let mutable haloProgram : uint32 = 0u
     let mutable rulerVao : uint32 = 0u
     let mutable rulerVbo : uint32 = 0u
     let mutable rulerVertexCount : int = 0
@@ -3379,6 +3385,37 @@ type StackCanvasControl() =
         hoverVao <- g.GenVertexArray()
         hoverVbo <- g.GenBuffer()
 
+        // ---- Halo shader: rulerProgram + uAlpha uniform ----
+        // Separate program so the existing rulerProgram callers
+        // (ruler, ratlines, hover, drag indicator) don't need to
+        // set uAlpha. The selection halo uses two-pass blending:
+        //   pass 1: wide line, low alpha → soft outer band
+        //   pass 2: thin line, full alpha → crisp inner edge
+        // Matches the 2D canvas's SKMaskFilter-blur + crisp-stroke
+        // pattern. GL line width support varies by driver, but
+        // even when capped at ~1-2px the layered alpha gives a
+        // visible glow.
+        let haloFsSrc = "
+            #version 330 core
+            in vec3 vColor;
+            out vec4 FragColor;
+            uniform float uAlpha;
+            void main() { FragColor = vec4(vColor, uAlpha); }
+        "
+        let hrvs = compile rulerVsSrc ShaderType.VertexShader
+        let hrfs = compile haloFsSrc  ShaderType.FragmentShader
+        haloProgram <- g.CreateProgram()
+        g.AttachShader(haloProgram, hrvs)
+        g.AttachShader(haloProgram, hrfs)
+        g.LinkProgram(haloProgram)
+        let mutable haloLink = 0
+        g.GetProgram(haloProgram, ProgramPropertyARB.LinkStatus, &haloLink)
+        if haloLink = 0 then
+            eprintfn "[viz3d] halo program link failed: %s"
+                (g.GetProgramInfoLog haloProgram)
+        g.DeleteShader hrvs
+        g.DeleteShader hrfs
+
         // ---- Bitmap font ----
         let textVsSrc = "
             #version 330 core
@@ -4285,7 +4322,14 @@ type StackCanvasControl() =
                                 GLEnum.ArrayBuffer,
                                 ReadOnlySpan<float32>(arr),
                                 GLEnum.DynamicDraw)
-                            g.UseProgram rulerProgram
+                            // Two-pass halo via haloProgram (vec3
+                            // color + uAlpha uniform). Standard
+                            // alpha blending so the wide
+                            // translucent outer band layers
+                            // behind the crisp opaque inner edge,
+                            // matching 2D's SKMaskFilter-blur +
+                            // stroke look.
+                            g.UseProgram haloProgram
                             let stride = uint32 (6 * sizeof<float32>)
                             g.EnableVertexAttribArray 0u
                             g.VertexAttribPointer(0u, 3, GLEnum.Float, false,
@@ -4294,16 +4338,33 @@ type StackCanvasControl() =
                             g.VertexAttribPointer(1u, 3, GLEnum.Float, false,
                                                   stride,
                                                   nativeint (3 * sizeof<float32>))
-                            let loc =
-                                g.GetUniformLocation(rulerProgram, "uMVP")
+                            let mvpLoc =
+                                g.GetUniformLocation(haloProgram, "uMVP")
+                            let alphaLoc =
+                                g.GetUniformLocation(haloProgram, "uAlpha")
                             let mvpArr = Matrix4x4Helpers.toFloatArray mvp
-                            g.UniformMatrix4(loc, 1u, false,
+                            g.UniformMatrix4(mvpLoc, 1u, false,
                                              ReadOnlySpan<float32>(mvpArr))
-                            g.LineWidth 3.0f
+                            let n = uint32 (arr.Length / 6)
                             g.Disable GLEnum.DepthTest
-                            g.DrawArrays(GLEnum.Lines, 0,
-                                         uint32 (arr.Length / 6))
-                            g.Enable GLEnum.DepthTest
+                            g.Enable   GLEnum.Blend
+                            g.BlendFunc(BlendingFactor.SrcAlpha,
+                                        BlendingFactor.OneMinusSrcAlpha)
+                            // Pass 1: wide soft halo. LineWidth
+                            // is capped by the driver (commonly
+                            // 1.0-10.0); we ask for 8 and take
+                            // what we get — the alpha layer is
+                            // what makes the glow visible even
+                            // when width clamps.
+                            g.Uniform1(alphaLoc, 0.35f)
+                            g.LineWidth 8.0f
+                            g.DrawArrays(GLEnum.Lines, 0, n)
+                            // Pass 2: crisp inner edge on top.
+                            g.Uniform1(alphaLoc, 1.0f)
+                            g.LineWidth 2.0f
+                            g.DrawArrays(GLEnum.Lines, 0, n)
+                            g.Disable GLEnum.Blend
+                            g.Enable  GLEnum.DepthTest
             drawSelectionHalo ()
             match hoveredRoute with
             | None -> drawDragIndicator ()

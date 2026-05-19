@@ -111,14 +111,53 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
                 Dispatcher.UIThread.Invoke(fun () -> resultRef.Value <- f (sx, sy, ex, ey))
                 resultRef.Value
         | "/select" ->
-            // Replace InstanceSelection with the given indices.
-            // body: { "indices": [0, 2, ...] }
-            let arr = root.GetProperty("indices")
-            let mutable acc = Set.empty
-            for i in 0 .. arr.GetArrayLength() - 1 do
-                acc <- acc.Add (arr.[i].GetInt32())
+            // Replace the active macro's selection with the
+            // given instance indices AND/OR polygon keys. Either
+            // or both arrays may be present; an absent array
+            // means "don't touch that side". Body:
+            //   { "indices": [0, 2, ...],          // SRef instance indices
+            //     "polygons": [                    // PolyKey records
+            //       { "cell": "...", "index": 14,
+            //         "topInstance": 7 } ] }
+            // `topInstance` is optional — null/missing means the
+            // poly is authored directly in the top cell (no
+            // SRef context).
+            let mutable instAcc : Set<int> voption = ValueNone
+            let mutable polyAcc : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> voption =
+                ValueNone
+            let mutable hasInd, indProp = root.TryGetProperty("indices")
+            if hasInd then
+                let mutable s = Set.empty
+                for i in 0 .. indProp.GetArrayLength() - 1 do
+                    s <- s.Add (indProp.[i].GetInt32())
+                instAcc <- ValueSome s
+            let mutable hasPoly, polyProp = root.TryGetProperty("polygons")
+            if hasPoly then
+                let mutable s : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> =
+                    Set.empty
+                for i in 0 .. polyProp.GetArrayLength() - 1 do
+                    let entry = polyProp.[i]
+                    let cell = entry.GetProperty("cell").GetString()
+                    let idx = entry.GetProperty("index").GetInt32()
+                    let topInst =
+                        let mutable found, tiProp = entry.TryGetProperty("topInstance")
+                        if found && tiProp.ValueKind <> JsonValueKind.Null then
+                            Some (tiProp.GetInt32())
+                        else None
+                    let pk : Rekolektion.Viz.Core.Layout.Flatten.PolyKey = {
+                        Cell = cell
+                        Index = idx
+                        TopInstance = topInst
+                    }
+                    s <- s.Add pk
+                polyAcc <- ValueSome s
             Dispatcher.UIThread.Post(fun () ->
-                dispatch (Msg.SetInstanceSelection acc))
+                match instAcc with
+                | ValueSome s -> dispatch (Msg.SetInstanceSelection s)
+                | ValueNone -> ()
+                match polyAcc with
+                | ValueSome s -> dispatch (Msg.SetPolygonSelection s)
+                | ValueNone -> ())
             "{\"ok\":true}"
         | "/move" ->
             // Translate the current InstanceSelection by Δ DBU.
@@ -333,7 +372,9 @@ let handleQuery (path: string) (_dispatch: Msg.Msg -> unit) : string =
                     let polyItems =
                         m.Selection
                         |> Set.toList
-                        |> List.choose (fun (sname, eidx) ->
+                        |> List.choose (fun (pk: Rekolektion.Viz.Core.Layout.Flatten.PolyKey) ->
+                            let sname = pk.Cell
+                            let eidx = pk.Index
                             match Map.tryFind sname cellByName with
                             | None -> None
                             | Some c when eidx < 0 || eidx >= c.Elements.Length ->
@@ -374,12 +415,16 @@ let handleQuery (path: string) (_dispatch: Msg.Msg -> unit) : string =
                                             Rekolektion.Viz.Core.Rkt.ToGds.layerToGds p.Layer
                                         "path", n, d
                                     | _ -> "other", -1, -1
+                                let topInstStr =
+                                    match pk.TopInstance with
+                                    | Some i -> string i
+                                    | None -> "null"
                                 match bbox with
                                 | None -> None
                                 | Some (x1, y1, x2, y2) ->
                                     Some (sprintf
-                                        "{\"cell\":\"%s\",\"index\":%d,\"kind\":\"%s\",\"layer\":%d,\"datatype\":%d,\"bboxUm\":[%.3f,%.3f,%.3f,%.3f]}"
-                                        (esc sname) eidx kind layerN layerD
+                                        "{\"cell\":\"%s\",\"index\":%d,\"topInstance\":%s,\"kind\":\"%s\",\"layer\":%d,\"datatype\":%d,\"bboxUm\":[%.3f,%.3f,%.3f,%.3f]}"
+                                        (esc sname) eidx topInstStr kind layerN layerD
                                         (umOf x1) (umOf y1) (umOf x2) (umOf y2)))
                         |> String.concat ","
                     sprintf

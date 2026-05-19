@@ -339,6 +339,29 @@ let private toolGetSelection (_args: JsonElement) : ToolResult =
     with ex ->
         toolError (sprintf "get_selection failed: %s" ex.Message)
 
+/// Tool: rekolektion_viz_set_selection — POST /select. Replaces
+/// the active macro's instance and/or polygon selection so an
+/// agent can highlight specifically what it changed. Mirror of
+/// `rekolektion_viz_get_selection` on the write side. Either
+/// `instances` or `polygons` (or both) may be present; an absent
+/// array means "don't touch that side of the selection."
+///
+/// Selections render with the canvas's cyan halo overlay in
+/// both 2D and 3D, so once this fires the user sees exactly
+/// the geometry the agent is calling out.
+let private toolSetSelection (args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            // Forward the JSON body verbatim — CommandListener
+            // validates it. The agent's args ARE the body.
+            let body = args.GetRawText()
+            let resp = udsRequest "POST" "/select" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "set_selection failed: %s" ex.Message)
+
 /// Tool: rekolektion_viz_hover_at { x, y } — probe the routing
 /// hover hit-test at a specific 3D-canvas screen pixel. Returns
 /// the canvas's full diagnose dump (ray, per-layer Z samples,
@@ -620,6 +643,7 @@ let private toolHandlers
         "rekolektion_viz_list_macros",       toolListMacros
         "rekolektion_viz_set_active_macro",  toolSetActiveMacro
         "rekolektion_viz_get_selection",     toolGetSelection
+        "rekolektion_viz_set_selection",     toolSetSelection
         "rekolektion_viz_hover_at",          toolHoverAt
         "rekolektion_viz_simulate_drag",     toolSimulateDrag
         "rekolektion_viz_get_geometry",      toolGetGeometry
@@ -716,6 +740,57 @@ let private toolList : obj =
                inputSchema =
                    box {| ``type`` = "object"
                           properties = obj()
+                          additionalProperties = false |} |}
+        box {| name = "rekolektion_viz_set_selection"
+               description =
+                   "Replace the active macro's selection so the user sees \
+                    exactly what you changed. Either or both of `instances` \
+                    (SRef indices) and `polygons` (PolyKey records) may be \
+                    present; an absent array leaves that side of the \
+                    selection untouched. Selected items render with the \
+                    canvas's cyan halo overlay in both 2D and 3D. Use \
+                    after an edit to point at the geometry you just \
+                    touched."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              box {|
+                                instances =
+                                    box {| ``type`` = "array"
+                                           description =
+                                               "SRef instance indices to \
+                                                select. Index matches the \
+                                                `index` field returned by \
+                                                rekolektion_viz_get_selection."
+                                           items =
+                                               box {| ``type`` = "integer" |} |}
+                                polygons =
+                                    box {| ``type`` = "array"
+                                           description =
+                                               "Polygon keys to select. \
+                                                Cell is the source-cell \
+                                                name; index is the \
+                                                element index within that \
+                                                cell; topInstance is the \
+                                                enclosing top-cell SRef \
+                                                index (omit / null if the \
+                                                poly is authored directly \
+                                                in the top cell)."
+                                           items =
+                                               box {|
+                                                ``type`` = "object"
+                                                properties =
+                                                    box {|
+                                                      cell =
+                                                          box {| ``type`` = "string" |}
+                                                      index =
+                                                          box {| ``type`` = "integer" |}
+                                                      topInstance =
+                                                          box {| ``type`` = ["integer"; "null"] |}
+                                                    |}
+                                                required = [| "cell"; "index" |]
+                                               |} |}
+                              |}
                           additionalProperties = false |} |}
         box {| name = "rekolektion_viz_hover_at"
                description =

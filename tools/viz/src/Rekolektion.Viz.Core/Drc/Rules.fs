@@ -157,10 +157,7 @@ type Rule =
     ///   * Fully inside any destination polygon → skip (legal,
     ///     e.g. NSDM inside nwell marks an n-tap).
     ///   * Partially overlaps a destination polygon (crosses
-    ///     the boundary) → fire at gap=0. This is the actual
-    ///     diff/tap.9 case: NSDM straddling an nwell edge means
-    ///     part of the n+ implant extends outside the well, and
-    ///     that outside part touches the well boundary (gap=0).
+    ///     the boundary) → fire at gap=0.
     ///   * Fully separate from all destinations → check gap;
     ///     fire if gap < minUm. Same as CrossSpacing for this
     ///     case.
@@ -174,6 +171,25 @@ type Rule =
         name: string
         * source: LayerKey
         * destination: LayerKey
+        * minUm: float
+    /// "Implant ∩ active, minus well, must be ≥ minUm from
+    /// well." Models Magic's SKY130 rules where the violation
+    /// is keyed on the actual diffusion region — diff ∩ implant
+    /// marker — rather than the bare implant marker. Avoids the
+    /// false-positive class where an implant marker (e.g. a
+    /// pFET's n-tap NSDM at the nwell edge) has no diff under
+    /// the part that extends past the well, and so isn't
+    /// actually a "n-diffusion outside well" violation.
+    ///
+    /// Used for `diff/tap.9` (n+ diffusion outside nwell to
+    /// nwell ≥ 0.34 µm). Magic's deck implements it via the
+    /// same boolean: `(NSDM ∩ DIFF) - NWELL` then spacing to
+    /// NWELL.
+    | ImplantOutsideWellSpacing of
+        name: string
+        * implant: LayerKey
+        * active: LayerKey
+        * well: LayerKey
         * minUm: float
     /// Asymmetric enclosure: `outer` must contain `inner` with
     /// enclosure ≥ `oneDirUm` on one axis AND ≥ `otherDirUm` on
@@ -215,6 +231,7 @@ let nameOf (rule: Rule) : string =
     | MinArea (n, _, _) -> n
     | AsymEnclosure (n, _, _, _, _, _) -> n
     | BoundaryCrossing (n, _, _, _) -> n
+    | ImplantOutsideWellSpacing (n, _, _, _, _) -> n
 
 // --- Rule table ---------------------------------------------------------
 // Ordering follows `sky130.py` top-to-bottom for ease of diffing,
@@ -278,14 +295,13 @@ let allRules : Rule list = [
     Endcap   ("poly.7",     diff,  poly, 0.25)    // diff overhangs source/drain
     CrossSpacing("poly.4",  poly,  diff, 0.075, Always)
                                                   // poly edge to diff (non-gate)
-    // diff/tap.9 — N+ diffusion to nwell ≥ 0.34 µm. Magic's
-    // deck keys this off the NSDM marker layer (NSDM = n-type
-    // implant region). The semantics are:
-    //   - NSDM fully inside nwell → n-tap, legal, no fire
-    //   - NSDM crossing nwell edge → outside part is too close
-    //     to nwell (gap = 0), FIRES
-    //   - NSDM outside nwell with gap < 0.34 → FIRES
-    BoundaryCrossing("diff/tap.9", nsdm, nwell, 0.34)
+    // diff/tap.9 — n+ diffusion outside nwell to nwell ≥ 0.34.
+    // Uses (NSDM ∩ DIFF) \ NWELL as the violating geometry,
+    // matching Magic's deck. Bare NSDM crossing nwell (a pFET's
+    // n-tap implant extending slightly past the well boundary
+    // with no diff under it) correctly does NOT fire — the
+    // n-diffusion itself isn't outside nwell, only the marker.
+    ImplantOutsideWellSpacing("diff/tap.9", nsdm, diff, nwell, 0.34)
 
     // --- LICON1 (contact: diff/poly to li1) ---
     // Licon contacts are typed by what's BELOW them: diff for

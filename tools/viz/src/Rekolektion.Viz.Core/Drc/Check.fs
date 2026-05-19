@@ -582,6 +582,50 @@ let checkWithToggles
                             MeasuredDbu = minSepGap
                             BboxA = sBb
                             BboxB = Some nearestDest }
+        | Rules.ImplantOutsideWellSpacing (name, implant, active, well, minUm) ->
+            // Build the actual diffusion-outside-well region
+            // via polygon booleans, then check distance to
+            // well. The full Region pipeline:
+            //   nDiff       = implant ∩ active
+            //   nDiffOut    = nDiff \ well
+            //   if nDiffOut is empty → no possible violation
+            //   wellGrown   = grow well by limit
+            //   violations  = nDiffOut ∩ wellGrown
+            // Where nDiffOut and wellGrown overlap, an n-diff
+            // region is within `limit` of well — a violation.
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let implantPolys =
+                    polysOnLayer idx implant
+                    |> Array.map (fun (p, _, _) -> p)
+                let activePolys =
+                    polysOnLayer idx active
+                    |> Array.map (fun (p, _, _) -> p)
+                let wellPolys =
+                    polysOnLayer idx well
+                    |> Array.map (fun (p, _, _) -> p)
+                if implantPolys.Length > 0
+                   && activePolys.Length > 0
+                   && wellPolys.Length > 0 then
+                    let implantR = Region.ofPolygons implantPolys
+                    let activeR  = Region.ofPolygons activePolys
+                    let wellR    = Region.ofPolygons wellPolys
+                    let nDiff = Boolean.intersect implantR activeR
+                    let nDiffOut = Boolean.subtract nDiff wellR
+                    if not (Region.isEmpty nDiffOut) then
+                        let wellGrown = Size.grow limit wellR
+                        let violations = Boolean.intersect nDiffOut wellGrown
+                        for slab in violations.Slabs do
+                            for iv in slab.Intervals do
+                                let m = min (iv.X2 - iv.X1) slab.Height
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = active.Number
+                                    LayerType   = active.DataType
+                                    LimitDbu    = limit
+                                    MeasuredDbu = m
+                                    BboxA = (iv.X1, slab.Y, iv.X2, slab.Y + slab.Height)
+                                    BboxB = None }
         | Rules.MinArea (name, layer, minUm2) ->
             // Magic-fidelity min-area: build a Region from the
             // input polygons, find connected components, check

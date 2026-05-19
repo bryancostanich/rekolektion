@@ -274,17 +274,213 @@ power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
     x1=SRC_BRIDGE_X1, y1=12150,
     x2=SRC_BRIDGE_X2, y2=12400))
 
-# disch.D → SRC bridge: via1 on the existing disch.D met1 strip
-# (x=29237..29467, y=-5682..-3682), then met2 vertical at x=29350
-# up to the bridge. The column is clear east of nand_F (x>29098),
-# west of lsh_S (x<29485), and above the VSS trunk (y > -4930), so
-# the vertical doesn't collide with any other met2 feature.
-SRC_DISCH_X = 29350
-SRC_DISCH_Y = -4200  # in disch.D strip's y range (-5682..-3682)
-power_routes.append(m1_pad(SRC_DISCH_X, SRC_DISCH_Y))
-power_routes.extend(place_via((SRC_DISCH_X, SRC_DISCH_Y), "met1", "met2"))
-power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
-    x1=SRC_DISCH_X-70, y1=SRC_DISCH_Y, x2=SRC_DISCH_X+70, y2=12400))
+# disch.D → SRC bridge: met1 vertical extending the disch.D strip
+# north, then via1 up to met2 inside the SRC bridge near the top.
+# Met1 is used for the long vertical so we don't blow through the
+# VDD met2 strap at y=3700 (same-layer met2 short).
+# Column is offset slightly west of the strip center so it stays
+# clear of the gate pad east of disch.D.
+# - disch.D strip:   x=29237..29467, y=-5682..-3682
+# - VSS top bridge:  x=23230..34565, y=12505..12950 (met1 — must
+#                    keep ≥140 nm clearance to our met1 pad)
+# - SRC bridge:      x=22595..35850, y=12150..12400 (met2 — target)
+SRC_VERT_X1 = 29230
+SRC_VERT_X2 = 29370
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=SRC_VERT_X1, y1=-5682, x2=SRC_VERT_X2, y2=12100))
+# Transition to met2 inside SRC bridge y range. Met1 pad top stays
+# 145 nm clear of VSS top bridge bottom.
+SRC_VIA_X = (SRC_VERT_X1 + SRC_VERT_X2) // 2   # 29330
+SRC_VIA_Y = 12200
+power_routes.append(m1_pad(SRC_VIA_X, SRC_VIA_Y))
+power_routes.extend(place_via((SRC_VIA_X, SRC_VIA_Y), "met1", "met2"))
+
+# ─── Signal routing — Step 1: internal nets ─────────────────────────
+signal_routes = []
+
+# pulse_req_1v8: nf.A → ns.A on li1. Both nand2's NFET-col0 gates
+# already have a poly→licon→li1→mcon→met1 stack inside the nand2
+# primitive. Extending the existing gate li1 patch leftward and a
+# vertical li1 spine bridges the two cells.
+PR_VERT_X = 23700
+PR_VERT_HALF = 85   # 170 nm (li1.1 ≥ 170)
+# nf NFET-col0 gate li1 at global (24578..24908, -3665..-3495)
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "li1"),
+    x1=PR_VERT_X-PR_VERT_HALF, y1=-3665,
+    x2=24908, y2=-3495))
+# ns NFET-col0 gate li1 at global (24565..24895, -11176..-11006)
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "li1"),
+    x1=PR_VERT_X-PR_VERT_HALF, y1=-11176,
+    x2=24895, y2=-11006))
+# Vertical li1 spine
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "li1"),
+    x1=PR_VERT_X-PR_VERT_HALF, y1=-11176,
+    x2=PR_VERT_X+PR_VERT_HALF, y2=-3495))
+
+# form_active_1v8: nf.Y (met2) → lf.IN (met1). Vertical met3 with
+# via2 stacks at both ends.
+FA_X_NF = 27923   # nf.Y pin X (after nand_F origin)
+FA_X_LF = 27935   # lf.IN pin X
+# nf.Y end stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=FA_X_NF-185, y1=-1355, x2=FA_X_NF+185, y2=-985))
+signal_routes.extend(place_via((FA_X_NF, -1170), "met2", "met3"))
+# lf.IN end stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=FA_X_LF-185, y1=9010, x2=FA_X_LF+185, y2=9380))
+signal_routes.extend(place_via((FA_X_LF, 9195), "met2", "met3"))
+# Met3 vertical bridge between via2 cuts
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=min(FA_X_NF, FA_X_LF)-195, y1=-1365,
+    x2=max(FA_X_NF, FA_X_LF)+195, y2=9390))
+
+# setrr_active_1v8: ns.Y → ls.IN. L on met3.
+SR_X_NS = 27910
+SR_X_LS = 33610
+SR_Y_NS = -8681
+SR_Y_LS = 9250
+# ns.Y end stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=SR_X_NS-185, y1=SR_Y_NS-185, x2=SR_X_NS+185, y2=SR_Y_NS+185))
+signal_routes.extend(place_via((SR_X_NS, SR_Y_NS), "met2", "met3"))
+# ls.IN end stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=SR_X_LS-185, y1=SR_Y_LS-185, x2=SR_X_LS+185, y2=SR_Y_LS+185))
+signal_routes.extend(place_via((SR_X_LS, SR_Y_LS), "met2", "met3"))
+# Met3 L: horizontal at SR_Y_NS + vertical at SR_X_LS
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=SR_X_NS-195, y1=SR_Y_NS-195,
+    x2=SR_X_LS+195, y2=SR_Y_NS+195))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=SR_X_LS-195, y1=SR_Y_NS-195,
+    x2=SR_X_LS+195, y2=SR_Y_LS+195))
+
+# lsh_form: lf.OUT_N → pmos_F.G. L on met3.
+LF_X, LF_Y = 27200, 8000   # lf.OUT_N stack location
+PG_X = 19065               # pmos_F.G column
+PG_VIA1_Y = 12820
+PG_VIA2_Y = 12950
+# lf.OUT_N stack: met1 + via1 + met2 + via2
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=LF_X-160, y1=LF_Y-185, x2=LF_X+160, y2=LF_Y+185))
+signal_routes.extend(place_via((LF_X, LF_Y), "met1", "met2"))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=LF_X-160, y1=LF_Y-185, x2=LF_X+160, y2=LF_Y+185))
+signal_routes.extend(place_via((LF_X, LF_Y), "met2", "met3"))
+# pmos_F.G stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=PG_X-185, y1=12660, x2=PG_X+185, y2=13135))
+signal_routes.extend(place_via((PG_X, PG_VIA1_Y), "met1", "met2"))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=PG_X-185, y1=12660, x2=PG_X+185, y2=13135))
+signal_routes.extend(place_via((PG_X, PG_VIA2_Y), "met2", "met3"))
+# Met3 L: vertical at LF_X + horizontal at PG_VIA2_Y
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=LF_X-195, y1=LF_Y-195, x2=LF_X+195, y2=PG_VIA2_Y+195))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=PG_X-195, y1=PG_VIA2_Y-195, x2=LF_X+195, y2=PG_VIA2_Y+195))
+
+# lsh_setrr: ls.OUT_N → pmos_S.G. Mirror of lsh_form.
+LS_X, LS_Y = 32875, 8000
+PG_S_X = 40170
+PG_S_VIA1_Y = 12820
+PG_S_VIA2_Y = 12950
+# ls.OUT_N stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=LS_X-160, y1=LS_Y-185, x2=LS_X+160, y2=LS_Y+185))
+signal_routes.extend(place_via((LS_X, LS_Y), "met1", "met2"))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=LS_X-160, y1=LS_Y-185, x2=LS_X+160, y2=LS_Y+185))
+signal_routes.extend(place_via((LS_X, LS_Y), "met2", "met3"))
+# pmos_S.G stack
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=PG_S_X-185, y1=12660, x2=PG_S_X+185, y2=13135))
+signal_routes.extend(place_via((PG_S_X, PG_S_VIA1_Y), "met1", "met2"))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=PG_S_X-185, y1=12660, x2=PG_S_X+185, y2=13135))
+signal_routes.extend(place_via((PG_S_X, PG_S_VIA2_Y), "met2", "met3"))
+# Met3 L: vertical at LS_X + horizontal at PG_S_VIA2_Y
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=LS_X-195, y1=LS_Y-195, x2=LS_X+195, y2=PG_S_VIA2_Y+195))
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=LS_X-195, y1=PG_S_VIA2_Y-195, x2=PG_S_X+195, y2=PG_S_VIA2_Y+195))
+
+# ─── Signal routing — Step 2: pulse_req_n ───────────────────────────
+# Connects the inverter output (inv_p.D + inv_n.D) to disch.G. All on
+# met1. Topology:
+#   A. inv_p.D ↔ inv_n.D bridge (horizontal at y≈-4450, inside both
+#      D-strip y ranges; runs through the gap between inv_n east and
+#      inv_p west).
+#   B. inv_n.D north extension (vertical above inv_n.D's strip top
+#      from y=-4370 north to y=-3290, in the open area above inv_n).
+#   C. Horizontal at y=-3430..-3290 from disch.G pad east to overlap
+#      the vertical at the top.
+# Pin coords used:
+#   inv_p.D strip: x=32370..32600, y=-5419..-3419
+#   inv_n.D strip: x=31387..31617, y=-5370..-4370 (rot 180 swaps L/R)
+#   disch.G pad:   x=29517..29977, y=-3522..-3292
+
+# A. inv_p.D ↔ inv_n.D bridge (140 nm tall, inside both strips' y).
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=31500, y1=-4520, x2=32500, y2=-4380))
+
+# B. inv_n.D north extension (overlaps strip top by 30 nm).
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=31387, y1=-4400, x2=31617, y2=-3290))
+
+# C. Horizontal to disch.G (overlaps disch.G pad in y=-3430..-3292 = 138 nm).
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=29517, y1=-3430, x2=31617, y2=-3290))
+
+# ─── Signal routing — Step 3: pulse_req_1v8 fan-out ─────────────────
+# The existing li1 vertical handles nf.A and ns.A gates. Extend to
+# the discharge cluster gates (inv_p.G + inv_n.G) via a met3 trunk.
+# Transition stack drops in the empty band between nand_F (south
+# edge y=-5840) and nand_S (north edge y=-6161). All four metal
+# layers stacked at the same point: li1 → mcon → met1 → via1 →
+# met2 → via2 → met3.
+def m2_pad(x, y, half=185):
+    """Met2 pad for via2 lower enclosure (≥85 nm on a 200 nm cut)."""
+    return rkt.Rect(layer=rkt.named("sky130", "met2"),
+        x1=x-half, y1=y-half, x2=x+half, y2=y+half)
+
+def m3_pad(x, y, half=195):
+    """Met3 pad for via2 upper enclosure (≥95 nm on a 200 nm cut)."""
+    return rkt.Rect(layer=rkt.named("sky130", "met3"),
+        x1=x-half, y1=y-half, x2=x+half, y2=y+half)
+
+# Transition stack on li1 vertical at (23700, -6000).
+PR_TRANS_X = PR_VERT_X
+PR_TRANS_Y = -6000
+signal_routes.append(m1_pad(PR_TRANS_X, PR_TRANS_Y))
+signal_routes.extend(place_via((PR_TRANS_X, PR_TRANS_Y), "li1", "met1"))
+signal_routes.append(m2_pad(PR_TRANS_X, PR_TRANS_Y))
+signal_routes.extend(place_via((PR_TRANS_X, PR_TRANS_Y), "met1", "met2"))
+signal_routes.append(m3_pad(PR_TRANS_X, PR_TRANS_Y))
+signal_routes.extend(place_via((PR_TRANS_X, PR_TRANS_Y), "met2", "met3"))
+
+# Met3 trunk east at y=-5700 ±195 (390 nm tall — wide enough to
+# fully enclose via2 cuts at both gate sites and to overlap the
+# transition stack's m3_pad).
+PR_FAN_Y = -5700
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
+    x1=PR_TRANS_X-195, y1=PR_FAN_Y-195,
+    x2=33000, y2=PR_FAN_Y+195))
+
+# inv_n.G drop at (31282, -5645). Asymmetric m1_pad — top edge kept
+# 170 nm clear of inv_n.S strip (south edge y=-5370) by trimming the
+# pad to y=-5540 (still gives 30 nm top via1 enclosure, 85 nm bottom).
+signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=31122, y1=-5805, x2=31442, y2=-5510))
+signal_routes.append(m2_pad(31282, -5645))
+signal_routes.extend(place_via((31282, -5645), "met1", "met2"))
+signal_routes.extend(place_via((31282, -5645), "met2", "met3"))
+
+# inv_p.G drop at (32705, -5739). Symmetric m1_pad.
+signal_routes.append(m1_pad(32705, -5739))
+signal_routes.append(m2_pad(32705, -5739))
+signal_routes.extend(place_via((32705, -5739), "met1", "met2"))
+signal_routes.extend(place_via((32705, -5739), "met2", "met3"))
 
 # ─── Assemble doc (placement-only — no routing, no labels) ──────────
 doc = rkt.Document(
@@ -299,7 +495,7 @@ doc = rkt.Document(
     cells=[
         rkt.Cell(
             name='cim_reram_drv_phaseA_srcmux',
-            elements=[*srefs, *extra_paint, *power_routes],
+            elements=[*srefs, *extra_paint, *power_routes, *signal_routes],
         ),
     ],
     top_cell='cim_reram_drv_phaseA_srcmux',

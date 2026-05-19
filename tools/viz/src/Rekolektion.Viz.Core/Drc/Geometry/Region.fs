@@ -31,11 +31,18 @@ module Rekolektion.Viz.Core.Drc.Geometry.Region
 
 open Rekolektion.Viz.Core.Layout.Flatten
 
-/// A single X-interval `[X1, X2]` inside a slab. Stored as a
-/// closed-closed pair so a 0-width interval `{X1=10; X2=10}`
-/// represents an isolated edge — useful for spacing checks that
-/// emit zero-width violation strips. Construction normalizes
-/// `X1 <= X2`; downstream code can rely on that invariant.
+/// A single X-interval `[X1, X2)` inside a slab. Half-open:
+/// X1 inclusive, X2 exclusive. Width = X2 - X1. Touching
+/// intervals share an endpoint (a.X2 == b.X1) and are merged
+/// during canonicalization.
+///
+/// Half-open is the standard for sweep algorithms (Lauther,
+/// Bentley-Ottmann) because it avoids off-by-one errors at
+/// shared boundaries — `A \ B` where A.X2 == B.X1 correctly
+/// returns A unchanged (no spurious 1-DBU loss at the shared
+/// edge). All ops in this module assume the half-open
+/// convention. Construction normalizes `X1 < X2`; an empty
+/// interval (X1 >= X2) is dropped.
 type Interval = {
     X1 : int64
     X2 : int64
@@ -94,13 +101,13 @@ let mergeSortedIntervals (sorted: Interval array) : Interval array =
         let mutable cur = sorted.[0]
         for i in 1 .. sorted.Length - 1 do
             let next = sorted.[i]
-            // Touching intervals (X2 + 1 = X1') ARE merged here
-            // because the canonical form requires non-adjacent
-            // intervals. DRC consumers treat the merged span as
-            // one continuous strip — which is what they need
-            // for width/spacing measurements across a contiguous
-            // edge.
-            if next.X1 <= cur.X2 + 1L then
+            // Touching intervals (next.X1 == cur.X2 under
+            // half-open convention) ARE merged here because the
+            // canonical form requires non-adjacent intervals.
+            // DRC consumers treat the merged span as one
+            // continuous strip — what they need for width /
+            // spacing measurements across a contiguous edge.
+            if next.X1 <= cur.X2 then
                 cur <- { cur with X2 = max cur.X2 next.X2 }
             else
                 result.Add cur
@@ -128,8 +135,13 @@ let private intervalsEqual (a: Interval array) (b: Interval array) : bool =
 /// the user-supplied terminator (caller passes the Y where the
 /// region ends).
 ///
-/// Internal helper used by `ofPolygons` and the boolean ops.
-let private fromSlabBuilders
+/// Low-level builder shared by `ofPolygons` and the boolean
+/// ops in `Drc.Geometry.Boolean`. External callers should
+/// prefer the higher-level constructors (`ofPolygons`,
+/// `ofRect`) when possible — this primitive requires the
+/// caller to supply a Y-sorted-distinct event list with the
+/// "active interval set at each Y" already computed.
+let fromSlabBuilders
         (buildersY: int64 array)
         (buildersIntervals: Interval array array)
         : Region =
@@ -315,7 +327,9 @@ let area (r: Region) : int64 =
 /// Build a Region from a single rectangle. Used by tests and by
 /// the boolean/sizing ops when they need a one-rect Region.
 let ofRect (xMin: int64) (yMin: int64) (xMax: int64) (yMax: int64) : Region =
-    if xMin > xMax || yMin > yMax then empty
+    // Empty when half-open extents are zero-or-negative —
+    // [a, a) covers no area.
+    if xMin >= xMax || yMin >= yMax then empty
     else
         { Slabs =
             [| { Y = yMin

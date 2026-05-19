@@ -305,12 +305,17 @@ type StackCanvasControl() =
     // tracks the cell's silicon bbox; rebuilt when FitCameraTo
     // sees new bounds.
     let mutable rulerProgram : uint32 = 0u
-    // Halo program — same vertex shader as rulerProgram but the
-    // fragment shader writes vec4(vColor, uAlpha). Used by the
-    // selection halo two-pass draw to layer a translucent wide
-    // band underneath the crisp inner edge, matching 2D's
-    // SKMaskFilter blur + stroke pattern.
+    // Halo program — fat-line shader. macOS GL core profile
+    // clamps glLineWidth to 1.0, so a "wide halo + crisp inner"
+    // two-pass with native lines collapses both passes to 1px
+    // and the halo disappears. Instead we generate quad
+    // geometry (2 triangles per segment) and the vertex shader
+    // offsets each quad corner perpendicular to the segment by
+    // `uHalfWidthPx` pixels in screen space. Per-pixel uniform
+    // alpha makes the soft glow + sharp inner edge readable.
     let mutable haloProgram : uint32 = 0u
+    let mutable haloVao : uint32 = 0u
+    let mutable haloVbo : uint32 = 0u
     let mutable rulerVao : uint32 = 0u
     let mutable rulerVbo : uint32 = 0u
     let mutable rulerVertexCount : int = 0
@@ -3385,25 +3390,61 @@ type StackCanvasControl() =
         hoverVao <- g.GenVertexArray()
         hoverVbo <- g.GenBuffer()
 
-        // ---- Halo shader: rulerProgram + uAlpha uniform ----
-        // Separate program so the existing rulerProgram callers
-        // (ruler, ratlines, hover, drag indicator) don't need to
-        // set uAlpha. The selection halo uses two-pass blending:
-        //   pass 1: wide line, low alpha → soft outer band
-        //   pass 2: thin line, full alpha → crisp inner edge
-        // Matches the 2D canvas's SKMaskFilter-blur + crisp-stroke
-        // pattern. GL line width support varies by driver, but
-        // even when capped at ~1-2px the layered alpha gives a
-        // visible glow.
-        let haloFsSrc = "
+        // ---- Halo shader: fat-line program ----
+        // Each input segment becomes 2 triangles (6 vertices).
+        // The vertex shader computes the screen-space
+        // perpendicular to the segment and offsets each quad
+        // corner by `uHalfWidthPx` pixels along it, so the
+        // rendered line has a stable on-screen width regardless
+        // of the GL driver's glLineWidth cap.
+        //
+        // Per-vertex attribute layout (11 floats):
+        //   aPosA  (vec3)  — segment start world position
+        //   aPosB  (vec3)  — segment end world position
+        //   aEnd   (float) — 0.0 = this vertex at A, 1.0 = at B
+        //   aSide  (float) — -1.0 or +1.0 (which side of segment)
+        //   aColor (vec3)  — RGB
+        // Uniforms: uMVP (mat4), uViewport (vec2, pixels),
+        //           uHalfWidthPx (float), uAlpha (float).
+        let fatVsSrc = "
+            #version 330 core
+            layout(location=0) in vec3 aPosA;
+            layout(location=1) in vec3 aPosB;
+            layout(location=2) in float aEnd;
+            layout(location=3) in float aSide;
+            layout(location=4) in vec3 aColor;
+            uniform mat4 uMVP;
+            uniform vec2 uViewport;
+            uniform float uHalfWidthPx;
+            out vec3 vColor;
+            void main() {
+                vec4 clipA = uMVP * vec4(aPosA, 1.0);
+                vec4 clipB = uMVP * vec4(aPosB, 1.0);
+                vec4 thisClip = mix(clipA, clipB, aEnd);
+                // NDC of both endpoints.
+                vec2 ndcA = clipA.xy / clipA.w;
+                vec2 ndcB = clipB.xy / clipB.w;
+                vec2 dirPx = (ndcB - ndcA) * 0.5 * uViewport;
+                float len = length(dirPx);
+                vec2 normDir = len > 0.0001 ? dirPx / len : vec2(1.0, 0.0);
+                // Perpendicular in pixels, rotated 90° CCW.
+                vec2 perpPx = vec2(-normDir.y, normDir.x);
+                vec2 offsetPx = perpPx * uHalfWidthPx * aSide;
+                vec2 offsetNdc = offsetPx / uViewport * 2.0;
+                thisClip.xy += offsetNdc * thisClip.w;
+                gl_Position = thisClip;
+                vColor = aColor;
+            }
+        "
+        let fatFsSrc = "
             #version 330 core
             in vec3 vColor;
             out vec4 FragColor;
             uniform float uAlpha;
             void main() { FragColor = vec4(vColor, uAlpha); }
         "
-        let hrvs = compile rulerVsSrc ShaderType.VertexShader
-        let hrfs = compile haloFsSrc  ShaderType.FragmentShader
+        let hrvs = compile fatVsSrc ShaderType.VertexShader
+        let hrfs = compile fatFsSrc ShaderType.FragmentShader
         haloProgram <- g.CreateProgram()
         g.AttachShader(haloProgram, hrvs)
         g.AttachShader(haloProgram, hrfs)
@@ -3415,6 +3456,8 @@ type StackCanvasControl() =
                 (g.GetProgramInfoLog haloProgram)
         g.DeleteShader hrvs
         g.DeleteShader hrfs
+        haloVao <- g.GenVertexArray()
+        haloVbo <- g.GenBuffer()
 
         // ---- Bitmap font ----
         let textVsSrc = "
@@ -4315,54 +4358,115 @@ type StackCanvasControl() =
                                     verts.Add x; verts.Add y; verts.Add zTop
                                     verts.Add r; verts.Add gC; verts.Add bC
                         if verts.Count > 0 then
-                            let arr = verts.ToArray()
-                            g.BindVertexArray hoverVao
-                            g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
+                            // Convert line pairs (2 vertices × 6
+                            // floats each) into fat-line quads
+                            // (6 vertices × 11 floats each).
+                            // verts layout per pair:
+                            //   v0: posA.xyz, colorA.rgb
+                            //   v1: posB.xyz, colorB.rgb
+                            // Quad vertices (2 triangles):
+                            //   A_left, A_right, B_left,
+                            //   A_right, B_right, B_left
+                            // Each quad vertex carries both
+                            // endpoint positions so the VS can
+                            // compute screen-space direction.
+                            let srcArr = verts.ToArray()
+                            let nSeg = srcArr.Length / 12  // 2 verts × 6 floats
+                            let quadVerts = Array.zeroCreate<float32> (nSeg * 6 * 11)
+                            let mutable w = 0
+                            let emit (ax: float32) (ay: float32) (az: float32)
+                                     (bx: float32) (by: float32) (bz: float32)
+                                     (endF: float32) (side: float32)
+                                     (rR: float32) (gG: float32) (bB: float32) =
+                                quadVerts.[w] <- ax
+                                quadVerts.[w+1] <- ay
+                                quadVerts.[w+2] <- az
+                                quadVerts.[w+3] <- bx
+                                quadVerts.[w+4] <- by
+                                quadVerts.[w+5] <- bz
+                                quadVerts.[w+6] <- endF
+                                quadVerts.[w+7] <- side
+                                quadVerts.[w+8] <- rR
+                                quadVerts.[w+9] <- gG
+                                quadVerts.[w+10] <- bB
+                                w <- w + 11
+                            for s in 0 .. nSeg - 1 do
+                                let off = s * 12
+                                let ax = srcArr.[off]
+                                let ay = srcArr.[off+1]
+                                let az = srcArr.[off+2]
+                                // color RGB at off+3..off+5 (same for both ends)
+                                let cR = srcArr.[off+3]
+                                let cG = srcArr.[off+4]
+                                let cB = srcArr.[off+5]
+                                let bx = srcArr.[off+6]
+                                let by = srcArr.[off+7]
+                                let bz = srcArr.[off+8]
+                                // Triangle 1: A_left, A_right, B_left
+                                emit ax ay az bx by bz 0.0f  1.0f cR cG cB
+                                emit ax ay az bx by bz 0.0f -1.0f cR cG cB
+                                emit ax ay az bx by bz 1.0f  1.0f cR cG cB
+                                // Triangle 2: A_right, B_right, B_left
+                                emit ax ay az bx by bz 0.0f -1.0f cR cG cB
+                                emit ax ay az bx by bz 1.0f -1.0f cR cG cB
+                                emit ax ay az bx by bz 1.0f  1.0f cR cG cB
+                            g.BindVertexArray haloVao
+                            g.BindBuffer(GLEnum.ArrayBuffer, haloVbo)
                             g.BufferData(
                                 GLEnum.ArrayBuffer,
-                                ReadOnlySpan<float32>(arr),
+                                ReadOnlySpan<float32>(quadVerts),
                                 GLEnum.DynamicDraw)
-                            // Two-pass halo via haloProgram (vec3
-                            // color + uAlpha uniform). Standard
-                            // alpha blending so the wide
-                            // translucent outer band layers
-                            // behind the crisp opaque inner edge,
-                            // matching 2D's SKMaskFilter-blur +
-                            // stroke look.
                             g.UseProgram haloProgram
-                            let stride = uint32 (6 * sizeof<float32>)
-                            g.EnableVertexAttribArray 0u
+                            let stride = uint32 (11 * sizeof<float32>)
+                            g.EnableVertexAttribArray 0u  // aPosA
                             g.VertexAttribPointer(0u, 3, GLEnum.Float, false,
                                                   stride, nativeint 0)
-                            g.EnableVertexAttribArray 1u
+                            g.EnableVertexAttribArray 1u  // aPosB
                             g.VertexAttribPointer(1u, 3, GLEnum.Float, false,
                                                   stride,
                                                   nativeint (3 * sizeof<float32>))
+                            g.EnableVertexAttribArray 2u  // aEnd
+                            g.VertexAttribPointer(2u, 1, GLEnum.Float, false,
+                                                  stride,
+                                                  nativeint (6 * sizeof<float32>))
+                            g.EnableVertexAttribArray 3u  // aSide
+                            g.VertexAttribPointer(3u, 1, GLEnum.Float, false,
+                                                  stride,
+                                                  nativeint (7 * sizeof<float32>))
+                            g.EnableVertexAttribArray 4u  // aColor
+                            g.VertexAttribPointer(4u, 3, GLEnum.Float, false,
+                                                  stride,
+                                                  nativeint (8 * sizeof<float32>))
                             let mvpLoc =
                                 g.GetUniformLocation(haloProgram, "uMVP")
                             let alphaLoc =
                                 g.GetUniformLocation(haloProgram, "uAlpha")
+                            let viewLoc =
+                                g.GetUniformLocation(haloProgram, "uViewport")
+                            let widthLoc =
+                                g.GetUniformLocation(haloProgram, "uHalfWidthPx")
                             let mvpArr = Matrix4x4Helpers.toFloatArray mvp
                             g.UniformMatrix4(mvpLoc, 1u, false,
                                              ReadOnlySpan<float32>(mvpArr))
-                            let n = uint32 (arr.Length / 6)
+                            // fbW / fbH are captured from the
+                            // enclosing OnOpenGlRender scope —
+                            // VisualRoot is a protected member
+                            // and inner functions don't see it.
+                            g.Uniform2(viewLoc, float32 fbW, float32 fbH)
+                            let triCount = uint32 (nSeg * 6)
                             g.Disable GLEnum.DepthTest
-                            g.Enable   GLEnum.Blend
+                            g.Enable  GLEnum.Blend
                             g.BlendFunc(BlendingFactor.SrcAlpha,
                                         BlendingFactor.OneMinusSrcAlpha)
-                            // Pass 1: wide soft halo. LineWidth
-                            // is capped by the driver (commonly
-                            // 1.0-10.0); we ask for 8 and take
-                            // what we get — the alpha layer is
-                            // what makes the glow visible even
-                            // when width clamps.
-                            g.Uniform1(alphaLoc, 0.35f)
-                            g.LineWidth 8.0f
-                            g.DrawArrays(GLEnum.Lines, 0, n)
-                            // Pass 2: crisp inner edge on top.
+                            // Pass 1: wide soft outer halo
+                            // (~9 px on retina = ~4.5 logical px).
+                            g.Uniform1(alphaLoc, 0.30f)
+                            g.Uniform1(widthLoc, 9.0f)
+                            g.DrawArrays(GLEnum.Triangles, 0, triCount)
+                            // Pass 2: crisp inner edge.
                             g.Uniform1(alphaLoc, 1.0f)
-                            g.LineWidth 2.0f
-                            g.DrawArrays(GLEnum.Lines, 0, n)
+                            g.Uniform1(widthLoc, 1.5f)
+                            g.DrawArrays(GLEnum.Triangles, 0, triCount)
                             g.Disable GLEnum.Blend
                             g.Enable  GLEnum.DepthTest
             drawSelectionHalo ()

@@ -24,7 +24,7 @@
 .title Phase A FORM pulse __CORNER__ __TEMP__C
 
 .lib /Users/bryancostanich/.volare/sky130B/libs.tech/ngspice/sky130.lib.spice __CORNER__
-.include /Users/bryancostanich/git_repos/bryan_costanich/rekolektion/cell_designs/khalkulo/spice/cim_reram_drv_phaseA_extracted.spice
+.include /Users/bryancostanich/git_repos/bryan_costanich/rekolektion/cell_designs/khalkulo/spice/cim_reram_drv_phaseA_srcmux_extracted.spice
 
 .option temp = __TEMP__
 
@@ -34,8 +34,9 @@ V_VDD   VDD   0 PWL(0 0 1n 0 50n 1.80)
 V_VSS   VSS   0 DC 0
 
 * === DUT ===
-X_DUT VDDA1 VDD VSS SRC_RAIL pulse_req_1v8 pulse_kind_form_1v8 pulse_kind_setrr_1v8
-+ cim_reram_drv_phaseA
+* Port order (from extracted subckt header): VDD VDDA1 VSS SRC_RAIL pulse_req_1v8 pulse_kind_form_1v8 pulse_kind_setrr_1v8
+X_DUT VDD VDDA1 VSS SRC_RAIL pulse_req_1v8 pulse_kind_form_1v8 pulse_kind_setrr_1v8
++ cim_reram_drv_phaseA_srcmux
 
 * === Control inputs ===
 V_PK_FORM  pulse_kind_form_1v8  0 PWL(0 0 99n 0 100n 1.8 1500n 1.8 1501n 0)
@@ -53,11 +54,10 @@ XM_FET_VICTIM BE_victim WL_victim BL_victim 0 sky130_fd_pr__nfet_01v8 w=1.5 l=0.
 * === Lumped 255 inhibited cells on the same SL (parasitic cap only) ===
 C_SL_LUMPED SRC_RAIL 0 5p
 
-* === PROPOSED FIX: SRC_RAIL discharge ===
-* Inverter generates ~pulse_req in the 1.8 V domain.
-Bpulse_req_n pulse_req_n 0 V=1.8 - V(pulse_req_1v8)
-* 5 V NFET pulls SRC_RAIL to VSS when pulse_req = 0 (idle/exit).
-XDISCHARGE SRC_RAIL pulse_req_n VSS VSS sky130_fd_pr__nfet_g5v0d10v5 w=2.0 l=0.5
+* === SRC_RAIL discharge is now integrated inside the srcmux DUT. ===
+* Previously this TB ran the discharge externally via a behavioral
+* inverter + standalone NFET; the layout now carries both, so the
+* DUT instance covers the full path on its own.
 
 * === Analysis ===
 .tran 1n 2u

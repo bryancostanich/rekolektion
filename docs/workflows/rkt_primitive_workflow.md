@@ -1695,6 +1695,128 @@ params → same digest → same content), but committing them means:
 
 ---
 
+## Methodology lessons
+
+These are recurring practices that worked across multi-cell blocks
+(Phase A srcmux, …) when the naive approach didn't. **Read the
+[SKY130 DRC cheatsheet](../operational_protocols/sky130_drc_cheatsheet.md)
+for the rule-level gotchas referenced below.**
+
+### Strip down when DRC accumulates errors across layers
+
+When a fully-routed block returns dozens to hundreds of DRC errors,
+**don't try to fix them in place**. Errors from placement, power
+routing, signal routing, vias, and labels become impossible to
+attribute. Instead:
+
+1. Strip the build script back to **placement only** (SRefs +
+   parent-painted wells/bulk paints, no routing, no labels).
+2. DRC. Errors here are all placement / nwell-merging issues.
+3. Add **one power net at a time**: VSS → DRC → VDDA1 → DRC → VDD
+   → DRC → SRC_RAIL → DRC. Each new error attaches to the just-added
+   geometry.
+4. Add internal signal nets next, one or two at a time, DRC between.
+5. Add port labels last; they don't change DRC but do shape LVS.
+
+When the original Phase A srcmux build hit 102 errors after the
+discharge cell was dropped in, this strip-down took it back to a
+clean 0-error placement baseline in one pass and surfaced *which*
+routing pieces caused which problems on the way back up.
+
+### Step-by-step DRC validation per net
+
+Even within power or signal routing, **don't batch additions**. A
+single new net or even a single new via stack between DRC runs gives
+you immediate attribution. Magic DRC on a small block is < 5 s; the
+turn-around cost is negligible.
+
+### NWELL cutouts for body-bias-mismatched cells
+
+When a sub-cell needs a different body bias than the surrounding
+nwell strip (e.g., a 1.8 V PFET sitting amid VDDA1 = 3.3 V strips):
+
+1. **Don't merge.** Different voltages on the same nwell = short.
+2. **Cut the strip around the cell** with `nwell.2a` setback
+   (1.27 µm from the cell's intrinsic nwell on each side).
+3. **Verify the strip's previous merging still holds** through other
+   cells whose internal nwells bridge the cut. If not, add a small
+   nwell bridge at a clear y above or below the cell.
+
+If the cell needs a body tap at a *different* voltage than the strip
+(common case: 1.8 V PFET into VDD nwell, surrounded by 3.3 V VDDA1
+strips), see "Body taps for primitives without internal taps" below.
+
+### Body taps for primitives without internal taps
+
+The PDK's `_core` (non-guard) 1.8 V FET primitives **don't include
+an internal body tap**. The cell's nwell extracts as a floating
+node, LVS reports one extra net.
+
+Three options when you hit this:
+
+| Option | When to use |
+|---|---|
+| **Parent-paint a body tap** | Default. Extend the cell's nwell into a free area, add the standard n+ tap stack, tie to the bulk net. See the [cheatsheet](../operational_protocols/sky130_drc_cheatsheet.md#diffusion-taps--licon7-and-li5-need-bigger-enclosures) for the layer stack and enclosure thresholds (`licon.7` = 120 nm, `li.5` = 80 nm). |
+| **Use `guard=True`** | When the cell footprint can grow significantly (~2×). Built-in body ring. |
+| **Bias to adjacent strip voltage** | Only when the resulting body bias is within the device's reliability spec (e.g., +1.5 V reverse bias on a 1.8 V PFET adds Vth and may exceed bulk-junction limits). Verify by re-sim. |
+
+### Long verticals → use a layer that doesn't share with horizontal power straps
+
+A long met2 vertical traversing the full cell height **will collide
+with horizontal met2 power straps at the same layer**. The strap is
+a different net; you're shorting two power rails together.
+
+Fix: **run the long section on met1**, transition to met2 only at
+the endpoints where the vertical connects to the strap or another
+met2 feature. Met1 over met2 is a normal cross-layer crossing and is
+DRC-silent.
+
+### Don't emit `kind="net-name"` labels at the parent level
+
+The `.rkt` format carries a `kind` annotation on labels — but
+**Magic doesn't honor it after GDS export**. Every label on a port
+layer (`met1_label`, `li1_label`, etc.) becomes a candidate subckt
+port during extraction, regardless of the `kind`.
+
+**Practical rule**: at the parent level of an LVS-checked block,
+**only emit labels for nets that should be subckt ports**. Magic
+auto-traces connectivity through geometry and names internal nets
+itself. Adding internal-net labels at the parent creates spurious
+extra ports that show up as "Top level cell failed pin matching".
+
+Labels inside sub-blocks are fine (they're internal to that
+sub-block's subckt) — this applies specifically to the parent block
+whose ports you care about for LVS.
+
+### Schematic must declare `nf` for multifinger devices
+
+When the layout uses a wrapper subckt with `nf=N` internally, the
+extracted netlist's effective `w` = per-finger `w` × N. The
+schematic must match either by:
+
+- Declaring `nf=N` *and* using the total effective width: `w=250 l=0.5 nf=10`.
+- Or expanding into N parallel single-finger instances.
+
+Mismatch shows up as an LVS property error (e.g., "circuit1: 250
+vs. circuit2: 25, delta=164 %"). Structurally the circuits still
+match; the property error gates an otherwise-clean LVS.
+
+### Always DRC each primitive standalone after a generator change
+
+Even a no-op-looking generator change (e.g., re-minting for a new
+metadata version) can shift geometry slightly — and PDK draw procs
+sometimes emit under-area features that only show up on specific
+device sizes. **DRC every primitive standalone**, then **DRC every
+wrapper that imports them**, after any generator change.
+
+The Phase A run hit `met1.6` violations on `pfet_01v8_W2p0_L0p15` and
+`nfet_01v8_W1p0_L0p15` only after the generator was rebumped for
+DEVICE_TERMINAL tagging; the underlying gate-pad geometry was the
+same as before. The `_fix_met1_min_area` post-processing pass in
+`fet.py` was added in response.
+
+---
+
 ## Hard rules
 
 1. **Never reimplement PDK device geometry in Python or F#.** Always
@@ -1856,6 +1978,36 @@ params → same digest → same content), but committing them means:
     at the same y-level.  Compute the drop x-range AFTER all
     drop X positions are finalized (post Rule #14), then paint
     the trunk to fit.
+
+16. **Match wire width to via-pad width at every endpoint — never
+    a step corner.**  `place_via` paints a met2 (or met3) pad sized
+    to satisfy the via2.4/via3.4 alt-enclosure rule (≥0.085 µm on
+    two opposite sides) — that's a **320 nm** pad around a 150 nm
+    via1 cut, **370 nm** around a 200 nm via2.  If you paint the
+    connecting wire NARROWER than the pad (e.g. `width_um=0.3` =
+    300 nm into a 320 nm pad), the pad sticks out 10 nm on each
+    side of the wire at the junction, producing an ugly **stair-
+    step corner** in viz — the wire and pad merge on the metal
+    layer, but the silhouette has unwanted notches.
+
+    The same notch appears at every L-bend if `place_wire`'s chain
+    form generates two segments at different widths, or if the
+    wire passes by a via stack whose pad is wider than the wire.
+
+    **How to apply.**  Decide a single canonical wire width per
+    power/signal class — typically `0.32` µm for via1-pad-matched
+    met2 wires, `0.37` µm for via2-pad-matched met3 wires.  Pass
+    that exact width to every `place_wire` for the net.  When you
+    need a different width somewhere (e.g. a wider trunk), match
+    the trunk width to the WIDEST via pad it touches, then size
+    branch wires to match.  Don't accept the default
+    `MET2_MIN_WIDTH` (140 nm) for power rails — it's smaller than
+    every via1 pad and guarantees stepped junctions.
+
+    Visual check: at every via stack and every L-bend, the wire
+    edge should be flush with the pad edge.  Any visible
+    overhang or notch in viz means width mismatch — fix at the
+    helper call, not by widening the pad locally.
 
 ---
 

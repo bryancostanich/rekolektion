@@ -16,12 +16,12 @@
 * FORM branch
 XAND_FORM    pulse_req_1v8 pulse_kind_form_1v8  form_active_1v8 VDD VDDA1 VSS nand2_inv_lv
 XLSH_FORM    form_active_1v8 lsh_form_n lsh_form VDD VDDA1 VSS lshift_1v8_to_3v3
-XPMOS_FORM   SRC_RAIL lsh_form VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=25.0 l=0.5
+XPMOS_FORM   SRC_RAIL lsh_form VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=250.0 l=0.5 nf=10
 
 * SETRR branch
 XAND_SETRR   pulse_req_1v8 pulse_kind_setrr_1v8 setrr_active_1v8 VDD VDDA1 VSS nand2_inv_lv
 XLSH_SETRR   setrr_active_1v8 lsh_setrr_n lsh_setrr VDD VDDA1 VSS lshift_1v8_to_3v3
-XPMOS_SETRR  SRC_RAIL lsh_setrr VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=25.0 l=0.5
+XPMOS_SETRR  SRC_RAIL lsh_setrr VDDA1 VDDA1 sky130_fd_pr__pfet_g5v0d10v5 w=250.0 l=0.5 nf=10
 
 * SRC_RAIL discharge — pulls SRC_RAIL to VSS when pulse_req is low,
 * so the rail doesn't float at ~3 V after a pulse and breach the

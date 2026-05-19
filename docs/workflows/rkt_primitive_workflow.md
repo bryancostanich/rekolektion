@@ -1771,22 +1771,47 @@ the endpoints where the vertical connects to the strap or another
 met2 feature. Met1 over met2 is a normal cross-layer crossing and is
 DRC-silent.
 
-### Don't emit `kind="net-name"` labels at the parent level
+### Use `internal=True` for parent labels that shouldn't reach GDS
 
-The `.rkt` format carries a `kind` annotation on labels — but
-**Magic doesn't honor it after GDS export**. Every label on a port
-layer (`met1_label`, `li1_label`, etc.) becomes a candidate subckt
-port during extraction, regardless of the `kind`.
+The `kind` annotation on a label (`NetName` / `PortName` /
+`DeviceTerminal`) controls how net-level consumers treat it in the
+F# viz tools and the .rkt sidecar — NOT whether Magic sees it as a
+subckt port. `kind` does not survive the GDS export; Magic treats
+every label on a port layer (`met1_label`, `li1_label`, etc.) as a
+candidate port regardless of kind.
 
-**Practical rule**: at the parent level of an LVS-checked block,
-**only emit labels for nets that should be subckt ports**. Magic
-auto-traces connectivity through geometry and names internal nets
-itself. Adding internal-net labels at the parent creates spurious
-extra ports that show up as "Top level cell failed pin matching".
+If you want a label to appear in viz / ratlines / the sidecar but
+NOT in the GDS Magic reads (so it doesn't become a spurious port at
+LVS), use the `internal=True` flag on the `Label`:
 
-Labels inside sub-blocks are fine (they're internal to that
-sub-block's subckt) — this applies specifically to the parent block
-whose ports you care about for LVS.
+```python
+# Net-name label for an internal-only net — visible in viz, absent
+# from the GDS, so LVS doesn't see a phantom port at the parent.
+rkt.Label(
+    layer=rkt.named("sky130", "met1_label"),
+    text="form_active_1v8",
+    origin=(27923, -1170),
+    internal=True,
+)
+```
+
+In `.rkt` text the same thing reads:
+
+```scheme
+(label (layer sky130:met1_label) (text "form_active_1v8")
+       (origin 27923 -1170) (internal #t))
+```
+
+**Practical rule**: at the parent level of an LVS-checked block, any
+internal-only net label needs `internal=True`. Without it, the label
+flows through to GDS and Magic promotes the net to a subckt port —
+showing up as "Top level cell failed pin matching" with extra ports
+on the layout side. Magic auto-traces internal connectivity from
+geometry, so the internal label exists for your benefit (viz / nets
+panel / `diagnose_met2_overlaps.py`'s net-inference), not for LVS.
+
+Labels inside sub-blocks need the same treatment if they're internal
+to that sub-block — same `internal=True` flag.
 
 ### Schematic must declare `nf` for multifinger devices
 

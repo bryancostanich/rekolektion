@@ -38,6 +38,7 @@
     <Compile Include="Routing/Detect.fs" />
     <Compile Include="Drc/Geometry/Region.fs" />
     <Compile Include="Drc/Geometry/Boolean.fs" />
+    <Compile Include="Drc/Geometry/Size.fs" />
     <Compile Include="Drc/Rules.fs" />
     <Compile Include="Drc/Implant.fs" />
     <Compile Include="Drc/Waiver.fs" />

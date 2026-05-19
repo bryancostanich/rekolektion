@@ -121,3 +121,147 @@ let isWaived
     if not (waiverRuleIds.Contains ruleName) then false
     elif areas.Length = 0 then false
     else bboxFullyInside violationBbox areas
+
+// ---------------------------------------------------------------------
+// Foundry-primitive cell waiver
+//
+// SKY130 foundry primitives (FET cells, BJT cells, resistors,
+// caps) ship as pre-validated layouts whose internal geometry
+// is foundry-DRC-clean by construction even when it appears to
+// violate stock rules — they're packed at process minimums,
+// asymmetric enclosures, sub-spec contact spacings. Magic's
+// rule deck implicitly waives DRC errors that are fully
+// internal to such cells.
+//
+// Without `areaid_core` polygons (which only mark SRAM bitcells,
+// not all foundry primitives), the COREID waiver above can't
+// catch these. The mechanism here is name-based: cells matching
+// known foundry naming conventions are treated as opaque, and
+// any violation whose bbox sits entirely inside one of their
+// SRef-instance footprints is waived.
+//
+// Detection heuristic: cells whose name starts with one of the
+// known foundry prefixes are treated as foundry primitives.
+// Future enhancement: explicit `(foundry yes)` annotation in
+// .rkt, or path-based detection ("imported from .../primitives/
+// directory").
+
+let private foundryPrefixes : string array = [|
+    "pfet_"; "nfet_"
+    "bjt_"
+    "cap_"; "capacitor_"
+    "res_"; "resistor_"
+    "sky130_fd_"   // SKY130 PDK std cells
+|]
+
+/// Rules that Magic implicitly waives when the violation is
+/// fully internal to a foundry-primitive cell. This is a SUBSET
+/// of `waiverRuleIds` — foundry cells get the contact-packing /
+/// spacing relaxations because the foundry pre-validated those
+/// dimensions, but FUNDAMENTAL rules (min-area, well-spacing,
+/// implant-vs-well interactions) are still checked everywhere.
+///
+/// Empirically derived from running Magic on cim_reram and
+/// comparing against viz output. Magic fires met1.6, nwell.2a,
+/// difftap.9 even when the geometry is inside foundry FET
+/// footprints — those rules are NOT in this list. Magic
+/// silently waives mcon.2, licon.2, nsdm.2, psdm.2, poly.7/8,
+/// li.3 in foundry footprints — those ARE.
+let private foundryWaivedRules : Set<string> = Set.ofList [
+    // Contact / via packing — foundry cells pack at the foundry
+    // process minimum, which is below Magic's stock spec.
+    "mcon.1"; "mcon.2"
+    "licon.1"; "licon.2"
+    "via.2"
+    // Implant spacing — foundry cells often abut implants tighter
+    // than user-routing rules require.
+    "nsdm.2"; "psdm.2"
+    // Local interconnect — foundry cells pack li1 tighter than
+    // user routing.
+    "li.1"; "li.3"
+    // Poly endcaps — foundry cell layout uses precise foundry-
+    // measured endcap values, sometimes below stock spec.
+    "poly.7"; "poly.8"
+    // Enclosure rules — foundry contacts/vias use asymmetric
+    // enclosures that the rule deck's "one direction" handling
+    // gets right but our simpler model may not.
+    "licon.5a"; "licon.5c"; "licon.8"
+    "li.5"; "met1.5"; "met2.5"
+    "via.4a"; "via.5a"
+    // Well-overlap-of-implant — foundry cells have
+    // implant patterns that overlap nwell edges in ways the
+    // simpler stock rule mis-reads.
+    "nwell.5"
+]
+
+/// Is this cell name a foundry primitive by our heuristic? Used
+/// to decide whether to waive internal DRC violations.
+let isFoundryCell (cellName: string) : bool =
+    if System.String.IsNullOrEmpty cellName then false
+    else
+        foundryPrefixes
+        |> Array.exists (fun prefix -> cellName.StartsWith prefix)
+
+/// Compute the world bbox of every foundry-primitive cell
+/// instance present in `flat`. Groups flat polygons by
+/// (SourceStructure, TopInstanceIndex) — same SRef instance —
+/// and returns the bbox of each group whose source cell is
+/// foundry by the heuristic above.
+///
+/// Caller hands the result to `isFoundryWaived` per violation.
+let collectFoundryFootprints
+        (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
+        : (int64 * int64 * int64 * int64) array =
+    let groups =
+        System.Collections.Generic.Dictionary<
+            string * int option,
+            int64 * int64 * int64 * int64>()
+    for p in flat do
+        if isFoundryCell p.SourceStructure then
+            let key = (p.SourceStructure, p.TopInstanceIndex)
+            let xs = p.Points |> Array.map (fun pt -> pt.X)
+            let ys = p.Points |> Array.map (fun pt -> pt.Y)
+            let bb =
+                Array.min xs, Array.min ys,
+                Array.max xs, Array.max ys
+            match groups.TryGetValue key with
+            | true, (gx1, gy1, gx2, gy2) ->
+                let (bx1, by1, bx2, by2) = bb
+                groups.[key] <-
+                    (min gx1 bx1, min gy1 by1,
+                     max gx2 bx2, max gy2 by2)
+            | _ ->
+                groups.[key] <- bb
+    groups.Values |> Array.ofSeq
+
+/// True iff the violation bbox is fully inside at least one
+/// foundry-cell-instance footprint AND every polygon
+/// contributing to the violation is itself authored in a
+/// foundry cell. The dual test avoids the over-suppression bug
+/// where a user-cell polygon (e.g. a met1 fragment in
+/// `lshift_1v8_to_3v3`) coincidentally falls inside a foundry
+/// FET footprint and would be wrongly waived by bbox alone.
+///
+/// `contributingPolys` is the list of input polygons whose
+/// bbox overlaps the violation bbox. The caller assembles it
+/// from the same flat array the check ran on.
+let isFoundryWaived
+        (foundryFootprints: (int64 * int64 * int64 * int64) array)
+        (ruleName: string)
+        (violationBbox: int64 * int64 * int64 * int64)
+        (contributingPolys: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
+        : bool =
+    if not (foundryWaivedRules.Contains ruleName) then false
+    elif foundryFootprints.Length = 0 then false
+    elif not (bboxFullyInside violationBbox foundryFootprints) then false
+    elif contributingPolys.Length = 0 then
+        // No identifiable contributing polys (e.g. a Region-
+        // morphology violation where the input geometry isn't
+        // tracked back to specific polys). Fall back to the
+        // bbox-only check — the violation falls inside a
+        // foundry footprint AND the rule is in the foundry-
+        // waiver list, so most likely waive-worthy.
+        true
+    else
+        contributingPolys
+        |> Array.forall (fun p -> isFoundryCell p.SourceStructure)

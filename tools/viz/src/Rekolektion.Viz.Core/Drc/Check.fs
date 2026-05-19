@@ -215,6 +215,12 @@ let checkWithToggles
     // areaid_core polygons in the flat — no waivers fire and the
     // post-pass filter is a no-op.
     let coreAreas = Waiver.collectCoreAreas flat
+    // Foundry-primitive cell footprints. Any violation fully
+    // inside one of these is waived (Magic's per-cell scope:
+    // foundry cells are atomic and their internal sub-spec
+    // geometry is pre-validated). Cross-cell violations stay
+    // in the report.
+    let foundryFootprints = Waiver.collectFoundryFootprints flat
 
     let checkRule (rule: Rules.Rule) =
         let ruleName = Rules.nameOf rule
@@ -247,44 +253,40 @@ let checkWithToggles
                             BboxA = (x1, y1, x2, y2)
                             BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
-            // Magic-fidelity spacing via Region morphology +
-            // connected components:
-            //   violations = shrink(grow(r, s/2), s/2) \ r
-            //   components = Components.componentBboxes violations
-            //   one reported violation per component
+            // Spacing via per-pair facing-edge check, NOT Region
+            // morphology. Why: morphology's component bbox has
+            // two dimensions (gap-axis and polygon-perpendicular-
+            // extent), and without knowing WHICH is the gap, the
+            // "narrow dim < limit" post-filter wrongly fires
+            // when the polygon perpendicular extent is itself
+            // smaller than the limit (e.g. foundry mcons of
+            // 170nm size at 190nm gap = at-spec, but component
+            // dim 170 < limit 190 → false fire).
             //
-            // Morphology produces a Region whose tiles cover
-            // every gap < limit. Slab decomposition fragments
-            // each gap into many tiles based on neighbor Y
-            // events, but the tiles are CONNECTED — one gap =
-            // one component. Reporting per-component gives the
-            // Magic-style "one violation per gap region" count.
-            //
-            // Per-component bbox tells us the actual gap
-            // dimensions. The narrow axis (min of W and H) is
-            // the gap distance. Post-filter drops components at
-            // exactly limit — those are at-spec (touching post-
-            // grow but Magic considers gap == s passing).
+            // Per-pair edge check preserves gap orientation and
+            // correctly distinguishes at-spec from below-spec.
+            // The cost: per-pair counts differ from Magic's
+            // per-tile counts (clustering would be a separate
+            // pass, similar in spirit to Components but applied
+            // post-violation).
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
-                let polys =
-                    polysOnLayer idx layer
-                    |> Array.map (fun (p, _, _) -> p)
-                let r = Region.ofPolygons polys
-                let half = limit / 2L
-                let closed = Size.shrink half (Size.grow half r)
-                let violations = Boolean.subtract closed r
-                for (x1, y1, x2, y2) in Components.componentBboxes violations do
-                    let m = min (x2 - x1) (y2 - y1)
-                    if m < limit then
-                        result.Add {
-                            Rule = name
-                            LayerNumber = layer.Number
-                            LayerType   = layer.DataType
-                            LimitDbu    = limit
-                            MeasuredDbu = m
-                            BboxA = (x1, y1, x2, y2)
-                            BboxB = None }
+                let polys = polysOnLayer idx layer
+                for i in 0 .. polys.Length - 1 do
+                    let (_, bbA, _) = polys.[i]
+                    for j in i + 1 .. polys.Length - 1 do
+                        let (_, bbB, _) = polys.[j]
+                        match bboxOrthoGap bbA bbB with
+                        | Some g when g > 0L && g < limit ->
+                            result.Add {
+                                Rule = name
+                                LayerNumber = layer.Number
+                                LayerType   = layer.DataType
+                                LimitDbu    = limit
+                                MeasuredDbu = g
+                                BboxA = bbA
+                                BboxB = Some bbB }
+                        | _ -> ()
         | Rules.CrossSpacing (name, layerA, layerB, minUm, condA) ->
             // Same orthogonal-only rule as same-layer Spacing.
             // Overlap = same net at this layer pair (e.g. poly
@@ -541,22 +543,38 @@ let checkWithToggles
                             BboxA = sBb
                             BboxB = Some nearestDest }
         | Rules.MinArea (name, layer, minUm2) ->
-            // Compare areas in DBU² to avoid round-off near the
-            // limit. (umPerDbu)² scales the µm² threshold up to
-            // DBU² for one comparison per polygon.
+            // Magic-fidelity min-area: build a Region from the
+            // input polygons, find connected components, check
+            // each component's ACTUAL area (sum of tile areas,
+            // not bbox area — an L-shape's bbox overstates its
+            // true area).
+            //
+            // Per-rectangle min-area would wrongly fire on
+            // narrow fragments of a larger connected feature
+            // (e.g. a 200×100 strip made of two 100×100 abutting
+            // rects would fail twice at threshold > 10000 even
+            // though the actual connected feature has area
+            // 20000). Components fix that.
+            //
+            // Limit converted to DBU² up front; comparison is
+            // integer to avoid round-off near the threshold.
             let scale = umPerDbu * umPerDbu
             if scale > 0.0 then
                 let limit = max 0L (int64 (System.Math.Round (minUm2 / scale)))
                 if limit > 0L then
-                    for (_, (x1, y1, x2, y2), _) in polysOnLayer idx layer do
-                        let a = (x2 - x1) * (y2 - y1)
-                        if a < limit then
+                    let polys =
+                        polysOnLayer idx layer
+                        |> Array.map (fun (p, _, _) -> p)
+                    let r = Region.ofPolygons polys
+                    for ((x1, y1, x2, y2), area) in
+                            Components.componentBboxesAndAreas r do
+                        if area < limit then
                             result.Add {
                                 Rule = name
                                 LayerNumber = layer.Number
                                 LayerType   = layer.DataType
                                 LimitDbu    = limit
-                                MeasuredDbu = a
+                                MeasuredDbu = area
                                 BboxA = (x1, y1, x2, y2)
                                 BboxB = None }
 
@@ -576,9 +594,46 @@ let checkWithToggles
         | None -> (ax1, ay1, ax2, ay2)
         | Some (bx1, by1, bx2, by2) ->
             (min ax1 bx1, min ay1 by1, max ax2 bx2, max ay2 by2)
+    // For the foundry-waiver check, we need to identify which
+    // input polygons CONTRIBUTE to each violation. Polys whose
+    // bbox overlaps the violation bbox are candidates. The
+    // dual-test waiver then asks whether ALL such contributors
+    // are sourced from foundry cells — distinguishing genuine
+    // foundry-internal DRC from a user-cell polygon that
+    // happens to fall inside a foundry footprint by coincidence.
+    let contributingPolys (v: Violation) =
+        let (vx1, vy1, vx2, vy2) = unionBbox v.BboxA v.BboxB
+        flat
+        |> Array.filter (fun p ->
+            // Same-layer filter: only polys on the rule's
+            // layer can actually contribute. Without this,
+            // any nearby user poly (on any layer) blocks the
+            // foundry waiver even when the real contributors
+            // are foundry-internal.
+            if p.Layer <> v.LayerNumber || p.DataType <> v.LayerType then false
+            else
+                let mutable xMin = System.Int64.MaxValue
+                let mutable yMin = System.Int64.MaxValue
+                let mutable xMax = System.Int64.MinValue
+                let mutable yMax = System.Int64.MinValue
+                for pt in p.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+                xMin <= vx2 && vx1 <= xMax && yMin <= vy2 && vy1 <= yMax)
     result
     |> Seq.filter (fun v ->
-        not (Waiver.isWaived coreAreas v.Rule (unionBbox v.BboxA v.BboxB)))
+        let bb = unionBbox v.BboxA v.BboxB
+        // Drop if EITHER waiver applies:
+        //   * COREID + rule in waiver list (SRAM bitcell-class
+        //     relaxations).
+        //   * Violation fully inside any foundry-primitive cell
+        //     footprint AND every contributing polygon (same
+        //     layer, bbox-overlapping) comes from a foundry
+        //     cell — Magic per-cell scope.
+        not (Waiver.isWaived coreAreas v.Rule bb
+             || Waiver.isFoundryWaived foundryFootprints v.Rule bb (contributingPolys v)))
     |> Array.ofSeq
 
 /// Backward-compatible entry point: same signature as before, no

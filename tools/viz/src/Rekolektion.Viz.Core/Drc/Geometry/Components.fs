@@ -129,3 +129,63 @@ let componentBboxes
                 | _ ->
                     groups.[root] <- bb
             groups.Values |> Array.ofSeq
+
+/// Connected components with both bbox AND actual polygon area
+/// per component. Used by MinArea rules where a component's
+/// ACTUAL area (sum of tile areas) matters, not its bbox area —
+/// an L-shape's bbox is larger than the polygon's true area.
+///
+/// Returns `(bbox, areaDbu²)` per component. The bbox is the
+/// same as `componentBboxes` returns; `areaDbu²` sums every
+/// tile (slab.Height × interval-width) in the component.
+let componentBboxesAndAreas
+        (r: Region)
+        : ((int64 * int64 * int64 * int64) * int64) array =
+    if isEmpty r then [||]
+    else
+        let cells = enumerateCells r
+        let totalCells = cells.Length
+        if totalCells = 0 then [||]
+        else
+            let dsu = DSU(totalCells)
+            let byslab = cellsBySlab r
+            // Same union logic as componentBboxes.
+            for i in 0 .. r.Slabs.Length - 2 do
+                let upper = r.Slabs.[i]
+                let lower = r.Slabs.[i + 1]
+                if upper.Y + upper.Height = lower.Y then
+                    let upperCells = byslab.[i]
+                    let lowerCells = byslab.[i + 1]
+                    for (uIdx, uIv) in upperCells do
+                        for (lIdx, lIv) in lowerCells do
+                            let lo = max uIv.X1 lIv.X1
+                            let hi = min uIv.X2 lIv.X2
+                            if lo < hi then
+                                dsu.Union uIdx lIdx
+            // Cell flat-index → (slab Y range, interval) — used
+            // to compute per-tile area.
+            let cellTile = Array.zeroCreate<Interval * int64 * int64> totalCells
+            let mutable idx = 0
+            for si in 0 .. r.Slabs.Length - 1 do
+                let slab = r.Slabs.[si]
+                for iv in slab.Intervals do
+                    cellTile.[idx] <- (iv, slab.Y, slab.Height)
+                    idx <- idx + 1
+            // Accumulate per-component bbox + area.
+            let groups =
+                System.Collections.Generic.Dictionary<int,
+                    (int64 * int64 * int64 * int64) * int64>()
+            for (i, bb) in cells do
+                let root = dsu.Find i
+                let (iv, _, h) = cellTile.[i]
+                let tileArea = (iv.X2 - iv.X1) * h
+                let (bx1, by1, bx2, by2) = bb
+                match groups.TryGetValue root with
+                | true, ((gx1, gy1, gx2, gy2), area) ->
+                    let bbox' =
+                        (min gx1 bx1, min gy1 by1,
+                         max gx2 bx2, max gy2 by2)
+                    groups.[root] <- (bbox', area + tileArea)
+                | _ ->
+                    groups.[root] <- (bb, tileArea)
+            groups.Values |> Array.ofSeq

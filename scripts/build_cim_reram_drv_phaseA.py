@@ -40,7 +40,7 @@ doc = rkt.Document(
                                text="SRC_RAIL", origin=(29000, 12275)),
                 # Control inputs (1.8 V)
                 rkt.port_label(layer=rkt.named("sky130", "li1_label"),
-                               text="pulse_req_1v8", origin=(23600, -7000)),
+                               text="pulse_req_1v8", origin=(23700, -7000)),
                 rkt.port_label(layer=rkt.named("sky130", "met1_label"),
                                text="pulse_kind_form_1v8",
                                origin=(26443, -3545)),

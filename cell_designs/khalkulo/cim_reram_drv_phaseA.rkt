@@ -13,7 +13,7 @@
       (kind port-name))
     (label (layer sky130:met2_label) (text "SRC_RAIL") (origin 29000 12275)
       (kind port-name))
-    (label (layer sky130:li1_label) (text "pulse_req_1v8") (origin 23600 -7000)
+    (label (layer sky130:li1_label) (text "pulse_req_1v8") (origin 23700 -7000)
       (kind port-name))
     (label (layer sky130:met1_label) (text "pulse_kind_form_1v8") (origin 26443 -3545)
       (kind port-name))

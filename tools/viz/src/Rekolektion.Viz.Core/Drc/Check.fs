@@ -38,6 +38,50 @@ let private bboxOf (poly: FlatPolygon) : int64 * int64 * int64 * int64 =
         if p.Y > yMax then yMax <- p.Y
     xMin, yMin, xMax, yMax
 
+/// Orthogonal facing-edge gap, with the gap REGION as a bbox:
+/// returns `Some (d, gapBbox)` when the two input bboxes have a
+/// facing edge, and `None` otherwise. The gap bbox covers the
+/// rectangular strip between the two facing edges — gap-wide on
+/// the perpendicular axis, common-projection-long on the
+/// parallel axis. Clustering uses this small bbox so violations
+/// at unrelated gaps don't merge by virtue of their polygon
+/// pair's union encompassing the whole layer.
+let private bboxOrthoGapAndRegion
+        ((ax1, ay1, ax2, ay2): int64 * int64 * int64 * int64)
+        ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
+        : (int64 * (int64 * int64 * int64 * int64)) option =
+    let xOverlap = (min ax2 bx2) > (max ax1 bx1)
+    let yOverlap = (min ay2 by2) > (max ay1 by1)
+    if xOverlap && yOverlap then
+        // Bbox overlap — not a clean spacing case; emit zero
+        // gap with a tiny gap region at the intersection.
+        let gx1 = max ax1 bx1
+        let gy1 = max ay1 by1
+        let gx2 = min ax2 bx2
+        let gy2 = min ay2 by2
+        Some (0L, (gx1, gy1, gx2, gy2))
+    elif xOverlap then
+        // Vertical gap (one above, one below). Gap bbox = X
+        // common projection × Y between the two.
+        let g, gy1, gy2 =
+            if ay2 <= by1 then by1 - ay2, ay2, by1
+            elif by2 <= ay1 then ay1 - by2, by2, ay1
+            else 0L, 0L, 0L
+        let gx1 = max ax1 bx1
+        let gx2 = min ax2 bx2
+        Some (g, (gx1, gy1, gx2, gy2))
+    elif yOverlap then
+        // Horizontal gap. Gap bbox = X between × Y common.
+        let g, gx1, gx2 =
+            if ax2 <= bx1 then bx1 - ax2, ax2, bx1
+            elif bx2 <= ax1 then ax1 - bx2, bx2, ax1
+            else 0L, 0L, 0L
+        let gy1 = max ay1 by1
+        let gy2 = min ay2 by2
+        Some (g, (gx1, gy1, gx2, gy2))
+    else
+        None
+
 /// Orthogonal facing-edge gap: returns `Some d` when the two
 /// bboxes have a facing edge (one axis's projections overlap,
 /// the other axis's don't — so there's a clean perpendicular
@@ -276,16 +320,23 @@ let checkWithToggles
                     let (_, bbA, _) = polys.[i]
                     for j in i + 1 .. polys.Length - 1 do
                         let (_, bbB, _) = polys.[j]
-                        match bboxOrthoGap bbA bbB with
-                        | Some g when g > 0L && g < limit ->
+                        match bboxOrthoGapAndRegion bbA bbB with
+                        | Some (g, gapBb) when g > 0L && g < limit ->
+                            // BboxA = the gap REGION (small strip
+                            // between the two polygons), not the
+                            // polygon-pair union. Critical for the
+                            // post-pass clustering: small gap
+                            // bboxes only cluster when their gap
+                            // strips actually touch, matching
+                            // Magic's per-region grouping.
                             result.Add {
                                 Rule = name
                                 LayerNumber = layer.Number
                                 LayerType   = layer.DataType
                                 LimitDbu    = limit
                                 MeasuredDbu = g
-                                BboxA = bbA
-                                BboxB = Some bbB }
+                                BboxA = gapBb
+                                BboxB = None }
                         | _ -> ()
         | Rules.CrossSpacing (name, layerA, layerB, minUm, condA) ->
             // Same orthogonal-only rule as same-layer Spacing.
@@ -305,16 +356,19 @@ let checkWithToggles
                     if condMatches condA aTags then
                         for (_, bbB, _) in polysB do
                             if not (bboxOverlaps bbA bbB) then
-                                match bboxOrthoGap bbA bbB with
-                                | Some g when g > 0L && g < limit ->
+                                match bboxOrthoGapAndRegion bbA bbB with
+                                | Some (g, gapBb) when g > 0L && g < limit ->
+                                    // Gap-region bbox (small)
+                                    // for correct clustering —
+                                    // see Spacing rule above.
                                     result.Add {
                                         Rule = name
                                         LayerNumber = layerA.Number
                                         LayerType   = layerA.DataType
                                         LimitDbu    = limit
                                         MeasuredDbu = g
-                                        BboxA = bbA
-                                        BboxB = Some bbB }
+                                        BboxA = gapBb
+                                        BboxB = None }
                                 | _ -> ()
         | Rules.Enclosure (name, outer, inner, minUm, cond) ->
             let limit = umToDbu umPerDbu minUm
@@ -622,19 +676,96 @@ let checkWithToggles
                     if pt.Y < yMin then yMin <- pt.Y
                     if pt.Y > yMax then yMax <- pt.Y
                 xMin <= vx2 && vx1 <= xMax && yMin <= vy2 && vy1 <= yMax)
-    result
-    |> Seq.filter (fun v ->
-        let bb = unionBbox v.BboxA v.BboxB
-        // Drop if EITHER waiver applies:
-        //   * COREID + rule in waiver list (SRAM bitcell-class
-        //     relaxations).
-        //   * Violation fully inside any foundry-primitive cell
-        //     footprint AND every contributing polygon (same
-        //     layer, bbox-overlapping) comes from a foundry
-        //     cell — Magic per-cell scope.
-        not (Waiver.isWaived coreAreas v.Rule bb
-             || Waiver.isFoundryWaived foundryFootprints v.Rule bb (contributingPolys v)))
-    |> Array.ofSeq
+    let waivedViolations =
+        result
+        |> Seq.filter (fun v ->
+            let bb = unionBbox v.BboxA v.BboxB
+            // Drop if EITHER waiver applies:
+            //   * COREID + rule in waiver list (SRAM bitcell-
+            //     class relaxations).
+            //   * Violation fully inside any foundry-primitive
+            //     cell footprint AND every contributing polygon
+            //     (same layer, bbox-overlapping) comes from a
+            //     foundry cell — Magic per-cell scope.
+            not (Waiver.isWaived coreAreas v.Rule bb
+                 || Waiver.isFoundryWaived foundryFootprints v.Rule bb (contributingPolys v)))
+        |> Array.ofSeq
+
+    // Final post-pass: cluster per-rule adjacent violations
+    // into single per-region violations. Per-pair rules (Spacing,
+    // CrossSpacing) emit one violation per polygon-pair; Magic
+    // emits one violation per connected gap region. Group by
+    // (Rule, Layer, DataType), build a Region from the
+    // violation bboxes (each as a rectangle), find connected
+    // components, emit one consolidated violation per component
+    // with the worst (smallest) MeasuredDbu in the cluster.
+    //
+    // Rules that already emit per-component (MinArea) cluster
+    // trivially — each input component IS already a singleton
+    // cluster, no change.
+    let mkPolyForBbox
+            (layer: int) (dt: int)
+            ((x1, y1, x2, y2): int64 * int64 * int64 * int64)
+            (idx: int)
+            : FlatPolygon =
+        let pts : Rekolektion.Viz.Core.Rkt.Types.Point array =
+            [| { X = x1; Y = y1 }
+               { X = x2; Y = y1 }
+               { X = x2; Y = y2 }
+               { X = x1; Y = y2 } |]
+        { Layer = layer; DataType = dt
+          Points = pts
+          SourceStructure = "drc-cluster"
+          SourceIndex = idx
+          TopInstanceIndex = None }
+    waivedViolations
+    |> Array.groupBy (fun v -> v.Rule, v.LayerNumber, v.LayerType)
+    |> Array.collect (fun ((ruleName, ln, lt), vs) ->
+        if vs.Length <= 1 then vs
+        else
+            // Cluster via connected components. Spacing/Cross-
+            // Spacing use gap-region bboxes (small strips
+            // between facing polygons); MinArea uses already-
+            // clustered component bboxes; Width/Enclosure use
+            // per-polygon bboxes. Adjacent or overlapping
+            // bboxes merge into one cluster regardless of which
+            // source rule produced them.
+            //
+            // One reported violation per spatial cluster. Magic
+            // emits per-tile within each cluster (so Magic's
+            // count is higher than viz's per-cluster count), but
+            // for the canvas overlay one marker per cluster is
+            // a better UX than N markers in one spot.
+            let bboxes =
+                vs |> Array.map (fun v -> unionBbox v.BboxA v.BboxB)
+            let polys =
+                bboxes
+                |> Array.mapi (fun i bb -> mkPolyForBbox ln lt bb i)
+            let r = Region.ofPolygons polys
+            let clusters = Components.componentBboxes r
+            let measuredPerCluster = Array.create clusters.Length System.Int64.MaxValue
+            let limitPerCluster = Array.create clusters.Length 0L
+            let clusterIdOf ((vx1, vy1, vx2, vy2): int64 * int64 * int64 * int64) =
+                clusters
+                |> Array.tryFindIndex (fun (cx1, cy1, cx2, cy2) ->
+                    vx1 >= cx1 && vy1 >= cy1 && vx2 <= cx2 && vy2 <= cy2)
+            for i in 0 .. vs.Length - 1 do
+                let v = vs.[i]
+                match clusterIdOf bboxes.[i] with
+                | Some ci ->
+                    if v.MeasuredDbu < measuredPerCluster.[ci] then
+                        measuredPerCluster.[ci] <- v.MeasuredDbu
+                    limitPerCluster.[ci] <- v.LimitDbu
+                | None -> ()
+            clusters
+            |> Array.mapi (fun ci (cx1, cy1, cx2, cy2) ->
+                { Rule = ruleName
+                  LayerNumber = ln
+                  LayerType   = lt
+                  LimitDbu    = limitPerCluster.[ci]
+                  MeasuredDbu = measuredPerCluster.[ci]
+                  BboxA = (cx1, cy1, cx2, cy2)
+                  BboxB = None }))
 
 /// Backward-compatible entry point: same signature as before, no
 /// toggles, no implant tags. Computes implant tags internally.

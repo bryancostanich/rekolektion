@@ -214,6 +214,78 @@ power_routes.extend(vdda1_dropper(nand_S.origin[1] + NAND_VDDA1_LOCAL_Y, 24900))
 power_routes.extend(vdda1_dropper(lsh_F.origin[1] - LSH_VDDA1_LOCAL_Y, lsh_F.origin[0] - 45))
 power_routes.extend(vdda1_dropper(lsh_S.origin[1] - LSH_VDDA1_LOCAL_Y, lsh_S.origin[0] - 45))
 
+# ─── Power routing — Step 3: VDD ────────────────────────────────────
+# Met2 strap at y=3700 (between cluster VDD rails max y≈2650 and lsh
+# NFET row at y≈6350). Droppers up from each cluster cell's VDD rail.
+# nand_S sits south of its sibling; its dropper is a long vertical
+# from the strap down to nand_S.VDD rail at y=-7471.
+VDD_STRAP_Y = 3700
+VDD_STRAP_HALF = 70
+VDD_STRAP_X1 = 25130
+VDD_STRAP_X2 = 33500
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=VDD_STRAP_X1, y1=VDD_STRAP_Y - VDD_STRAP_HALF,
+    x2=VDD_STRAP_X2, y2=VDD_STRAP_Y + VDD_STRAP_HALF))
+
+def vdd_dropper_up(rail_y, tap_x):
+    """met1 pad at (tap_x, rail_y) on VDD rail → via1 → met2 up to strap."""
+    rs = [m1_pad(tap_x, rail_y)]
+    rs.extend(place_via((tap_x, rail_y), "met1", "met2"))
+    rs.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+        x1=tap_x-70, y1=rail_y, x2=tap_x+70, y2=VDD_STRAP_Y))
+    return rs
+
+# nand2 VDD rail cell-local y = 4240
+NAND_VDD_LOCAL_Y = 4240
+# nand_F VDD tap at x=25500 (clears VDDA1 dropper at x=24900 by 600 nm)
+power_routes.extend(vdd_dropper_up(nand_F.origin[1] + NAND_VDD_LOCAL_Y, 25500))
+# lf, ls VDD pins at fixed lshift X (label positions after rot 180 + origin)
+power_routes.extend(vdd_dropper_up(2595, 27715))   # lf
+power_routes.extend(vdd_dropper_up(2650, 33390))   # ls
+
+# nand_S sits below the strap — long vertical met2 from strap down
+# to nand_S.VDD rail at y=-7471, same x column as nf for consistency.
+NS_VDD_RAIL_Y = nand_S.origin[1] + NAND_VDD_LOCAL_Y
+NS_TAP_X = 25500
+power_routes.append(m1_pad(NS_TAP_X, NS_VDD_RAIL_Y))
+power_routes.extend(place_via((NS_TAP_X, NS_VDD_RAIL_Y), "met1", "met2"))
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=NS_TAP_X-70, y1=NS_VDD_RAIL_Y, x2=NS_TAP_X+70, y2=VDD_STRAP_Y))
+
+# inv_p VDD (its S strip is the source rail at 1.8 V supply).
+# inv_p.S strip global: x=32810..33040, y=-5419..-3419.
+# Path: met1 east-jog from S strip into via1 column at x=33390 →
+# via1 → met2 vertical UP, merging with the existing lsh_S VDD
+# dropper at x=33390 (same net, same column).
+INVP_VDD_Y = -4419
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=32900, y1=INVP_VDD_Y - 160, x2=33550, y2=INVP_VDD_Y + 160))
+power_routes.extend(place_via((33390, INVP_VDD_Y), "met1", "met2"))
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=33390-70, y1=INVP_VDD_Y, x2=33390+70, y2=2650))
+
+# ─── Power routing — Step 4: SRC_RAIL ───────────────────────────────
+# Met2 top bridge spans pmos_F.D-strap (y=12150..12500) → pmos_S.D-strap.
+# Bridge kept at y=12150..12400 (top stays ≥140 nm below the cell's
+# lsh_F/lsh_S VSS via1 met2 enclosures at y=12540).
+SRC_BRIDGE_X1 = pmos_F.origin[0] + 4125 - 200  # 200 nm overlap into pmos_F.D
+SRC_BRIDGE_X2 = pmos_S.origin[0] - 4125 + 200  # 200 nm overlap into pmos_S.D
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=SRC_BRIDGE_X1, y1=12150,
+    x2=SRC_BRIDGE_X2, y2=12400))
+
+# disch.D → SRC bridge: via1 on the existing disch.D met1 strip
+# (x=29237..29467, y=-5682..-3682), then met2 vertical at x=29350
+# up to the bridge. The column is clear east of nand_F (x>29098),
+# west of lsh_S (x<29485), and above the VSS trunk (y > -4930), so
+# the vertical doesn't collide with any other met2 feature.
+SRC_DISCH_X = 29350
+SRC_DISCH_Y = -4200  # in disch.D strip's y range (-5682..-3682)
+power_routes.append(m1_pad(SRC_DISCH_X, SRC_DISCH_Y))
+power_routes.extend(place_via((SRC_DISCH_X, SRC_DISCH_Y), "met1", "met2"))
+power_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
+    x1=SRC_DISCH_X-70, y1=SRC_DISCH_Y, x2=SRC_DISCH_X+70, y2=12400))
+
 # ─── Assemble doc (placement-only — no routing, no labels) ──────────
 doc = rkt.Document(
     imports=[

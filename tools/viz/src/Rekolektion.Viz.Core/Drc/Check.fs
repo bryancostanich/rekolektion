@@ -2,6 +2,7 @@ module Rekolektion.Viz.Core.Drc.Check
 
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout.Flatten
+open Rekolektion.Viz.Core.Drc.Geometry
 
 /// µm per DBU, derived from the document's `Units.DbuNm` (nm/DBU).
 /// 1 µm = 1000 nm, so 1 nm/DBU = 0.001 µm/DBU.
@@ -220,6 +221,18 @@ let checkWithToggles
         if disabledRules.Contains ruleName then () else
         match rule with
         | Rules.Width (name, layer, minUm) ->
+            // Width is per-rectangle in Magic semantics: each
+            // input polygon's bbox dimensions are checked
+            // against the limit. Tried doing this via
+            // morphological opening on the Region (r \ opened);
+            // it works mathematically but the slab-tile
+            // decomposition of the Region splits each polygon
+            // into many narrow tiles based on neighbor Y events,
+            // and each tile fragment reports a violation —
+            // bogus 4000+ violations on a clean licon array.
+            // Magic's tiles are MAXIMAL strips, not slab tiles,
+            // so the morphology approach doesn't translate to
+            // viz's reporting model. Per-rectangle is correct.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 for (_, (x1, y1, x2, y2), _) in polysOnLayer idx layer do
@@ -234,14 +247,19 @@ let checkWithToggles
                             BboxA = (x1, y1, x2, y2)
                             BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
-            // Orthogonal-only: spacing fires when the two
-            // polygons have a facing edge (one axis's
-            // projections overlap, the other axis's don't), and
-            // the perpendicular gap is below the limit. Diagonal
-            // pairs (no projection overlap on either axis) don't
-            // trigger spacing in Magic — corner-to-corner
-            // distance is governed by separate corner rules
-            // (rare in SKY130).
+            // Spacing tried via Region morphology (shrink(grow,
+            // s/2), s/2) \ r) but the slab-tile decomposition
+            // fragments each gap region into many narrow tiles
+            // based on global Y events from neighbors. Each
+            // fragment reports a violation with a misleading
+            // MeasuredDbu (the slab height, not the actual
+            // gap). To match Magic's per-gap-region counting,
+            // need connected-components on the violation
+            // Region — group adjacent tiles into one component,
+            // report one violation per component. That's the
+            // next step. For now: per-pair with orthogonal-only
+            // facing-edge filter (matches Magic semantics, just
+            // not Magic counts).
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let polys = polysOnLayer idx layer
@@ -464,6 +482,57 @@ let checkWithToggles
                                     MeasuredDbu = max 0L measured
                                     BboxA = ibb
                                     BboxB = Some obb }
+        | Rules.BoundaryCrossing (name, source, destination, minUm) ->
+            // For each source poly:
+            //   * any destination FULLY contains it → skip
+            //     (legal case, e.g. NSDM inside nwell = n-tap).
+            //   * any destination PARTIALLY overlaps it (bbox
+            //     overlap but not containment) → fire at gap=0
+            //     (the source crosses the destination edge; the
+            //     outside-part touches the edge).
+            //   * all destinations fully separate (no overlap):
+            //     fire when nearest-edge gap < minUm.
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let sources = polysOnLayer idx source
+                let destinations = polysOnLayer idx destination
+                for (_, sBb, _) in sources do
+                    let (sx1, sy1, sx2, sy2) = sBb
+                    let mutable fullyInside = false
+                    let mutable crossingDest : (int64 * int64 * int64 * int64) option = None
+                    let mutable minSepGap = System.Int64.MaxValue
+                    let mutable nearestDest = sBb
+                    for (_, dBb, _) in destinations do
+                        let (dx1, dy1, dx2, dy2) = dBb
+                        if sx1 >= dx1 && sy1 >= dy1 && sx2 <= dx2 && sy2 <= dy2 then
+                            fullyInside <- true
+                        elif bboxOverlaps sBb dBb then
+                            crossingDest <- Some dBb
+                        else
+                            match bboxOrthoGap sBb dBb with
+                            | Some g when g < minSepGap ->
+                                minSepGap <- g
+                                nearestDest <- dBb
+                            | _ -> ()
+                    if fullyInside then ()
+                    elif crossingDest.IsSome then
+                        result.Add {
+                            Rule = name
+                            LayerNumber = source.Number
+                            LayerType   = source.DataType
+                            LimitDbu    = limit
+                            MeasuredDbu = 0L
+                            BboxA = sBb
+                            BboxB = crossingDest }
+                    elif minSepGap > 0L && minSepGap < limit then
+                        result.Add {
+                            Rule = name
+                            LayerNumber = source.Number
+                            LayerType   = source.DataType
+                            LimitDbu    = limit
+                            MeasuredDbu = minSepGap
+                            BboxA = sBb
+                            BboxB = Some nearestDest }
         | Rules.MinArea (name, layer, minUm2) ->
             // Compare areas in DBU² to avoid round-off near the
             // limit. (umPerDbu)² scales the µm² threshold up to

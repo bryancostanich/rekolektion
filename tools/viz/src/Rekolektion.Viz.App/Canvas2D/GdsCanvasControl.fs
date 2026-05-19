@@ -773,6 +773,27 @@ type GdsCanvasControl() as this =
     // cursor. None when no drag is active.
     let mutable dragLiveLib : Document option = None
     let mutable dragLiveFlat : FlatPolygon array = [||]
+    // DRC cache for fast drag updates. `cachedDrcFlat` is the
+    // FlatPolygons reference (by identity) that produced
+    // `cachedDrcViolations`. If the static FlatPolygons hasn't
+    // changed identity, the cache is reusable. During a drag,
+    // we compute fresh DRC only for the moving area and merge
+    // with the cached violations from the rest of the design.
+    //
+    // Implant tags are cached separately because they're
+    // expensive to compute (O(N×M) bbox AND of every polygon
+    // against every implant marker) and don't change unless
+    // the underlying flat changes.
+    //
+    // Cache invariant: if `cachedDrcFlat` references the same
+    // array as `this.FlatPolygons`, the cached violations and
+    // tags are valid. Any property change that produces a new
+    // FlatPolygons array invalidates the cache automatically
+    // by identity mismatch.
+    let mutable cachedDrcFlat : FlatPolygon array = [||]
+    let mutable cachedDrcViolations : Drc.Check.Violation array = [||]
+    let mutable cachedDrcImplantTags : Drc.Implant.ImplantTags array = [||]
+    let mutable cachedDrcDisabled : Set<string> = Set.empty
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -2390,24 +2411,138 @@ type GdsCanvasControl() as this =
                     // The two passes don't overlap: (1) checks
                     // intra-top-cell only; (2) checks across
                     // instances. Concatenation is the merge.
-                    // Run the full DRC pass over the FULL flat
-                    // (top cell + every SRef'd primitive). The
-                    // engine's foundry-cell waiver
-                    // (`Waiver.isFoundryWaived`) and COREID
-                    // waiver suppress foundry-internal sub-spec
-                    // geometry, so flat-coverage doesn't drown
-                    // the canvas in foundry-primitive errors.
+                    // Two-tier DRC: full pass on static state
+                    // (cached across frames), incremental pass
+                    // for the moving region during a drag.
                     //
-                    // Real bugs the user cares about — including
-                    // violations INSIDE user-added cells like
-                    // `lshift_1v8_to_3v3` — only show up via
-                    // full-flat, because user cells are SRef'd
-                    // into the top.
+                    // Non-drag render: cache invariant holds
+                    // (this.FlatPolygons identity matches
+                    // cachedDrcFlat) → return cache. Otherwise
+                    // recompute full, refresh cache.
+                    //
+                    // Drag render: keep cached violations
+                    // OUTSIDE the moving region (they can't
+                    // change — none of their polys moved); run
+                    // fresh DRC on polys inside the moving
+                    // region + halo (drag-affected area). Concat.
                     let disabled = this.DisabledDrcRules
-                    let tagsFull =
-                        Drc.Implant.tagAll this.FlatPolygons
-                    Drc.Check.checkWithToggles
-                        renderLib.Units this.FlatPolygons tagsFull disabled
+                    let staticFlat = this.FlatPolygons
+                    // Refresh cache if the static flat changed
+                    // identity OR the disabled-rules set changed.
+                    let cacheValid =
+                        obj.ReferenceEquals(cachedDrcFlat, staticFlat)
+                        && cachedDrcDisabled = disabled
+                    if not cacheValid then
+                        let tags = Drc.Implant.tagAll staticFlat
+                        let vs =
+                            Drc.Check.checkWithToggles
+                                lib.Units staticFlat tags disabled
+                        cachedDrcFlat <- staticFlat
+                        cachedDrcImplantTags <- tags
+                        cachedDrcViolations <- vs
+                        cachedDrcDisabled <- disabled
+                    let drcDragActive =
+                        dragLiveLib.IsSome
+                        && (dragKind = PolygonDrag
+                            || dragKind = SelectionDrag
+                            || (match dragKind with
+                                | ResizeDrag _ -> true
+                                | _ -> false))
+                    if not drcDragActive then
+                        // Static state: cache is authoritative.
+                        cachedDrcViolations
+                    else
+                        // Drag in flight: compute moving region
+                        // bbox = union of (selected SRef bboxes
+                        // pre-move) ∪ (post-move = + delta).
+                        // Halo by 1270 DBU (the max rule limit
+                        // — nwell.2a) so spacing violations with
+                        // stationary neighbors near the boundary
+                        // are caught.
+                        let dx, dy = dragLiveDeltaDbu
+                        let halo = 1270L
+                        // Build a "drag-affected area" — covers
+                        // pre-move + post-move positions plus
+                        // halo. Drop selected polys' static
+                        // bboxes; add (static + delta) for the
+                        // post-move position. Union them all.
+                        let selBboxes =
+                            this.Instances
+                            |> Array.filter (fun i ->
+                                this.InstanceSelection.Contains i.Index)
+                            |> Array.map (fun i ->
+                                let (x1, y1, x2, y2) = i.BBox
+                                let postX1 = x1 + dx
+                                let postY1 = y1 + dy
+                                let postX2 = x2 + dx
+                                let postY2 = y2 + dy
+                                (min x1 postX1) - halo,
+                                (min y1 postY1) - halo,
+                                (max x2 postX2) + halo,
+                                (max y2 postY2) + halo)
+                        if selBboxes.Length = 0 then
+                            // No instance selection (e.g. polygon
+                            // drag without instance context).
+                            // Fall back to full recompute on the
+                            // live state — slow but correct.
+                            let tags = Drc.Implant.tagAll renderFlat
+                            Drc.Check.checkWithToggles
+                                renderLib.Units renderFlat tags disabled
+                        else
+                            // Affected = union bbox of all
+                            // selected instances' areas.
+                            let aBb =
+                                let init =
+                                    System.Int64.MaxValue, System.Int64.MaxValue,
+                                    System.Int64.MinValue, System.Int64.MinValue
+                                selBboxes
+                                |> Array.fold (fun (axMn, ayMn, axMx, ayMx)
+                                                   (bxMn, byMn, bxMx, byMx) ->
+                                    min axMn bxMn, min ayMn byMn,
+                                    max axMx bxMx, max ayMx byMx) init
+                            let (ax1, ay1, ax2, ay2) = aBb
+                            let overlapsAffected
+                                    ((px1, py1, px2, py2): int64*int64*int64*int64) =
+                                px1 < ax2 && ax1 < px2
+                                && py1 < ay2 && ay1 < py2
+                            // Cached violations OUTSIDE affected
+                            // area stay valid; drop those inside.
+                            let kept =
+                                cachedDrcViolations
+                                |> Array.filter (fun v ->
+                                    let bb =
+                                        match v.BboxB with
+                                        | None ->
+                                            v.BboxA
+                                        | Some b ->
+                                            let (x1, y1, x2, y2) = v.BboxA
+                                            let (bx1, by1, bx2, by2) = b
+                                            min x1 bx1, min y1 by1,
+                                            max x2 bx2, max y2 by2
+                                    not (overlapsAffected bb))
+                            // Filter renderFlat to polys in the
+                            // affected area.
+                            let polyBb (p: FlatPolygon) =
+                                let mutable xMn = System.Int64.MaxValue
+                                let mutable yMn = System.Int64.MaxValue
+                                let mutable xMx = System.Int64.MinValue
+                                let mutable yMx = System.Int64.MinValue
+                                for pt in p.Points do
+                                    if pt.X < xMn then xMn <- pt.X
+                                    if pt.X > xMx then xMx <- pt.X
+                                    if pt.Y < yMn then yMn <- pt.Y
+                                    if pt.Y > yMx then yMx <- pt.Y
+                                xMn, yMn, xMx, yMx
+                            let smallFlat =
+                                renderFlat
+                                |> Array.filter (fun p ->
+                                    overlapsAffected (polyBb p))
+                            let smallTags =
+                                Drc.Implant.tagAll smallFlat
+                            let fresh =
+                                Drc.Check.checkWithToggles
+                                    renderLib.Units smallFlat smallTags disabled
+                            Array.append kept fresh
                 else
                     [||]
             let marquee =

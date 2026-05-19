@@ -118,6 +118,35 @@ extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
 extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
     x1=INVP_CUT_X2, y1=-10396, x2=NWELL_X2, y2=-6161))  # Strip B-east
 
+# inv_p body tap — for LVS. inv_p's 1v8 PFET has no internal body tap
+# in the primitive; its nwell extracts as a floating net. Extend the
+# nwell northward into the cutout zone (still at VDD, abuts inv_p's
+# own nwell), drop an n+ tap inside, and tie it to inv_p.S (= VDD)
+# via a met1 stub. Distances:
+#   - extension east x=33250 = inv_p nwell east. Stays 1280 nm from
+#     Strip A-east (x=34530) — ≥nwell.2a 1.27 µm.
+#   - extension north y=-2000. lsh_S south edge y=1465 → 3465 nm gap.
+#   - tap n+ diff at y=-2650..-2350. inv_p psdm top y=-3294 → 519 nm
+#     vertical gap (≥nsdm/psdm min spacing).
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
+    x1=32160, y1=-3109, x2=33250, y2=-2000))  # nwell extension (merges with inv_p)
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nsdm"),
+    x1=32425, y1=-2830, x2=32975, y2=-2170))  # n+ implant select (≥125 nm encl of diff)
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "diff"),
+    x1=32550, y1=-2705, x2=32850, y2=-2295))  # n+ tap diff (≥120 nm y encl of licon, licon.7)
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "licon1"),
+    x1=32615, y1=-2585, x2=32785, y2=-2415))  # diff → li1 contact
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "li1"),
+    x1=32555, y1=-2685, x2=32845, y2=-2315))  # li1 (≥100 nm y encl of licon, li.5)
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "mcon"),
+    x1=32615, y1=-2585, x2=32785, y2=-2415))  # li1 → met1 contact
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=32540, y1=-2640, x2=32860, y2=-2360))  # met1 tap pad
+# Met1 vertical: connects body tap pad south to inv_p.S strip (x=32810..33040, y=-5419..-3419)
+# — same net (VDD), so it merges into the VDD polygon.
+extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
+    x1=32810, y1=-3500, x2=32950, y2=-2500))
+
 # ─── Power routing — Step 1: VSS ────────────────────────────────────
 # Topology (user-approved from prior iteration):
 #   - Met1 vertical at x=23300 (in gap between pmos_F right and central

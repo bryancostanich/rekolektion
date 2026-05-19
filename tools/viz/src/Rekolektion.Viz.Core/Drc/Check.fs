@@ -371,61 +371,47 @@ let checkWithToggles
                                         BboxB = None }
                                 | _ -> ()
         | Rules.Enclosure (name, outer, inner, minUm, cond) ->
+            // Magic-fidelity enclosure via Region morphology:
+            //   violations = inner \ shrink(outer, N)
+            // shrink(outer, N) is the "core" of outer that has
+            // ≥ N margin on every side. Anything in inner that
+            // isn't in that core is too close to outer's edge
+            // (or completely outside outer) — a violation.
+            //
+            // Implant condition filters which inner polygons
+            // contribute. licon.5a only applies to diff-contact
+            // licons (OverlapsDiff); inners that don't match
+            // the condition are excluded from the violation
+            // calculation.
+            //
+            // Per-cluster reporting falls out of the post-pass.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let outers = polysOnLayer idx outer
                 let inners = polysOnLayer idx inner
-                for (_, ibb, iIdx) in inners do
-                    // Skip inner polygons whose implant tags
-                    // don't match the rule's condition (e.g.
-                    // licon.5a only applies to diff-contact
-                    // licons, which have OverlapsDiff = true).
-                    let iTags = Implant.tagOf tags iIdx
-                    if condMatches cond iTags then
-                        // The innermost-margin outer is the one
-                        // whose bbox contains the inner. If
-                        // multiple outers cover (rare), the
-                        // largest margin wins — a generously-
-                        // enclosing outer doesn't fail because
-                        // another smaller outer also covers and
-                        // trims tight.
-                        let mutable bestMargin : int64 voption = ValueNone
-                        let mutable bestOuter = ibb
-                        for (_, obb, _) in outers do
-                            if bboxOverlaps obb ibb then
-                                let m = bboxContainsMargin ibb obb
-                                match bestMargin with
-                                | ValueNone ->
-                                    bestMargin <- ValueSome m
-                                    bestOuter <- obb
-                                | ValueSome cur when m > cur ->
-                                    bestMargin <- ValueSome m
-                                    bestOuter <- obb
-                                | _ -> ()
-                        match bestMargin with
-                        | ValueNone ->
-                            // No outer covers this inner at all.
-                            // Report as zero-margin enclosure
-                            // failure — the inner is fully
-                            // outside any outer.
-                            result.Add {
-                                Rule = name
-                                LayerNumber = inner.Number
-                                LayerType   = inner.DataType
-                                LimitDbu    = limit
-                                MeasuredDbu = 0L
-                                BboxA = ibb
-                                BboxB = None }
-                        | ValueSome m when m < limit ->
+                let outerPolys = outers |> Array.map (fun (p, _, _) -> p)
+                let innerPolysFiltered =
+                    inners
+                    |> Array.filter (fun (_, _, iIdx) ->
+                        condMatches cond (Implant.tagOf tags iIdx))
+                    |> Array.map (fun (p, _, _) -> p)
+                if innerPolysFiltered.Length > 0 then
+                    let outerR = Region.ofPolygons outerPolys
+                    let innerR = Region.ofPolygons innerPolysFiltered
+                    let outerCore = Size.shrink limit outerR
+                    let violations = Boolean.subtract innerR outerCore
+                    for slab in violations.Slabs do
+                        for iv in slab.Intervals do
+                            let m =
+                                min (iv.X2 - iv.X1) slab.Height
                             result.Add {
                                 Rule = name
                                 LayerNumber = inner.Number
                                 LayerType   = inner.DataType
                                 LimitDbu    = limit
                                 MeasuredDbu = m
-                                BboxA = ibb
-                                BboxB = Some bestOuter }
-                        | _ -> ()
+                                BboxA = (iv.X1, slab.Y, iv.X2, slab.Y + slab.Height)
+                                BboxB = None }
         | Rules.Endcap (name, source, reference, minUm) ->
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then

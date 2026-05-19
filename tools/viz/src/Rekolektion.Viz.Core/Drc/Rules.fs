@@ -152,6 +152,29 @@ type Rule =
     /// Single-polygon min area: bbox area ≥ MinUm². Catches tiny
     /// isolated fragments (`met1.6`, `met2.6`, `li.6`).
     | MinArea  of name: string * layer: LayerKey * minUm2: float
+    /// "Source must not cross destination boundary; if outside,
+    /// must be ≥ minUm away." For each source polygon:
+    ///   * Fully inside any destination polygon → skip (legal,
+    ///     e.g. NSDM inside nwell marks an n-tap).
+    ///   * Partially overlaps a destination polygon (crosses
+    ///     the boundary) → fire at gap=0. This is the actual
+    ///     diff/tap.9 case: NSDM straddling an nwell edge means
+    ///     part of the n+ implant extends outside the well, and
+    ///     that outside part touches the well boundary (gap=0).
+    ///   * Fully separate from all destinations → check gap;
+    ///     fire if gap < minUm. Same as CrossSpacing for this
+    ///     case.
+    ///
+    /// Why this isn't just CrossSpacing: CrossSpacing skips
+    /// overlapping pairs because intentional crossings (poly
+    /// over diff = transistor gate) are legal. BoundaryCrossing
+    /// is the opposite — overlap-without-containment IS the
+    /// violation.
+    | BoundaryCrossing of
+        name: string
+        * source: LayerKey
+        * destination: LayerKey
+        * minUm: float
     /// Asymmetric enclosure: `outer` must contain `inner` with
     /// enclosure ≥ `oneDirUm` on one axis AND ≥ `otherDirUm` on
     /// the other axis. The "one" axis is whichever (X or Y) has
@@ -191,6 +214,7 @@ let nameOf (rule: Rule) : string =
     | Endcap (n, _, _, _) -> n
     | MinArea (n, _, _) -> n
     | AsymEnclosure (n, _, _, _, _, _) -> n
+    | BoundaryCrossing (n, _, _, _) -> n
 
 // --- Rule table ---------------------------------------------------------
 // Ordering follows `sky130.py` top-to-bottom for ease of diffing,
@@ -227,7 +251,12 @@ let allRules : Rule list = [
     Spacing  ("nwell.2a",   nwell, 1.27)
     // NWELL_TO_NWELL_SAME (0.60) — same-net relaxation, can't model
     // without net awareness; the stricter 1.27 is the safe default.
-    Enclosure("nwell.5",    nwell, psdm, 0.18, Always)  // nwell encloses psdm
+    // nwell.5 — nwell encloses psdm BY 0.18 µm. Only fires
+    // when the psdm is over diff (i.e. it's the p-diff
+    // source/drain implant). Psdm that doesn't cover diff is
+    // a psub-tap marker and doesn't need nwell coverage —
+    // firing the rule there would falsely flag every p-tap.
+    Enclosure("nwell.5",    nwell, psdm, 0.18, OverlapsDiff)
 
     // --- Implants ---
     Width    ("nsdm.1",     nsdm,  0.38)
@@ -249,11 +278,14 @@ let allRules : Rule list = [
     Endcap   ("poly.7",     diff,  poly, 0.25)    // diff overhangs source/drain
     CrossSpacing("poly.4",  poly,  diff, 0.075, Always)
                                                   // poly edge to diff (non-gate)
-    // difftap.9 — n-diff outside any nwell must be ≥ 0.34 µm
-    // from any nwell edge. NsdmNotInNwell selects "n-diff
-    // outside an nwell" by combining the NSDM marker (= n-type)
-    // with the absence of NWELL overlap.
-    CrossSpacing("diff/tap.9", diff, nwell, 0.34, NsdmNotInNwell)
+    // diff/tap.9 — N+ diffusion to nwell ≥ 0.34 µm. Magic's
+    // deck keys this off the NSDM marker layer (NSDM = n-type
+    // implant region). The semantics are:
+    //   - NSDM fully inside nwell → n-tap, legal, no fire
+    //   - NSDM crossing nwell edge → outside part is too close
+    //     to nwell (gap = 0), FIRES
+    //   - NSDM outside nwell with gap < 0.34 → FIRES
+    BoundaryCrossing("diff/tap.9", nsdm, nwell, 0.34)
 
     // --- LICON1 (contact: diff/poly to li1) ---
     // Licon contacts are typed by what's BELOW them: diff for

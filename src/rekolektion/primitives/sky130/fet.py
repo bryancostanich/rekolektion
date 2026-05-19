@@ -35,6 +35,84 @@ from rekolektion.primitives._cache import (
 from rekolektion.primitives.sky130._gds_to_rkt import read_gds
 
 
+# Bump when the FET generator's emit-side semantics change in a way
+# that requires re-minting every cached .rkt. v2 (2026-05-16) adds
+# the `_tag_fet_port_labels` pass — every D/G/S/B label gets
+# `(kind device-terminal)` so the viz Nets panel / ratlines / LVS
+# flood-fill don't see them as fake nets. v3 (2026-05-18) adds
+# `_fix_met1_min_area` — grows gate-contact met1 pads that the PDK
+# mos_draw proc emits under met1.6 min-area (0.083 µm²), notably
+# on short-L 1.8 V devices.
+_FET_GENERATOR_VERSION = 3
+
+# met1.6 min area in nm² (0.083 µm²). Bumped to 90000 for safety margin
+# — Magic's met1.6 evaluator flagged 83230 (290 × 287) as a violation
+# in measurement, suggesting the rule's effective threshold rounds up or
+# uses a slightly larger value than the documented 0.083 µm².
+_MET1_MIN_AREA_NM2 = 90000
+# met1.2 min spacing in nm — clearance budget when growing pads.
+_MET1_MIN_SPACING_NM = 140
+
+
+def _fix_met1_min_area(cell: rkt.Cell) -> None:
+    """Grow any met1 rect that falls below met1.6 min-area.
+
+    The PDK mos_draw proc emits a gate-contact landing pad sized
+    for the smallest gate-pad mcon enclosure rule, but on short-L
+    1.8 V devices the resulting met1 rect (290 nm × 230 nm =
+    0.067 µm²) falls under the 0.083 µm² min-area threshold.
+
+    We post-process: detect the under-area rect, grow in y by the
+    deficit, growing away from the nearest same-x-band met1 to
+    preserve met1.2 spacing.
+    """
+
+    met1_layer = rkt.named("sky130", "met1")
+    met1 = [el for el in cell.elements
+            if isinstance(el, rkt.Rect) and el.layer == met1_layer]
+    for r in met1:
+        w = r.x2 - r.x1
+        h = r.y2 - r.y1
+        if w * h >= _MET1_MIN_AREA_NM2:
+            continue
+        target_h = -(-_MET1_MIN_AREA_NM2 // w)  # ceil(min/w)
+        deficit = target_h - h
+
+        # Find nearest met1 neighbor above/below in the same x-band.
+        above = float('inf')
+        below = float('inf')
+        for o in met1:
+            if o is r:
+                continue
+            if o.x2 <= r.x1 or o.x1 >= r.x2:
+                continue
+            if o.y1 >= r.y2:
+                above = min(above, o.y1 - r.y2)
+            if o.y2 <= r.y1:
+                below = min(below, r.y1 - o.y2)
+        # Room to grow without crossing met1.2 min spacing.
+        below_room = (below - _MET1_MIN_SPACING_NM) if below != float('inf') else deficit
+        above_room = (above - _MET1_MIN_SPACING_NM) if above != float('inf') else deficit
+        # Prefer the direction with more room — typical gate pad
+        # sits away from the S/D strips on one side and against the
+        # cell bbox on the other.
+        if below_room >= deficit and below_room >= above_room:
+            r.y1 -= deficit
+        elif above_room >= deficit:
+            r.y2 += deficit
+        else:
+            # Neither side alone has room — split, but never violate
+            # met1.2. If the math doesn't close, leave the rect alone
+            # and let DRC surface the issue rather than silently
+            # producing a met1.2 violation.
+            grow_below = min(deficit // 2, max(0, int(below_room)))
+            grow_above = deficit - grow_below
+            if grow_above > above_room:
+                return
+            r.y1 -= grow_below
+            r.y2 += grow_above
+
+
 def _tag_fet_port_labels(cell: rkt.Cell) -> None:
     """Mark every `li1_label`-layered label inside the FET cell as
     `LabelKind.DEVICE_TERMINAL`.
@@ -253,7 +331,9 @@ def _build_fet(
         rkt.Property("botc", rkt.Symbol("true" if botc else "false")),
     ]
     generator = f"sky130/{prefix}"
-    digest = compute_digest(generator, params)
+    digest = compute_digest(
+        generator, params, generator_version=_FET_GENERATOR_VERSION,
+    )
     if cache_hit(name, digest, primitives_dir):
         return name
 
@@ -298,6 +378,11 @@ def _build_fet(
                 # of one. Inject D and S met2 straps to fix that.
                 if nf > 1:
                     _add_multifinger_sd_ties(cell, nf)
+                # Grow any met1 pad that violates met1.6 min-area
+                # (PDK mos_draw emits under-area gate pads on short-L
+                # 1.8 V devices). Runs before label tagging since it
+                # only touches Rects.
+                _fix_met1_min_area(cell)
                 # Tag every li1_label-layered label inside this cell
                 # as DeviceTerminal. mos_draw's `doports 1` emits
                 # them; they're FET port annotations, not nets. Runs

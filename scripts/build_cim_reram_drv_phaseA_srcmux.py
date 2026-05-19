@@ -482,7 +482,96 @@ signal_routes.append(m2_pad(32705, -5739))
 signal_routes.extend(place_via((32705, -5739), "met1", "met2"))
 signal_routes.extend(place_via((32705, -5739), "met2", "met3"))
 
-# ─── Assemble doc (placement-only — no routing, no labels) ──────────
+# ─── Pin coord helpers ──────────────────────────────────────────────
+def pin_loc(sref, info, terminal):
+    p = info.pin(terminal)
+    if p is None:
+        raise ValueError(f"no '{terminal}' in {sref.cell}")
+    lx, ly = p.origin
+    if abs(sref.rot - 180.0) < 0.001:
+        lx, ly = -lx, -ly
+    return (sref.origin[0] + lx, sref.origin[1] + ly)
+
+def pmos25_pin(sref, terminal):
+    pins = [p for p in pmos25_info.pins if p.terminal == terminal]
+    center = pins[len(pins) // 2]
+    return (sref.origin[0] + center.origin[0],
+            sref.origin[1] + center.origin[1])
+
+# Cluster cell pin coords
+nf_VDD   = pin_loc(nand_F, nand_info, "VDD")
+nf_VDDA1 = pin_loc(nand_F, nand_info, "VDDA1")
+nf_VSS   = pin_loc(nand_F, nand_info, "VSS")
+nf_A     = pin_loc(nand_F, nand_info, "A")
+nf_B     = pin_loc(nand_F, nand_info, "B")
+nf_Y     = pin_loc(nand_F, nand_info, "Y")
+ns_VDD   = pin_loc(nand_S, nand_info, "VDD")
+ns_VDDA1 = pin_loc(nand_S, nand_info, "VDDA1")
+ns_VSS   = pin_loc(nand_S, nand_info, "VSS")
+ns_A     = pin_loc(nand_S, nand_info, "A")
+ns_B     = pin_loc(nand_S, nand_info, "B")
+ns_Y     = pin_loc(nand_S, nand_info, "Y")
+lf_VDD   = pin_loc(lsh_F, lshift_info, "VDD")
+lf_VDDA1 = pin_loc(lsh_F, lshift_info, "VDDA1")
+lf_VSS   = pin_loc(lsh_F, lshift_info, "VSS")
+lf_IN    = pin_loc(lsh_F, lshift_info, "IN")
+lf_OUTN  = pin_loc(lsh_F, lshift_info, "OUT_N")
+ls_VDD   = pin_loc(lsh_S, lshift_info, "VDD")
+ls_VDDA1 = pin_loc(lsh_S, lshift_info, "VDDA1")
+ls_VSS   = pin_loc(lsh_S, lshift_info, "VSS")
+ls_IN    = pin_loc(lsh_S, lshift_info, "IN")
+ls_OUTN  = pin_loc(lsh_S, lshift_info, "OUT_N")
+pmos_F_D = pmos25_pin(pmos_F, "D")
+pmos_F_G = pmos25_pin(pmos_F, "G")
+pmos_F_S = pmos25_pin(pmos_F, "S")
+pmos_S_D = pmos25_pin(pmos_S, "D")
+pmos_S_G = pmos25_pin(pmos_S, "G")
+pmos_S_S = pmos25_pin(pmos_S, "S")
+
+_KINDS = {"port-name": rkt.LabelKind.PORT_NAME,
+          "net-name":  rkt.LabelKind.NET_NAME}
+def lbl(layer, text, origin, kind="port-name"):
+    return rkt.Label(layer=rkt.named("sky130", layer), text=text,
+                     origin=origin, kind=_KINDS[kind])
+
+# ─── Port labels + internal-net labels for LVS ──────────────────────
+port_labels = [
+    # ─── External ports ─────────────────────────────────────────────
+    lbl("met1_label", "VDD", nf_VDD),
+    lbl("met1_label", "VDD", ns_VDD),
+    lbl("met1_label", "VDD", lf_VDD),
+    lbl("met1_label", "VDD", ls_VDD),
+    lbl("met1_label", "VDDA1", lf_VDDA1),
+    lbl("met1_label", "VDDA1", ls_VDDA1),
+    lbl("met1_label", "VDDA1", nf_VDDA1),
+    lbl("met1_label", "VDDA1", ns_VDDA1),
+    lbl("li1_label",  "VDDA1", pmos_F_S),
+    lbl("li1_label",  "VDDA1", pmos_S_S),
+    lbl("met1_label", "VSS", nf_VSS),
+    lbl("met1_label", "VSS", ns_VSS),
+    lbl("met1_label", "VSS", lf_VSS),
+    lbl("met1_label", "VSS", ls_VSS),
+    lbl("li1_label",  "SRC_RAIL", pmos_F_D),
+    lbl("li1_label",  "SRC_RAIL", pmos_S_D),
+    lbl("met1_label", "pulse_req_1v8",        nf_A),
+    lbl("met1_label", "pulse_req_1v8",        ns_A),
+    lbl("met1_label", "pulse_kind_form_1v8",  nf_B),
+    lbl("met1_label", "pulse_kind_setrr_1v8", ns_B),
+
+    # ─── Discharge cell terminal port labels ────────────────────────
+    # All port-name kind so the bulk and discharge connections land on
+    # the right external nets at LVS. Magic auto-traces connectivity
+    # between these labels via the routed met1 — no extra "internal"
+    # labels needed.
+    lbl("met1_label", "VDD",           (32925, -4419)),  # inv_p.S
+    lbl("met1_label", "VSS",           (31062, -4870)),  # inv_n.S
+    lbl("met1_label", "VSS",           (30142, -4682)),  # disch.S
+    lbl("met1_label", "SRC_RAIL",      (29352, -4682)),  # disch.D
+    lbl("met1_label", "pulse_req_1v8", (32705, -5739)),  # inv_p.G
+    lbl("met1_label", "pulse_req_1v8", (31282, -5645)),  # inv_n.G
+]
+
+# ─── Assemble doc ───────────────────────────────────────────────────
 doc = rkt.Document(
     imports=[
         rkt.Import(path=f"./{NAND_NAME}.rkt"),
@@ -495,7 +584,7 @@ doc = rkt.Document(
     cells=[
         rkt.Cell(
             name='cim_reram_drv_phaseA_srcmux',
-            elements=[*srefs, *extra_paint, *power_routes, *signal_routes],
+            elements=[*srefs, *extra_paint, *power_routes, *signal_routes, *port_labels],
         ),
     ],
     top_cell='cim_reram_drv_phaseA_srcmux',

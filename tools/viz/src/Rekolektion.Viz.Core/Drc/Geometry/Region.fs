@@ -101,13 +101,23 @@ let mergeSortedIntervals (sorted: Interval array) : Interval array =
         let mutable cur = sorted.[0]
         for i in 1 .. sorted.Length - 1 do
             let next = sorted.[i]
-            // Touching intervals (next.X1 == cur.X2 under
-            // half-open convention) ARE merged here because the
-            // canonical form requires non-adjacent intervals.
-            // DRC consumers treat the merged span as one
-            // continuous strip — what they need for width /
-            // spacing measurements across a contiguous edge.
-            if next.X1 <= cur.X2 then
+            // STRICT overlap only — touching intervals
+            // (next.X1 == cur.X2 under half-open convention)
+            // stay SEPARATE. This is what KLayout / Magic do
+            // semantically: two polygons sharing an edge are
+            // distinct features, not one merged shape. Critical
+            // for spacing rules: gap == limit (touching after
+            // grow-by-limit/2) should NOT fire — but if touch
+            // merged, the morphology would mistakenly close the
+            // gap and report a violation.
+            //
+            // Area and bbox queries are unaffected (sum of
+            // widths is identical). Subtract / intersect work
+            // correctly on touching inputs (touching = 0
+            // overlap area = no intersect; touching boundary
+            // edges stay in their respective polygons under
+            // subtract).
+            if next.X1 < cur.X2 then
                 cur <- { cur with X2 = max cur.X2 next.X2 }
             else
                 result.Add cur

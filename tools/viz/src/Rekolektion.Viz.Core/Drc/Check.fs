@@ -247,37 +247,44 @@ let checkWithToggles
                             BboxA = (x1, y1, x2, y2)
                             BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
-            // Spacing tried via Region morphology (shrink(grow,
-            // s/2), s/2) \ r) but the slab-tile decomposition
-            // fragments each gap region into many narrow tiles
-            // based on global Y events from neighbors. Each
-            // fragment reports a violation with a misleading
-            // MeasuredDbu (the slab height, not the actual
-            // gap). To match Magic's per-gap-region counting,
-            // need connected-components on the violation
-            // Region — group adjacent tiles into one component,
-            // report one violation per component. That's the
-            // next step. For now: per-pair with orthogonal-only
-            // facing-edge filter (matches Magic semantics, just
-            // not Magic counts).
+            // Magic-fidelity spacing via Region morphology +
+            // connected components:
+            //   violations = shrink(grow(r, s/2), s/2) \ r
+            //   components = Components.componentBboxes violations
+            //   one reported violation per component
+            //
+            // Morphology produces a Region whose tiles cover
+            // every gap < limit. Slab decomposition fragments
+            // each gap into many tiles based on neighbor Y
+            // events, but the tiles are CONNECTED — one gap =
+            // one component. Reporting per-component gives the
+            // Magic-style "one violation per gap region" count.
+            //
+            // Per-component bbox tells us the actual gap
+            // dimensions. The narrow axis (min of W and H) is
+            // the gap distance. Post-filter drops components at
+            // exactly limit — those are at-spec (touching post-
+            // grow but Magic considers gap == s passing).
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
-                let polys = polysOnLayer idx layer
-                for i in 0 .. polys.Length - 1 do
-                    let (_, bbA, _) = polys.[i]
-                    for j in i + 1 .. polys.Length - 1 do
-                        let (_, bbB, _) = polys.[j]
-                        match bboxOrthoGap bbA bbB with
-                        | Some g when g > 0L && g < limit ->
-                            result.Add {
-                                Rule = name
-                                LayerNumber = layer.Number
-                                LayerType   = layer.DataType
-                                LimitDbu    = limit
-                                MeasuredDbu = g
-                                BboxA = bbA
-                                BboxB = Some bbB }
-                        | _ -> ()
+                let polys =
+                    polysOnLayer idx layer
+                    |> Array.map (fun (p, _, _) -> p)
+                let r = Region.ofPolygons polys
+                let half = limit / 2L
+                let closed = Size.shrink half (Size.grow half r)
+                let violations = Boolean.subtract closed r
+                for (x1, y1, x2, y2) in Components.componentBboxes violations do
+                    let m = min (x2 - x1) (y2 - y1)
+                    if m < limit then
+                        result.Add {
+                            Rule = name
+                            LayerNumber = layer.Number
+                            LayerType   = layer.DataType
+                            LimitDbu    = limit
+                            MeasuredDbu = m
+                            BboxA = (x1, y1, x2, y2)
+                            BboxB = None }
         | Rules.CrossSpacing (name, layerA, layerB, minUm, condA) ->
             // Same orthogonal-only rule as same-layer Spacing.
             // Overlap = same net at this layer pair (e.g. poly

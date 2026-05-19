@@ -115,21 +115,31 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
             // given instance indices AND/OR polygon keys. Either
             // or both arrays may be present; an absent array
             // means "don't touch that side". Body:
-            //   { "indices": [0, 2, ...],          // SRef instance indices
-            //     "polygons": [                    // PolyKey records
+            //   { "instances": [0, 2, ...],         // SRef indices
+            //     "polygons": [                     // PolyKey records
             //       { "cell": "...", "index": 14,
             //         "topInstance": 7 } ] }
             // `topInstance` is optional — null/missing means the
             // poly is authored directly in the top cell (no
             // SRef context).
+            //
+            // `indices` is accepted as an alias for `instances`
+            // for backward compatibility with pre-MCP-tool
+            // callers that hit /select directly; new code
+            // should use `instances` to match the
+            // get_selection response field name.
             let mutable instAcc : Set<int> voption = ValueNone
             let mutable polyAcc : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> voption =
                 ValueNone
-            let mutable hasInd, indProp = root.TryGetProperty("indices")
-            if hasInd then
+            let mutable hasInst, instProp = root.TryGetProperty("instances")
+            if not hasInst then
+                let h, p = root.TryGetProperty("indices")
+                hasInst <- h
+                instProp <- p
+            if hasInst then
                 let mutable s = Set.empty
-                for i in 0 .. indProp.GetArrayLength() - 1 do
-                    s <- s.Add (indProp.[i].GetInt32())
+                for i in 0 .. instProp.GetArrayLength() - 1 do
+                    s <- s.Add (instProp.[i].GetInt32())
                 instAcc <- ValueSome s
             let mutable hasPoly, polyProp = root.TryGetProperty("polygons")
             if hasPoly then

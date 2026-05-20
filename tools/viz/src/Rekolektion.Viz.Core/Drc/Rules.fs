@@ -319,6 +319,13 @@ let allRules : Rule list = [
                  Always, Always)
     CrossSpacing("poly.9",         polyres, diff, 0.480,
                  Always, Always)
+    // poly.9 also applies polyres-to-poly (Magic's *poly tile
+    // class includes regular poly; the deck has both an rpm.3-7
+    // entry at 0.4 µm and a poly.9 entry at 0.48 µm for the
+    // same source-target pair — viz needs both to match Magic
+    // when the actual gap falls between the two limits).
+    CrossSpacing("poly.9",         polyres, poly, 0.480,
+                 Always, Always)
     // poly.9 also applies polyres-to-polyres (Magic's *poly tile
     // class covers all poly subtypes, including the resistor
     // body itself). Needed both for DRC fidelity AND so the

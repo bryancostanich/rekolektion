@@ -1037,19 +1037,31 @@ let maxOrthoSlackDbu
 /// `SelBb` and `OthBb` to draw an orthogonal arrow between the
 /// facing edges; on commit, the move is `(dx, dy) * SlackDbu`.
 type TightenCandidate = {
+    /// MOVE direction in DBU axes. For a TIGHTEN candidate this
+    /// matches the concern side (1, 0 = move right toward right
+    /// neighbour). For a LOOSEN candidate it's the OPPOSITE of
+    /// the concern side (e.g. concern = left neighbour
+    /// violating, move = right to back off).
     DirX        : int   // -1, 0, 1
     DirY        : int
-    /// Stable 1-based slot tied to direction so the user can
-    /// memorize "3 = down". Mapping: 1 = right (+X), 2 = left
-    /// (-X), 3 = down (-Y), 4 = up (+Y). Renderer + hit-test +
-    /// commit all use this slot, NOT array position, so absent
-    /// directions leave gaps in the visible numbering instead of
-    /// renaming the surviving directions.
+    /// Stable 1-based slot tied to CONCERN SIDE (not move
+    /// direction). Mapping by concern: 1 = right side, 2 = left
+    /// side, 3 = down side, 4 = up side. Slot remains stable
+    /// across tighten/loosen so the user can memorize "2 = left
+    /// side concern" — clicking slot 2 either tightens leftward
+    /// (when the left has clearance) or moves rightward to fix
+    /// an existing left-side violation.
     Slot        : int
     LayerName   : string
     LimitDbu    : int64
     GapDbu      : int64
+    /// Magnitude of the move (always positive). Apply to the
+    /// canvas via (DirX * SlackDbu, DirY * SlackDbu).
     SlackDbu    : int64
+    /// True when the candidate moves AWAY from the concern side
+    /// to fix a pre-existing DRC violation, false for the normal
+    /// "snuggle up to the neighbour" tighten.
+    IsLoosen    : bool
     SelBb       : int64 * int64 * int64 * int64
     OthBb       : int64 * int64 * int64 * int64
 }
@@ -1103,13 +1115,31 @@ let tightenCandidates
         let selByLayer = groupBy selPhys
         let othByLayer = groupBy othPhys
 
-        let dirs = [ (1, 0); (-1, 0); (0, 1); (0, -1) ]
-        dirs
-        |> List.choose (fun (dirX, dirY) ->
-            // Walk every shared layer; per layer find the closest
-            // facing pair on this direction; track the BINDING
-            // (smallest-slack) pair across layers.
-            let mutable best : TightenCandidate option = None
+        // Sel-edge-to-oth-edge distance for a pair on the side
+        // (sx, sy). Includes bbox-overlap pairs (returns a
+        // negative number = overlap depth), since loosen needs
+        // to see them. "On this side" = oth has *any* extent
+        // past sel's bbox in the (sx, sy) direction, with
+        // perpendicular projection overlap. Tighten filters out
+        // the negative-gap pairs via the s > 0L test; loosen
+        // uses them to size the corrective move.
+        let facingGap (sx, sy) (sBb: int64*int64*int64*int64) (oBb: int64*int64*int64*int64) =
+            let (sx1, sy1, sx2, sy2) = sBb
+            let (ox1, oy1, ox2, oy2) = oBb
+            let yOver = (min sy2 oy2) > (max sy1 oy1)
+            let xOver = (min sx2 ox2) > (max sx1 ox1)
+            if sx = 1 && yOver && ox2 > sx2 then Some (ox1 - sx2)
+            elif sx = -1 && yOver && ox1 < sx1 then Some (sx1 - ox2)
+            elif sy = 1 && xOver && oy2 > sy2 then Some (oy1 - sy2)
+            elif sy = -1 && xOver && oy1 < sy1 then Some (sy1 - oy2)
+            else None
+
+        // Collect every (selBb, othBb, limit, gap, layerName)
+        // pair on the requested side from BOTH same-layer
+        // Spacing rules and cross-layer CrossSpacing rules.
+        let pairsOnSide (sx, sy) =
+            let acc = ResizeArray<_>()
+            // Same-layer Spacing.
             for KeyValue (key, selBbs) in selByLayer do
                 match Rules.tryFind (fst key) (snd key) with
                 | None -> ()
@@ -1120,122 +1150,115 @@ let tightenCandidates
                         let limit = umToDbu umPerDbu rule.MinSpacingUm
                         if limit > 0L then
                             for sBb in selBbs do
-                                let (sx1, sy1, sx2, sy2) = sBb
                                 for oBb in othBbs do
-                                    let (ox1, oy1, ox2, oy2) = oBb
-                                    let yOverlap = (min sy2 oy2) > (max sy1 oy1)
-                                    let xOverlap = (min sx2 ox2) > (max sx1 ox1)
-                                    let gOpt =
-                                        if dirX = 1 && yOverlap && ox1 >= sx2 then
-                                            Some (ox1 - sx2)
-                                        elif dirX = -1 && yOverlap && ox2 <= sx1 then
-                                            Some (sx1 - ox2)
-                                        elif dirY = 1 && xOverlap && oy1 >= sy2 then
-                                            Some (oy1 - sy2)
-                                        elif dirY = -1 && xOverlap && oy2 <= sy1 then
-                                            Some (sy1 - oy2)
-                                        else None
-                                    match gOpt with
-                                    | Some g ->
-                                        let slack = g - limit
-                                        if slack > 0L then
-                                            let cand = {
-                                                DirX = dirX
-                                                DirY = dirY
-                                                Slot = slotOfDir dirX dirY
-                                                LayerName = rule.Layer
-                                                LimitDbu = limit
-                                                GapDbu = g
-                                                SlackDbu = slack
-                                                SelBb = sBb
-                                                OthBb = oBb
-                                            }
-                                            match best with
-                                            | None -> best <- Some cand
-                                            | Some cur when slack < cur.SlackDbu ->
-                                                best <- Some cand
-                                            | _ -> ()
+                                    match facingGap (sx, sy) sBb oBb with
+                                    | Some g -> acc.Add (sBb, oBb, limit, g, rule.Layer)
                                     | None -> ()
-            // Cross-layer Spacing constraints. Without these,
-            // tighten was blind to rules like polyres → diff /
-            // poly → diff and would overshoot when the binding
-            // constraint was cross-layer rather than same-layer.
-            //
-            // Cross-layer pairs already at gap < limit (the user
-            // is sitting on top of a pre-existing DRC violation)
-            // FORBID the direction entirely instead of silently
-            // dropping the candidate — moving toward an existing
-            // violation makes it worse. Same-layer over-firing
-            // on this is risky (legitimate connections look
-            // identical) but cross-layer rules like polyres →
-            // diff don't have the connection ambiguity.
-            //
-            // Implant conditions intentionally not filtered —
-            // over-constraining is safer than under-constraining
-            // for an interactive move.
-            let mutable forbidden = false
-            let checkCross
-                    (selBbs: (int64*int64*int64*int64) array)
-                    (othBbs: (int64*int64*int64*int64) array)
-                    (limit: int64)
-                    (layerName: string) =
-                if limit > 0L then
-                    for sBb in selBbs do
-                        let (sx1, sy1, sx2, sy2) = sBb
-                        for oBb in othBbs do
-                            let (ox1, oy1, ox2, oy2) = oBb
-                            let yOver = (min sy2 oy2) > (max sy1 oy1)
-                            let xOver = (min sx2 ox2) > (max sx1 ox1)
-                            let gOpt =
-                                if dirX = 1 && yOver && ox1 >= sx2 then Some (ox1 - sx2)
-                                elif dirX = -1 && yOver && ox2 <= sx1 then Some (sx1 - ox2)
-                                elif dirY = 1 && xOver && oy1 >= sy2 then Some (oy1 - sy2)
-                                elif dirY = -1 && xOver && oy2 <= sy1 then Some (sy1 - oy2)
-                                else None
-                            match gOpt with
-                            | Some g ->
-                                let slack = g - limit
-                                if slack > 0L then
-                                    let cand = {
-                                        DirX = dirX
-                                        DirY = dirY
-                                        Slot = slotOfDir dirX dirY
-                                        LayerName = layerName
-                                        LimitDbu = limit
-                                        GapDbu = g
-                                        SlackDbu = slack
-                                        SelBb = sBb
-                                        OthBb = oBb
-                                    }
-                                    match best with
-                                    | None -> best <- Some cand
-                                    | Some cur when slack < cur.SlackDbu -> best <- Some cand
-                                    | _ -> ()
-                                else
-                                    // gap < limit: pair already
-                                    // violating in this direction.
-                                    // Moving by any positive Δ
-                                    // makes it worse — forbid.
-                                    forbidden <- true
-                            | None -> ()
+            // Cross-layer Spacing (both sel-on-A/oth-on-B and
+            // sel-on-B/oth-on-A orderings).
             for cs in Rules.allCrossSpacings do
                 let keyA = cs.LayerA.Number, cs.LayerA.DataType
                 let keyB = cs.LayerB.Number, cs.LayerB.DataType
                 let limit = umToDbu umPerDbu cs.MinUm
                 let layerName = sprintf "%dx%d" cs.LayerA.Number cs.LayerB.Number
-                match Map.tryFind keyA selByLayer, Map.tryFind keyB othByLayer with
-                | Some s, Some o -> checkCross s o limit layerName
-                | _ -> ()
-                match Map.tryFind keyB selByLayer, Map.tryFind keyA othByLayer with
-                | Some s, Some o -> checkCross s o limit layerName
-                | _ -> ()
-            if forbidden then None else best)
+                if limit > 0L then
+                    let pump selBbs othBbs =
+                        for sBb in selBbs do
+                            for oBb in othBbs do
+                                match facingGap (sx, sy) sBb oBb with
+                                | Some g -> acc.Add (sBb, oBb, limit, g, layerName)
+                                | None -> ()
+                    match Map.tryFind keyA selByLayer, Map.tryFind keyB othByLayer with
+                    | Some s, Some o -> pump s o
+                    | _ -> ()
+                    match Map.tryFind keyB selByLayer, Map.tryFind keyA othByLayer with
+                    | Some s, Some o -> pump s o
+                    | _ -> ()
+            acc.ToArray()
+
+        // Per CONCERN SIDE: decide tighten vs loosen.
+        //   Loosen if any pair on this side has gap < limit
+        //     (pre-existing DRC violation we should back off
+        //     from). Move = AWAY from the concern side. Move
+        //     amount = max(limit - gap) over the violating
+        //     pairs (just enough to land the worst violator at
+        //     exactly limit), capped by the opposite-side min
+        //     positive slack so the back-off doesn't create a
+        //     new violation on the other side.
+        //   Tighten if no violation on this side. Move = TOWARD
+        //     the concern side. Amount = smallest positive
+        //     slack (standard "snuggle up" semantics).
+        // Slot number reflects the CONCERN SIDE (stable across
+        // tighten/loosen so the user's muscle memory holds).
+        let sides = [ (1, 0); (-1, 0); (0, 1); (0, -1) ]
+        sides
+        |> List.choose (fun (cx, cy) ->
+            let here = pairsOnSide (cx, cy)
+            let opposite = pairsOnSide (-cx, -cy)
+
+            // Loosen need: max (limit - gap) over violating pairs.
+            let mutable loosenNeed = 0L
+            let mutable loosenPair = None
+            for (sBb, oBb, limit, gap, layerName) in here do
+                if gap < limit then
+                    let need = limit - gap
+                    if need > loosenNeed then
+                        loosenNeed <- need
+                        loosenPair <- Some (sBb, oBb, limit, gap, layerName)
+
+            // Tighten slack: smallest positive (gap - limit) on this side.
+            let mutable tightenSlack : int64 option = None
+            let mutable tightenPair = None
+            for (sBb, oBb, limit, gap, layerName) in here do
+                let s = gap - limit
+                if s > 0L then
+                    match tightenSlack with
+                    | None ->
+                        tightenSlack <- Some s
+                        tightenPair <- Some (sBb, oBb, limit, gap, layerName)
+                    | Some cur when s < cur ->
+                        tightenSlack <- Some s
+                        tightenPair <- Some (sBb, oBb, limit, gap, layerName)
+                    | _ -> ()
+
+            // No opposite-side cap. Earlier iteration capped the
+            // loosen move at the far-side slack to avoid
+            // CREATING a new violation, but the user's mental
+            // model is "one click should fix the worst violation
+            // on this side completely" — capping silently
+            // shrinks the move and produces the multi-click
+            // incremental behaviour you don't want. Any new
+            // violation on the opposite side just shows up as a
+            // fresh loosen candidate the next time T is pressed.
+
+            if loosenNeed > 0L then
+                let (sBb, oBb, limit, gap, layerName) = loosenPair.Value
+                Some { DirX = -cx
+                       DirY = -cy
+                       Slot = slotOfDir cx cy
+                       LayerName = layerName
+                       LimitDbu = limit
+                       GapDbu = gap
+                       SlackDbu = loosenNeed
+                       IsLoosen = true
+                       SelBb = sBb
+                       OthBb = oBb }
+            else
+                match tightenSlack with
+                | Some slack ->
+                    let (sBb, oBb, limit, gap, layerName) = tightenPair.Value
+                    Some { DirX = cx
+                           DirY = cy
+                           Slot = slotOfDir cx cy
+                           LayerName = layerName
+                           LimitDbu = limit
+                           GapDbu = gap
+                           SlackDbu = slack
+                           IsLoosen = false
+                           SelBb = sBb
+                           OthBb = oBb }
+                | None -> None)
         |> List.toArray
-        // Order by stable slot (right, left, down, up) so the
-        // user can memorize "3 = down" and have it hold across
-        // files. Renderer + hit-test key on `Slot`, so the array
-        // order here only affects iteration; the visible labels
-        // are stable regardless.
         |> Array.sortBy (fun c -> c.Slot)
 
 // Side classification reused by `checkInterInstance`. Returns Some

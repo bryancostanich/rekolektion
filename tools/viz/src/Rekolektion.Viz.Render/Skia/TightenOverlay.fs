@@ -57,19 +57,34 @@ let render
         : LabelHit array =
     if candidates.Length = 0 then [||]
     else
-    use paintLine =
+    // Two colour schemes: amber for tighten (snuggle-up move),
+    // cyan for loosen (move AWAY from a pre-existing violation
+    // to fix it). The colour also drives the slot number's
+    // circle so the visual answer to "what does clicking this do"
+    // is the same wherever the user looks.
+    let tightenColor = SKColor(0xFFuy, 0xA0uy, 0x40uy, 0xFFuy)
+    let loosenColor  = SKColor(0x40uy, 0xC0uy, 0xFFuy, 0xFFuy)
+    use paintLineTighten =
         new SKPaint(
             Style = SKPaintStyle.Stroke,
-            // Tighten amber, slightly different shade so it doesn't
-            // mistake itself for the regular dimension overlay.
-            Color = SKColor(0xFFuy, 0xA0uy, 0x40uy, 0xFFuy),
+            Color = tightenColor,
             StrokeWidth = 1.5f,
             IsAntialias = true)
-    use paintNumberBg =
+    use paintLineLoosen =
+        new SKPaint(
+            Style = SKPaintStyle.Stroke,
+            Color = loosenColor,
+            StrokeWidth = 1.5f,
+            IsAntialias = true)
+    use paintNumberBgTighten =
         new SKPaint(
             Style = SKPaintStyle.Fill,
-            // Bright filled circle behind the index — clickable.
-            Color = SKColor(0xFFuy, 0xA0uy, 0x40uy, 0xFFuy),
+            Color = tightenColor,
+            IsAntialias = true)
+    use paintNumberBgLoosen =
+        new SKPaint(
+            Style = SKPaintStyle.Fill,
+            Color = loosenColor,
             IsAntialias = true)
     use paintNumberStroke =
         new SKPaint(
@@ -99,8 +114,33 @@ let render
     let hits = System.Collections.Generic.List<LabelHit>()
     for idx0 in 0 .. candidates.Length - 1 do
         let c = candidates.[idx0]
+        let paintLine = if c.IsLoosen then paintLineLoosen else paintLineTighten
+        let paintNumberBg = if c.IsLoosen then paintNumberBgLoosen else paintNumberBgTighten
+        // Endpoint geometry:
+        //   Tighten: arrow spans the gap between sel's facing
+        //     edge and oth's facing edge — exactly what the move
+        //     is closing.
+        //   Loosen: oth is on the OPPOSITE of the move
+        //     direction, so spanning to oth would point the wrong
+        //     way. Instead draw the arrow ON THE MOVE PATH: from
+        //     sel's leading edge in the move direction to where
+        //     it lands after the SlackDbu-sized move.
         let (p1x, p1y), (p2x, p2y) =
-            orthEndpoints c.DirX c.DirY c.SelBb c.OthBb
+            if c.IsLoosen then
+                // Concern side = OPPOSITE of move direction.
+                // Place the arrow on the sel edge that's facing
+                // the violation (where the user expects to "see"
+                // the problem) and have it run in the move
+                // direction by SlackDbu.
+                let (sx1, sy1, sx2, sy2) = c.SelBb
+                let yMid = (sy1 + sy2) / 2L
+                let xMid = (sx1 + sx2) / 2L
+                if c.DirX = 1 then (sx1, yMid), (sx1 + c.SlackDbu, yMid)
+                elif c.DirX = -1 then (sx2, yMid), (sx2 - c.SlackDbu, yMid)
+                elif c.DirY = 1 then (xMid, sy1), (xMid, sy1 + c.SlackDbu)
+                else (xMid, sy2), (xMid, sy2 - c.SlackDbu)
+            else
+                orthEndpoints c.DirX c.DirY c.SelBb c.OthBb
         let s1 = worldToScreen vb (float p1x) (float p1y)
         let s2 = worldToScreen vb (float p2x) (float p2y)
         // Skip degenerate (sub-pixel) segments — clicking them
@@ -126,7 +166,18 @@ let render
                 path.Close()
                 canvas.DrawPath(path, paintLine)
                 path.Dispose()
-            if c.DirX = 1 then
+            if c.IsLoosen then
+                // One-headed arrow at the move-destination end,
+                // head pointing in the move direction. signY is
+                // inverted relative to "up world is up screen"
+                // because drawHead's signY=+1 places the tail
+                // BELOW the tip in screen coords (→ head points
+                // up).
+                if c.DirX = 1 then drawHead s2 -1.0f 0.0f
+                elif c.DirX = -1 then drawHead s2 1.0f 0.0f
+                elif c.DirY = 1 then drawHead s2 0.0f 1.0f
+                else drawHead s2 0.0f -1.0f
+            elif c.DirX = 1 then
                 drawHead s1 1.0f 0.0f
                 drawHead s2 -1.0f 0.0f
             elif c.DirX = -1 then
@@ -154,14 +205,22 @@ let render
                 Rect = SKRect(mid.X - radius, mid.Y - radius,
                               mid.X + radius, mid.Y + radius)
             }
-            // Caption: "<slot>: <layer>  gap -> limit um".
-            // ASCII "->" rather than "→" for the same Skia
-            // glyph-availability reason as "um" vs "µm".
+            // Caption: tighten shows the closing direction
+            // ("gap -> limit"), loosen shows the recovery move
+            // ("gap -> limit, fix"). ASCII "->" rather than "→"
+            // for the Skia glyph-availability reason "um" vs
+            // "µm".
             let caption =
-                sprintf "%d: %s  %s -> %s"
-                    c.Slot c.LayerName
-                    (formatUm umPerDbu c.GapDbu)
-                    (formatUm umPerDbu c.LimitDbu)
+                if c.IsLoosen then
+                    sprintf "%d: %s  fix  %s -> %s"
+                        c.Slot c.LayerName
+                        (formatUm umPerDbu c.GapDbu)
+                        (formatUm umPerDbu c.LimitDbu)
+                else
+                    sprintf "%d: %s  %s -> %s"
+                        c.Slot c.LayerName
+                        (formatUm umPerDbu c.GapDbu)
+                        (formatUm umPerDbu c.LimitDbu)
             let mutable bounds = SKRect()
             paintGapLabel.MeasureText(caption, &bounds) |> ignore
             // Place caption offset from the click target so it

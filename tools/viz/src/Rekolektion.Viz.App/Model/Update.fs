@@ -45,6 +45,47 @@ let private polyKeyTuples
 /// `msg` log category so a user / agent can replay an action stream
 /// without paying for full payload serialisation. Reflection cost
 /// is negligible vs the dispatch + view diff that follows.
+/// Switch the active tab while preserving per-tab selection state.
+/// Stashes the outgoing tab's (Selection, InstanceSelection,
+/// SelectedRatlines) into SavedSelections under the old path, then
+/// loads the incoming tab's saved sets (empty if never selected
+/// in). No-op when newPath equals the current active path.
+let private switchActive
+        (newPath: string option)
+        (model: Model.Model)
+        : Model.Model =
+    if newPath = model.ActiveMacroPath then model
+    else
+        let saved =
+            match model.ActiveMacroPath with
+            | Some oldPath ->
+                model.SavedSelections
+                |> Map.add oldPath
+                    (model.Selection,
+                     model.InstanceSelection,
+                     model.SelectedRatlines)
+            | None -> model.SavedSelections
+        let sel, instSel, ratSel =
+            match newPath with
+            | Some p ->
+                match Map.tryFind p saved with
+                | Some triple -> triple
+                | None -> Set.empty, Set.empty, Set.empty
+            | None -> Set.empty, Set.empty, Set.empty
+        // Drop the new tab's entry from the saved map — it's live
+        // now in the top-level fields, so keeping a stale copy
+        // would let the next switch resurrect old state.
+        let saved' =
+            match newPath with
+            | Some p -> Map.remove p saved
+            | None -> saved
+        { model with
+            ActiveMacroPath = newPath
+            Selection = sel
+            InstanceSelection = instSel
+            SelectedRatlines = ratSel
+            SavedSelections = saved' }
+
 let private msgCaseName (msg: Msg.Msg) : string =
     let info, _ =
         Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(
@@ -109,15 +150,30 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     backend.DeriveNets macro.Document
                     (fun nets -> Msg.NetsLoaded (macro.Path, nets))
                     (fun ex -> Msg.LogLine (sprintf "net derivation failed: %s" ex.Message))
-        let model' =
-            { model with
-                OpenMacros = openMacros
-                ActiveMacroPath = Some macro.Path
-                RecentFiles = recents
-                Toggle = toggle'
-                Selection = Set.empty
-                InstanceSelection = Set.empty }
-        model', cmd
+        // Ratlines-on state carries across file loads, but the
+        // visible-net SET is per-macro. Stale net names from the
+        // previous file's nets wouldn't match anything in the new
+        // macro, so nothing would render until the user toggled
+        // the button twice. Refresh to the new macro's nets when
+        // ratlines were on.
+        let toggle' =
+            if model.Toggle.VisibleRatlines.IsEmpty then toggle'
+            elif macro.Nets.IsEmpty then toggle'  // wait for NetsLoaded
+            else
+                let newNets = macro.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                Visibility.setVisibleRatlines newNets toggle'
+        // Stash the old tab's selection and load anything saved for
+        // the newly-active path (typically empty on a fresh load,
+        // populated when the user reloaded the same path). Doing
+        // this through switchActive keeps the per-tab selection
+        // contract consistent with explicit tab clicks.
+        let switched =
+            switchActive (Some macro.Path)
+                { model with
+                    OpenMacros = openMacros
+                    RecentFiles = recents
+                    Toggle = toggle' }
+        switched, cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
         // the user closed the tab while net derivation was in flight.
@@ -129,7 +185,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             model.OpenMacros
             |> List.map (fun m ->
                 if m.Path = path then { m with Nets = nets } else m)
-        { model with OpenMacros = openMacros }, Cmd.none
+        // Pair with the LoadComplete refresh: when nets arrive
+        // asynchronously for the currently-active macro and
+        // ratlines are on, populate VisibleRatlines now (the
+        // LoadComplete refresh saw an empty Nets map and deferred).
+        let toggle' =
+            if model.Toggle.VisibleRatlines.IsEmpty then model.Toggle
+            elif model.ActiveMacroPath <> Some path then model.Toggle
+            elif nets.IsEmpty then model.Toggle
+            else
+                let names = nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                Visibility.setVisibleRatlines names model.Toggle
+        { model with OpenMacros = openMacros; Toggle = toggle' }, Cmd.none
     | Msg.LoadFailed (path, reason) ->
         Rekolektion.Viz.App.Services.Logger.log "load"
             {| op = "fail"; path = path; reason = reason |}
@@ -143,11 +210,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             // Only switch if the path is actually open; ignore stale
             // requests (e.g. socket-driven from outside).
             let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
-            if exists then
-                { model with
-                    ActiveMacroPath = Some path
-                    Selection = Set.empty
-                    InstanceSelection = Set.empty }, Cmd.none
+            if exists then switchActive (Some path) model, Cmd.none
             else model, Cmd.none
     | Msg.CloseAllTabs ->
         { model with
@@ -155,6 +218,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             ActiveMacroPath = None
             Selection = Set.empty
             InstanceSelection = Set.empty
+            SelectedRatlines = Set.empty
+            SavedSelections = Map.empty
             RenamingPath = None }, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
@@ -179,12 +244,31 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             | Some p when p = path ->
                 remaining |> List.tryLast |> Option.map (fun m -> m.Path)
             | other -> other
+        // Drop any saved selection for the closed tab. switchActive
+        // handles the case where the closed tab WAS the active tab
+        // (current top-level selection belongs to the closed path
+        // → discard, load next tab's saved selection).
+        let savedAfterClose = Map.remove path model.SavedSelections
         let model' =
-            { model with
-                OpenMacros = remaining
-                ActiveMacroPath = nextActive
-                Selection = Set.empty
-                InstanceSelection = Set.empty }
+            if model.ActiveMacroPath = Some path then
+                // Active tab closed → fully discard its selection
+                // (don't stash it under the closed path) and load
+                // the next tab's saved.
+                switchActive nextActive
+                    { model with
+                        OpenMacros = remaining
+                        SavedSelections = savedAfterClose
+                        ActiveMacroPath = None
+                        Selection = Set.empty
+                        InstanceSelection = Set.empty
+                        SelectedRatlines = Set.empty }
+            else
+                // Non-active tab closed → just drop its saved entry,
+                // top-level selection (belongs to still-active tab)
+                // stays put.
+                { model with
+                    OpenMacros = remaining
+                    SavedSelections = savedAfterClose }
         model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
         let toggle' = Visibility.toggleLayer key vis model.Toggle

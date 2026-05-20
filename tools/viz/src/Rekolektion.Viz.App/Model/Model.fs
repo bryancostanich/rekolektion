@@ -73,6 +73,16 @@ type Model = {
     /// which net a given MST edge represents (useful for diagnosing
     /// suspect cross-net edges).
     SelectedRatlines : Set<string>
+    /// Per-tab snapshot of (Selection, InstanceSelection,
+    /// SelectedRatlines) for every open macro EXCEPT the active
+    /// one. When the user switches tabs, the active tab's three
+    /// selection sets get stashed here under the OLD path, and
+    /// the NEW path's saved sets (if any) get loaded back into
+    /// the top-level fields. This way every tab keeps its
+    /// selection across switches — the in-flight active fields
+    /// stay the same so the canvas / inspector code is
+    /// unchanged.
+    SavedSelections : Map<string, Set<Layout.Flatten.PolyKey> * Set<int> * Set<string>>
     /// Whether the canvas draws the dimension overlay (arrows +
     /// µm labels between selected instances and their nearest
     /// in-radius neighbors). Toggleable via TopBar / D key. Off
@@ -152,6 +162,7 @@ let empty : Model = {
     Selection = Set.empty
     InstanceSelection = Set.empty
     SelectedRatlines = Set.empty
+    SavedSelections = Map.empty
     ShowDimensions = false
     ShowDrc = false
     DisabledDrcRules = Set.empty

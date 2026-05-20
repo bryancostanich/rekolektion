@@ -271,31 +271,64 @@ let checkWithToggles
         if disabledRules.Contains ruleName then () else
         match rule with
         | Rules.Width (name, layer, minUm) ->
-            // Width is per-rectangle in Magic semantics: each
-            // input polygon's bbox dimensions are checked
-            // against the limit. Tried doing this via
-            // morphological opening on the Region (r \ opened);
-            // it works mathematically but the slab-tile
-            // decomposition of the Region splits each polygon
-            // into many narrow tiles based on neighbor Y events,
-            // and each tile fragment reports a violation —
-            // bogus 4000+ violations on a clean licon array.
-            // Magic's tiles are MAXIMAL strips, not slab tiles,
-            // so the morphology approach doesn't translate to
-            // viz's reporting model. Per-rectangle is correct.
+            // Per-polygon bbox width, but a narrow polygon is
+            // waived when an overlapping same-layer polygon
+            // extends its narrow axis to ≥ limit across the
+            // perpendicular range — Magic merges connected
+            // metals into one region, and the merged feature
+            // is wide enough at this polygon's location, so
+            // there's no width violation. Classic case: a
+            // small rect entirely contained in a wider rect
+            // (the wider rect's bbox covers the smaller's
+            // perpendicular range and extends past on the
+            // narrow axis).
+            //
+            // Morphological opening on the Region was tried
+            // and rejected — slab fragmentation produces
+            // thousands of bogus tile-fragment violations on
+            // clean licon arrays, and integer-DBU shrink/grow
+            // can't represent "width ≥ limit passes, < limit
+            // fails" cleanly (the half-grid problem). Per-
+            // polygon with the merge-coverage waiver is what
+            // matches Magic on the cases we've seen.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
-                for (_, (x1, y1, x2, y2), _) in polysOnLayer idx layer do
-                    let m = min (x2 - x1) (y2 - y1)
+                let polys = polysOnLayer idx layer
+                for i in 0 .. polys.Length - 1 do
+                    let (_, (ax1, ay1, ax2, ay2), _) = polys.[i]
+                    let w = ax2 - ax1
+                    let h = ay2 - ay1
+                    let m = min w h
                     if m < limit then
-                        result.Add {
-                            Rule = name
-                            LayerNumber = layer.Number
-                            LayerType   = layer.DataType
-                            LimitDbu    = limit
-                            MeasuredDbu = m
-                            BboxA = (x1, y1, x2, y2)
-                            BboxB = None }
+                        let narrowIsX = w < h
+                        let mutable covered = false
+                        let mutable j = 0
+                        while not covered && j < polys.Length do
+                            if j <> i then
+                                let (_, (bx1, by1, bx2, by2), _) = polys.[j]
+                                // Strict overlap (shared interior).
+                                let overlaps =
+                                    ax1 < bx2 && bx1 < ax2 &&
+                                    ay1 < by2 && by1 < ay2
+                                if overlaps then
+                                    if narrowIsX then
+                                        if by1 <= ay1 && ay2 <= by2 then
+                                            let ux = (max ax2 bx2) - (min ax1 bx1)
+                                            if ux >= limit then covered <- true
+                                    else
+                                        if bx1 <= ax1 && ax2 <= bx2 then
+                                            let uy = (max ay2 by2) - (min ay1 by1)
+                                            if uy >= limit then covered <- true
+                            j <- j + 1
+                        if not covered then
+                            result.Add {
+                                Rule = name
+                                LayerNumber = layer.Number
+                                LayerType   = layer.DataType
+                                LimitDbu    = limit
+                                MeasuredDbu = m
+                                BboxA = (ax1, ay1, ax2, ay2)
+                                BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
             // Per-pair facing-edge spacing, but pairs that belong
             // to the same connected component of the layer are

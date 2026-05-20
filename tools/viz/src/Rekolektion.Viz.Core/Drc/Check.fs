@@ -297,47 +297,77 @@ let checkWithToggles
                             BboxA = (x1, y1, x2, y2)
                             BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
-            // Spacing via per-pair facing-edge check, NOT Region
-            // morphology. Why: morphology's component bbox has
-            // two dimensions (gap-axis and polygon-perpendicular-
-            // extent), and without knowing WHICH is the gap, the
-            // "narrow dim < limit" post-filter wrongly fires
-            // when the polygon perpendicular extent is itself
-            // smaller than the limit (e.g. foundry mcons of
-            // 170nm size at 190nm gap = at-spec, but component
-            // dim 170 < limit 190 → false fire).
+            // Per-pair facing-edge spacing, but pairs that belong
+            // to the same connected component of the layer are
+            // skipped — they're physically one feature so Magic
+            // doesn't fire spacing between their parts.
             //
-            // Per-pair edge check preserves gap orientation and
-            // correctly distinguishes at-spec from below-spec.
-            // The cost: per-pair counts differ from Magic's
-            // per-tile counts (clustering would be a separate
-            // pass, similar in spirit to Components but applied
-            // post-violation).
+            // Connectivity: bbox overlap OR touching (touch =
+            // connected for SKY130 metal-like layers). Build DSU
+            // over polys by sweeping bboxes once. A bridged
+            // L-shape (A and C, connected via overlapping B) is
+            // detected: A and C end up in the same component, so
+            // the A↔C narrow gap doesn't fire even though their
+            // bboxes don't directly overlap.
+            //
+            // Morphology was ruled out: rectilinear closing fills
+            // any cavity narrower than 2·limit anywhere on its
+            // perimeter, even if no edge-pair is < limit apart.
+            // That's closing semantics, not spacing semantics.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let polys = polysOnLayer idx layer
-                for i in 0 .. polys.Length - 1 do
+                let n = polys.Length
+                // DSU over poly indices. Two polys are in the
+                // same component when their bboxes touch or
+                // overlap (right/left edges share a coordinate
+                // OR perpendicular projections overlap with
+                // bbox-intersect on the other axis).
+                let parent = Array.init n id
+                let rec find x =
+                    if parent.[x] = x then x
+                    else
+                        let r = find parent.[x]
+                        parent.[x] <- r
+                        r
+                let union a b =
+                    let ra = find a
+                    let rb = find b
+                    if ra <> rb then parent.[ra] <- rb
+                // Pairwise component build (O(N²) for clarity;
+                // matches the spacing loop's cost so no asymptotic
+                // change).
+                for i in 0 .. n - 1 do
                     let (_, bbA, _) = polys.[i]
-                    for j in i + 1 .. polys.Length - 1 do
+                    let (ax1, ay1, ax2, ay2) = bbA
+                    for j in i + 1 .. n - 1 do
                         let (_, bbB, _) = polys.[j]
-                        match bboxOrthoGapAndRegion bbA bbB with
-                        | Some (g, gapBb) when g > 0L && g < limit ->
-                            // BboxA = the gap REGION (small strip
-                            // between the two polygons), not the
-                            // polygon-pair union. Critical for the
-                            // post-pass clustering: small gap
-                            // bboxes only cluster when their gap
-                            // strips actually touch, matching
-                            // Magic's per-region grouping.
-                            result.Add {
-                                Rule = name
-                                LayerNumber = layer.Number
-                                LayerType   = layer.DataType
-                                LimitDbu    = limit
-                                MeasuredDbu = g
-                                BboxA = gapBb
-                                BboxB = None }
-                        | _ -> ()
+                        let (bx1, by1, bx2, by2) = bbB
+                        // Touch-or-overlap: bboxes share any
+                        // point. Using closed-interval test
+                        // (≤/≥) so abutting metals count as
+                        // connected.
+                        let touches =
+                            ax1 <= bx2 && bx1 <= ax2 &&
+                            ay1 <= by2 && by1 <= ay2
+                        if touches then union i j
+                // Spacing per pair, skipping same-component pairs.
+                for i in 0 .. n - 1 do
+                    let (_, bbA, _) = polys.[i]
+                    for j in i + 1 .. n - 1 do
+                        let (_, bbB, _) = polys.[j]
+                        if find i <> find j then
+                            match bboxOrthoGapAndRegion bbA bbB with
+                            | Some (g, gapBb) when g > 0L && g < limit ->
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = layer.Number
+                                    LayerType   = layer.DataType
+                                    LimitDbu    = limit
+                                    MeasuredDbu = g
+                                    BboxA = gapBb
+                                    BboxB = None }
+                            | _ -> ()
         | Rules.CrossSpacing (name, layerA, layerB, minUm, condA) ->
             // Same orthogonal-only rule as same-layer Spacing.
             // Overlap = same net at this layer pair (e.g. poly

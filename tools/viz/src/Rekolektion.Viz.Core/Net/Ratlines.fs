@@ -43,15 +43,10 @@ type NetEdge = {
 /// pin). Pre-computed at `compute` time so the renderer is purely
 /// visual.
 ///
-/// `IsPower` flags nets whose name matches a power/ground pattern
-/// (`VDD`, `VSS`, `VPWR`, `GND`, …). Power nets typically have so
-/// many pins that even an MST is a hairball, so the "all on" master
-/// toggle excludes them by default — see `Visibility.HidePowerRatlines`.
 type NetRoute = {
     Name    : string
     Pins    : Pin array
     Mst     : NetEdge array
-    IsPower : bool
 }
 
 /// Manhattan (rectilinear) distance between two pins. Matches how
@@ -95,32 +90,6 @@ let mstOf (pins: Pin array) : NetEdge array =
                         minCost.[i] <- cost
                         parent.[i] <- best
     edges.ToArray()
-
-/// Heuristic: does this net name look like a power or ground rail?
-/// Matches the SKY130 conventions (`VPWR`, `VGND`, `VPB`, `VNB`)
-/// plus the common cross-vendor names (`VDD`, `VSS`, `GND`, `VCC`,
-/// `VEE`) and mixed-signal split variants (`VDDA`, `VSSD`, …).
-///
-/// Case-insensitive. False on borderline cases — better to under-
-/// classify (user sees the net) than misclassify a signal as power.
-let isLikelyPowerNet (name: string) : bool =
-    if System.String.IsNullOrWhiteSpace name then false else
-    let upper = name.ToUpperInvariant()
-    let isExact =
-        match upper with
-        | "VDD" | "VSS" | "GND" | "VCC" | "VEE"
-        | "VPWR" | "VGND" | "VPB" | "VNB"
-        | "AVDD" | "AVSS" | "DVDD" | "DVSS"
-        | "VBAT" | "VREF" -> true
-        | _ -> false
-    if isExact then true else
-    // Common prefix patterns: VDD_*, VSS_*, GND_*, VPWR_*, VGND_*.
-    let prefixes = [| "VDD"; "VSS"; "GND"; "VPWR"; "VGND"; "VCC"; "VEE" |]
-    prefixes
-    |> Array.exists (fun p ->
-        upper.StartsWith p
-        && upper.Length > p.Length
-        && (let c = upper.[p.Length] in c = '_' || c = ':' || c = '/'))
 
 /// Per-flat-poly bbox + layer-Z + identity. Computed once and
 /// indexed by layer-number so per-label lookup walks only
@@ -188,8 +157,20 @@ let private buildPolyIndex
 /// don't carry geometry and stay out.
 let private viaStacks : ((int * int) * (int * int) list * (int * int)) array =
     [|
-        // licon1 contacts diff OR poly below; li1 above.
-        ((66, 44), [ (65, 20); (66, 20) ], (67, 20))
+        // licon1 contacts POLY (gates) below, li1 above. DIFF (65,20)
+        // is intentionally NOT in the lower list: source and drain
+        // regions of a single FET share one diff rectangle (the
+        // channel + gate poly above separate them electrically). If
+        // licon1 bridged through diff, the source-contact licon1
+        // would union with the drain-contact licon1 via the shared
+        // diff, falsely merging two electrically distinct nets. The
+        // ratline trace caught this leaking VSS into cross-cell
+        // signal nets through every FET's diff. Gate-poly bridging
+        // is preserved (multiple FETs sharing a gate poly really
+        // ARE on the same net). Tap (65,44) was never in the chain
+        // and stays out — tap connectivity to li1 happens through
+        // its own licon1's bbox overlap with the local li1 strap.
+        ((66, 44), [ (66, 20) ],            (67, 20))   // licon1 (no diff)
         ((67, 44), [ (67, 20) ],            (68, 20))   // mcon
         ((68, 44), [ (68, 20) ],            (69, 20))   // via
         ((69, 44), [ (69, 20) ],            (70, 20))   // via2
@@ -211,7 +192,7 @@ let private viaStacks : ((int * int) * (int * int) list * (int * int)) array =
 /// accurate, for non-rectilinear it can over-connect.
 let private flatPolyComponents
         (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
-        : int array =
+        : int array * (int * int) array =
     let n = flat.Length
     let parent = Array.init n id
     let rec find (i: int) : int =
@@ -220,9 +201,17 @@ let private flatPolyComponents
             let r = find parent.[i]
             parent.[i] <- r
             r
+    // Record every union attempt so callers (the merge-trace diag)
+    // can BFS the polygon-bridge graph to discover what's collapsing
+    // two label anchors into one component. Stores the (i, j) input
+    // pair from `union`, not the parent/root — that preserves the
+    // direct geometric connection regardless of subsequent path
+    // compression in `find`.
+    let edges = ResizeArray<int * int>()
     let union (a: int) (b: int) : unit =
         let ra = find a
         let rb = find b
+        edges.Add(a, b)
         if ra <> rb then parent.[ra] <- rb
     // Pre-compute bboxes once.
     let bb = Array.zeroCreate<struct (int64 * int64 * int64 * int64)> n
@@ -291,7 +280,7 @@ let private flatPolyComponents
                     for li in lowerList do
                         if overlaps vi li then union vi li
     // Flatten union-find: every poly's parent is its root.
-    Array.init n (fun i -> find i)
+    Array.init n (fun i -> find i), edges.ToArray()
 
 /// Find the smallest containing-bbox poly on the same layer-number
 /// for a label origin. "Smallest" so a label sitting on a met1
@@ -356,7 +345,7 @@ let compute
     // anchors flood-fill to each other into ONE representative pin —
     // i.e., ratline edges only span unconnected components, so a
     // pair the user has wired up disappears from the ratline view.
-    let polyComp = flatPolyComponents flat
+    let polyComp, unionEdges = flatPolyComponents flat
     // Stage 1: each (net, pinKey) gets a "logical pin" — one pin
     // per label-group within an SRef OR per anchor polygon for
     // top-cell labels. Same shape as before; the per-component
@@ -430,6 +419,110 @@ let compute
                 | _ -> nextUniqueTag ()
             name, compId, pin)
         |> Seq.toArray
+    // Env-gated diagnostic. Set RATLINE_TRACE=1 to dump, for every
+    // net whose label-anchors collapsed into one component, the
+    // BFS path of polygon-unions that bridged the anchors. Reveals
+    // exactly which polygon edge in `flatPolyComponents` is over-
+    // merging unrelated rails. Goes to stderr (not viz.log) since
+    // Core can't depend on App.Services.Logger.
+    if System.Environment.GetEnvironmentVariable "RATLINE_TRACE" = "1" then
+        // Collect (anchorFlat, compId) per net from `acc`.
+        let perNet =
+            System.Collections.Generic.Dictionary<string, ResizeArray<int * int>>()
+        for kv in acc do
+            let (netName, _) = kv.Key
+            let (_, _, _, _, _, anchorFlat) = kv.Value
+            match anchorFlat with
+            | Some fi when fi >= 0 && fi < polyComp.Length ->
+                let comp = polyComp.[fi]
+                let list =
+                    match perNet.TryGetValue netName with
+                    | true, l -> l
+                    | _ ->
+                        let l = ResizeArray<int * int>()
+                        perNet.[netName] <- l
+                        l
+                list.Add(fi, comp)
+            | _ -> ()
+        // Adjacency from union edges (undirected).
+        let adj = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
+        let addNbr a b =
+            let list =
+                match adj.TryGetValue a with
+                | true, l -> l
+                | _ ->
+                    let l = ResizeArray<int>()
+                    adj.[a] <- l
+                    l
+            list.Add b
+        for (a, b) in unionEdges do
+            addNbr a b
+            addNbr b a
+        let bfsPath (src: int) (dst: int) (maxDepth: int) : int list =
+            if src = dst then [src] else
+            let visited = System.Collections.Generic.HashSet<int>()
+            let prev = System.Collections.Generic.Dictionary<int, int>()
+            let q = System.Collections.Generic.Queue<int>()
+            q.Enqueue src
+            visited.Add src |> ignore
+            let mutable found = false
+            let mutable depth = 0
+            while q.Count > 0 && not found && depth < maxDepth do
+                let levelSize = q.Count
+                let mutable i = 0
+                while i < levelSize && not found do
+                    let cur = q.Dequeue()
+                    if cur = dst then found <- true
+                    elif adj.ContainsKey cur then
+                        for nxt in adj.[cur] do
+                            if not (visited.Contains nxt) then
+                                visited.Add nxt |> ignore
+                                prev.[nxt] <- cur
+                                q.Enqueue nxt
+                    i <- i + 1
+                depth <- depth + 1
+            if not found then [] else
+            let mutable cur = dst
+            let acc = ResizeArray<int>()
+            acc.Add cur
+            while cur <> src do
+                cur <- prev.[cur]
+                acc.Add cur
+            acc.Reverse()
+            List.ofSeq acc
+        let polyDesc (i: int) : string =
+            if i < 0 || i >= flat.Length then sprintf "[?%d]" i else
+            let p = flat.[i]
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for pt in p.Points do
+                if pt.X < xMin then xMin <- pt.X
+                if pt.X > xMax then xMax <- pt.X
+                if pt.Y < yMin then yMin <- pt.Y
+                if pt.Y > yMax then yMax <- pt.Y
+            sprintf "[%d %d/%d src=%s bbox=(%d,%d)-(%d,%d)]"
+                i p.Layer p.DataType p.SourceStructure xMin yMin xMax yMax
+        for KeyValue (netName, anchors) in perNet do
+            let byComp =
+                anchors
+                |> Seq.groupBy snd
+                |> Seq.toList
+            for (compId, group) in byComp do
+                let anchorFlats =
+                    group |> Seq.map fst |> Seq.distinct |> Seq.toList
+                if anchorFlats.Length > 1 then
+                    let src = List.head anchorFlats
+                    for dst in List.tail anchorFlats do
+                        let path = bfsPath src dst 2000
+                        eprintfn "[ratline.trace] net=%s anchor %d → anchor %d (comp=%d, path-len=%d)"
+                            netName src dst compId path.Length
+                        if path.IsEmpty then
+                            eprintfn "  (no path found within depth 2000 — likely a false-comp tag)"
+                        else
+                            for i in path do
+                                eprintfn "  %s" (polyDesc i)
     // Stage 2: per net, group logical pins by component id. Each
     // group collapses into ONE final Pin (centroid + Z averaged
     // across the contributing logical pins, total label count
@@ -449,25 +542,47 @@ let compute
                 let n = pins.Length
                 if n = 1 then pins.[0]
                 else
+                    // Pick the medoid — the pin whose own position
+                    // is closest to the mean of all pin positions
+                    // in the component. The mean alone can land in
+                    // empty space between labels in different cells
+                    // (TIMER.G at Y=19 + INV_N.S at Y=13 → mean at
+                    // Y=16 falls between both cells), making the
+                    // ratline endpoint visually float. The medoid
+                    // is always on an actual label, so endpoints
+                    // anchor where the user can see what they
+                    // represent.
+                    //
+                    // LabelCount sums across all pins so the
+                    // inspector still reports the cluster size,
+                    // and ZUm averages so the 3D draw lands at a
+                    // representative height even when the chosen
+                    // medoid sits on one specific layer.
                     let mutable sx = 0L
                     let mutable sy = 0L
                     let mutable sz = 0.0
                     let mutable labelCount = 0
-                    let mutable ti : int option = None
                     for p in pins do
                         sx <- sx + p.Position.X
                         sy <- sy + p.Position.Y
                         sz <- sz + p.ZUm
                         labelCount <- labelCount + p.LabelCount
-                        // First non-None instance wins; multi-
-                        // instance components lose the tag.
-                        if ti.IsNone then ti <- p.TopInstanceIndex
-                    { TopInstanceIndex = ti
-                      Position = { X = sx / int64 n; Y = sy / int64 n }
+                    let mx = sx / int64 n
+                    let my = sy / int64 n
+                    let mutable best = pins.[0]
+                    let mutable bestD2 = System.Int64.MaxValue
+                    for p in pins do
+                        let dx = p.Position.X - mx
+                        let dy = p.Position.Y - my
+                        let d2 = dx * dx + dy * dy
+                        if d2 < bestD2 then
+                            bestD2 <- d2
+                            best <- p
+                    { TopInstanceIndex = best.TopInstanceIndex
+                      Position = best.Position
                       ZUm = sz / float n
                       LabelCount = labelCount })
         { Name = name
           Pins = reps
-          Mst = mstOf reps
-          IsPower = isLikelyPowerNet name })
+          Mst = mstOf reps })
     |> Array.filter (fun route -> route.Pins.Length >= 2)

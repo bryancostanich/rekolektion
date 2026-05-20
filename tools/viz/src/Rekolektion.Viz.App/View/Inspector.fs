@@ -116,10 +116,21 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
             let strictHits =
                 allLabels
                 |> List.filter (fun l ->
-                    let lx, ly = labelXY l
-                    pointInPolyUm lx ly poly.Points
-                    || (lx >= xMin - strictTol && lx <= xMax + strictTol
-                        && ly >= yMin - strictTol && ly <= yMax + strictTol))
+                    // Layer-gate: a label only annotates a
+                    // polygon when they're on the same GDS layer
+                    // NUMBER. Without this, a li1 VSS label
+                    // sitting inside a met2 bus's bbox was
+                    // wrongly attributed to the bus (different
+                    // layer, no electrical connection — just 2D
+                    // overlap). Family pass below already does
+                    // the same check; the strict pass was
+                    // missing it.
+                    if labelLayerNumber l <> poly.Layer then false
+                    else
+                        let lx, ly = labelXY l
+                        pointInPolyUm lx ly poly.Points
+                        || (lx >= xMin - strictTol && lx <= xMax + strictTol
+                            && ly >= yMin - strictTol && ly <= yMax + strictTol))
             let familyHits =
                 allLabels
                 |> List.filter (fun l ->
@@ -148,6 +159,35 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
                         (sprintf "label \"%s\" on %s" l.Text layerOf)
                         [ SelectableTextBlock.foreground "#a0d8ff" ])
 
+            // Net lookup: find any NetEntry whose Polygons list
+            // names THIS exact (structure, layer, datatype,
+            // index). Net derivation already does the connectivity
+            // flood-fill, so this turns the inspector into a
+            // single-shot answer to "what net is this poly on?"
+            // even when there's no label sitting directly on it
+            // (very common for bus segments labelled only at
+            // their CS-cell sources).
+            let netHits =
+                m.Nets
+                |> Map.toList
+                |> List.choose (fun (name, entry) ->
+                    let matches =
+                        entry.Polygons
+                        |> List.exists (fun r ->
+                            r.Structure = struc &&
+                            r.Layer = poly.Layer &&
+                            r.DataType = poly.DataType &&
+                            r.Index = idx)
+                    if matches then Some name else None)
+            let netLines : IView list =
+                netHits
+                |> List.map (fun name ->
+                    line
+                        (sprintf "net: %s" name)
+                        [ SelectableTextBlock.foreground "#a0d8ff"
+                          SelectableTextBlock.fontWeight FontWeight.SemiBold ])
+
+
             [ yield line
                 (sprintf "layer: %s (%d/%d)" layerName poly.Layer poly.DataType)
                 [ SelectableTextBlock.fontWeight FontWeight.SemiBold ]
@@ -157,6 +197,7 @@ let private polyDetails (model: Model.Model) (struc: string) (idx: int) : IView 
               yield line
                 (sprintf "@ (%.3f, %.3f) µm" xMin yMin)
                 [ SelectableTextBlock.foreground "#888" ]
+              yield! netLines
               yield! labelLines ]
 
 let private instanceDetails (model: Model.Model) (idx: int) : IView list =
@@ -194,16 +235,66 @@ let private instanceDetails (model: Model.Model) (idx: int) : IView list =
               line orientation
                 [ SelectableTextBlock.foreground "#888" ] ]
 
+/// One block per selected ratline: net name + every pin's
+/// world-DBU centroid (rendered as µm) and contributing label
+/// count. Recomputes routes on demand for the active macro — the
+/// canvas does the same in its draw path, so we don't try to share
+/// state through the model.
+let private ratlineDetails (model: Model.Model) : IView list =
+    match Model.activeMacro model with
+    | None -> []
+    | Some m ->
+        let uupdb = float m.Document.Units.DbuNm * 1.0e-3
+        let routes =
+            Net.Ratlines.compute m.Document m.FlatPolygons
+        let byName =
+            routes |> Array.map (fun r -> r.Name, r) |> Map.ofArray
+        let selected =
+            model.SelectedRatlines
+            |> Set.toList
+            |> List.sort
+        [ for net in selected do
+            match Map.tryFind net byName with
+            | None ->
+                yield line
+                    (sprintf "net: %s" net)
+                    [ SelectableTextBlock.fontWeight FontWeight.SemiBold ]
+                yield line "(no pins resolved)"
+                    [ SelectableTextBlock.foreground "#888" ]
+            | Some r ->
+                yield line
+                    (sprintf "net: %s" r.Name)
+                    [ SelectableTextBlock.fontWeight FontWeight.SemiBold ]
+                yield line
+                    (sprintf "%d endpoint%s"
+                        r.Pins.Length
+                        (if r.Pins.Length = 1 then "" else "s"))
+                    [ SelectableTextBlock.foreground "#CCC" ]
+                for i in 0 .. r.Pins.Length - 1 do
+                    let p = r.Pins.[i]
+                    let xum = float p.Position.X * uupdb
+                    let yum = float p.Position.Y * uupdb
+                    let inst =
+                        match p.TopInstanceIndex with
+                        | Some k -> sprintf " inst#%d" k
+                        | None -> " top"
+                    yield line
+                        (sprintf
+                            "  #%d (%.3f, %.3f) µm z=%.3f µm ×%d%s"
+                            i xum yum p.ZUm p.LabelCount inst)
+                        [ SelectableTextBlock.fontSize 11.0 ] ]
+
 let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
     let polySel = model.Selection
     let instSel = model.InstanceSelection
+    let ratSel = model.SelectedRatlines
     let body : IView list =
         [
             yield TextBlock.create [
                 TextBlock.text "Inspector"
                 TextBlock.fontWeight FontWeight.Bold
             ] :> IView
-            if polySel.IsEmpty && instSel.IsEmpty then
+            if polySel.IsEmpty && instSel.IsEmpty && ratSel.IsEmpty then
                 yield TextBlock.create [
                     TextBlock.text "(nothing selected)"
                     TextBlock.foreground "#888"
@@ -212,8 +303,8 @@ let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
                 if instSel.Count = 1 && polySel.IsEmpty then
                     yield! instanceDetails model instSel.MinimumElement
                 elif polySel.Count = 1 && instSel.IsEmpty then
-                    let struc, idx = polySel.MinimumElement
-                    yield! polyDetails model struc idx
+                    let pk = polySel.MinimumElement
+                    yield! polyDetails model pk.Cell pk.Index
                 else
                     if instSel.Count > 0 then
                         yield TextBlock.create [
@@ -231,6 +322,8 @@ let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
                                     (if polySel.Count = 1 then "" else "s"))
                             TextBlock.foreground "#CCC"
                         ] :> IView
+                if not ratSel.IsEmpty then
+                    yield! ratlineDetails model
         ]
 
     StackPanel.create [

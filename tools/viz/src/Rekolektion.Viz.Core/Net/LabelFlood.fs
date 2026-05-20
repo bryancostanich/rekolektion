@@ -32,6 +32,34 @@ let private classOfName (n: string) : NetClass =
     elif upper.StartsWith "CLK"               then Clock
     else Signal
 
+/// Stack connectivity: each contact/via layer bridges a set of
+/// routing layers. `licon` (66/44) is the diff/poly/li bridge;
+/// `mcon` and the via series are routing-to-routing.
+///
+/// Two routing polys on different layers share a net iff there's
+/// a contact-layer polygon that touches BOTH. The flood-fill
+/// below uses this map to step across the stack — without it the
+/// flood was same-layer-only and a label on li1 never propagated
+/// up to met1 / met2 / met3, so any bus segment routed on a
+/// higher metal showed up as "no net" in the inspector.
+let private contactBridges : Map<int * int, (int * int) list> =
+    [ (66, 44), [ (65, 20); (65, 44); (66, 20); (67, 20) ]  // licon  → diff/tap/poly/li1
+      (67, 44), [ (67, 20); (68, 20) ]                       // mcon   → li1/met1
+      (68, 44), [ (68, 20); (69, 20) ]                       // via    → met1/met2
+      (69, 44), [ (69, 20); (70, 20) ]                       // via2   → met2/met3
+      (70, 44), [ (70, 20); (71, 20) ]                       // via3   → met3/met4
+      (71, 44), [ (71, 20); (72, 20) ] ]                     // via4   → met4/met5
+    |> Map.ofList
+
+/// Inverse: which contact layers does a given routing layer touch?
+let private routingContacts : Map<int * int, (int * int) list> =
+    contactBridges
+    |> Map.toList
+    |> List.collect (fun (c, rs) -> rs |> List.map (fun r -> r, c))
+    |> List.groupBy fst
+    |> List.map (fun (r, l) -> r, l |> List.map snd |> List.distinct)
+    |> Map.ofList
+
 /// Build NetMap from labels in the document. Operates on
 /// `Layout.Flatten`'s world-coord polys + labels so a label authored
 /// at the TOP cell can anchor to a polygon living inside an SRef'd
@@ -40,15 +68,26 @@ let private classOfName (n: string) : NetClass =
 /// previous local-frame implementation.
 ///
 /// For each label: find the world-coord polygon on the same layer
-/// that contains the label point, then flood across same-layer
-/// touching polygons. Output `PolyRef`s deduplicate by (cell, index)
-/// so multiple instances of the same source polygon collapse to one
-/// entry — the Nets panel only needs to know the net exists.
+/// that contains the label point, then flood across (a) same-layer
+/// touching polygons AND (b) cross-layer routing connected via
+/// contact/via polys (licon → mcon → via → via2 …). Output
+/// `PolyRef`s deduplicate so multiple instances of the same source
+/// polygon collapse to one entry — the Nets panel only needs to
+/// know the net exists.
 let derive (doc: Document) : Map<string, NetEntry> =
     let polys = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
     let labels = Rekolektion.Viz.Core.Layout.Flatten.flattenLabels doc
     let pointsList (p: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) =
         Array.toList p.Points
+
+    // Bucket polys by (Layer, DataType) once so every per-label
+    // flood doesn't re-scan the full flat array.
+    let byLayer : Map<int * int, (int * Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) array> =
+        polys
+        |> Array.mapi (fun i p -> i, p)
+        |> Array.groupBy (fun (_, p) -> p.Layer, p.DataType)
+        |> Array.map (fun (k, arr) -> k, arr)
+        |> Map.ofArray
 
     labels
     |> Array.fold (fun (acc: Map<string, NetEntry>) (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel) ->
@@ -64,17 +103,6 @@ let derive (doc: Document) : Map<string, NetEntry> =
         match seedIdx with
         | None -> acc
         | Some i0 ->
-            let s0 = polys.[i0]
-            // BFS over same-(layer, datatype) world polygons that
-            // touch. Index keyed by flat-array position so the two
-            // instances of the same source poly count as separate
-            // candidates (their world geometry sits in different
-            // places, so flood reaches one only via a real touch).
-            let sameLayer =
-                polys
-                |> Array.mapi (fun i p -> i, p)
-                |> Array.filter (fun (_, p) ->
-                    p.Layer = s0.Layer && p.DataType = s0.DataType)
             let visited = System.Collections.Generic.HashSet<int>()
             let queue = System.Collections.Generic.Queue<int>()
             queue.Enqueue i0 |> ignore
@@ -85,11 +113,48 @@ let derive (doc: Document) : Map<string, NetEntry> =
                 let cur = polys.[curIdx]
                 collected.Add cur
                 let curPts = pointsList cur
-                for (cIdx, cand) in sameLayer do
-                    if not (visited.Contains cIdx)
-                       && touch curPts (pointsList cand) then
-                        visited.Add cIdx |> ignore
-                        queue.Enqueue cIdx |> ignore
+                let curKey = cur.Layer, cur.DataType
+                // Same-(layer, datatype) flood: any touching poly
+                // on the same routing layer shares the net.
+                match Map.tryFind curKey byLayer with
+                | Some arr ->
+                    for (cIdx, cand) in arr do
+                        if not (visited.Contains cIdx)
+                           && touch curPts (pointsList cand) then
+                            visited.Add cIdx |> ignore
+                            queue.Enqueue cIdx |> ignore
+                | None -> ()
+                // Cross-layer flood via the contact/via stack.
+                // For every contact layer that bridges this
+                // routing layer, find contact polys touching the
+                // current poly. Each such contact connects to a
+                // set of routing layers; OTHER-layer polys
+                // touching the contact join the flood.
+                match Map.tryFind curKey routingContacts with
+                | Some contactKeys ->
+                    for contactKey in contactKeys do
+                        match Map.tryFind contactKey byLayer with
+                        | Some contactArr ->
+                            for (_, contactPoly) in contactArr do
+                                let contactPts = pointsList contactPoly
+                                if touch curPts contactPts then
+                                    // Routing layers wired by
+                                    // THIS contact.
+                                    match Map.tryFind contactKey contactBridges with
+                                    | Some routingKeys ->
+                                        for routingKey in routingKeys do
+                                            if routingKey <> curKey then
+                                                match Map.tryFind routingKey byLayer with
+                                                | Some otherArr ->
+                                                    for (oIdx, otherPoly) in otherArr do
+                                                        if not (visited.Contains oIdx)
+                                                           && touch contactPts (pointsList otherPoly) then
+                                                            visited.Add oIdx |> ignore
+                                                            queue.Enqueue oIdx |> ignore
+                                                | None -> ()
+                                    | None -> ()
+                        | None -> ()
+                | None -> ()
             let polyRefs =
                 collected
                 |> Seq.map (fun p ->

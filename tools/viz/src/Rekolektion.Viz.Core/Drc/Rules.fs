@@ -63,6 +63,13 @@ let via    = layer 68 44
 let met2   = layer 69 20
 let via2   = layer 69 44
 let met3   = layer 70 20
+/// POLYRES — derived poly-resistor layer (xhrpoly/uhrpoly +
+/// xpc, grown 80 nm). SKY130 emits this on GDS 66/13 from
+/// `res_xhigh_po_*` / `res_xhigh_po_uhrpoly_*` foundry cells.
+/// Used as the source layer for rpm.* and poly.9 precision-
+/// resistor spacing checks (distance from resistor body to
+/// n-diff / poly / general diff).
+let polyres = layer 66 13
 
 /// Filter predicate on the *inner* polygon of an Enclosure rule
 /// (or analogous "subject" polygon of other rule kinds). Lets a
@@ -120,6 +127,7 @@ type Rule =
         * layerB: LayerKey
         * minUm: float
         * condA: InnerCondition
+        * condB: InnerCondition
     /// Symmetric enclosure: `outer` must contain `inner` with at
     /// least MinUm margin on every side. A violation fires for
     /// any `inner` polygon (matching `cond`) whose enclosing
@@ -225,7 +233,7 @@ let nameOf (rule: Rule) : string =
     match rule with
     | Width (n, _, _) -> n
     | Spacing (n, _, _) -> n
-    | CrossSpacing (n, _, _, _, _) -> n
+    | CrossSpacing (n, _, _, _, _, _) -> n
     | Enclosure (n, _, _, _, _) -> n
     | Endcap (n, _, _, _) -> n
     | MinArea (n, _, _) -> n
@@ -293,8 +301,32 @@ let allRules : Rule list = [
     Spacing  ("poly.2",     poly,  0.21)
     Endcap   ("poly.8",     poly,  diff, 0.13)    // poly overhangs gate edge
     Endcap   ("poly.7",     diff,  poly, 0.25)    // diff overhangs source/drain
-    CrossSpacing("poly.4",  poly,  diff, 0.075, Always)
+    CrossSpacing("poly.4",  poly,  diff, 0.075, Always, Always)
                                                   // poly edge to diff (non-gate)
+    // --- Precision poly resistors (POLYRES = 66/13) ---
+    // POLYRES is the foundry's derived layer for resistor poly
+    // (xhrpoly/uhrpoly + xpc, grown). Spacing rules from a
+    // resistor body to its neighbours come from Magic's deck:
+    //   rpm.3 + rpm.6 + nsd.5a   525 nm to n+ diffusion
+    //   rpm.3 + rpm.7            400 nm to unrelated poly
+    //   poly.9                   480 nm to general diffusion
+    // The 525 nm rule is keyed on n-diff (NSDM ∩ DIFF outside
+    // NWELL), modelled with the NsdmNotInNwell condition on
+    // the layerB filter — same machinery diff/tap.9 uses.
+    CrossSpacing("rpm.3-6-nsd.5a", polyres, diff, 0.525,
+                 Always, NsdmNotInNwell)
+    CrossSpacing("rpm.3-7",        polyres, poly, 0.400,
+                 Always, Always)
+    CrossSpacing("poly.9",         polyres, diff, 0.480,
+                 Always, Always)
+    // poly.9 also applies polyres-to-polyres (Magic's *poly tile
+    // class covers all poly subtypes, including the resistor
+    // body itself). Needed both for DRC fidelity AND so the
+    // Tighten path can find a per-layer spacing rule for the
+    // 66/13 layer — without it, dragging a poly resistor
+    // toward its neighbour would overshoot because tighten
+    // would see no constraint on layer 66/13.
+    Spacing  ("poly.9",     polyres, 0.480)
     // diff/tap.9 — n+ diffusion outside nwell to nwell ≥ 0.34.
     // Uses (NSDM ∩ DIFF) \ NWELL as the violating geometry,
     // matching Magic's deck. Bare NSDM crossing nwell (a pFET's
@@ -396,6 +428,7 @@ let private displayName (key: LayerKey) : string =
     elif key = nsdm   then "nsdm"
     elif key = psdm   then "psdm"
     elif key = poly   then "poly"
+    elif key = polyres then "polyres"
     elif key = licon1 then "licon1"
     elif key = li1    then "li1"
     elif key = mcon   then "mcon"
@@ -452,3 +485,28 @@ let private byKey =
 /// `allRules` directly.
 let tryFind (number: int) (dataType: int) : LayerRule option =
     Map.tryFind (number, dataType) byKey
+
+/// Cross-layer min spacing entries derived from `allRules`. Each
+/// entry says: a poly on `LayerA` must stay ≥ `MinUm` from any
+/// poly on `LayerB` (when the inner-condition filters match).
+/// Tighten consults this so cross-layer constraints (e.g.
+/// polyres → diff at 0.48 µm) bind the move, not just same-layer
+/// ones. CondA / CondB are kept for the rare implant-aware
+/// cases (e.g. rpm.3-6-nsd.5a only fires against n-diff outside
+/// nwell).
+type CrossSpacingRule = {
+    LayerA   : LayerKey
+    LayerB   : LayerKey
+    MinUm    : float
+    CondA    : InnerCondition
+    CondB    : InnerCondition
+}
+
+let allCrossSpacings : CrossSpacingRule list =
+    allRules
+    |> List.choose (fun r ->
+        match r with
+        | CrossSpacing (_, a, b, m, ca, cb) ->
+            Some { LayerA = a; LayerB = b; MinUm = m
+                   CondA = ca; CondB = cb }
+        | _ -> None)

@@ -306,11 +306,20 @@ let checkWithToggles
                         while not covered && j < polys.Length do
                             if j <> i then
                                 let (_, (bx1, by1, bx2, by2), _) = polys.[j]
-                                // Strict overlap (shared interior).
-                                let overlaps =
-                                    ax1 < bx2 && bx1 < ax2 &&
-                                    ay1 < by2 && by1 < ay2
-                                if overlaps then
+                                // Touch-or-overlap (closed-interval).
+                                // Magic merges touching polys on
+                                // the same layer into one feature
+                                // for width checks. The classic
+                                // case: a 5 nm-thick sliver of
+                                // poly inside a foundry resistor
+                                // abuts the resistor body exactly
+                                // at one edge — strict overlap
+                                // wouldn't see the join, and the
+                                // sliver fires a bogus poly.1a.
+                                let touches =
+                                    ax1 <= bx2 && bx1 <= ax2 &&
+                                    ay1 <= by2 && by1 <= ay2
+                                if touches then
                                     if narrowIsX then
                                         if by1 <= ay1 && ay2 <= by2 then
                                             let ux = (max ax2 bx2) - (min ax1 bx1)
@@ -401,15 +410,19 @@ let checkWithToggles
                                     BboxA = gapBb
                                     BboxB = None }
                             | _ -> ()
-        | Rules.CrossSpacing (name, layerA, layerB, minUm, condA) ->
+        | Rules.CrossSpacing (name, layerA, layerB, minUm, condA, condB) ->
             // Same orthogonal-only rule as same-layer Spacing.
             // Overlap = same net at this layer pair (e.g. poly
             // contact on diff is legal); skip to avoid false-
             // firing on intentional crossings.
             //
-            // `condA` filters the source layer to typed subsets
-            // (e.g. diff/tap.9 only fires on n-diff outside
-            // nwell — NsdmNotInNwell tag).
+            // `condA`/`condB` filter each side to typed subsets
+            // via the implant tags pre-pass. Examples:
+            //   diff/tap.9: NsdmNotInNwell on the source side
+            //               (n-diff outside well).
+            //   rpm.3-6-nsd.5a: NsdmNotInNwell on the *target*
+            //               diff (precision resistor only
+            //               cares about distance to n-diff).
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let polysA = polysOnLayer idx layerA
@@ -417,8 +430,10 @@ let checkWithToggles
                 for (_, bbA, aIdx) in polysA do
                     let aTags = Implant.tagOf tags aIdx
                     if condMatches condA aTags then
-                        for (_, bbB, _) in polysB do
-                            if not (bboxOverlaps bbA bbB) then
+                        for (_, bbB, bIdx) in polysB do
+                            let bTags = Implant.tagOf tags bIdx
+                            if condMatches condB bTags
+                               && not (bboxOverlaps bbA bbB) then
                                 match bboxOrthoGapAndRegion bbA bbB with
                                 | Some (g, gapBb) when g > 0L && g < limit ->
                                     // Gap-region bbox (small)
@@ -922,16 +937,40 @@ let maxOrthoSlackDbu
         let selByLayer = groupBy selPhys
         let othByLayer = groupBy othPhys
 
-        // For every shared layer that has a per-layer DRC rule:
-        // find the closest facing poly-pair on the requested
-        // direction (oth-poly on dir-side of sel-poly with
-        // perpendicular-axis projection overlap). Δ for that
-        // layer = (closest facing gap) − (layer min-spacing).
-        // The MIN Δ across layers is the binding constraint —
-        // tightening by that amount lands the closest facing
-        // pair exactly at its rule limit; every other layer ends
-        // up at gap ≥ its own limit.
-        let layerSlack =
+        // Closest facing-edge gap between two bbox arrays in the
+        // requested direction. Returns None when no pair has a
+        // clean facing edge (overlapping pairs return None — the
+        // intent is to bound the move so it doesn't drive sel
+        // closer to oth, not to react to overlap shapes which
+        // can be either DRC violations or intentional
+        // connections).
+        let closestGap
+                (selBbs: (int64*int64*int64*int64) array)
+                (othBbs: (int64*int64*int64*int64) array) =
+            let mutable bestGap : int64 option = None
+            for sBb in selBbs do
+                let (sx1, sy1, sx2, sy2) = sBb
+                for oBb in othBbs do
+                    let (ox1, oy1, ox2, oy2) = oBb
+                    let yOverlap = (min sy2 oy2) > (max sy1 oy1)
+                    let xOverlap = (min sx2 ox2) > (max sx1 ox1)
+                    let g =
+                        if dirX = 1 && yOverlap && ox1 >= sx2 then Some (ox1 - sx2)
+                        elif dirX = -1 && yOverlap && ox2 <= sx1 then Some (sx1 - ox2)
+                        elif dirY = 1 && xOverlap && oy1 >= sy2 then Some (oy1 - sy2)
+                        elif dirY = -1 && xOverlap && oy2 <= sy1 then Some (sy1 - oy2)
+                        else None
+                    match g with
+                    | Some gv ->
+                        match bestGap with
+                        | None -> bestGap <- Some gv
+                        | Some cur when gv < cur -> bestGap <- Some gv
+                        | _ -> ()
+                    | None -> ()
+            bestGap
+
+        // Same-layer Spacing constraints.
+        let sameLayerSlack =
             selByLayer
             |> Map.toSeq
             |> Seq.choose (fun (key, selBbs) ->
@@ -942,35 +981,56 @@ let maxOrthoSlackDbu
                     | None -> None
                     | Some othBbs ->
                         let limit = umToDbu umPerDbu rule.MinSpacingUm
-                        let mutable bestGap : int64 option = None
-                        for sBb in selBbs do
-                            let (sx1, sy1, sx2, sy2) = sBb
-                            for oBb in othBbs do
-                                let (ox1, oy1, ox2, oy2) = oBb
-                                let yOverlap = (min sy2 oy2) > (max sy1 oy1)
-                                let xOverlap = (min sx2 ox2) > (max sx1 ox1)
-                                let g =
-                                    if dirX = 1 && yOverlap && ox1 >= sx2 then Some (ox1 - sx2)
-                                    elif dirX = -1 && yOverlap && ox2 <= sx1 then Some (sx1 - ox2)
-                                    elif dirY = 1 && xOverlap && oy1 >= sy2 then Some (oy1 - sy2)
-                                    elif dirY = -1 && xOverlap && oy2 <= sy1 then Some (sy1 - oy2)
-                                    else None
-                                match g with
-                                | Some gv ->
-                                    match bestGap with
-                                    | None -> bestGap <- Some gv
-                                    | Some cur when gv < cur -> bestGap <- Some gv
-                                    | _ -> ()
-                                | None -> ()
-                        bestGap |> Option.map (fun gv -> rule.Layer, gv, limit, gv - limit))
+                        closestGap selBbs othBbs
+                        |> Option.map (fun gv -> rule.Layer, gv, limit, gv - limit))
             |> Seq.toList
 
-        match layerSlack with
-        | [] -> None
-        | _ ->
-            let minSlack =
-                layerSlack |> List.map (fun (_, _, _, s) -> s) |> List.min
-            if minSlack > 0L then Some minSlack else None
+        // Cross-layer Spacing constraints. Mirrors the tighten-
+        // candidate path: a cross-spacing pair already at gap <
+        // limit forbids the direction (returns None) rather than
+        // just dropping the candidate — moving toward an
+        // existing DRC violation makes it worse. Same-layer
+        // ambiguity (connection vs violation) doesn't apply at
+        // cross-layer scope.
+        let mutable crossForbidden = false
+        let crossLayerSlack =
+            Rules.allCrossSpacings
+            |> List.choose (fun cs ->
+                let keyA = cs.LayerA.Number, cs.LayerA.DataType
+                let keyB = cs.LayerB.Number, cs.LayerB.DataType
+                let limit = umToDbu umPerDbu cs.MinUm
+                let pairs =
+                    [ Map.tryFind keyA selByLayer,
+                      Map.tryFind keyB othByLayer
+                      Map.tryFind keyB selByLayer,
+                      Map.tryFind keyA othByLayer ]
+                let best =
+                    pairs
+                    |> List.choose (fun (s, o) ->
+                        match s, o with
+                        | Some sBbs, Some oBbs -> closestGap sBbs oBbs
+                        | _ -> None)
+                    |> List.fold (fun acc g ->
+                        match acc with
+                        | None -> Some g
+                        | Some cur when g < cur -> Some g
+                        | _ -> acc) None
+                match best with
+                | Some gv when gv < limit ->
+                    crossForbidden <- true
+                    None
+                | Some gv -> Some ("xspace", gv, limit, gv - limit)
+                | None -> None)
+
+        if crossForbidden then None
+        else
+            let layerSlack = sameLayerSlack @ crossLayerSlack
+            match layerSlack with
+            | [] -> None
+            | _ ->
+                let minSlack =
+                    layerSlack |> List.map (fun (_, _, _, s) -> s) |> List.min
+                if minSlack > 0L then Some minSlack else None
 
 /// One Tighten-mode candidate: the binding (most-constrained)
 /// polygon-pair on a single cardinal direction. Renderer uses
@@ -1096,7 +1156,80 @@ let tightenCandidates
                                                 best <- Some cand
                                             | _ -> ()
                                     | None -> ()
-            best)
+            // Cross-layer Spacing constraints. Without these,
+            // tighten was blind to rules like polyres → diff /
+            // poly → diff and would overshoot when the binding
+            // constraint was cross-layer rather than same-layer.
+            //
+            // Cross-layer pairs already at gap < limit (the user
+            // is sitting on top of a pre-existing DRC violation)
+            // FORBID the direction entirely instead of silently
+            // dropping the candidate — moving toward an existing
+            // violation makes it worse. Same-layer over-firing
+            // on this is risky (legitimate connections look
+            // identical) but cross-layer rules like polyres →
+            // diff don't have the connection ambiguity.
+            //
+            // Implant conditions intentionally not filtered —
+            // over-constraining is safer than under-constraining
+            // for an interactive move.
+            let mutable forbidden = false
+            let checkCross
+                    (selBbs: (int64*int64*int64*int64) array)
+                    (othBbs: (int64*int64*int64*int64) array)
+                    (limit: int64)
+                    (layerName: string) =
+                if limit > 0L then
+                    for sBb in selBbs do
+                        let (sx1, sy1, sx2, sy2) = sBb
+                        for oBb in othBbs do
+                            let (ox1, oy1, ox2, oy2) = oBb
+                            let yOver = (min sy2 oy2) > (max sy1 oy1)
+                            let xOver = (min sx2 ox2) > (max sx1 ox1)
+                            let gOpt =
+                                if dirX = 1 && yOver && ox1 >= sx2 then Some (ox1 - sx2)
+                                elif dirX = -1 && yOver && ox2 <= sx1 then Some (sx1 - ox2)
+                                elif dirY = 1 && xOver && oy1 >= sy2 then Some (oy1 - sy2)
+                                elif dirY = -1 && xOver && oy2 <= sy1 then Some (sy1 - oy2)
+                                else None
+                            match gOpt with
+                            | Some g ->
+                                let slack = g - limit
+                                if slack > 0L then
+                                    let cand = {
+                                        DirX = dirX
+                                        DirY = dirY
+                                        Slot = slotOfDir dirX dirY
+                                        LayerName = layerName
+                                        LimitDbu = limit
+                                        GapDbu = g
+                                        SlackDbu = slack
+                                        SelBb = sBb
+                                        OthBb = oBb
+                                    }
+                                    match best with
+                                    | None -> best <- Some cand
+                                    | Some cur when slack < cur.SlackDbu -> best <- Some cand
+                                    | _ -> ()
+                                else
+                                    // gap < limit: pair already
+                                    // violating in this direction.
+                                    // Moving by any positive Δ
+                                    // makes it worse — forbid.
+                                    forbidden <- true
+                            | None -> ()
+            for cs in Rules.allCrossSpacings do
+                let keyA = cs.LayerA.Number, cs.LayerA.DataType
+                let keyB = cs.LayerB.Number, cs.LayerB.DataType
+                let limit = umToDbu umPerDbu cs.MinUm
+                let layerName = sprintf "%dx%d" cs.LayerA.Number cs.LayerB.Number
+                match Map.tryFind keyA selByLayer, Map.tryFind keyB othByLayer with
+                | Some s, Some o -> checkCross s o limit layerName
+                | _ -> ()
+                match Map.tryFind keyB selByLayer, Map.tryFind keyA othByLayer with
+                | Some s, Some o -> checkCross s o limit layerName
+                | _ -> ()
+            if forbidden then None else best)
         |> List.toArray
         // Order by stable slot (right, left, down, up) so the
         // user can memorize "3 = down" and have it hold across

@@ -681,6 +681,45 @@ stubs and supply rails, met2 vertical for any cross-row signal
 (connecting an nfet's drain to a pfet's gate, etc.). Use met3+
 only when met2 routing channels are full.
 
+### HARD RULE — offset perpendicular met1 wires off FET S/D pins
+
+When you need to run a met1 wire vertically off an nfet/pfet `01v8`
+`_core` S or D pin, **center the wire on `pin_x ± 200 nm` (OUTWARD
+into the inter-cell channel), not on the pin x itself.** D pins
+offset left, S pins offset right (for unrotated cells; flip per
+sref rotation).
+
+Why: the `_core` primitive paints a 4-strip met1 ring inside the
+cell — two vertical S/D frames at the pin edges (S/D net) plus two
+horizontal top/bottom strips at `y ≈ ±cell_top` (**GATE net**, with
+the gate contact stack under them). The vertical frames extend
+to cell-local ±5260/-5030 (for W=10) and the horizontal gate strips
+start at cell-local ±4980 — only ~50 nm inside the S/D frames. A
+wire centered on the pin lands ≤5 nm shy of the gate strip → trips
+`met1.2` (140 nm min spacing) AND electrically shorts S/D to GATE.
+
+**How to apply, every time:**
+
+1. **Do not** drop your own mcon at the pin — the primitive already
+   paints multiple mcons there for its own contact stack. An added
+   mcon at the same x lands ~10 nm from the primitive's mcons →
+   `mcon.2` (190 nm spacing) violations.
+2. Place the vertical wire centered at `pin_x ± 200 nm` (OUTWARD
+   from cell center). 320 nm wire width is fine.
+3. The wire's edge overlaps the primitive's S/D vertical met1 frame
+   (~75–100 nm of x-overlap) → same-layer same-net merge supplies
+   the electrical tie. **The primitive's mcons feed S/D into that
+   frame, and your wire merges into the frame from the side.**
+4. If the wire start needs to reach the pin x (e.g. for a labeled
+   tie or a horizontal jog into something off-axis), add a short
+   met1 horizontal stub at `pin_y ± met1_half` spanning from the
+   pin's li1 region out to the offset wire. Same met1, same net,
+   they merge.
+
+Burned on: T37 startup_circuit, routes #4 (MOSCAP array → GND
+spine), #5 (INV_N.S → GND). Both had to be re-done after the
+naïve pin-centered wire shorted S/D to the gate strip.
+
 ### Three routing helpers
 
 ```python

@@ -145,6 +145,12 @@ type Model = {
     /// from `DraftRoute` (the tool may be armed without an in-flight
     /// draft, e.g. just after finishing a previous route).
     RoutingMode : bool
+    /// Ratlines master "want them on" flag (U key + TopBar button).
+    /// When true, NetsLoaded will populate `Toggle.VisibleRatlines`
+    /// from the freshly-derived net map as soon as the background
+    /// LabelFlood completes. Set without waiting for derivation so
+    /// the U key never blocks the UI thread on a heavy cell.
+    RatlinesArmed : bool
     /// In-flight route the user is drawing (ADR-0002). `None` when
     /// no route is being drawn. Each click during routing appends to
     /// `Points`; FinishRoute commits the whole batch as one undo
@@ -193,6 +199,7 @@ let empty : Model = {
     TightenMode = false
     EditRoutingMode = false
     RoutingMode = false
+    RatlinesArmed = false
     DraftRoute = None
     RenamingPath = None
     ActiveTab = View2D

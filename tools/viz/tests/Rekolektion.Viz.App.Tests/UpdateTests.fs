@@ -227,38 +227,19 @@ let ``MovePolygonsDbu pushes an undo snapshot`` () =
     macro.Dirty |> should equal true
 
 [<Fact>]
-let ``ToggleRatlines derives nets from labels when LoadedMacro.Nets is empty`` () =
-    // Regression: the Ratlines button + U hotkey silently failed on
-    // .rkt cells without a sidecar because Nets was empty and the
-    // toggle-on path produced an empty set. Fallback derives via
-    // Net.LabelFlood — exercised here with a doc whose only net
-    // information is a (label …) form.
-    let labelledDoc : Document =
-        let metalPoly = mkRectPoly 0L 0L 100L 100L
-        let label : Label = {
-            Layer = Named ("sky130", "met1")
-            Text = "BL_3"
-            Origin = { X = 50L; Y = 50L }   // inside the poly
-            Class = None
-            Props = []
-            Comments = []
-            IsInternal = false
-            Kind = NetName
-        }
-        { emptyDocument with
-            Cells = [
-                { Name = "TOP"
-                  Meta = None
-                  Comments = []
-                  Elements = [ PolyEl metalPoly; LabelEl label ] }
-            ]
-            TopCell = Some "TOP" }
+let ``ToggleRatlines on an underived cell ARMS but does not sync-derive`` () =
+    // The U key MUST NOT block the UI thread on cells without
+    // pre-derived nets — the LabelFlood pass can run 10+ s on
+    // production macros. ToggleRatlines now just flips
+    // RatlinesArmed; the background derive that LoadComplete
+    // already kicked off paints VisibleRatlines via NetsLoaded
+    // when it returns.
     let macro : Model.LoadedMacro = {
         Path = "/tmp/labelled.gds"
-        Document = labelledDoc
-        FlatPolygons = Flatten.flatten labelledDoc
-        TopInstances = Instances.enumerate labelledDoc
-        Nets = Map.empty            // ← intentional: no sidecar loaded
+        Document = emptyDocument
+        FlatPolygons = [||]
+        TopInstances = [||]
+        Nets = Map.empty            // ← intentional: derive in flight
         Blocks = []
         NetsFromSidecar = false
         SidecarError = None
@@ -272,8 +253,75 @@ let ``ToggleRatlines derives nets from labels when LoadedMacro.Nets is empty`` (
             OpenMacros = [macro]
             ActiveMacroPath = Some macro.Path }
     let next, _ = Update.update stubBackend Msg.ToggleRatlines model
-    // BL_3 was discovered via the label-flood fallback.
-    next.Toggle.VisibleRatlines.Contains "BL_3" |> should equal true
+    next.RatlinesArmed |> should equal true
+    // No sync derive happened → no ratlines visible yet.
+    next.Toggle.VisibleRatlines |> should equal (Set.empty : Set<string>)
+
+[<Fact>]
+let ``NetsLoaded paints ratlines when RatlinesArmed and active path matches`` () =
+    let macro : Model.LoadedMacro = {
+        Path = "/tmp/labelled.gds"
+        Document = emptyDocument
+        FlatPolygons = [||]
+        TopInstances = [||]
+        Nets = Map.empty
+        Blocks = []
+        NetsFromSidecar = false
+        SidecarError = None
+        OriginalPath = "/tmp/labelled.gds"
+        Dirty = false
+        UndoStack = []
+        RedoStack = []
+    }
+    let armed =
+        { Model.empty with
+            OpenMacros = [macro]
+            ActiveMacroPath = Some macro.Path
+            RatlinesArmed = true }
+    let derivedNets : Map<string, Sidecar.Types.NetEntry> =
+        Map.ofList [
+            "BL_3", { Name = "BL_3"; Class = Sidecar.Types.Signal; Polygons = [] }
+            "WL_5", { Name = "WL_5"; Class = Sidecar.Types.Signal; Polygons = [] }
+        ]
+    let next, _ =
+        Update.update stubBackend
+            (Msg.NetsLoaded (macro.Path, derivedNets)) armed
+    next.Toggle.VisibleRatlines
+    |> should equal (Set.ofList ["BL_3"; "WL_5"])
+
+[<Fact>]
+let ``NetsLoaded does NOT paint ratlines when RatlinesArmed is false`` () =
+    // User hasn't pressed U yet; background derive arrives. Cache
+    // the nets on the macro, but don't surprise-paint.
+    let macro : Model.LoadedMacro = {
+        Path = "/tmp/labelled.gds"
+        Document = emptyDocument
+        FlatPolygons = [||]
+        TopInstances = [||]
+        Nets = Map.empty
+        Blocks = []
+        NetsFromSidecar = false
+        SidecarError = None
+        OriginalPath = "/tmp/labelled.gds"
+        Dirty = false
+        UndoStack = []
+        RedoStack = []
+    }
+    let model =
+        { Model.empty with
+            OpenMacros = [macro]
+            ActiveMacroPath = Some macro.Path
+            RatlinesArmed = false }
+    let derivedNets : Map<string, Sidecar.Types.NetEntry> =
+        Map.ofList [
+            "BL_3", { Name = "BL_3"; Class = Sidecar.Types.Signal; Polygons = [] }
+        ]
+    let next, _ =
+        Update.update stubBackend
+            (Msg.NetsLoaded (macro.Path, derivedNets)) model
+    next.Toggle.VisibleRatlines |> should equal (Set.empty : Set<string>)
+    // But the nets cache was updated on the macro.
+    (List.head next.OpenMacros).Nets |> should equal derivedNets
 
 // --- ADR-0002 routing tool ---------------------------------------------
 

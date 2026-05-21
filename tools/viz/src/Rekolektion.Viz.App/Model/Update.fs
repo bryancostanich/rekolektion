@@ -293,17 +293,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             model.OpenMacros
             |> List.map (fun m ->
                 if m.Path = path then { m with Nets = nets } else m)
-        // Pair with the LoadComplete refresh: when nets arrive
-        // asynchronously for the currently-active macro and
-        // ratlines are on, populate VisibleRatlines now (the
-        // LoadComplete refresh saw an empty Nets map and deferred).
+        // Pair with the LoadComplete refresh AND the ToggleRatlines
+        // armed flag: when nets arrive asynchronously for the
+        // currently-active macro, paint VisibleRatlines if either
+        // (a) ratlines were already on (LoadComplete deferred the
+        // refresh because Nets was empty) or (b) the user pressed
+        // U during the in-flight derive (Toggle stayed empty but
+        // RatlinesArmed flipped).
+        let shouldPaint =
+            model.ActiveMacroPath = Some path
+            && not nets.IsEmpty
+            && (not model.Toggle.VisibleRatlines.IsEmpty
+                || model.RatlinesArmed)
         let toggle' =
-            if model.Toggle.VisibleRatlines.IsEmpty then model.Toggle
-            elif model.ActiveMacroPath <> Some path then model.Toggle
-            elif nets.IsEmpty then model.Toggle
-            else
+            if shouldPaint then
                 let names = nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
                 Visibility.setVisibleRatlines names model.Toggle
+            else model.Toggle
         { model with OpenMacros = openMacros; Toggle = toggle' }, Cmd.none
     | Msg.LoadFailed (path, reason) ->
         Rekolektion.Viz.App.Services.Logger.log "load"
@@ -477,49 +483,33 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ToggleSnap ->
         { model with SnapEnabled = not model.SnapEnabled }, Cmd.none
     | Msg.ToggleRatlines ->
-        // Master toggle: if any ratline is on, clear all; otherwise
-        // turn on ratlines for every known net in the active macro.
-        // Mirrors the layer panel "All / None" pattern.
+        // Master toggle. The derive is heavy on production macros
+        // (10+ s for full SRAMs) — the U key MUST NOT do it on the
+        // UI thread. Two paths:
         //
-        // `LoadedMacro.Nets` is only populated when a `.nets.json`
-        // sidecar loaded alongside the cell. .rkt cells without a
-        // sidecar leave it empty — historically this made the U
-        // hotkey + TopBar Ratlines button silently fail. Fall back
-        // to deriving nets directly from the document's labels via
-        // `Net.LabelFlood.derive`, AND cache the result back onto
-        // the LoadedMacro so subsequent toggles don't re-derive
-        // (the derive cost is what beachballed the U press the
-        // first time after load).
+        //   Clear: any ratline on → wipe VisibleRatlines, drop the
+        //   armed flag. No derive needed.
+        //
+        //   Arm: turning on. If the active macro's Nets map is
+        //   already populated (sidecar loaded, or background derive
+        //   from LoadComplete already finished), light them up
+        //   immediately. If it's still empty, just SET RatlinesArmed
+        //   — the background derive kicked off in LoadComplete is
+        //   already in flight, and the `NetsLoaded` arm will paint
+        //   the ratlines the moment it returns.
         if not model.Toggle.VisibleRatlines.IsEmpty then
-            // Clear path — no derive needed.
             { model with
-                Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle },
-            Cmd.none
+                Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle
+                RatlinesArmed = false }, Cmd.none
         else
-            match Model.activeMacro model, model.ActiveMacroPath with
-            | Some m, Some path ->
-                let nets, cachedNew =
-                    if m.Nets.IsEmpty then
-                        Net.LabelFlood.derive m.Document, true
-                    else
-                        m.Nets, false
-                let nextSet =
-                    nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
-                let openMacros' =
-                    if not cachedNew then model.OpenMacros
-                    else
-                        model.OpenMacros
-                        |> List.map (fun mc ->
-                            if mc.Path <> path then mc
-                            else { mc with Nets = nets })
+            match Model.activeMacro model with
+            | Some m when not m.Nets.IsEmpty ->
+                let names = m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
                 { model with
-                    OpenMacros = openMacros'
-                    Toggle = Visibility.setVisibleRatlines nextSet model.Toggle },
-                Cmd.none
+                    Toggle = Visibility.setVisibleRatlines names model.Toggle
+                    RatlinesArmed = true }, Cmd.none
             | _ ->
-                { model with
-                    Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle },
-                Cmd.none
+                { model with RatlinesArmed = true }, Cmd.none
     | Msg.RouteSlideCommit (cell, dxDbu, dyDbu, adjusts, extensions) ->
         if (dxDbu = 0L && dyDbu = 0L)
            || (List.isEmpty adjusts && List.isEmpty extensions) then

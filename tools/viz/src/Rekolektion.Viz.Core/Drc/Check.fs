@@ -972,10 +972,16 @@ let cellCrossNetOverlaps
 /// `nets` is the document's net-membership map (typically derived
 /// once per cell by `Net.LabelFlood.derive`). Empty map disables
 /// the cross-net pass entirely — unlabeled designs skip it.
-let runLive
+/// `runLive` variant that consumes a pre-built spatial index over
+/// `cellFlat`. The canvas caches the index across mouse moves so the
+/// per-frame region query is O(local-density) instead of O(cell-size).
+/// Index indices must be aligned 1:1 with `cellFlat` positions —
+/// `UniformGrid.build` over each polygon's bbox does that naturally.
+let runLiveWithIndex
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
+        (cellIndex: Rekolektion.Viz.Core.Spatial.UniformGrid.Index)
         (draftFlat: FlatPolygon array)
         (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
         (disabledRules: Set<string>)
@@ -1002,10 +1008,13 @@ let runLive
             let ry1 = yMin - regionMarginDbu
             let rx2 = xMax + regionMarginDbu
             let ry2 = yMax + regionMarginDbu
-            cellFlat
-            |> Array.filter (fun p ->
-                let (px1, py1, px2, py2) = bboxOf p
-                rx1 <= px2 && px1 <= rx2 && ry1 <= py2 && py1 <= ry2)
+            // Spatial-index lookup: returns only poly indices whose
+            // bbox cells overlap the query window. Replaces the
+            // previous O(N) Array.filter scan over every cell poly.
+            let hits =
+                Rekolektion.Viz.Core.Spatial.UniformGrid.queryBboxArray
+                    cellIndex (rx1, ry1, rx2, ry2)
+            hits |> Array.map (fun i -> cellFlat.[i])
     let combined = Array.append regionFiltered draftFlat
     let tags = Implant.tagAll combined
     let nonLiveDisabled =
@@ -1081,6 +1090,26 @@ let runLive
                 | Some v -> overlapViolations.Add v
                 | None -> ()
     Array.append standardViolations (overlapViolations.ToArray())
+
+/// `runLive` convenience: builds the spatial index inline from
+/// `cellFlat` and delegates to `runLiveWithIndex`. Used by tests
+/// and any caller that doesn't have an external cache. Interactive
+/// callers (the canvas) should hold a cached index across mouse
+/// moves and call `runLiveWithIndex` directly — the index build is
+/// O(cell-size) so doing it per-frame defeats the point.
+let runLive
+        (view: Rules.RulesetView)
+        (units: Units)
+        (cellFlat: FlatPolygon array)
+        (draftFlat: FlatPolygon array)
+        (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
+        (disabledRules: Set<string>)
+        : Violation array =
+    let bboxes = cellFlat |> Array.map bboxOf
+    let cellSize = Rekolektion.Viz.Core.Spatial.UniformGrid.suggestCellSize bboxes
+    let cellIndex =
+        Rekolektion.Viz.Core.Spatial.UniformGrid.build cellSize bboxes
+    runLiveWithIndex view units cellFlat cellIndex draftFlat nets disabledRules
 
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),

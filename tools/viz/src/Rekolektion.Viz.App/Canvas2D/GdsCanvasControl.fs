@@ -892,6 +892,14 @@ type GdsCanvasControl() as this =
     /// DraftRoute changes; consumed by SkiaDraw to paint red
     /// outlines on offending bboxes.
     let mutable cachedRouteLiveViolations : Drc.Check.Violation array = [||]
+    /// Spatial index over the active macro's `FlatPolygons`, built
+    /// once per geometry change and reused by `runLiveWithIndex`
+    /// across mouse moves. `cachedCellIndexFor` tracks the
+    /// FlatPolygons array we built against so we can detect when
+    /// to rebuild via reference equality (the array gets a new
+    /// reference on every edit / re-flatten).
+    let mutable cachedCellIndex : Spatial.UniformGrid.Index option = None
+    let mutable cachedCellIndexFor : FlatPolygon array = [||]
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1450,8 +1458,36 @@ type GdsCanvasControl() as this =
                             let draftFlat =
                                 Routing.Draft.allSegments r
                                 |> Routing.Draft.toFlatPolygons
-                            Drc.Check.runLive this.DrcView units
-                                this.FlatPolygons draftFlat Map.empty
+                            // Rebuild the spatial index iff the
+                            // active FlatPolygons array has been
+                            // replaced (edit / re-flatten); reuse
+                            // otherwise so per-frame cost is the
+                            // index query, not the index build.
+                            let cellIndex =
+                                if obj.ReferenceEquals(cachedCellIndexFor, this.FlatPolygons)
+                                   && cachedCellIndex.IsSome then
+                                    cachedCellIndex.Value
+                                else
+                                    let bboxes =
+                                        this.FlatPolygons
+                                        |> Array.map (fun p ->
+                                            let mutable xMin = System.Int64.MaxValue
+                                            let mutable yMin = System.Int64.MaxValue
+                                            let mutable xMax = System.Int64.MinValue
+                                            let mutable yMax = System.Int64.MinValue
+                                            for pt in p.Points do
+                                                if pt.X < xMin then xMin <- pt.X
+                                                if pt.X > xMax then xMax <- pt.X
+                                                if pt.Y < yMin then yMin <- pt.Y
+                                                if pt.Y > yMax then yMax <- pt.Y
+                                            (xMin, yMin, xMax, yMax))
+                                    let cs = Spatial.UniformGrid.suggestCellSize bboxes
+                                    let idx = Spatial.UniformGrid.build cs bboxes
+                                    cachedCellIndex <- Some idx
+                                    cachedCellIndexFor <- this.FlatPolygons
+                                    idx
+                            Drc.Check.runLiveWithIndex this.DrcView units
+                                this.FlatPolygons cellIndex draftFlat Map.empty
                                 this.DisabledDrcRules
                 with _ ->
                     cachedRouteLiveViolations <- [||]

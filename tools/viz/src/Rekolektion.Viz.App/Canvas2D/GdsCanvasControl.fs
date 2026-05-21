@@ -1498,6 +1498,12 @@ type GdsCanvasControl() as this =
 
     override this.OnPropertyChanged(e) =
         base.OnPropertyChanged e
+        // PROBE — confirm NetMap actually propagates through the
+        // attr binding. Walkaround diagnostics show netNameCount=0
+        // even when the macro has 22 nets loaded.
+        if e.Property = GdsCanvasControl.NetMapProperty then
+            Rekolektion.Viz.App.Services.Logger.log "canvas.netmap.changed"
+                {| count = this.NetMap.Count |}
         // ADR-0002 — flip the cursor to a crosshair when the wire
         // tool is armed so the user gets immediate visual feedback
         // that clicks now anchor a route. Restored to the platform

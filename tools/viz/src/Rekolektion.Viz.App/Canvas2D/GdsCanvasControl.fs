@@ -949,6 +949,13 @@ type GdsCanvasControl() as this =
     /// every 30 frames so the log doesn't churn under continuous
     /// mouse motion.
     let mutable pointerMoveCount : int = 0
+    /// Monotonic version counter for the live-DRC background task.
+    /// The instrumentation showed `runLiveWithIndex` taking
+    /// 1.4–1.5 s per call on real cells, blocking the UI thread
+    /// and making wire drawing unusable. We now run DRC on a thread
+    /// pool task; this counter lets the result-writeback path drop
+    /// stale results when the user moved on before the task finished.
+    let mutable drcLiveVersion : int = 0
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1506,79 +1513,89 @@ type GdsCanvasControl() as this =
             if e.Property = GdsCanvasControl.DraftRouteProperty
                || e.Property = GdsCanvasControl.FlatPolygonsProperty
                || e.Property = GdsCanvasControl.DisabledDrcRulesProperty then
-                // A failure in live DRC must NEVER break the routing
-                // tool — if compute throws or hangs, fall back to no
-                // violations and keep the canvas responsive.
-                let swDrc = System.Diagnostics.Stopwatch.StartNew()
+                // Live DRC: kicked off on a thread-pool task so per-
+                // frame UI cost stays at ~0. The result writes back
+                // to `cachedRouteLiveViolations` and re-invalidates
+                // the canvas, but only if the version counter still
+                // matches — older queued tasks whose user already
+                // moved on are dropped silently.
+                drcLiveVersion <- drcLiveVersion + 1
+                let myVersion = drcLiveVersion
+                let snapshotDraft = this.DraftRoute
+                let snapshotFlat  = this.FlatPolygons
+                let snapshotView  = this.DrcView
+                let snapshotDisabled = this.DisabledDrcRules
+                let snapshotUnits =
+                    match this.Library with
+                    | Some doc -> doc.Units
+                    | None -> { DbuNm = 1; UuUm = 1 }
+                let triggerName =
+                    if e.Property = GdsCanvasControl.DraftRouteProperty then "DraftRoute"
+                    elif e.Property = GdsCanvasControl.FlatPolygonsProperty then "FlatPolygons"
+                    else "DisabledDrcRules"
+                // Rebuild the spatial index on the calling thread
+                // when geometry changed — it's bounded by the
+                // flat-array size and must be ready before any
+                // background task uses it. Cached for subsequent
+                // mouse-move recomputes.
                 let mutable indexBuilt = false
-                try
-                    cachedRouteLiveViolations <-
-                        match this.DraftRoute with
-                        | None -> [||]
-                        | Some r ->
-                            let units =
-                                match this.Library with
-                                | Some doc -> doc.Units
-                                | None -> { DbuNm = 1; UuUm = 1 }
-                            // Net derivation is too heavy for the per-
-                            // move path. Skip it for now; draft-vs-cell
-                            // overlap still fires (it treats draft as
-                            // unknown-net), and cell-vs-cell cross-net
-                            // overlap is available via the dedicated
-                            // Drc.Check.cellCrossNetOverlaps entry for
-                            // a future on-demand audit pass.
-                            let draftFlat =
-                                Routing.Draft.allSegments r
-                                |> Routing.Draft.toFlatPolygons
-                            // Rebuild the spatial index iff the
-                            // active FlatPolygons array has been
-                            // replaced (edit / re-flatten); reuse
-                            // otherwise so per-frame cost is the
-                            // index query, not the index build.
-                            let cellIndex =
-                                if obj.ReferenceEquals(cachedCellIndexFor, this.FlatPolygons)
-                                   && cachedCellIndex.IsSome then
-                                    cachedCellIndex.Value
-                                else
-                                    indexBuilt <- true
-                                    let bboxes =
-                                        this.FlatPolygons
-                                        |> Array.map (fun p ->
-                                            let mutable xMin = System.Int64.MaxValue
-                                            let mutable yMin = System.Int64.MaxValue
-                                            let mutable xMax = System.Int64.MinValue
-                                            let mutable yMax = System.Int64.MinValue
-                                            for pt in p.Points do
-                                                if pt.X < xMin then xMin <- pt.X
-                                                if pt.X > xMax then xMax <- pt.X
-                                                if pt.Y < yMin then yMin <- pt.Y
-                                                if pt.Y > yMax then yMax <- pt.Y
-                                            (xMin, yMin, xMax, yMax))
-                                    let cs = Spatial.UniformGrid.suggestCellSize bboxes
-                                    let idx = Spatial.UniformGrid.build cs bboxes
-                                    cachedCellIndex <- Some idx
-                                    cachedCellIndexFor <- this.FlatPolygons
-                                    idx
-                            Drc.Check.runLiveWithIndex this.DrcView units
-                                this.FlatPolygons cellIndex draftFlat Map.empty
-                                this.DisabledDrcRules
-                with _ ->
-                    cachedRouteLiveViolations <- [||]
-                swDrc.Stop()
-                // Emit when expensive (≥2 ms) or every 30th
-                // DraftRoute change. `indexBuilt = true` means the
-                // hot-path rebuilt the spatial index (geometry
-                // changed); should only fire once per cell load.
-                if swDrc.ElapsedMilliseconds >= 2L
-                   || pointerMoveCount % 30 = 0 then
-                    Rekolektion.Viz.App.Services.Logger.log "drc.live.recompute"
-                        {| triggerProp =
-                            if e.Property = GdsCanvasControl.DraftRouteProperty then "DraftRoute"
-                            elif e.Property = GdsCanvasControl.FlatPolygonsProperty then "FlatPolygons"
-                            else "DisabledDrcRules"
-                           ms = swDrc.ElapsedMilliseconds
-                           indexBuilt = indexBuilt
-                           violations = cachedRouteLiveViolations.Length |}
+                let cellIndex =
+                    if obj.ReferenceEquals(cachedCellIndexFor, snapshotFlat)
+                       && cachedCellIndex.IsSome then
+                        cachedCellIndex.Value
+                    else
+                        indexBuilt <- true
+                        let bboxes =
+                            snapshotFlat
+                            |> Array.map (fun p ->
+                                let mutable xMin = System.Int64.MaxValue
+                                let mutable yMin = System.Int64.MaxValue
+                                let mutable xMax = System.Int64.MinValue
+                                let mutable yMax = System.Int64.MinValue
+                                for pt in p.Points do
+                                    if pt.X < xMin then xMin <- pt.X
+                                    if pt.X > xMax then xMax <- pt.X
+                                    if pt.Y < yMin then yMin <- pt.Y
+                                    if pt.Y > yMax then yMax <- pt.Y
+                                (xMin, yMin, xMax, yMax))
+                        let cs = Spatial.UniformGrid.suggestCellSize bboxes
+                        let idx = Spatial.UniformGrid.build cs bboxes
+                        cachedCellIndex <- Some idx
+                        cachedCellIndexFor <- snapshotFlat
+                        idx
+                // Fire-and-forget background recompute.
+                System.Threading.Tasks.Task.Run(fun () ->
+                    let swDrc = System.Diagnostics.Stopwatch.StartNew()
+                    let mutable result : Drc.Check.Violation array = [||]
+                    try
+                        result <-
+                            match snapshotDraft with
+                            | None -> [||]
+                            | Some r ->
+                                let draftFlat =
+                                    Routing.Draft.allSegments r
+                                    |> Routing.Draft.toFlatPolygons
+                                Drc.Check.runLiveWithIndex snapshotView
+                                    snapshotUnits snapshotFlat cellIndex
+                                    draftFlat Map.empty snapshotDisabled
+                    with _ -> ()
+                    swDrc.Stop()
+                    Avalonia.Threading.Dispatcher.UIThread.Post(fun () ->
+                        // Drop stale results — a newer recompute may
+                        // have already finished and we don't want to
+                        // clobber it with an older snapshot.
+                        if myVersion = drcLiveVersion then
+                            cachedRouteLiveViolations <- result
+                            this.InvalidateVisual()
+                            if swDrc.ElapsedMilliseconds >= 2L
+                               || pointerMoveCount % 30 = 0 then
+                                Rekolektion.Viz.App.Services.Logger.log "drc.live.recompute"
+                                    {| triggerProp = triggerName
+                                       ms = swDrc.ElapsedMilliseconds
+                                       indexBuilt = indexBuilt
+                                       async = true
+                                       violations = result.Length |})
+                ) |> ignore
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----

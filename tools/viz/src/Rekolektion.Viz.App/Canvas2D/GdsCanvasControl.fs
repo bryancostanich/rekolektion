@@ -1650,11 +1650,16 @@ type GdsCanvasControl() as this =
                         | None    -> (cx, cy)
                     let layerKey : Routing.Obstacles.LayerKey =
                         { Number = fst draft.Layer; DataType = snd draft.Layer }
-                    // Clearance = half wire width for v1. A future
-                    // pass can pull foreign-net spacing from the DRC
-                    // view; for now half-width keeps the wire's
-                    // edges out of foreign features.
-                    let clearance = max 0L (draft.Width / 2L)
+                    // Clearance = 0 per ADR-0006. The walk-around
+                    // is an ELECTRICAL-short avoider, not a
+                    // spacing-rule check. Spacing is handled by the
+                    // live-DRC overlay (red outlines on too-close
+                    // edges). Expanding obstacles by half wire
+                    // width frequently enclosed the wire's own
+                    // start centroid (FET licons sit closer than
+                    // 2× clearance apart), which made the search
+                    // unreachable and silently failed to None.
+                    let clearance = 0L
                     let key : Routing.WalkAround.BuildKey =
                         { Layer = layerKey
                           StartNet = draft.StartNet
@@ -1688,20 +1693,32 @@ type GdsCanvasControl() as this =
                             with _ -> Routing.VisibilityGraph.build 0L [||]
                         swBuild.Stop()
                         let swSearch = System.Diagnostics.Stopwatch.StartNew()
+                        let mutable searchOutcome = "unknown"
                         let result =
                             try
                                 match Routing.WalkAround.route graph startPt cursorPt with
-                                | None -> []
+                                | None ->
+                                    searchOutcome <- "noPath"
+                                    []
                                 | Some nodes ->
                                     match nodes with
                                     | _ :: rest ->
-                                        rest
-                                        |> List.rev
-                                        |> (fun xs -> match xs with _ :: t -> t | [] -> [])
-                                        |> List.rev
-                                        |> List.map (fun pt -> pt.X, pt.Y)
-                                    | [] -> []
-                            with _ -> []
+                                        let corners =
+                                            rest
+                                            |> List.rev
+                                            |> (fun xs -> match xs with _ :: t -> t | [] -> [])
+                                            |> List.rev
+                                            |> List.map (fun pt -> pt.X, pt.Y)
+                                        searchOutcome <-
+                                            if corners.IsEmpty then "trivialStraight"
+                                            else "jogged"
+                                        corners
+                                    | [] ->
+                                        searchOutcome <- "emptyNodes"
+                                        []
+                            with _ ->
+                                searchOutcome <- "exception"
+                                []
                         swSearch.Stop()
                         if swBuild.ElapsedMilliseconds + swSearch.ElapsedMilliseconds >= 2L
                            || pointerMoveCount % 30 = 0 then
@@ -1710,7 +1727,13 @@ type GdsCanvasControl() as this =
                                    searchMs = swSearch.ElapsedMilliseconds
                                    obstacles = graph.Obstacles.Length
                                    nodes = graph.Nodes.Length
-                                   corners = result.Length |}
+                                   corners = result.Length
+                                   outcome = searchOutcome
+                                   startNet = key.StartNet
+                                   startX = startPt.X
+                                   startY = startPt.Y
+                                   cursorX = cursorPt.X
+                                   cursorY = cursorPt.Y |}
                         result
                     let postBack (action : unit -> unit) =
                         Avalonia.Threading.Dispatcher.UIThread.Post(System.Action(action))

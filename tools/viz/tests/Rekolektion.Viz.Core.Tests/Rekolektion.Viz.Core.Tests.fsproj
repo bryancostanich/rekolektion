@@ -40,6 +40,7 @@
     <Compile Include="RoutingSnapTests.fs" />
     <Compile Include="RoutingPadsTests.fs" />
     <Compile Include="RoutingLiveDrcTests.fs" />
+    <Compile Include="RoutingObstaclesTests.fs" />
     <Compile Include="UniformGridTests.fs" />
     <Compile Include="LiveDrcTests.fs" />
     <Compile Include="RulesYamlTests.fs" />

@@ -44,6 +44,7 @@
     <Compile Include="Routing/Pointer.fs" />
     <Compile Include="Routing/Snap.fs" />
     <Compile Include="Routing/LiveDrc.fs" />
+    <Compile Include="Routing/Obstacles.fs" />
     <Compile Include="Drc/Geometry/Region.fs" />
     <Compile Include="Drc/Geometry/Boolean.fs" />
     <Compile Include="Drc/Geometry/Size.fs" />

@@ -28,6 +28,12 @@ type DraftRoute = {
     Posture : DraftPosture
     Points  : (int64 * int64) list
     Cursor  : (int64 * int64) option
+    /// Walk-around corner nodes between the last fixed Point and
+    /// the Cursor (ADR-0006). When non-empty, the tentative segment
+    /// is decomposed as a polyline through these corners; on `fix`
+    /// they all become Points. Empty = straight-L behaviour (the
+    /// caller didn't compute an auto-jog path).
+    Auto    : (int64 * int64) list
 }
 
 /// Decompose p1 → p2 into 0, 1, or 2 axis-aligned rectangles. Zero
@@ -72,18 +78,32 @@ let start
     Posture = HorizontalFirst
     Points = [ anchor ]
     Cursor = None
+    Auto = []
 }
 
 /// Update the live cursor position. Tentative L re-derives off this.
+/// Clears any walk-around corners — the new cursor position invalidates
+/// the prior path; the dispatch layer recomputes and calls `setAuto`.
 let setCursor (cursor: int64 * int64) (r: DraftRoute) : DraftRoute =
-    { r with Cursor = Some cursor }
+    { r with Cursor = Some cursor; Auto = [] }
 
-/// Commit the tentative L by appending cursor to `Points`. No-op
-/// when cursor is None (nothing to fix).
+/// Set the walk-around corner sequence between the last fixed Point
+/// and the Cursor (ADR-0006). Empty list resets to straight-L.
+let setAuto (auto: (int64 * int64) list) (r: DraftRoute) : DraftRoute =
+    { r with Auto = auto }
+
+/// Commit the tentative segment by appending Auto + Cursor onto
+/// `Points`. When Auto is non-empty, the walk-around corners get
+/// fixed as new turn points; when empty, only the cursor is fixed
+/// (existing straight-L behaviour). No-op when cursor is None.
 let fix (r: DraftRoute) : DraftRoute =
     match r.Cursor with
     | None -> r
-    | Some c -> { r with Points = r.Points @ [c]; Cursor = None }
+    | Some c ->
+        { r with
+            Points = r.Points @ r.Auto @ [c]
+            Cursor = None
+            Auto   = [] }
 
 /// Remove the last fixed corner. The anchor is preserved — popping
 /// past the first point is a no-op so the route stays alive.
@@ -110,12 +130,19 @@ let fixedSegments (r: DraftRoute) : DraftSegment list =
     |> List.pairwise
     |> List.collect (fun (a, b) -> lShape r.Layer r.Width r.Posture a b)
 
-/// Rectangles for the live tentative L from the last fixed point to
-/// the current cursor. Empty when cursor is None or the route has
-/// only its anchor.
+/// Rectangles for the live tentative segment(s) from the last fixed
+/// point through any walk-around corners to the current cursor.
+/// Empty when cursor is None or the route has only its anchor.
+/// When `Auto` is non-empty, the path is the polyline
+/// last → Auto[0] → ... → Auto[N-1] → cursor; each consecutive pair
+/// is decomposed under the active posture.
 let tentativeSegments (r: DraftRoute) : DraftSegment list =
     match List.tryLast r.Points, r.Cursor with
-    | Some last, Some cursor -> lShape r.Layer r.Width r.Posture last cursor
+    | Some last, Some cursor ->
+        let polyline = last :: r.Auto @ [ cursor ]
+        polyline
+        |> List.pairwise
+        |> List.collect (fun (a, b) -> lShape r.Layer r.Width r.Posture a b)
     | _ -> []
 
 /// Fixed + tentative segments in render order. Used by the canvas
@@ -124,13 +151,13 @@ let allSegments (r: DraftRoute) : DraftSegment list =
     fixedSegments r @ tentativeSegments r
 
 /// Segments to write into the cell on FinishRoute. Includes the
-/// tentative L (so finishing on a target pad commits the in-flight
-/// segment too); callers that want fixed-only should use
-/// `fixedSegments` instead.
+/// tentative path (walk-around corners + cursor) so finishing on a
+/// target pad commits the in-flight segment too; callers that want
+/// fixed-only should use `fixedSegments` instead.
 let finishSegments (r: DraftRoute) : DraftSegment list =
     let lastPoints =
         match r.Cursor with
-        | Some c -> r.Points @ [c]
+        | Some c -> r.Points @ r.Auto @ [c]
         | None   -> r.Points
     lastPoints
     |> List.pairwise

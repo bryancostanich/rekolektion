@@ -216,3 +216,74 @@ let ``toFlatPolygons emits closed 5-point rectangles`` () =
     flat.[0].Points.Length |> should equal 5
     // First and last point coincide (closed polygon convention).
     flat.[0].Points.[0] |> should equal flat.[0].Points.[4]
+
+// ---- ADR-0006 — walk-around corner integration -----------------
+
+[<Fact>]
+let ``new route starts with Auto = []`` () =
+    let r = Draft.start met1 width (0L, 0L)
+    r.Auto |> should be Empty
+
+[<Fact>]
+let ``setAuto stores the corner list on the route`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 1000L)
+        |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
+    r.Auto |> should equal [ (500L, 0L); (500L, 1000L) ]
+
+[<Fact>]
+let ``setCursor clears any prior Auto corners`` () =
+    // The dispatch layer recomputes the walk-around on every move;
+    // setCursor must invalidate the stale path so the renderer
+    // doesn't keep drawing an out-of-date polyline.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 1000L)
+        |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
+        |> Draft.setCursor (2000L, 2000L)
+    r.Auto |> should be Empty
+    r.Cursor |> should equal (Some (2000L, 2000L))
+
+[<Fact>]
+let ``tentativeSegments routes through Auto corners when set`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 1000L)
+        |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
+    // Polyline (0,0) → (500,0) → (500,1000) → (1000,1000): three
+    // straight-axis links → three segments under any posture.
+    let segs = Draft.tentativeSegments r
+    segs.Length |> should equal 3
+
+[<Fact>]
+let ``tentativeSegments falls back to straight L when Auto is empty`` () =
+    // No Auto = original two-segment L behaviour.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 500L)
+    let segs = Draft.tentativeSegments r
+    segs.Length |> should equal 2
+
+[<Fact>]
+let ``fix promotes Auto corners to Points and clears Auto`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 1000L)
+        |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
+        |> Draft.fix
+    // Points = anchor + Auto + cursor.
+    r.Points |> should equal [ (0L, 0L); (500L, 0L); (500L, 1000L); (1000L, 1000L) ]
+    r.Cursor |> should equal (None : (int64 * int64) option)
+    r.Auto |> should be Empty
+
+[<Fact>]
+let ``finishSegments includes Auto corners in the committed geometry`` () =
+    // FinishRoute writes the tentative path into the cell.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 1000L)
+        |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
+    let segs = Draft.finishSegments r
+    // (0,0)→(500,0), (500,0)→(500,1000), (500,1000)→(1000,1000)
+    segs.Length |> should equal 3

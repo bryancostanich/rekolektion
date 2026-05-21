@@ -599,8 +599,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         |> List.map (fun mc ->
                             if mc.Path <> path then mc
                             else
+                                // DRC-driven endpoint pads — square
+                                // landing patches on the active layer
+                                // sized so vias going up can drop
+                                // without breaking enclosure. None
+                                // when the layer has no enclosure
+                                // data in the view; wire endpoints
+                                // stay bare in that case.
+                                let pads =
+                                    match
+                                        Routing.Pads.endpointPadSide
+                                            model.DrcView mc.Document.Units
+                                            d.Layer with
+                                    | Some side -> Routing.Draft.endpointPads side d
+                                    | None -> []
+                                let allSegs = pads @ segs
                                 let rects =
-                                    segs
+                                    allSegs
                                     |> List.map
                                         (rectOfDraftSegment mc.Document.Pdk)
                                 let doc' = appendRectsToTop rects mc.Document

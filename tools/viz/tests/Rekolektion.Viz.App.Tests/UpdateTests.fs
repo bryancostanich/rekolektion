@@ -300,15 +300,17 @@ let ``RouteFinish commits segments to the active macro and pushes undo`` () =
     // Draft cleared.
     m3.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
     let macro = List.head m3.OpenMacros
-    // Straight horizontal segment → 1 new RectEl appended.
+    // Straight horizontal segment + DRC-driven endpoint pads on
+    // met1 → 1 wire RectEl + 2 pad RectEls. Pads come first in the
+    // batch; the wire is the last appended element.
     let elems = macro.Document.Cells.[0].Elements
-    elems.Length |> should equal (before + 1)
+    elems.Length |> should equal (before + 3)
     match List.last elems with
     | RectEl r ->
         r.Layer |> should equal (Named ("sky130", "met1"))
         r.X1 |> should equal -160L
         r.X2 |> should equal 1160L
-    | _ -> failwith "expected RectEl appended by RouteFinish"
+    | _ -> failwith "expected wire RectEl as the last appended element"
     // Undo pushed, dirty flagged.
     macro.UndoStack.Length |> should equal 1
     macro.Dirty |> should equal true
@@ -324,6 +326,36 @@ let ``RouteFinish on a degenerate draft (no segments) just clears DraftRoute`` (
     m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
     (List.head m2.OpenMacros).Document |> should equal originalDoc
     (List.head m2.OpenMacros).UndoStack |> should equal ([] : Document list)
+
+[<Fact>]
+let ``RouteFinish emits DRC-driven endpoint pads on the active layer`` () =
+    // met1 pad is 290 nm per Rules.allRules (mcon enclosure
+    // dominates min-area). A straight horizontal route from
+    // (0,0) → (1000,0) emits 1 wire RectEl + 2 pad RectEls (one
+    // at each end) → 3 new elements appended to the cell.
+    let model =
+        let m = fixtureModel ()
+        { m with DrcView = Rekolektion.Viz.Core.Drc.Rules.defaultView }
+    let before =
+        (List.head model.OpenMacros).Document.Cells.[0].Elements.Length
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (1000L, 0L)) m1
+    let m3, _ = Update.update stubBackend Msg.RouteFinish m2
+    let macro = List.head m3.OpenMacros
+    let elems = macro.Document.Cells.[0].Elements
+    elems.Length |> should equal (before + 3)   // wire + 2 pads
+    // Pads are emitted FIRST in the batch (before the wire) per the
+    // RouteFinish arm; check that the first new element is a square
+    // centered at (0,0) with side 290 nm.
+    match elems.[before] with
+    | RectEl r ->
+        r.X1 |> should equal -145L
+        r.X2 |> should equal 145L
+        r.Y1 |> should equal -145L
+        r.Y2 |> should equal 145L
+    | _ -> failwith "expected RectEl pad at first appended slot"
 
 [<Fact>]
 let ``RouteFinish with no active macro clears DraftRoute and does nothing else`` () =

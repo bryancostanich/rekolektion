@@ -51,6 +51,7 @@
     <Compile Include="Drc/Implant.fs" />
     <Compile Include="Drc/Waiver.fs" />
     <Compile Include="Drc/Check.fs" />
+    <Compile Include="Routing/Pads.fs" />
     <Compile Include="Visibility.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>

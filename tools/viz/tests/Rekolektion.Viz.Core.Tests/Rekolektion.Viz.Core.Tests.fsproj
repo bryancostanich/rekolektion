@@ -38,6 +38,7 @@
     <Compile Include="RoutingDraftTests.fs" />
     <Compile Include="RoutingPointerTests.fs" />
     <Compile Include="RoutingSnapTests.fs" />
+    <Compile Include="RoutingPadsTests.fs" />
     <Compile Include="LiveDrcTests.fs" />
     <Compile Include="RulesYamlTests.fs" />
     <Compile Include="Placeholder.fs" />

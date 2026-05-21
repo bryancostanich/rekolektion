@@ -136,6 +136,43 @@ let finishSegments (r: DraftRoute) : DraftSegment list =
     |> List.pairwise
     |> List.collect (fun (a, b) -> lShape r.Layer r.Width r.Posture a b)
 
+/// Square endpoint pads at the route's anchor and final point on
+/// the route's layer. Used by `RouteFinish` so vias can land on
+/// either end of the wire without breaking the layer's via-
+/// enclosure rule. `padSide` comes from `Routing.Pads.endpointPadSide`
+/// (DRC-driven) — DBU side length of the square.
+///
+/// The "final point" is the cursor when set, otherwise the last
+/// fixed corner (mirrors `finishSegments` semantics — finishing on
+/// a target pad commits the in-flight L too).
+let endpointPads (padSide: int64) (r: DraftRoute) : DraftSegment list =
+    if padSide <= 0L then [] else
+    let half = padSide / 2L
+    let mkPad ((cx, cy): int64 * int64) : DraftSegment = {
+        Layer = r.Layer
+        X1 = cx - half
+        Y1 = cy - half
+        X2 = cx + half
+        Y2 = cy + half
+    }
+    let anchor =
+        match r.Points with
+        | first :: _ -> Some first
+        | [] -> None
+    let finalPoint =
+        match r.Cursor, List.tryLast r.Points with
+        | Some c, _ -> Some c
+        | None, last -> last
+    // Dedupe when anchor and final point coincide (single-click
+    // route, no cursor yet) — one pad covers it.
+    let points =
+        match anchor, finalPoint with
+        | Some a, Some f when a = f -> [a]
+        | _ ->
+            [ if anchor.IsSome then yield anchor.Value
+              if finalPoint.IsSome then yield finalPoint.Value ]
+    points |> List.map mkPad
+
 /// Convert a list of DraftSegments into the FlatPolygon shape the
 /// DRC engine consumes. Each segment becomes a closed rectangle
 /// with a synthetic SourceStructure tag so live-DRC violations on

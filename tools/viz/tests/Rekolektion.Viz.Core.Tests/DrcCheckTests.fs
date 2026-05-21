@@ -32,7 +32,7 @@ let ``met1 spacing exactly at limit (140 nm) does not violate`` () =
         rect (340L, 0L, 540L, 200L) (68, 20)   // 140 nm gap
     |]
     let v = Check.check Rules.defaultView units1nm polys
-    v |> Array.filter (fun x -> x.Rule = "met1.spacing")
+    v |> Array.filter (fun x -> x.Rule = "met1.2")
       |> Array.length
       |> should equal 0
 
@@ -43,14 +43,14 @@ let ``met1 spacing 1 nm under limit triggers a violation`` () =
         rect (339L, 0L, 539L, 200L) (68, 20)   // 139 nm gap
     |]
     let v = Check.check Rules.defaultView units1nm polys
-    v |> Array.exists (fun x -> x.Rule = "met1.spacing" && x.MeasuredDbu = 139L)
+    v |> Array.exists (fun x -> x.Rule = "met1.2" && x.MeasuredDbu = 139L)
       |> should equal true
 
 [<Fact>]
 let ``met1 width below 140 nm triggers a width violation`` () =
     let polys = [| rect (0L, 0L, 100L, 200L) (68, 20) |]   // 100 nm wide
     let v = Check.check Rules.defaultView units1nm polys
-    v |> Array.exists (fun x -> x.Rule = "met1.width" && x.MeasuredDbu = 100L)
+    v |> Array.exists (fun x -> x.Rule = "met1.1" && x.MeasuredDbu = 100L)
       |> should equal true
 
 [<Fact>]
@@ -69,7 +69,7 @@ let ``poly spacing 0.21 µm = 210 nm enforced`` () =
         rect (200L + 209L, 0L, 200L + 409L, 200L) (66, 20)
     |]
     let v = Check.check Rules.defaultView units1nm polys
-    v |> Array.exists (fun x -> x.Rule = "poly.spacing")
+    v |> Array.exists (fun x -> x.Rule = "poly.2")
       |> should equal true
 
 [<Fact>]
@@ -79,4 +79,11 @@ let ``different layers don't trigger same-layer spacing`` () =
         rect (210L, 0L, 410L, 200L) (69, 20)      // met2 — different layer
     |]
     let v = Check.check Rules.defaultView units1nm polys
-    v.Length |> should equal 0
+    // Filter to spacing rules — min-area (met1.6 / met2.6) fires
+    // on both 0.04 µm² rects since they're under the 0.083 µm²
+    // threshold, but that's a different rule class. This test is
+    // about same-layer spacing NOT being applied across layers.
+    v
+    |> Array.filter (fun x -> x.Rule.EndsWith ".2" || x.Rule.EndsWith ".spacing")
+    |> Array.length
+    |> should equal 0

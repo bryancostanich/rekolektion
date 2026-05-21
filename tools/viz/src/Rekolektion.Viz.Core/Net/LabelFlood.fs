@@ -245,6 +245,15 @@ let derive (doc: Document) : Map<string, NetEntry> =
                         visitNeighbors contactKey curBbox (fun contactIdx ->
                             if touchIdx curIdx contactIdx then
                                 let contactBbox = cachedBbox.[contactIdx]
+                                // The contact itself is electrically
+                                // part of THIS net — record it so
+                                // downstream consumers (walk-around
+                                // router, ratlines, anything that
+                                // asks "what net is this polygon?")
+                                // see it as ours rather than as an
+                                // unclaimed foreign feature.
+                                if visited.Add contactIdx then
+                                    collected.Add polys.[contactIdx]
                                 match Map.tryFind contactKey contactBridges with
                                 | Some routingKeys ->
                                     for routingKey in routingKeys do

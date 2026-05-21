@@ -84,7 +84,13 @@ type private PolyId = {
     Index     : int
 }
 
-type NetIndex = private NetIndex of Map<PolyId, string>
+/// Many-to-one: a single (Structure, Layer, DataType, Index) can be
+/// claimed by multiple nets when the same subcell is instanced more
+/// than once at the top level and a different net label hits the same
+/// polygon in each instance. The classifier asks "is the start net
+/// among the claimants?" rather than "what's THE net?" so multi-
+/// instance pin polygons aren't misclassified as foreign.
+type NetIndex = private NetIndex of Map<PolyId, Set<string>>
 
 let private polyIdOf (p : PolygonRef) : PolyId =
     { Structure = p.Structure
@@ -100,20 +106,45 @@ let private flatPolyId (fp : FlatPolygon) : PolyId =
 
 /// Build the reverse index. O(Σ |net.Polygons|) — one pass over the
 /// net map. Cached by the caller; rebuilt on `Macro.Nets` change.
+/// A single PolyId can map to multiple net names when the source
+/// polygon is reused across instances on different nets.
 let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
-    let mutable m = Map.empty
+    let mutable m : Map<PolyId, Set<string>> = Map.empty
     for KeyValue (netName, entry) in nets do
         for pRef in entry.Polygons do
-            m <- Map.add (polyIdOf pRef) netName m
+            let pid = polyIdOf pRef
+            let existing =
+                match Map.tryFind pid m with
+                | Some s -> s
+                | None -> Set.empty
+            m <- Map.add pid (Set.add netName existing) m
     NetIndex m
 
-/// Look up the net a flat polygon belongs to, if any. Polygons not
-/// claimed by any `NetEntry` return `None` and are treated as
-/// obstacles only when they share the routing layer (defensive
-/// default — better to route around an unknown-net feature than to
-/// short into it).
+/// True if `startNet` is among the nets that claim this polygon.
+/// Used by the obstacle classifier to decide "ours vs theirs" —
+/// a polygon counts as ours iff its claimant set INCLUDES startNet.
+/// Polygons no one claims return false (defensive: route around
+/// unknown features).
+let isOurs (NetIndex m) (startNet : string) (fp : FlatPolygon) : bool =
+    match Map.tryFind (flatPolyId fp) m with
+    | Some claimants -> Set.contains startNet claimants
+    | None -> false
+
+/// All nets that claim this polygon. Empty set when nothing does.
+/// Diagnostics + visibility into multi-instance overlaps.
+let claimantsOf (NetIndex m) (fp : FlatPolygon) : Set<string> =
+    match Map.tryFind (flatPolyId fp) m with
+    | Some s -> s
+    | None -> Set.empty
+
+/// Deprecated single-net lookup. Returns one of the claimants if any
+/// (which one is unspecified for multi-claim polygons). Kept so older
+/// tests that don't care about ambiguity keep compiling. New code
+/// should use `isOurs` or `claimantsOf`.
 let netOf (NetIndex m) (fp : FlatPolygon) : string option =
-    Map.tryFind (flatPolyId fp) m
+    match Map.tryFind (flatPolyId fp) m with
+    | Some s when not (Set.isEmpty s) -> Some (Set.minElement s)
+    | _ -> None
 
 /// Axis-aligned region in DBU. Used by `obstaclesInRegion` to clip
 /// the obstacle set to a local neighbourhood for interactive
@@ -166,10 +197,7 @@ let obstaclesFor
         flat
         |> Array.filter (fun fp ->
             if not (onLayer fp || onBridge fp) then false
-            else
-                match netOf idx fp with
-                | Some net -> net <> startNet
-                | None     -> true)   // unknown net → defensive obstacle
+            else not (isOurs idx startNet fp))
 
 /// Region-bounded obstacle set. Same classification as `obstaclesFor`
 /// but only returns polygons whose bbox intersects `region`. The
@@ -196,7 +224,4 @@ let obstaclesInRegion
         |> Array.filter (fun fp ->
             if not (onLayer fp || onBridge fp) then false
             elif not (polyIntersectsRegion fp region) then false
-            else
-                match netOf idx fp with
-                | Some net -> net <> startNet
-                | None     -> true)
+            else not (isOurs idx startNet fp))

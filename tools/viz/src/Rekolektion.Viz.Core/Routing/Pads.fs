@@ -64,3 +64,21 @@ let endpointPadSide
     else
         let sideUm = List.max candidates
         Some (int64 (sideUm / umPerDbu))
+
+/// Default wire width (DBU) for the routing layer — the layer's
+/// `Width` rule min, e.g. 0.14 µm for met1, 0.30 µm for met3. The
+/// interactive router uses this when starting a new draft so wires
+/// match the PDK's minimum, not an arbitrary global default.
+/// Returns None when no Width rule names this layer (no PDK data).
+let wireWidthFor
+        (view: RulesetView)
+        (units: Units)
+        ((layerNum, layerDt): int * int)
+        : int64 option =
+    let umPerDbu = float units.DbuNm * 1.0e-3
+    view.Rules
+    |> List.tryPick (fun r ->
+        match r with
+        | Width (_, l, m) when l.Number = layerNum && l.DataType = layerDt ->
+            Some (int64 (m / umPerDbu))
+        | _ -> None)

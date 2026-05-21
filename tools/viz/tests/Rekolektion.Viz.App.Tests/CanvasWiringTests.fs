@@ -92,7 +92,9 @@ let ``RoutingMode on, no draft, left-click → StartRoute on ActiveLayer fires``
     cap.Starts.Length |> should equal 1
     let (layer, width, _x, _y) = cap.Starts.[0]
     layer |> should equal (69, 20)
-    width |> should equal 320L
+    // Width comes from `Routing.Pads.wireWidthFor` against the
+    // canvas's DrcView — met2.1 is 0.14 µm.
+    width |> should equal 140L
 
 [<Fact>]
 let ``RoutingMode on, no draft, ActiveLayer None → StartRoute defaults to met1`` () =

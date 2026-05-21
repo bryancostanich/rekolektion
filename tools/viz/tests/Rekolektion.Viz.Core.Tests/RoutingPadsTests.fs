@@ -109,6 +109,35 @@ let ``endpointPads uses the last fixed point when cursor is None`` () =
     pads.Length |> should equal 2
     pads.[1].X1 |> should equal 355L   // pad at (500, 0)
 
+// --- wireWidthFor -----------------------------------------------------
+
+[<Fact>]
+let ``wireWidthFor met1 is 140 nm (met1.1 width rule)`` () =
+    Pads.wireWidthFor Rules.defaultView units1nm met1Key
+    |> should equal (Some 140L)
+
+[<Fact>]
+let ``wireWidthFor met2 is 140 nm`` () =
+    Pads.wireWidthFor Rules.defaultView units1nm met2Key
+    |> should equal (Some 140L)
+
+[<Fact>]
+let ``wireWidthFor met3 is 300 nm`` () =
+    Pads.wireWidthFor Rules.defaultView units1nm met3Key
+    |> should equal (Some 300L)
+
+[<Fact>]
+let ``wireWidthFor li1 is 170 nm (li.1 width rule)`` () =
+    let li1Key : int * int = (67, 20)
+    Pads.wireWidthFor Rules.defaultView units1nm li1Key
+    |> should equal (Some 170L)
+
+[<Fact>]
+let ``wireWidthFor returns None for a layer without a Width rule`` () =
+    let unknownKey : int * int = (999, 99)
+    Pads.wireWidthFor Rules.defaultView units1nm unknownKey
+    |> should equal (None : int64 option)
+
 [<Fact>]
 let ``endpointPads emits nothing when padSide is zero or negative`` () =
     let r = Draft.start met1Key 320L (0L, 0L)

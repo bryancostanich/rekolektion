@@ -1462,13 +1462,14 @@ type GdsCanvasControl() as this =
         // unit-tested without an Avalonia harness.
         let draft = this.DraftRoute
         let (wx, wy) = this.ScreenToWorld p
-        // Snap-to-pin on route start: when armed and no draft is
-        // active, look for a labeled pin centroid within ~20 px of
-        // the cursor and use that as the anchor. Subsequent clicks
-        // (mid-route) use the raw cursor so the user keeps fine
-        // control of the L-shape posture.
+        // Snap-to-pin on EVERY routing click (start anchor + every
+        // fix-segment corner). Cursor sees a labeled pin centroid
+        // within ~20 px → use the centroid; else raw click. Mid-
+        // route snapping is what makes "draw straight line between
+        // two pins" actually land on the second pin instead of a
+        // few DBU off-axis.
         let (snapX, snapY) =
-            if this.RoutingMode && draft.IsNone then
+            if this.RoutingMode || draft.IsSome then
                 match this.Library with
                 | None -> int64 wx, int64 wy
                 | Some doc ->
@@ -1482,11 +1483,24 @@ type GdsCanvasControl() as this =
                     | None -> int64 wx, int64 wy
             else
                 int64 wx, int64 wy
+        // Default wire width pulled from the active view's per-layer
+        // Width rule (e.g. 140 nm for met1, 300 nm for met3). Pads
+        // widen the endpoints separately via `Routing.Pads`.
+        let defaultLayer = (68, 20)
+        let defaultWidth =
+            let units =
+                match this.Library with
+                | Some d -> d.Units
+                | None -> { DbuNm = 1; UuUm = 1 }
+            let layerForWidth =
+                this.ActiveLayer |> Option.defaultValue defaultLayer
+            Routing.Pads.wireWidthFor this.DrcView units layerForWidth
+            |> Option.defaultValue 140L
         let action =
             Routing.Pointer.decideAction
                 this.RoutingMode draft this.ActiveLayer
                 props.IsLeftButtonPressed props.IsRightButtonPressed
-                (68, 20) 320L      // default layer = met1, default width = 320 nm
+                defaultLayer defaultWidth
                 (snapX, snapY)
         match action with
         | Routing.Pointer.StartRoute (layer, width, x, y) ->
@@ -2362,12 +2376,28 @@ type GdsCanvasControl() as this =
         let p = e.GetPosition this
         // ADR-0002 — when a draft is in flight, every move feeds
         // RouteMouseMove so the tentative L tracks the cursor.
+        // Snap the cursor to a nearby labeled pin centroid so the
+        // tentative L lands on the pin when the mouse is close —
+        // makes "draw straight line from pin A to pin B" actually
+        // land on B instead of a few DBU off-axis.
         // Doesn't return early; pan / hover still work as usual.
         if (this.DraftRoute).IsSome then
             let cb = this.RouteMouseMoveHandler
             if not (isNull cb) then
                 let (wx, wy) = this.ScreenToWorld p
-                cb.Invoke(int64 wx, int64 wy)
+                let (sx, sy) =
+                    match this.Library with
+                    | None -> int64 wx, int64 wy
+                    | Some doc ->
+                        let labels = Layout.Flatten.flattenLabels doc
+                        let targets =
+                            Routing.Snap.buildTargets labels this.FlatPolygons
+                        let radiusDbu =
+                            int64 (20.0 / max pixelsPerDbu 0.0001)
+                        match Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu with
+                        | Some t -> t.X, t.Y
+                        | None -> int64 wx, int64 wy
+                cb.Invoke(sx, sy)
         // Capture the prior cursor position BEFORE any handler
         // updates `lastPos`. The middle-pan branch needs this to
         // compute its screen delta (we rebind `lastPos = p` only

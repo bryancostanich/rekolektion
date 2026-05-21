@@ -122,7 +122,8 @@ type private SkiaDraw(bounds: Rect,
                       resizeHitsOut: ResizeHandleHit array ref,
                       draftRoute: Routing.Draft.DraftRoute option,
                       routeLiveViolations: Drc.Check.Violation array,
-                      drcProvenance: Map<string, string>) =
+                      drcProvenance: Map<string, string>,
+                      hoveredSnapTarget: Routing.Snap.SnapTarget option) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -799,6 +800,37 @@ type private SkiaDraw(bounds: Rect,
                         | Some b -> paintBbox b
                         | None -> ()
 
+                // Wire-mode snap-target hint — small circle at the
+                // pin centroid the cursor is hovering over. Tells
+                // the user "a wire CAN start (or end) here" before
+                // they click. Painted last so it always reads on top.
+                match hoveredSnapTarget with
+                | None -> ()
+                | Some t ->
+                    let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
+                    let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
+                    let pxPerDbuX = float vb.PixelW / dxWorld
+                    let pxPerDbuY = float vb.PixelH / dyWorld
+                    let sx =
+                        (float (t.X - vb.MinX)) * pxPerDbuX |> float32
+                    let sy =
+                        float vb.PixelH
+                        - (float (t.Y - vb.MinY)) * pxPerDbuY
+                        |> float32
+                    use snapStroke =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            IsAntialias = true,
+                            StrokeWidth = 2.0f,
+                            Color = SKColor(0x4Cuy, 0xFFuy, 0xA0uy, 0xFFuy))
+                    use snapFill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = true,
+                            Color = SKColor(0x4Cuy, 0xFFuy, 0xA0uy, 0x33uy))
+                    canvas.DrawCircle(sx, sy, 7.0f, snapFill)
+                    canvas.DrawCircle(sx, sy, 7.0f, snapStroke)
+
                 canvas.RestoreToCount saved
 
 type private DragKind =
@@ -892,6 +924,12 @@ type GdsCanvasControl() as this =
     /// DraftRoute changes; consumed by SkiaDraw to paint red
     /// outlines on offending bboxes.
     let mutable cachedRouteLiveViolations : Drc.Check.Violation array = [||]
+    /// Currently-hovered snap target while in wire mode. When set,
+    /// the renderer paints a small circle at this world point so
+    /// the user sees where a wire CAN start (or where the next
+    /// fix-segment click will land). Updated on every pointer move
+    /// when RoutingMode || DraftRoute is active; cleared otherwise.
+    let mutable hoveredSnapTarget : Routing.Snap.SnapTarget option = None
     /// Spatial index over the active macro's `FlatPolygons`, built
     /// once per geometry change and reused by `runLiveWithIndex`
     /// across mouse moves. `cachedCellIndexFor` tracks the
@@ -2441,24 +2479,45 @@ type GdsCanvasControl() as this =
         // tentative L lands on the pin when the mouse is close —
         // makes "draw straight line from pin A to pin B" actually
         // land on B instead of a few DBU off-axis.
-        // Doesn't return early; pan / hover still work as usual.
-        if (this.DraftRoute).IsSome then
-            let cb = this.RouteMouseMoveHandler
-            if not (isNull cb) then
-                let (wx, wy) = this.ScreenToWorld p
-                let (sx, sy) =
-                    match this.Library with
-                    | None -> int64 wx, int64 wy
-                    | Some doc ->
-                        let labels = Layout.Flatten.flattenLabels doc
-                        let targets =
-                            Routing.Snap.buildTargets labels this.FlatPolygons
-                        let radiusDbu =
-                            int64 (20.0 / max pixelsPerDbu 0.0001)
-                        match Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu with
+        //
+        // Also stash the hovered snap target whenever the wire tool
+        // is active so the renderer can paint a hint circle at
+        // valid start/end points before the user clicks.
+        if this.RoutingMode || (this.DraftRoute).IsSome then
+            let (wx, wy) = this.ScreenToWorld p
+            let target =
+                match this.Library with
+                | None -> None
+                | Some doc ->
+                    let labels = Layout.Flatten.flattenLabels doc
+                    let targets =
+                        Routing.Snap.buildTargets labels this.FlatPolygons
+                    let radiusDbu =
+                        int64 (20.0 / max pixelsPerDbu 0.0001)
+                    Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu
+            // Only invalidate the canvas when the hover state
+            // actually changes — bouncing the mouse over empty
+            // space shouldn't churn frames.
+            let changed =
+                match hoveredSnapTarget, target with
+                | None, None -> false
+                | Some a, Some b -> a.X <> b.X || a.Y <> b.Y
+                | _ -> true
+            hoveredSnapTarget <- target
+            if changed then this.InvalidateVisual()
+            // Mouse-move dispatch (only when actually routing).
+            if (this.DraftRoute).IsSome then
+                let cb = this.RouteMouseMoveHandler
+                if not (isNull cb) then
+                    let (sx, sy) =
+                        match target with
                         | Some t -> t.X, t.Y
                         | None -> int64 wx, int64 wy
-                cb.Invoke(sx, sy)
+                    cb.Invoke(sx, sy)
+        else
+            if hoveredSnapTarget.IsSome then
+                hoveredSnapTarget <- None
+                this.InvalidateVisual()
         // Capture the prior cursor position BEFORE any handler
         // updates `lastPos`. The middle-pan branch needs this to
         // compute its screen delta (we rebind `lastPos = p` only
@@ -3063,7 +3122,7 @@ type GdsCanvasControl() as this =
                   ShowGrid = this.ShowGrid
                   ShowRuler = this.ShowRuler
                   ShowLabels = this.ShowLabels }
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, cachedRouteLiveViolations, this.DrcView.Provenance))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, cachedRouteLiveViolations, this.DrcView.Provenance, hoveredSnapTarget))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

@@ -949,13 +949,12 @@ type GdsCanvasControl() as this =
     /// every 30 frames so the log doesn't churn under continuous
     /// mouse motion.
     let mutable pointerMoveCount : int = 0
-    /// Monotonic version counter for the live-DRC background task.
-    /// The instrumentation showed `runLiveWithIndex` taking
-    /// 1.4–1.5 s per call on real cells, blocking the UI thread
-    /// and making wire drawing unusable. We now run DRC on a thread
-    /// pool task; this counter lets the result-writeback path drop
-    /// stale results when the user moved on before the task finished.
-    let mutable drcLiveVersion : int = 0
+    /// Background-task state for the live DRC compute. See
+    /// `Routing.LiveDrc` — owns the monotonic version counter and
+    /// staleness-drop semantics so the UI thread never blocks on
+    /// the 1.4–1.5 s recompute.
+    let liveDrcState : Routing.LiveDrc.State<Drc.Check.Violation array> =
+        Routing.LiveDrc.create [||]
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1513,14 +1512,11 @@ type GdsCanvasControl() as this =
             if e.Property = GdsCanvasControl.DraftRouteProperty
                || e.Property = GdsCanvasControl.FlatPolygonsProperty
                || e.Property = GdsCanvasControl.DisabledDrcRulesProperty then
-                // Live DRC: kicked off on a thread-pool task so per-
-                // frame UI cost stays at ~0. The result writes back
-                // to `cachedRouteLiveViolations` and re-invalidates
-                // the canvas, but only if the version counter still
-                // matches — older queued tasks whose user already
-                // moved on are dropped silently.
-                drcLiveVersion <- drcLiveVersion + 1
-                let myVersion = drcLiveVersion
+                // Live DRC: kicked off on a thread-pool task by
+                // `Routing.LiveDrc.schedule` so per-frame UI cost
+                // stays at ~0. Older results (overtaken by a newer
+                // schedule) are dropped via the version counter
+                // inside the module.
                 let snapshotDraft = this.DraftRoute
                 let snapshotFlat  = this.FlatPolygons
                 let snapshotView  = this.DrcView
@@ -1563,12 +1559,11 @@ type GdsCanvasControl() as this =
                         cachedCellIndex <- Some idx
                         cachedCellIndexFor <- snapshotFlat
                         idx
-                // Fire-and-forget background recompute.
-                System.Threading.Tasks.Task.Run(fun () ->
-                    let swDrc = System.Diagnostics.Stopwatch.StartNew()
-                    let mutable result : Drc.Check.Violation array = [||]
-                    try
-                        result <-
+                let swDrc = System.Diagnostics.Stopwatch()
+                let compute () =
+                    swDrc.Restart()
+                    let r =
+                        try
                             match snapshotDraft with
                             | None -> [||]
                             | Some r ->
@@ -1578,24 +1573,24 @@ type GdsCanvasControl() as this =
                                 Drc.Check.runLiveWithIndex snapshotView
                                     snapshotUnits snapshotFlat cellIndex
                                     draftFlat Map.empty snapshotDisabled
-                    with _ -> ()
+                        with _ -> [||]
                     swDrc.Stop()
-                    Avalonia.Threading.Dispatcher.UIThread.Post(fun () ->
-                        // Drop stale results — a newer recompute may
-                        // have already finished and we don't want to
-                        // clobber it with an older snapshot.
-                        if myVersion = drcLiveVersion then
-                            cachedRouteLiveViolations <- result
-                            this.InvalidateVisual()
-                            if swDrc.ElapsedMilliseconds >= 2L
-                               || pointerMoveCount % 30 = 0 then
-                                Rekolektion.Viz.App.Services.Logger.log "drc.live.recompute"
-                                    {| triggerProp = triggerName
-                                       ms = swDrc.ElapsedMilliseconds
-                                       indexBuilt = indexBuilt
-                                       async = true
-                                       violations = result.Length |})
-                ) |> ignore
+                    r
+                let postBack (action : unit -> unit) =
+                    Avalonia.Threading.Dispatcher.UIThread.Post(System.Action(action))
+                let onAccept (result : Drc.Check.Violation array) =
+                    cachedRouteLiveViolations <- result
+                    this.InvalidateVisual()
+                    if swDrc.ElapsedMilliseconds >= 2L
+                       || pointerMoveCount % 30 = 0 then
+                        Rekolektion.Viz.App.Services.Logger.log "drc.live.recompute"
+                            {| triggerProp = triggerName
+                               ms = swDrc.ElapsedMilliseconds
+                               indexBuilt = indexBuilt
+                               async = true
+                               violations = result.Length |}
+                Routing.LiveDrc.schedule liveDrcState compute postBack onAccept
+                |> ignore
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----

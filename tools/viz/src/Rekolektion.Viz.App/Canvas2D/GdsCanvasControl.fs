@@ -1720,8 +1720,24 @@ type GdsCanvasControl() as this =
                                 searchOutcome <- "exception"
                                 []
                         swSearch.Stop()
+                        // Containment check: which (if any) obstacle's
+                        // interior contains start/cursor. Strict
+                        // inequality matches the manhattan-visibility
+                        // test in VisibilityGraph — a point exactly on
+                        // a bbox edge does NOT count as inside.
+                        let inside (pt : Routing.VisibilityGraph.Pt) (b : Routing.VisibilityGraph.Bbox) =
+                            pt.X > b.XMin && pt.X < b.XMax
+                            && pt.Y > b.YMin && pt.Y < b.YMax
+                        let mutable startInIdx = -1
+                        let mutable cursorInIdx = -1
+                        for i in 0 .. graph.Obstacles.Length - 1 do
+                            if startInIdx < 0 && inside startPt graph.Obstacles.[i] then
+                                startInIdx <- i
+                            if cursorInIdx < 0 && inside cursorPt graph.Obstacles.[i] then
+                                cursorInIdx <- i
                         if swBuild.ElapsedMilliseconds + swSearch.ElapsedMilliseconds >= 2L
-                           || pointerMoveCount % 30 = 0 then
+                           || pointerMoveCount % 30 = 0
+                           || searchOutcome = "noPath" then
                             Rekolektion.Viz.App.Services.Logger.log "walkaround"
                                 {| buildMs = swBuild.ElapsedMilliseconds
                                    searchMs = swSearch.ElapsedMilliseconds
@@ -1733,7 +1749,9 @@ type GdsCanvasControl() as this =
                                    startX = startPt.X
                                    startY = startPt.Y
                                    cursorX = cursorPt.X
-                                   cursorY = cursorPt.Y |}
+                                   cursorY = cursorPt.Y
+                                   startInside = startInIdx
+                                   cursorInside = cursorInIdx |}
                         result
                     let postBack (action : unit -> unit) =
                         Avalonia.Threading.Dispatcher.UIThread.Post(System.Action(action))

@@ -115,6 +115,29 @@ let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
 let netOf (NetIndex m) (fp : FlatPolygon) : string option =
     Map.tryFind (flatPolyId fp) m
 
+/// Axis-aligned region in DBU. Used by `obstaclesInRegion` to clip
+/// the obstacle set to a local neighbourhood for interactive
+/// routing — the walk-around doesn't need to know about a foreign
+/// licon 50 µm away when the wire is only 2 µm long.
+[<Struct>]
+type Region = { XMin : int64; YMin : int64; XMax : int64; YMax : int64 }
+
+let private polyBbox (fp : FlatPolygon) : int64 * int64 * int64 * int64 =
+    let mutable xMin = System.Int64.MaxValue
+    let mutable yMin = System.Int64.MaxValue
+    let mutable xMax = System.Int64.MinValue
+    let mutable yMax = System.Int64.MinValue
+    for pt in fp.Points do
+        if pt.X < xMin then xMin <- pt.X
+        if pt.X > xMax then xMax <- pt.X
+        if pt.Y < yMin then yMin <- pt.Y
+        if pt.Y > yMax then yMax <- pt.Y
+    xMin, yMin, xMax, yMax
+
+let private polyIntersectsRegion (fp : FlatPolygon) (r : Region) : bool =
+    let (xMin, yMin, xMax, yMax) = polyBbox fp
+    not (xMax < r.XMin || xMin > r.XMax || yMax < r.YMin || yMin > r.YMax)
+
 /// The obstacle set for a wire of net `startNet` on layer `layer`.
 /// Returns the FlatPolygons (subset of `flat`) the walk-around must
 /// route around. Order matches input order; callers that need a
@@ -147,3 +170,33 @@ let obstaclesFor
                 match netOf idx fp with
                 | Some net -> net <> startNet
                 | None     -> true)   // unknown net → defensive obstacle
+
+/// Region-bounded obstacle set. Same classification as `obstaclesFor`
+/// but only returns polygons whose bbox intersects `region`. The
+/// visibility-graph build is O(N²·M) where M = obstacles; clipping
+/// to a local neighbourhood is what makes continuous walk-around
+/// affordable on real cells. The caller picks the region — typically
+/// a bbox around (start, cursor) with a margin so the search can
+/// still find detours.
+let obstaclesInRegion
+    (layer    : LayerKey)
+    (startNet : string)
+    (idx      : NetIndex)
+    (region   : Region)
+    (flat     : FlatPolygon array)
+    : FlatPolygon array =
+    if not (isRoutingLayer layer) then [||]
+    else
+        let bridges = Set.ofList (bridgesOf layer)
+        let onLayer (fp : FlatPolygon) =
+            fp.Layer = layer.Number && fp.DataType = layer.DataType
+        let onBridge (fp : FlatPolygon) =
+            bridges |> Set.contains { Number = fp.Layer; DataType = fp.DataType }
+        flat
+        |> Array.filter (fun fp ->
+            if not (onLayer fp || onBridge fp) then false
+            elif not (polyIntersectsRegion fp region) then false
+            else
+                match netOf idx fp with
+                | Some net -> net <> startNet
+                | None     -> true)

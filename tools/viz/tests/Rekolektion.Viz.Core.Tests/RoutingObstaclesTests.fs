@@ -179,6 +179,45 @@ let ``polygons on layers unrelated to the wire are NOT obstacles`` () =
     obstaclesFor li1Layer "VGND" idx [| diff; poly; nwell |]
     |> should be Empty
 
+// ---- obstaclesInRegion — bbox filter ---------------------------
+
+[<Fact>]
+let ``obstaclesInRegion drops polygons whose bbox sits outside the region`` () =
+    // Two foreign-net features on the routing layer: one near the
+    // origin (intersects the region), one 100 µm away (does not).
+    let near = flat "top" 67 20 0 [ 0,0; 100,0; 100,100; 0,100; 0,0 ]
+    let far  = flat "top" 67 20 1
+                  [ 50_000,0; 50_100,0; 50_100,100; 50_000,100; 50_000,0 ]
+    let nets =
+        Map.ofList [
+            "BL", netEntry "BL" Signal
+                [ pref "top" 67 20 0; pref "top" 67 20 1 ]
+        ]
+    let idx = buildNetIndex nets
+    let region : Region =
+        { XMin = -200L; YMin = -200L; XMax = 200L; YMax = 200L }
+    let obs = obstaclesInRegion li1Layer "VGND" idx region [| near; far |]
+    obs |> Array.length |> should equal 1
+    obs.[0].SourceIndex |> should equal 0
+
+[<Fact>]
+let ``obstaclesInRegion keeps the same net classification as obstaclesFor`` () =
+    let foreign = flat "top" 66 44 0
+                    [ 100,0; 200,0; 200,100; 100,100; 100,0 ]    // foreign licon
+    let ours    = flat "top" 66 44 1
+                    [ 300,0; 400,0; 400,100; 300,100; 300,0 ]    // our licon
+    let nets =
+        Map.ofList [
+            "BL",   netEntry "BL"   Signal [ pref "top" 66 44 0 ]
+            "VGND", netEntry "VGND" Ground [ pref "top" 66 44 1 ]
+        ]
+    let idx = buildNetIndex nets
+    let region : Region = { XMin = 0L; YMin = 0L; XMax = 1000L; YMax = 1000L }
+    let obs = obstaclesInRegion li1Layer "VGND" idx region [| foreign; ours |]
+    // Foreign in, ours out — same as obstaclesFor.
+    obs |> Array.length |> should equal 1
+    obs.[0].SourceIndex |> should equal 0
+
 [<Fact>]
 let ``obstaclesFor on a non-routing layer returns an empty set`` () =
     // We don't route on poly. Calling the function with a poly layer

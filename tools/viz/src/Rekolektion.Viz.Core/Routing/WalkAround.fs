@@ -50,6 +50,21 @@ let buildGraph (key : BuildKey) : VisibilityGraph.Prebuilt =
     let obstacles = Obstacles.obstaclesFor key.Layer key.StartNet netIdx key.FlatPolyRef
     VisibilityGraph.build key.Clearance obstacles
 
+/// Region-bounded graph build. Filters the obstacle universe to the
+/// supplied bbox before constructing the visibility graph — the
+/// whole point of ADR-0006's "continuous mode" is that the relevant
+/// obstacles are the ones near (start, cursor); the visibility-graph
+/// build is too costly to run against the full cell on every frame.
+///
+/// The caller picks the region (typically (start, cursor) bbox
+/// expanded by 1-2× the manhattan distance) so detours that have to
+/// leave the direct corridor can still be found.
+let buildGraphInRegion (key : BuildKey) (region : Obstacles.Region) : VisibilityGraph.Prebuilt =
+    let netIdx = Obstacles.buildNetIndex key.NetMapRef
+    let obstacles =
+        Obstacles.obstaclesInRegion key.Layer key.StartNet netIdx region key.FlatPolyRef
+    VisibilityGraph.build key.Clearance obstacles
+
 /// Run the walk-around. `graph` is a cached `Prebuilt` matching
 /// the current `BuildKey`; `start` and `cursor` are world DBU
 /// points.

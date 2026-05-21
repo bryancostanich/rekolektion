@@ -960,11 +960,10 @@ type GdsCanvasControl() as this =
     /// slot holds the most recently accepted corner list.
     let walkAroundState : Routing.LiveDrc.State<(int64 * int64) list> =
         Routing.LiveDrc.create []
-    /// Cached `VisibilityGraph.Prebuilt` for the walk-around. Built
-    /// once per `BuildKey` change (layer, start net, clearance,
-    /// FlatPolygons identity, NetMap identity); reused per move.
-    let mutable cachedWalkGraph : Routing.VisibilityGraph.Prebuilt option = None
-    let mutable cachedWalkKey   : Routing.WalkAround.BuildKey option = None
+    // ADR-0006 — graph build is region-bounded by (start, cursor)
+    // and runs INSIDE the background compute, so the cache that
+    // used to sit here at module scope was hit ~0% in practice and
+    // got dropped. Build per move; sub-millisecond on real cells.
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1662,49 +1661,33 @@ type GdsCanvasControl() as this =
                           Clearance = clearance
                           FlatPolyRef = this.FlatPolygons
                           NetMapRef = this.NetMap }
-                    let graph =
-                        // Rebuild on identity flip of any of the
-                        // four bound inputs; reuse otherwise.
-                        let needRebuild =
-                            match cachedWalkKey with
-                            | None -> true
-                            | Some k ->
-                                k.Layer <> key.Layer
-                                || k.StartNet <> key.StartNet
-                                || k.Clearance <> key.Clearance
-                                || not (obj.ReferenceEquals(k.FlatPolyRef, key.FlatPolyRef))
-                                || not (obj.ReferenceEquals(k.NetMapRef,  key.NetMapRef))
-                        if needRebuild then
-                            // INSTRUMENTATION: graph build is on the
-                            // UI thread for now — if this is slow on
-                            // real cells we'll see it in the log and
-                            // can push the build into the background
-                            // task. flatLen / netCount let us tell
-                            // whether the cost is scaling with cell
-                            // size as expected.
-                            let swBuild = System.Diagnostics.Stopwatch.StartNew()
-                            let g = Routing.WalkAround.buildGraph key
-                            swBuild.Stop()
-                            Rekolektion.Viz.App.Services.Logger.log "walkaround.graph.build"
-                                {| ms = swBuild.ElapsedMilliseconds
-                                   flatLen = key.FlatPolyRef.Length
-                                   netCount = key.NetMapRef.Count
-                                   nodes = g.Nodes.Length
-                                   obstacles = g.Obstacles.Length |}
-                            cachedWalkGraph <- Some g
-                            cachedWalkKey   <- Some key
-                            g
-                        else cachedWalkGraph.Value
                     let startPt : Routing.VisibilityGraph.Pt =
                         { X = fst lastPt; Y = snd lastPt }
                     let cursorPt : Routing.VisibilityGraph.Pt =
                         { X = cx; Y = cy }
+                    // Region-bound the obstacle set to a bbox around
+                    // (start, cursor) expanded by the manhattan
+                    // distance — the search can find detours up to
+                    // about twice as long as the direct route, which
+                    // is plenty for FET-wall escape. Caps total
+                    // obstacle count and keeps the per-move graph
+                    // build sub-millisecond on real cells.
+                    let dxAbs = abs (cursorPt.X - startPt.X)
+                    let dyAbs = abs (cursorPt.Y - startPt.Y)
+                    let margin = max (dxAbs + dyAbs) (clearance * 4L)
+                    let region : Routing.Obstacles.Region =
+                        { XMin = (min startPt.X cursorPt.X) - margin
+                          YMin = (min startPt.Y cursorPt.Y) - margin
+                          XMax = (max startPt.X cursorPt.X) + margin
+                          YMax = (max startPt.Y cursorPt.Y) + margin }
                     let cb = this.RouteAutoComputedHandler
-                    // Compute returns the intermediate corner list
-                    // already (start and cursor stripped) — the
-                    // dispatch layer never sees `Pt`s past this seam.
                     let compute () : (int64 * int64) list =
-                        let sw = System.Diagnostics.Stopwatch.StartNew()
+                        let swBuild = System.Diagnostics.Stopwatch.StartNew()
+                        let graph =
+                            try Routing.WalkAround.buildGraphInRegion key region
+                            with _ -> Routing.VisibilityGraph.build 0L [||]
+                        swBuild.Stop()
+                        let swSearch = System.Diagnostics.Stopwatch.StartNew()
                         let result =
                             try
                                 match Routing.WalkAround.route graph startPt cursorPt with
@@ -1719,11 +1702,14 @@ type GdsCanvasControl() as this =
                                         |> List.map (fun pt -> pt.X, pt.Y)
                                     | [] -> []
                             with _ -> []
-                        sw.Stop()
-                        if sw.ElapsedMilliseconds >= 2L
+                        swSearch.Stop()
+                        if swBuild.ElapsedMilliseconds + swSearch.ElapsedMilliseconds >= 2L
                            || pointerMoveCount % 30 = 0 then
-                            Rekolektion.Viz.App.Services.Logger.log "walkaround.search"
-                                {| ms = sw.ElapsedMilliseconds
+                            Rekolektion.Viz.App.Services.Logger.log "walkaround"
+                                {| buildMs = swBuild.ElapsedMilliseconds
+                                   searchMs = swSearch.ElapsedMilliseconds
+                                   obstacles = graph.Obstacles.Length
+                                   nodes = graph.Nodes.Length
                                    corners = result.Length |}
                         result
                     let postBack (action : unit -> unit) =

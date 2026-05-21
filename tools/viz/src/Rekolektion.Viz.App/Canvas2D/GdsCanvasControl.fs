@@ -1656,16 +1656,23 @@ type GdsCanvasControl() as this =
                         | None    -> (cx, cy)
                     let layerKey : Routing.Obstacles.LayerKey =
                         { Number = fst draft.Layer; DataType = snd draft.Layer }
-                    // Clearance = 0 per ADR-0006. The walk-around
-                    // is an ELECTRICAL-short avoider, not a
-                    // spacing-rule check. Spacing is handled by the
-                    // live-DRC overlay (red outlines on too-close
-                    // edges). Expanding obstacles by half wire
-                    // width frequently enclosed the wire's own
-                    // start centroid (FET licons sit closer than
-                    // 2× clearance apart), which made the search
-                    // unreachable and silently failed to None.
-                    let clearance = 0L
+                    // Clearance = wire_half_width + min_spacing on
+                    // this layer. The wire's CENTERLINE has to stay
+                    // at least this far from any foreign obstacle's
+                    // edge so the wire's own edge clears the
+                    // spacing rule. The visibility graph expands
+                    // each obstacle by this clearance; obstacles
+                    // containing start/cursor are exempted by
+                    // VisibilityGraph.shortestPath so a tight pin
+                    // doesn't trap the wire.
+                    let units =
+                        match this.Library with
+                        | Some d -> d.Units
+                        | None -> { DbuNm = 1; UuUm = 1 }
+                    let spacing =
+                        Routing.Pads.spacingFor this.DrcView units draft.Layer
+                        |> Option.defaultValue 0L
+                    let clearance = max 0L (draft.Width / 2L + spacing)
                     let key : Routing.WalkAround.BuildKey =
                         { Layer = layerKey
                           StartNet = draft.StartNet

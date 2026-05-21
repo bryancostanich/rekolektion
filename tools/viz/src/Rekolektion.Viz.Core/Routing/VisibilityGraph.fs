@@ -147,14 +147,26 @@ let build (clearance : int64) (obstacles : FlatPolygon array) : Prebuilt =
 /// graph, run Dijkstra, return the manhattan node sequence from
 /// start to goal. Returns `None` when no path exists.
 ///
-/// "No path" can happen when:
-///   - start or goal is inside an obstacle interior (start/goal
-///     can't see any node), or
-///   - the obstacle set fully encloses one of them.
+/// Obstacles whose INTERIOR contains `start` or `goal` are dropped
+/// from the visibility tests for the duration of this query — the
+/// wire has to begin and end somewhere, and a snap-target pin can
+/// easily land inside the clearance-expanded bbox of an adjacent
+/// foreign feature. Without this exemption, every wire from a
+/// tight pin would return `noPath` and the user would see a dumb
+/// straight L. Edges between non-start/goal corner nodes still use
+/// the FULL obstacle set, so the search can't sneak through a
+/// foreign feature mid-route.
 let shortestPath
     (graph : Prebuilt)
     (start : Pt)
     (goal  : Pt) : Pt list option =
+    let inside (pt : Pt) (b : Bbox) =
+        pt.X > b.XMin && pt.X < b.XMax
+        && pt.Y > b.YMin && pt.Y < b.YMax
+    // Obstacles to test visibility against from start/goal's seat.
+    let endpointObstacles =
+        graph.Obstacles
+        |> Array.filter (fun b -> not (inside start b) && not (inside goal b))
     // Adjacency for the augmented graph: prebuilt corners +
     // {start, goal} appended. Augment edges are computed lazily on
     // demand so we don't allocate a full N+2 adjacency table.
@@ -168,7 +180,8 @@ let shortestPath
     let neighbours (i : int) : (int * int64) seq =
         seq {
             if i < n then
-                // Prebuilt adjacency — already manhattan-visible.
+                // Prebuilt adjacency — already manhattan-visible
+                // under the full obstacle set.
                 for (j, c) in graph.Adjacency.[i] do
                     yield (j, c)
                 // Reverse edges (other i's adjacency listed us; we
@@ -177,23 +190,25 @@ let shortestPath
                     if k < i then
                         for (j, c) in graph.Adjacency.[k] do
                             if j = i then yield (k, c)
-                // start / goal augment edges.
+                // start / goal augment edges use the endpoint-
+                // exempted obstacle set so the wire can escape
+                // a tight pin.
                 let a = graph.Nodes.[i]
-                if manhattanVisible graph.Obstacles a start then
+                if manhattanVisible endpointObstacles a start then
                     yield (startIdx, manhattanCost a start)
-                if manhattanVisible graph.Obstacles a goal then
+                if manhattanVisible endpointObstacles a goal then
                     yield (goalIdx, manhattanCost a goal)
             else
                 let here = nodeOf i
                 for k in 0 .. (n - 1) do
                     let nk = graph.Nodes.[k]
-                    if manhattanVisible graph.Obstacles here nk then
+                    if manhattanVisible endpointObstacles here nk then
                         yield (k, manhattanCost here nk)
                 if i = startIdx then
-                    if manhattanVisible graph.Obstacles here goal then
+                    if manhattanVisible endpointObstacles here goal then
                         yield (goalIdx, manhattanCost here goal)
                 else
-                    if manhattanVisible graph.Obstacles here start then
+                    if manhattanVisible endpointObstacles here start then
                         yield (startIdx, manhattanCost here start)
         }
     // Dijkstra with a System.Collections.Generic.PriorityQueue.

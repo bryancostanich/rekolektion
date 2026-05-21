@@ -94,3 +94,21 @@ let wireWidthFor
         | Width (_, l, m) when l.Number = layerNum && l.DataType = layerDt ->
             Some (int64 (m / umPerDbu))
         | _ -> None)
+
+/// Min same-layer spacing (DBU) for a routing layer from its
+/// `Spacing` rule. The walk-around adds this to half-wire-width to
+/// get an obstacle expansion that keeps the wire edge at least
+/// `spacing` away from any foreign feature on the same layer.
+/// `None` when no `Spacing` rule covers the layer.
+let spacingFor
+        (view: RulesetView)
+        (units: Units)
+        ((layerNum, layerDt): int * int)
+        : int64 option =
+    let umPerDbu = float units.DbuNm * 1.0e-3
+    view.Rules
+    |> List.tryPick (fun r ->
+        match r with
+        | Spacing (_, l, m) when l.Number = layerNum && l.DataType = layerDt ->
+            Some (int64 (m / umPerDbu))
+        | _ -> None)

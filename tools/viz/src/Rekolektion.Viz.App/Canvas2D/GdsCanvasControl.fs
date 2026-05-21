@@ -945,6 +945,10 @@ type GdsCanvasControl() as this =
     /// reused on every move until FlatPolygons identity flips.
     let mutable cachedSnapTargets : Routing.Snap.SnapTarget array = [||]
     let mutable cachedSnapTargetsFor : FlatPolygon array = [||]
+    /// Sample counter for the per-pointer-move timing log — sampled
+    /// every 30 frames so the log doesn't churn under continuous
+    /// mouse motion.
+    let mutable pointerMoveCount : int = 0
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1505,6 +1509,8 @@ type GdsCanvasControl() as this =
                 // A failure in live DRC must NEVER break the routing
                 // tool — if compute throws or hangs, fall back to no
                 // violations and keep the canvas responsive.
+                let swDrc = System.Diagnostics.Stopwatch.StartNew()
+                let mutable indexBuilt = false
                 try
                     cachedRouteLiveViolations <-
                         match this.DraftRoute with
@@ -1534,6 +1540,7 @@ type GdsCanvasControl() as this =
                                    && cachedCellIndex.IsSome then
                                     cachedCellIndex.Value
                                 else
+                                    indexBuilt <- true
                                     let bboxes =
                                         this.FlatPolygons
                                         |> Array.map (fun p ->
@@ -1557,6 +1564,21 @@ type GdsCanvasControl() as this =
                                 this.DisabledDrcRules
                 with _ ->
                     cachedRouteLiveViolations <- [||]
+                swDrc.Stop()
+                // Emit when expensive (≥2 ms) or every 30th
+                // DraftRoute change. `indexBuilt = true` means the
+                // hot-path rebuilt the spatial index (geometry
+                // changed); should only fire once per cell load.
+                if swDrc.ElapsedMilliseconds >= 2L
+                   || pointerMoveCount % 30 = 0 then
+                    Rekolektion.Viz.App.Services.Logger.log "drc.live.recompute"
+                        {| triggerProp =
+                            if e.Property = GdsCanvasControl.DraftRouteProperty then "DraftRoute"
+                            elif e.Property = GdsCanvasControl.FlatPolygonsProperty then "FlatPolygons"
+                            else "DisabledDrcRules"
+                           ms = swDrc.ElapsedMilliseconds
+                           indexBuilt = indexBuilt
+                           violations = cachedRouteLiveViolations.Length |}
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----
@@ -2509,14 +2531,23 @@ type GdsCanvasControl() as this =
         // is active so the renderer can paint a hint circle at
         // valid start/end points before the user clicks.
         if this.RoutingMode || (this.DraftRoute).IsSome then
+            let swTotal = System.Diagnostics.Stopwatch.StartNew()
+            let swScreen = System.Diagnostics.Stopwatch.StartNew()
             let (wx, wy) = this.ScreenToWorld p
+            swScreen.Stop()
+            let swTargets = System.Diagnostics.Stopwatch.StartNew()
+            let targets = this.SnapTargets ()
+            let snapCacheHit =
+                obj.ReferenceEquals(cachedSnapTargetsFor, this.FlatPolygons)
+            swTargets.Stop()
+            let swNearest = System.Diagnostics.Stopwatch.StartNew()
             let target =
-                let targets = this.SnapTargets ()
                 if targets.Length = 0 then None
                 else
                     let radiusDbu =
                         int64 (20.0 / max pixelsPerDbu 0.0001)
                     Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu
+            swNearest.Stop()
             // Only invalidate the canvas when the hover state
             // actually changes — bouncing the mouse over empty
             // space shouldn't churn frames.
@@ -2526,8 +2557,11 @@ type GdsCanvasControl() as this =
                 | Some a, Some b -> a.X <> b.X || a.Y <> b.Y
                 | _ -> true
             hoveredSnapTarget <- target
+            let swInvalidate = System.Diagnostics.Stopwatch.StartNew()
             if changed then this.InvalidateVisual()
+            swInvalidate.Stop()
             // Mouse-move dispatch (only when actually routing).
+            let swDispatch = System.Diagnostics.Stopwatch.StartNew()
             if (this.DraftRoute).IsSome then
                 let cb = this.RouteMouseMoveHandler
                 if not (isNull cb) then
@@ -2536,6 +2570,24 @@ type GdsCanvasControl() as this =
                         | Some t -> t.X, t.Y
                         | None -> int64 wx, int64 wy
                     cb.Invoke(sx, sy)
+            swDispatch.Stop()
+            swTotal.Stop()
+            // Sample log: only emit when total >= 2 ms OR every 30
+            // frames so the log doesn't churn but lag spikes surface.
+            pointerMoveCount <- pointerMoveCount + 1
+            if swTotal.ElapsedMilliseconds >= 2L
+               || pointerMoveCount % 30 = 0 then
+                Rekolektion.Viz.App.Services.Logger.log "pointer.move"
+                    {| totalMs       = swTotal.ElapsedMilliseconds
+                       screenToWorldMs = swScreen.ElapsedMilliseconds
+                       snapTargetsMs = swTargets.ElapsedMilliseconds
+                       snapTargetsCacheHit = snapCacheHit
+                       snapTargetsCount = targets.Length
+                       nearestMs     = swNearest.ElapsedMilliseconds
+                       invalidateMs  = swInvalidate.ElapsedMilliseconds
+                       dispatchMs    = swDispatch.ElapsedMilliseconds
+                       draftActive   = (this.DraftRoute).IsSome
+                       sampleFrame   = pointerMoveCount |}
         else
             if hoveredSnapTarget.IsSome then
                 hoveredSnapTarget <- None

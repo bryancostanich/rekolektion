@@ -226,6 +226,55 @@ let ``MovePolygonsDbu pushes an undo snapshot`` () =
     macro.UndoStack.Length |> should equal 1
     macro.Dirty |> should equal true
 
+[<Fact>]
+let ``ToggleRatlines derives nets from labels when LoadedMacro.Nets is empty`` () =
+    // Regression: the Ratlines button + U hotkey silently failed on
+    // .rkt cells without a sidecar because Nets was empty and the
+    // toggle-on path produced an empty set. Fallback derives via
+    // Net.LabelFlood — exercised here with a doc whose only net
+    // information is a (label …) form.
+    let labelledDoc : Document =
+        let metalPoly = mkRectPoly 0L 0L 100L 100L
+        let label : Label = {
+            Layer = Named ("sky130", "met1")
+            Text = "BL_3"
+            Origin = { X = 50L; Y = 50L }   // inside the poly
+            Class = None
+            Props = []
+            Comments = []
+            IsInternal = false
+            Kind = NetName
+        }
+        { emptyDocument with
+            Cells = [
+                { Name = "TOP"
+                  Meta = None
+                  Comments = []
+                  Elements = [ PolyEl metalPoly; LabelEl label ] }
+            ]
+            TopCell = Some "TOP" }
+    let macro : Model.LoadedMacro = {
+        Path = "/tmp/labelled.gds"
+        Document = labelledDoc
+        FlatPolygons = Flatten.flatten labelledDoc
+        TopInstances = Instances.enumerate labelledDoc
+        Nets = Map.empty            // ← intentional: no sidecar loaded
+        Blocks = []
+        NetsFromSidecar = false
+        SidecarError = None
+        OriginalPath = "/tmp/labelled.gds"
+        Dirty = false
+        UndoStack = []
+        RedoStack = []
+    }
+    let model =
+        { Model.empty with
+            OpenMacros = [macro]
+            ActiveMacroPath = Some macro.Path }
+    let next, _ = Update.update stubBackend Msg.ToggleRatlines model
+    // BL_3 was discovered via the label-flood fallback.
+    next.Toggle.VisibleRatlines.Contains "BL_3" |> should equal true
+
 // --- ADR-0002 routing tool ---------------------------------------------
 
 let private met1 : Visibility.LayerKey = (68, 20)

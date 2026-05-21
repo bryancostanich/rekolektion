@@ -480,12 +480,24 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // Master toggle: if any ratline is on, clear all; otherwise
         // turn on ratlines for every known net in the active macro.
         // Mirrors the layer panel "All / None" pattern.
+        //
+        // `LoadedMacro.Nets` is only populated when a `.nets.json`
+        // sidecar loaded alongside the cell. .rkt cells without a
+        // sidecar leave it empty — historically this made the U
+        // hotkey + TopBar Ratlines button silently fail. Fall back
+        // to deriving nets directly from the document's labels
+        // (same pass `Net.LabelFlood.derive` already runs for live
+        // DRC) so the toggle works on every cell.
         let nextSet =
             if not model.Toggle.VisibleRatlines.IsEmpty then Set.empty
             else
                 match Model.activeMacro model with
                 | None -> Set.empty
-                | Some m -> m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                | Some m ->
+                    let nets =
+                        if m.Nets.IsEmpty then Net.LabelFlood.derive m.Document
+                        else m.Nets
+                    nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
         { model with Toggle = Visibility.setVisibleRatlines nextSet model.Toggle }, Cmd.none
     | Msg.RouteSlideCommit (cell, dxDbu, dyDbu, adjusts, extensions) ->
         if (dxDbu = 0L && dyDbu = 0L)

@@ -251,9 +251,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // macros, so we render the layers immediately and fill in
         // nets when ready. NetsLoaded carries the path so a stale
         // result for a previously-open file is dropped.
+        Rekolektion.Viz.App.Services.Logger.log "load.complete"
+            {| path = macro.Path
+               netsFromSidecar = macro.NetsFromSidecar
+               sidecarNets = macro.Nets.Count
+               flatPolys = macro.FlatPolygons.Length |}
         let cmd =
-            if macro.NetsFromSidecar then Cmd.none
+            if macro.NetsFromSidecar then
+                Rekolektion.Viz.App.Services.Logger.log "nets.derive"
+                    {| phase = "skipped"
+                       reason = "sidecar-loaded"
+                       path = macro.Path |}
+                Cmd.none
             else
+                Rekolektion.Viz.App.Services.Logger.log "nets.derive"
+                    {| phase = "scheduled"
+                       path = macro.Path
+                       cells = macro.Document.Cells.Length |}
                 Cmd.OfAsync.either
                     backend.DeriveNets macro.Document
                     (fun nets -> Msg.NetsLoaded (macro.Path, nets))
@@ -285,9 +299,16 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
         // the user closed the tab while net derivation was in flight.
+        let activeMatches = model.ActiveMacroPath = Some path
+        let openMatches =
+            model.OpenMacros |> List.exists (fun m -> m.Path = path)
         Rekolektion.Viz.App.Services.Logger.log "nets.loaded"
             {| path = path
                count = nets.Count
+               activeMatches = activeMatches
+               openMatches = openMatches
+               ratlinesArmed = model.RatlinesArmed
+               visibleRatlinesBefore = model.Toggle.VisibleRatlines.Count
                names = nets |> Map.toList |> List.map fst |> List.sort |}
         let openMacros =
             model.OpenMacros
@@ -497,18 +518,35 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         //   — the background derive kicked off in LoadComplete is
         //   already in flight, and the `NetsLoaded` arm will paint
         //   the ratlines the moment it returns.
+        let activePath = model.ActiveMacroPath
+        let activeNetsCount =
+            Model.activeMacro model
+            |> Option.map (fun m -> m.Nets.Count)
+            |> Option.defaultValue 0
         if not model.Toggle.VisibleRatlines.IsEmpty then
+            Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
+                {| branch = "clear"
+                   path = activePath
+                   visibleBefore = model.Toggle.VisibleRatlines.Count |}
             { model with
                 Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle
                 RatlinesArmed = false }, Cmd.none
         else
             match Model.activeMacro model with
             | Some m when not m.Nets.IsEmpty ->
+                Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
+                    {| branch = "paint-immediately"
+                       path = activePath
+                       nets = m.Nets.Count |}
                 let names = m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
                 { model with
                     Toggle = Visibility.setVisibleRatlines names model.Toggle
                     RatlinesArmed = true }, Cmd.none
             | _ ->
+                Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
+                    {| branch = "arm-waiting-for-derive"
+                       path = activePath
+                       activeNetsCount = activeNetsCount |}
                 { model with RatlinesArmed = true }, Cmd.none
     | Msg.RouteSlideCommit (cell, dxDbu, dyDbu, adjusts, extensions) ->
         if (dxDbu = 0L && dyDbu = 0L)

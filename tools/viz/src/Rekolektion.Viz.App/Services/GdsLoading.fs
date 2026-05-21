@@ -65,5 +65,15 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
 let deriveNets (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
         : Async<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>> = async {
     do! Async.SwitchToThreadPool ()
-    return LabelFlood.derive doc
+    Rekolektion.Viz.App.Services.Logger.log "nets.derive"
+        {| phase = "start"
+           cells = doc.Cells.Length |}
+    let sw = System.Diagnostics.Stopwatch.StartNew ()
+    let result = LabelFlood.derive doc
+    sw.Stop ()
+    Rekolektion.Viz.App.Services.Logger.log "nets.derive"
+        {| phase = "done"
+           ms = sw.ElapsedMilliseconds
+           nets = result.Count |}
+    return result
 }

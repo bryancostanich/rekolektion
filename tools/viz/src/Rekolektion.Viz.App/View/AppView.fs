@@ -133,6 +133,42 @@ let private gds2DClearPolygonSelectionHandlerAttr (h: System.Action) : IAttr<Gds
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
         GdsCanvasControl.ClearPolygonSelectionHandlerProperty, h, ValueNone)
 
+// ---- ADR-0002 routing attrs --------------------------------------------
+let private gds2DRoutingModeAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.RoutingModeProperty, v, ValueNone)
+
+let private gds2DDraftRouteAttr
+        (v: Routing.Draft.DraftRoute option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Routing.Draft.DraftRoute option>(
+        GdsCanvasControl.DraftRouteProperty, v, ValueNone)
+
+let private gds2DActiveLayerAttr
+        (v: Visibility.LayerKey option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Visibility.LayerKey option>(
+        GdsCanvasControl.ActiveLayerProperty, v, ValueNone)
+
+let private gds2DStartRouteHandlerAttr
+        (h: System.Action<Visibility.LayerKey, int64, int64, int64>)
+        : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Visibility.LayerKey, int64, int64, int64>>(
+        GdsCanvasControl.StartRouteHandlerProperty, h, ValueNone)
+
+let private gds2DRouteMouseMoveHandlerAttr
+        (h: System.Action<int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int64, int64>>(
+        GdsCanvasControl.RouteMouseMoveHandlerProperty, h, ValueNone)
+
+let private gds2DRouteFixSegmentHandlerAttr
+        (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.RouteFixSegmentHandlerProperty, h, ValueNone)
+
+let private gds2DRouteFinishHandlerAttr
+        (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.RouteFinishHandlerProperty, h, ValueNone)
+
 let private stack3DLibraryAttr (v: Document option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Document option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
@@ -236,7 +272,21 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                   (System.Action<string, int, int64, int64, int64, int64>(fun s i xMin yMin xMax yMax ->
                       dispatch (Msg.ResizePolygonBbox (s, i, xMin, yMin, xMax, yMax))))
               gds2DClearPolygonSelectionHandlerAttr
-                  (System.Action(fun () -> dispatch Msg.ClearSelection)) ]
+                  (System.Action(fun () -> dispatch Msg.ClearSelection))
+              // ADR-0002 interactive routing wiring
+              gds2DRoutingModeAttr model.RoutingMode
+              gds2DDraftRouteAttr  model.DraftRoute
+              gds2DActiveLayerAttr model.Toggle.ActiveLayer
+              gds2DStartRouteHandlerAttr
+                  (System.Action<Visibility.LayerKey, int64, int64, int64>(fun layer w x y ->
+                      dispatch (Msg.StartRoute (layer, w, x, y))))
+              gds2DRouteMouseMoveHandlerAttr
+                  (System.Action<int64, int64>(fun x y ->
+                      dispatch (Msg.RouteMouseMove (x, y))))
+              gds2DRouteFixSegmentHandlerAttr
+                  (System.Action(fun () -> dispatch Msg.RouteFixSegment))
+              gds2DRouteFinishHandlerAttr
+                  (System.Action(fun () -> dispatch Msg.RouteFinish)) ]
 
     let pickedHandler =
         System.Action<Layout.Flatten.PolyKey>(fun pk ->

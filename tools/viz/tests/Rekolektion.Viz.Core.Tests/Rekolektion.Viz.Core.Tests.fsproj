@@ -35,6 +35,8 @@
     <Compile Include="RktToGdsTests.fs" />
     <Compile Include="RktLoadTests.fs" />
     <Compile Include="Sky130LayerMapTests.fs" />
+    <Compile Include="RoutingDraftTests.fs" />
+    <Compile Include="LiveDrcTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

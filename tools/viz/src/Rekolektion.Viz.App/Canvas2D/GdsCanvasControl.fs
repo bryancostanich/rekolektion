@@ -119,7 +119,9 @@ type private SkiaDraw(bounds: Rect,
                       toggle: Visibility.ToggleState,
                       overlay: SelectionOverlay,
                       tightenHitsOut: TightenOverlay.LabelHit array ref,
-                      resizeHitsOut: ResizeHandleHit array ref) =
+                      resizeHitsOut: ResizeHandleHit array ref,
+                      draftRoute: Routing.Draft.DraftRoute option,
+                      routeLiveViolations: Drc.Check.Violation array) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -706,6 +708,94 @@ type private SkiaDraw(bounds: Rect,
                                 let approxW = approxCharW * float32 label.Length
                                 canvas.DrawText(label, origSx - tickLen - approxW - 2.0f, sy + labelPx * 0.4f, labelPaint)
 
+                // ADR-0002 draft route overlay — paint LAST so the
+                // in-flight wire reads on top of every other layer.
+                // Fixed segments solid amber; tentative segments same
+                // hue at reduced alpha so the user sees what is and
+                // isn't committed yet.
+                match draftRoute with
+                | None -> ()
+                | Some r ->
+                    let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
+                    let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
+                    let pxPerDbuX = float vb.PixelW / dxWorld
+                    let pxPerDbuY = float vb.PixelH / dyWorld
+                    let toScr (xDbu: int64) (yDbu: int64) : float32 * float32 =
+                        let sx = (float (xDbu - vb.MinX)) * pxPerDbuX |> float32
+                        let sy =
+                            float vb.PixelH
+                            - (float (yDbu - vb.MinY)) * pxPerDbuY
+                            |> float32
+                        sx, sy
+                    use fixedFill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = true,
+                            Color = SKColor(0xE8uy, 0x99uy, 0x1Cuy, 0xCCuy))
+                    use tentFill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = true,
+                            Color = SKColor(0xE8uy, 0x99uy, 0x1Cuy, 0x80uy))
+                    use outline =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            IsAntialias = true,
+                            StrokeWidth = 1.0f,
+                            Color = SKColor(0xFFuy, 0xC8uy, 0x50uy, 0xFFuy))
+                    let paintSeg (paint: SKPaint) (seg: Routing.Draft.DraftSegment) =
+                        let (x1s, y1s) = toScr seg.X1 seg.Y1
+                        let (x2s, y2s) = toScr seg.X2 seg.Y2
+                        let l = min x1s x2s
+                        let r' = max x1s x2s
+                        let t = min y1s y2s
+                        let b = max y1s y2s
+                        let rect = SKRect(l, t, r', b)
+                        canvas.DrawRect(rect, paint)
+                        canvas.DrawRect(rect, outline)
+                    for seg in Routing.Draft.fixedSegments r do
+                        paintSeg fixedFill seg
+                    for seg in Routing.Draft.tentativeSegments r do
+                        paintSeg tentFill seg
+
+                // ADR-0003 — live DRC violation overlay. Paints each
+                // violation bbox as a bright red outline on top of
+                // everything else so they read at a glance against
+                // the draft route + cell geometry. Empty array on
+                // the fast path (no draft, or draft is clean).
+                if routeLiveViolations.Length > 0 then
+                    let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
+                    let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
+                    let pxPerDbuX = float vb.PixelW / dxWorld
+                    let pxPerDbuY = float vb.PixelH / dyWorld
+                    let toScrV (xDbu: int64) (yDbu: int64) : float32 * float32 =
+                        let sx = (float (xDbu - vb.MinX)) * pxPerDbuX |> float32
+                        let sy =
+                            float vb.PixelH
+                            - (float (yDbu - vb.MinY)) * pxPerDbuY
+                            |> float32
+                        sx, sy
+                    use vOutline =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            IsAntialias = true,
+                            StrokeWidth = 1.5f,
+                            Color = SKColor(0xFFuy, 0x40uy, 0x40uy, 0xFFuy))
+                    let paintBbox (b: int64 * int64 * int64 * int64) =
+                        let (x1, y1, x2, y2) = b
+                        let (sx1, sy1) = toScrV x1 y1
+                        let (sx2, sy2) = toScrV x2 y2
+                        let l = min sx1 sx2
+                        let r' = max sx1 sx2
+                        let t = min sy1 sy2
+                        let b' = max sy1 sy2
+                        canvas.DrawRect(SKRect(l, t, r', b'), vOutline)
+                    for v in routeLiveViolations do
+                        paintBbox v.BboxA
+                        match v.BboxB with
+                        | Some b -> paintBbox b
+                        | None -> ()
+
                 canvas.RestoreToCount saved
 
 type private DragKind =
@@ -794,6 +884,11 @@ type GdsCanvasControl() as this =
     let mutable cachedDrcViolations : Drc.Check.Violation array = [||]
     let mutable cachedDrcImplantTags : Drc.Implant.ImplantTags array = [||]
     let mutable cachedDrcDisabled : Set<string> = Set.empty
+    /// ADR-0003 — violations from the live DRC pass against the
+    /// current draft route. Recomputed in OnPropertyChanged when
+    /// DraftRoute changes; consumed by SkiaDraw to paint red
+    /// outlines on offending bboxes.
+    let mutable cachedRouteLiveViolations : Drc.Check.Violation array = [||]
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -976,6 +1071,58 @@ type GdsCanvasControl() as this =
             "ClearPolygonSelectionHandler", null)
         with get
 
+    // ---- ADR-0002 interactive routing tool -----------------------------
+    /// When true, left-click on the canvas starts/extends a draft
+    /// route on the active layer. When false, clicks fall through
+    /// to normal selection.
+    static member val RoutingModeProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("RoutingMode", false)
+        with get
+    /// Current in-flight draft route, or None when nothing is being
+    /// drawn. Drives the canvas overlay and click semantics.
+    static member val DraftRouteProperty
+            : StyledProperty<Routing.Draft.DraftRoute option> =
+        AvaloniaProperty.Register<GdsCanvasControl, Routing.Draft.DraftRoute option>(
+            "DraftRoute", None)
+        with get
+    /// Active edit layer for the routing tool (and other future
+    /// edit ops). None = no layer focused; routing-mode clicks then
+    /// do nothing rather than guessing.
+    static member val ActiveLayerProperty
+            : StyledProperty<Visibility.LayerKey option> =
+        AvaloniaProperty.Register<GdsCanvasControl, Visibility.LayerKey option>(
+            "ActiveLayer", None)
+        with get
+    /// Dispatched on left-click when RoutingMode is on and no draft
+    /// is in flight. Args: layer, width, x, y (all in DBU).
+    static member val StartRouteHandlerProperty
+            : StyledProperty<Action<Visibility.LayerKey, int64, int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl,
+                                  Action<Visibility.LayerKey, int64, int64, int64>>(
+            "StartRouteHandler", null)
+        with get
+    /// Dispatched on every mouse-move when a draft is in flight.
+    /// Args: x, y in DBU.
+    static member val RouteMouseMoveHandlerProperty
+            : StyledProperty<Action<int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int64, int64>>(
+            "RouteMouseMoveHandler", null)
+        with get
+    /// Dispatched on left-click when a draft is in flight — commits
+    /// the tentative L as a fixed corner.
+    static member val RouteFixSegmentHandlerProperty
+            : StyledProperty<Action> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action>(
+            "RouteFixSegmentHandler", null)
+        with get
+    /// Dispatched on right-click when a draft is in flight — commits
+    /// the whole route into the cell as one undo step.
+    static member val RouteFinishHandlerProperty
+            : StyledProperty<Action> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action>(
+            "RouteFinishHandler", null)
+        with get
+
     member this.Library
         with get() : Document option = this.GetValue(GdsCanvasControl.LibraryProperty)
         and set(v: Document option) = this.SetValue(GdsCanvasControl.LibraryProperty, v) |> ignore
@@ -1114,6 +1261,47 @@ type GdsCanvasControl() as this =
         and set(v: Action) =
             this.SetValue(GdsCanvasControl.ClearPolygonSelectionHandlerProperty, v) |> ignore
 
+    // ---- ADR-0002 routing accessors ------------------------------------
+    member this.RoutingMode
+        with get() : bool = this.GetValue(GdsCanvasControl.RoutingModeProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.RoutingModeProperty, v) |> ignore
+
+    member this.DraftRoute
+        with get() : Routing.Draft.DraftRoute option =
+            this.GetValue(GdsCanvasControl.DraftRouteProperty)
+        and set(v: Routing.Draft.DraftRoute option) =
+            this.SetValue(GdsCanvasControl.DraftRouteProperty, v) |> ignore
+
+    member this.ActiveLayer
+        with get() : Visibility.LayerKey option =
+            this.GetValue(GdsCanvasControl.ActiveLayerProperty)
+        and set(v: Visibility.LayerKey option) =
+            this.SetValue(GdsCanvasControl.ActiveLayerProperty, v) |> ignore
+
+    member this.StartRouteHandler
+        with get() : Action<Visibility.LayerKey, int64, int64, int64> =
+            this.GetValue(GdsCanvasControl.StartRouteHandlerProperty)
+        and set(v: Action<Visibility.LayerKey, int64, int64, int64>) =
+            this.SetValue(GdsCanvasControl.StartRouteHandlerProperty, v) |> ignore
+
+    member this.RouteMouseMoveHandler
+        with get() : Action<int64, int64> =
+            this.GetValue(GdsCanvasControl.RouteMouseMoveHandlerProperty)
+        and set(v: Action<int64, int64>) =
+            this.SetValue(GdsCanvasControl.RouteMouseMoveHandlerProperty, v) |> ignore
+
+    member this.RouteFixSegmentHandler
+        with get() : Action =
+            this.GetValue(GdsCanvasControl.RouteFixSegmentHandlerProperty)
+        and set(v: Action) =
+            this.SetValue(GdsCanvasControl.RouteFixSegmentHandlerProperty, v) |> ignore
+
+    member this.RouteFinishHandler
+        with get() : Action =
+            this.GetValue(GdsCanvasControl.RouteFinishHandlerProperty)
+        and set(v: Action) =
+            this.SetValue(GdsCanvasControl.RouteFinishHandlerProperty, v) |> ignore
+
     override _.MeasureOverride(constraint': Size) : Size =
         let w =
             if System.Double.IsInfinity constraint'.Width then 200.0
@@ -1196,11 +1384,48 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.ShowRulerProperty
              || e.Property = GdsCanvasControl.ShowLabelsProperty
              || e.Property = GdsCanvasControl.SelectedRatlinesProperty
-             || e.Property = GdsCanvasControl.SnapEnabledProperty then
+             || e.Property = GdsCanvasControl.SnapEnabledProperty
+             || e.Property = GdsCanvasControl.DraftRouteProperty
+             || e.Property = GdsCanvasControl.RoutingModeProperty
+             || e.Property = GdsCanvasControl.ActiveLayerProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
             // (Tighten, drag, rotate, mirror) don't snap the
             // camera away from the user's working view.
+            //
+            // ADR-0003 — recompute live DRC against the draft
+            // whenever the route or the cell flat changes. The cost
+            // is proportional to (cell rects + draft rects); for
+            // typical macros it stays under a frame at 60 fps.
+            if e.Property = GdsCanvasControl.DraftRouteProperty
+               || e.Property = GdsCanvasControl.FlatPolygonsProperty
+               || e.Property = GdsCanvasControl.DisabledDrcRulesProperty then
+                // A failure in live DRC must NEVER break the routing
+                // tool — if compute throws or hangs, fall back to no
+                // violations and keep the canvas responsive.
+                try
+                    cachedRouteLiveViolations <-
+                        match this.DraftRoute with
+                        | None -> [||]
+                        | Some r ->
+                            let units =
+                                match this.Library with
+                                | Some doc -> doc.Units
+                                | None -> { DbuNm = 1; UuUm = 1 }
+                            // Net derivation is too heavy for the per-
+                            // move path. Skip it for now; draft-vs-cell
+                            // overlap still fires (it treats draft as
+                            // unknown-net), and cell-vs-cell cross-net
+                            // overlap is available via the dedicated
+                            // Drc.Check.cellCrossNetOverlaps entry for
+                            // a future on-demand audit pass.
+                            let draftFlat =
+                                Routing.Draft.allSegments r
+                                |> Routing.Draft.toFlatPolygons
+                            Drc.Check.runLive units this.FlatPolygons
+                                draftFlat Map.empty this.DisabledDrcRules
+                with _ ->
+                    cachedRouteLiveViolations <- [||]
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----
@@ -1213,11 +1438,43 @@ type GdsCanvasControl() as this =
         e.Pointer.Capture this
         this.Focus () |> ignore
 
+        // ADR-0002 interactive routing tool. Takes precedence over
+        // other modes when armed or when a draft is in flight.
+        // Right-click during a draft → commit and finish. Left-click
+        // either starts a new route (when armed + no draft) or fixes
+        // the current tentative L (when a draft exists).
+        let draft = this.DraftRoute
+        if draft.IsSome && props.IsRightButtonPressed then
+            let cb = this.RouteFinishHandler
+            if not (isNull cb) then cb.Invoke()
+            e.Handled <- true
+        elif (this.RoutingMode || draft.IsSome) && props.IsLeftButtonPressed then
+            let (wx, wy) = this.ScreenToWorld p
+            let xDbu = int64 wx
+            let yDbu = int64 wy
+            if draft.IsNone then
+                // Default to met1 when no layer has been picked yet.
+                // Earlier behavior silently no-op'd on no active layer,
+                // which felt like "the wire tool doesn't work" — fall
+                // back so a fresh user can click and draw immediately.
+                let layer =
+                    match this.ActiveLayer with
+                    | Some k -> k
+                    | None -> (68, 20)   // met1
+                let cb = this.StartRouteHandler
+                if not (isNull cb) then
+                    // 320 nm default wire width — refined later
+                    // via per-layer min-width lookup (ADR-0004).
+                    cb.Invoke(layer, 320L, xDbu, yDbu)
+            else
+                let cb = this.RouteFixSegmentHandler
+                if not (isNull cb) then cb.Invoke()
+            e.Handled <- true
         // Tighten mode: a left click on a numbered label commits
         // that candidate. Other clicks are swallowed so the user
         // doesn't accidentally pan, marquee, or change selection
         // while choosing a tighten direction.
-        if this.TightenMode && props.IsLeftButtonPressed then
+        elif this.TightenMode && props.IsLeftButtonPressed then
             let hits = !tightenHits
             let pxF = float32 p.X
             let pyF = float32 p.Y
@@ -2070,6 +2327,14 @@ type GdsCanvasControl() as this =
         base.OnPointerMoved e
         let props = e.GetCurrentPoint(this).Properties
         let p = e.GetPosition this
+        // ADR-0002 — when a draft is in flight, every move feeds
+        // RouteMouseMove so the tentative L tracks the cursor.
+        // Doesn't return early; pan / hover still work as usual.
+        if (this.DraftRoute).IsSome then
+            let cb = this.RouteMouseMoveHandler
+            if not (isNull cb) then
+                let (wx, wy) = this.ScreenToWorld p
+                cb.Invoke(int64 wx, int64 wy)
         // Capture the prior cursor position BEFORE any handler
         // updates `lastPos`. The middle-pan branch needs this to
         // compute its screen delta (we rebind `lastPos = p` only
@@ -2671,7 +2936,7 @@ type GdsCanvasControl() as this =
                   ShowGrid = this.ShowGrid
                   ShowRuler = this.ShowRuler
                   ShowLabels = this.ShowLabels }
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, cachedRouteLiveViolations))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

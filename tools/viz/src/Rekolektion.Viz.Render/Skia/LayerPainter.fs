@@ -123,7 +123,21 @@ let paintIn
         Layout.Layer.bySky130Number (fst key) (snd key)
         |> Option.map (fun l -> l.StackZ)
         |> Option.defaultValue 100.0
-    let ordered = byLayer |> Array.sortBy (fun (k, _) -> zOf k)
+    let zSorted = byLayer |> Array.sortBy (fun (k, _) -> zOf k)
+
+    // When ActiveLayer is set, paint non-focus layers first (they
+    // get dimmed below) and the focus layer last so it sits on top
+    // of the canvas regardless of its stack Z. When None, fall back
+    // to pure stack-Z order.
+    let activeKey = toggle.ActiveLayer
+    let isActiveFocus = activeKey.IsSome
+    let ordered =
+        match activeKey with
+        | None -> zSorted
+        | Some k ->
+            let others = zSorted |> Array.filter (fun (key, _) -> key <> k)
+            let active = zSorted |> Array.filter (fun (key, _) -> key = k)
+            Array.append others active
 
     // When one or more nets are highlighted, polygons not in any
     // of the matching sets are dimmed so the highlighted runs pop.
@@ -160,15 +174,24 @@ let paintIn
                 let strokeFull = SkyTheme.strokeFor layer.Name
                 let fillDim = dimColor fillFull
                 let strokeDim = dimColor strokeFull
+                // Layer is "in focus" when no active layer is set
+                // (all layers full intensity) or when it equals the
+                // active layer. Non-focus layers paint dimmed.
+                let isOnActiveLayer =
+                    match activeKey with
+                    | None -> true
+                    | Some k -> key = k
                 for poly in polys do
                     let inBlock =
                         match blockClosure with
                         | Some s -> s.Contains poly.SourceStructure
                         | None   -> true
                     if poly.Points.Length >= 3 && inBlock then
-                        let isMatch =
+                        let highlightMatch =
                             (not isHighlightActive)
                             || highlightSet.Contains((poly.SourceStructure, poly.SourceIndex))
+                        let focusMatch = (not isActiveFocus) || isOnActiveLayer
+                        let isMatch = highlightMatch && focusMatch
                         fill.Color <- if isMatch then fillFull else fillDim
                         stroke.Color <- if isMatch then strokeFull else strokeDim
                         use path = new SKPath()

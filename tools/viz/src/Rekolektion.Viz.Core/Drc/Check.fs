@@ -884,6 +884,198 @@ let check (units: Units) (flat: FlatPolygon array) : Violation array =
     let tags = Implant.tagAll flat
     checkWithToggles units flat tags Set.empty
 
+/// ADR-0003 — precompute the cross-net overlap violations within
+/// the cell itself (no draft involved). O(N²) over `cellFlat` so
+/// callers should compute this only on cell-geometry changes
+/// (cached at the canvas level), not on every mouse move.
+let cellCrossNetOverlaps
+        (cellFlat: FlatPolygon array)
+        (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
+        : Violation array =
+    let polyToNet =
+        let acc = System.Collections.Generic.Dictionary<string * int, string>()
+        for kv in nets do
+            for pr in kv.Value.Polygons do
+                acc.[(pr.Structure, pr.Index)] <- kv.Key
+        acc
+    let netOf (p: FlatPolygon) : string option =
+        match polyToNet.TryGetValue((p.SourceStructure, p.SourceIndex)) with
+        | true, n -> Some n
+        | _ -> None
+    let layerName (num: int) (dt: int) : string =
+        match Rekolektion.Viz.Core.Layout.Layer.bySky130Number num dt with
+        | Some l -> l.Name
+        | None   -> sprintf "layer%d_%d" num dt
+    let mkOverlap (a: FlatPolygon) (b: FlatPolygon) : Violation option =
+        let (ax1, ay1, ax2, ay2) = bboxOf a
+        let (bx1, by1, bx2, by2) = bboxOf b
+        let ix1 = max ax1 bx1
+        let iy1 = max ay1 by1
+        let ix2 = min ax2 bx2
+        let iy2 = min ay2 by2
+        if ix1 < ix2 && iy1 < iy2 then
+            Some {
+                Rule        =
+                    sprintf "%s.overlap" (layerName a.Layer a.DataType)
+                LayerNumber = a.Layer
+                LayerType   = a.DataType
+                LimitDbu    = 0L
+                MeasuredDbu = (ix2 - ix1) * (iy2 - iy1)
+                BboxA       = (ix1, iy1, ix2, iy2)
+                BboxB       = None
+            }
+        else None
+    let acc = System.Collections.Generic.List<Violation>()
+    for i in 0 .. cellFlat.Length - 1 do
+        let a = cellFlat.[i]
+        match netOf a with
+        | None -> ()
+        | Some na ->
+            for j in i + 1 .. cellFlat.Length - 1 do
+                let b = cellFlat.[j]
+                if a.Layer = b.Layer && a.DataType = b.DataType then
+                    match netOf b with
+                    | Some nb when nb <> na ->
+                        match mkOverlap a b with
+                        | Some v -> acc.Add v
+                        | None -> ()
+                    | _ -> ()
+    acc.ToArray()
+
+/// ADR-0003 live DRC entry point. Runs only `Rules.liveRules`
+/// (clearance, width, enclosure, endcap — locally decidable rules)
+/// against the union of `cellFlat` and `draftFlat`. Commit-only
+/// rules (MinArea, BoundaryCrossing, ImplantOutsideWellSpacing)
+/// are deferred to the full `check` pass at RouteFinish time.
+///
+/// The non-live rules are folded into `disabledRules` so the
+/// existing engine simply skips them; that keeps a single rule-
+/// evaluation code path and avoids drift between live and full.
+///
+/// `disabledRules` from the caller (e.g., user-silenced rule
+/// names) is honored on top — both layers compose by union.
+///
+/// **Cross-net overlap post-pass.** The standard Spacing rule
+/// treats touching/overlapping same-layer polys as one merged net
+/// and skips the gap check — correct when the overlap IS intended
+/// (the wires really do connect on one net). When the overlap is
+/// between polys on DIFFERENT named nets, that's a short, and
+/// this pass emits a synthetic `<layer>.overlap` violation for it.
+/// Draft segments have no net yet, so any overlap of the draft
+/// against a labeled cell poly is flagged conservatively.
+///
+/// `nets` is the document's net-membership map (typically derived
+/// once per cell by `Net.LabelFlood.derive`). Empty map disables
+/// the cross-net pass entirely — unlabeled designs skip it.
+let runLive
+        (units: Units)
+        (cellFlat: FlatPolygon array)
+        (draftFlat: FlatPolygon array)
+        (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
+        (disabledRules: Set<string>)
+        : Violation array =
+    // Region-filter the cell to a bbox of (draft + margin) before
+    // running the standard rule pass. Keeps per-frame cost bounded
+    // by the route's neighborhood, not the whole macro. 5 µm margin
+    // is comfortably wider than any single-layer SKY130 spacing rule.
+    let regionMarginDbu = int64 (5000.0 * (1.0 / umPerDbuOf units))
+    let regionFiltered =
+        if draftFlat.Length = 0 then cellFlat
+        else
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for d in draftFlat do
+                let (ax1, ay1, ax2, ay2) = bboxOf d
+                xMin <- min xMin ax1
+                yMin <- min yMin ay1
+                xMax <- max xMax ax2
+                yMax <- max yMax ay2
+            let rx1 = xMin - regionMarginDbu
+            let ry1 = yMin - regionMarginDbu
+            let rx2 = xMax + regionMarginDbu
+            let ry2 = yMax + regionMarginDbu
+            cellFlat
+            |> Array.filter (fun p ->
+                let (px1, py1, px2, py2) = bboxOf p
+                rx1 <= px2 && px1 <= rx2 && ry1 <= py2 && py1 <= ry2)
+    let combined = Array.append regionFiltered draftFlat
+    let tags = Implant.tagAll combined
+    let nonLiveDisabled =
+        Rules.allRules
+        |> List.filter (Rules.isLiveEligible >> not)
+        |> List.map Rules.nameOf
+        |> Set.ofList
+    let disabled' = Set.union disabledRules nonLiveDisabled
+    let standardViolations = checkWithToggles units combined tags disabled'
+
+    // (Structure, Index) → net name. A polygon not in the map
+    // belongs to no labeled net (or to a draft) and is treated as
+    // `None` in the cross-net check.
+    let polyToNet =
+        let acc = System.Collections.Generic.Dictionary<string * int, string>()
+        for kv in nets do
+            for pr in kv.Value.Polygons do
+                acc.[(pr.Structure, pr.Index)] <- kv.Key
+        acc
+    let netOf (p: FlatPolygon) : string option =
+        if p.SourceStructure = "<draft-route>" then None
+        else
+            match polyToNet.TryGetValue((p.SourceStructure, p.SourceIndex)) with
+            | true, n -> Some n
+            | _ -> None
+
+    let layerName (num: int) (dt: int) : string =
+        match Rekolektion.Viz.Core.Layout.Layer.bySky130Number num dt with
+        | Some l -> l.Name
+        | None   -> sprintf "layer%d_%d" num dt
+    let mkOverlap (a: FlatPolygon) (b: FlatPolygon) : Violation option =
+        let (ax1, ay1, ax2, ay2) = bboxOf a
+        let (bx1, by1, bx2, by2) = bboxOf b
+        let ix1 = max ax1 bx1
+        let iy1 = max ay1 by1
+        let ix2 = min ax2 bx2
+        let iy2 = min ay2 by2
+        if ix1 < ix2 && iy1 < iy2 then
+            Some {
+                Rule        =
+                    sprintf "%s.overlap" (layerName a.Layer a.DataType)
+                LayerNumber = a.Layer
+                LayerType   = a.DataType
+                LimitDbu    = 0L
+                MeasuredDbu = (ix2 - ix1) * (iy2 - iy1)
+                BboxA       = (ix1, iy1, ix2, iy2)
+                BboxB       = None
+            }
+        else None
+    let isDraft (p: FlatPolygon) = p.SourceStructure = "<draft-route>"
+    let isCrossNet (a: FlatPolygon) (b: FlatPolygon) : bool =
+        let na = netOf a
+        let nb = netOf b
+        if isDraft a || isDraft b then
+            // Draft vs anything labeled → potential short. Draft vs
+            // unlabeled cell poly we still flag because we can't
+            // tell which net it would join.
+            true
+        else
+            match na, nb with
+            | Some x, Some y -> x <> y
+            | _ -> false   // unlabeled cell↔cell overlap: skip
+
+    // Draft vs cell only — cell-vs-cell overlap is O(N²) and lives
+    // in `cellCrossNetOverlaps` (callers cache its result). Iterate
+    // over the region-filtered cell so we only touch nearby polys.
+    let overlapViolations = System.Collections.Generic.List<Violation>()
+    for d in draftFlat do
+        for c in regionFiltered do
+            if c.Layer = d.Layer && c.DataType = d.DataType
+               && isCrossNet d c then
+                match mkOverlap d c with
+                | Some v -> overlapViolations.Add v
+                | None -> ()
+    Array.append standardViolations (overlapViolations.ToArray())
+
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),
 /// (-1,0), (0,+1), (0,-1)}) before its physical bbox collides

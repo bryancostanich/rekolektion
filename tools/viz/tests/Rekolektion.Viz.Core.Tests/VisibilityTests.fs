@@ -78,3 +78,55 @@ let ``isolateBlock hides all other blocks`` () =
     let s = Visibility.empty |> Visibility.isolateBlock (Some "sram_array")
     Visibility.isBlockVisible s "sram_array" |> should equal true
     Visibility.isBlockVisible s "row_decoder" |> should equal false
+
+[<Fact>]
+let ``empty ToggleState has no active layer`` () =
+    Visibility.empty.ActiveLayer |> should equal (None : Visibility.LayerKey option)
+
+[<Fact>]
+let ``setActiveLayer Some sets the field`` () =
+    let met1 = (68, 20)
+    let s = Visibility.empty |> Visibility.setActiveLayer (Some met1)
+    s.ActiveLayer |> should equal (Some met1)
+
+[<Fact>]
+let ``setActiveLayer Some auto-shows a previously hidden layer`` () =
+    let met1 = (68, 20)
+    let s =
+        Visibility.empty
+        |> Visibility.toggleLayer met1 false
+        |> Visibility.setActiveLayer (Some met1)
+    Visibility.isLayerVisible s met1 |> should equal true
+    s.ActiveLayer |> should equal (Some met1)
+
+[<Fact>]
+let ``setActiveLayer Some does not change other layers' visibility`` () =
+    let met1 = (68, 20)
+    let met2 = (69, 20)
+    let s =
+        Visibility.empty
+        |> Visibility.toggleLayer met2 false
+        |> Visibility.setActiveLayer (Some met1)
+    Visibility.isLayerVisible s met2 |> should equal false
+
+[<Fact>]
+let ``setActiveLayer None clears the field without touching visibility`` () =
+    let met1 = (68, 20)
+    let s =
+        Visibility.empty
+        |> Visibility.setActiveLayer (Some met1)
+        |> Visibility.setActiveLayer None
+    s.ActiveLayer |> should equal (None : Visibility.LayerKey option)
+    Visibility.isLayerVisible s met1 |> should equal true
+
+[<Fact>]
+let ``toggling a different layer off does not clear active layer`` () =
+    let met1 = (68, 20)
+    let met2 = (69, 20)
+    let s =
+        Visibility.empty
+        |> Visibility.setActiveLayer (Some met1)
+        |> Visibility.toggleLayer met2 false
+    s.ActiveLayer |> should equal (Some met1)
+    Visibility.isLayerVisible s met1 |> should equal true
+    Visibility.isLayerVisible s met2 |> should equal false

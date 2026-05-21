@@ -86,6 +86,57 @@ let private switchActive
             SelectedRatlines = ratSel
             SavedSelections = saved' }
 
+// ADR-0002 — route-commit helpers used by RouteFinish.
+let private routeLayerOf
+        (key: int * int)
+        (pdk: string)
+        : Rekolektion.Viz.Core.Rkt.Types.Layer =
+    let (num, dt) = key
+    match Layout.Layer.bySky130Number num dt with
+    | Some l -> Rekolektion.Viz.Core.Rkt.Types.Named(pdk, l.Name)
+    | None   -> Rekolektion.Viz.Core.Rkt.Types.Unknown(num, dt)
+
+let private rectOfDraftSegment
+        (pdk: string)
+        (seg: Routing.Draft.DraftSegment)
+        : Rekolektion.Viz.Core.Rkt.Types.Rectangle = {
+    Layer = routeLayerOf seg.Layer pdk
+    X1 = seg.X1
+    Y1 = seg.Y1
+    X2 = seg.X2
+    Y2 = seg.Y2
+    Net = None
+    Props = []
+    Comments = []
+}
+
+/// Append a batch of rectangles to the document's top cell. The top
+/// cell is `doc.TopCell` if set, otherwise the first cell in `Cells`.
+/// No-op when the document has no cells.
+let private appendRectsToTop
+        (rects: Rekolektion.Viz.Core.Rkt.Types.Rectangle list)
+        (doc: Rekolektion.Viz.Core.Rkt.Types.Document)
+        : Rekolektion.Viz.Core.Rkt.Types.Document =
+    if List.isEmpty rects then doc
+    else
+        let topName =
+            doc.TopCell
+            |> Option.orElseWith (fun () ->
+                doc.Cells |> List.tryHead |> Option.map (fun c -> c.Name))
+        match topName with
+        | None -> doc
+        | Some n ->
+            let cells' =
+                doc.Cells
+                |> List.map (fun c ->
+                    if c.Name <> n then c
+                    else
+                        let newEls =
+                            rects
+                            |> List.map Rekolektion.Viz.Core.Rkt.Types.RectEl
+                        { c with Elements = c.Elements @ newEls })
+            { doc with Cells = cells' }
+
 let private msgCaseName (msg: Msg.Msg) : string =
     let info, _ =
         Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(
@@ -298,6 +349,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 |> Map.toList
                 |> List.map (fun ((n, d), v) -> (n, d, v)) }
         { model with Toggle = toggle' }, Cmd.none
+    | Msg.SetActiveLayer layer ->
+        let toggle' = Visibility.setActiveLayer layer model.Toggle
+        Rekolektion.Viz.App.Services.SessionState.save
+            { Layers =
+                toggle'.Layers
+                |> Map.toList
+                |> List.map (fun ((n, d), v) -> (n, d, v)) }
+        { model with Toggle = toggle' }, Cmd.none
     | Msg.ToggleNet (name, vis) ->
         { model with Toggle = Visibility.toggleNet name vis model.Toggle }, Cmd.none
     | Msg.ToggleBlock (name, vis) ->
@@ -481,6 +540,81 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         Rekolektion.Viz.App.Services.Logger.log "route.tool"
             {| op = "mode"; on = next |}
         { model with EditRoutingMode = next }, Cmd.none
+    | Msg.ToggleRoutingMode ->
+        let next = not model.RoutingMode
+        Rekolektion.Viz.App.Services.Logger.log "route.tool"
+            {| op = "wire-mode"; on = next |}
+        // Turning the tool off also aborts any in-flight draft so a
+        // user toggling out can't leave a half-drawn route hanging.
+        { model with
+            RoutingMode = next
+            DraftRoute = if next then model.DraftRoute else None }, Cmd.none
+    | Msg.StartRoute (layer, width, x, y) ->
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some _ ->
+            let draft = Routing.Draft.start layer width (x, y)
+            { model with DraftRoute = Some draft }, Cmd.none
+    | Msg.RouteMouseMove (x, y) ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with DraftRoute = Some (Routing.Draft.setCursor (x, y) d) }, Cmd.none
+    | Msg.RouteFixSegment ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with DraftRoute = Some (Routing.Draft.fix d) }, Cmd.none
+    | Msg.RouteBackspace ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with DraftRoute = Some (Routing.Draft.pop d) }, Cmd.none
+    | Msg.RouteFlipPosture ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with DraftRoute = Some (Routing.Draft.flipPosture d) }, Cmd.none
+    | Msg.RouteAbort ->
+        { model with DraftRoute = None }, Cmd.none
+    | Msg.RouteFinish ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            let segs = Routing.Draft.finishSegments d
+            if List.isEmpty segs then
+                { model with DraftRoute = None }, Cmd.none
+            else
+                match model.ActiveMacroPath with
+                | None -> { model with DraftRoute = None }, Cmd.none
+                | Some path ->
+                    let mutable activePath' = path
+                    let openMacros' =
+                        model.OpenMacros
+                        |> List.map (fun mc ->
+                            if mc.Path <> path then mc
+                            else
+                                let rects =
+                                    segs
+                                    |> List.map
+                                        (rectOfDraftSegment mc.Document.Pdk)
+                                let doc' = appendRectsToTop rects mc.Document
+                                let flat' = Layout.Flatten.flatten doc'
+                                let inst' = Layout.Instances.enumerate doc'
+                                let mc' =
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun mc'' ->
+                                        { mc'' with
+                                            Document = doc'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
+                                    |> EditSession.markDirty
+                                activePath' <- mc'.Path
+                                mc')
+                    { model with
+                        OpenMacros = openMacros'
+                        ActiveMacroPath = Some activePath'
+                        DraftRoute = None }, Cmd.none
     | Msg.ToggleTightenMode ->
         // Toggle on / off. Entering with an empty selection is
         // a no-op (nothing to compute candidates against).

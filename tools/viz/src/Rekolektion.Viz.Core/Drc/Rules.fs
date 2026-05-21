@@ -517,3 +517,29 @@ let allCrossSpacings : CrossSpacingRule list =
             Some { LayerA = a; LayerB = b; MinUm = m
                    CondA = ca; CondB = cb }
         | _ -> None)
+
+// --- ADR-0003 live DRC eligibility -------------------------------------
+//
+// A rule is live-eligible when its violation depends only on local
+// geometry — clearance, width, enclosure, endcap. These can be
+// re-checked on every mouse move during routing without needing the
+// full cell's topology.
+//
+// Commit-only rules (MinArea, BoundaryCrossing, implant-outside-well
+// spacing) depend on aggregates or implant booleans we don't recompute
+// per-frame. They fire on RouteFinish via the full `check` entry
+// point in Check.fs.
+
+let isLiveEligible (rule: Rule) : bool =
+    match rule with
+    | Width _ | Spacing _ | CrossSpacing _ -> true
+    | Enclosure _ | Endcap _ | AsymEnclosure _ -> true
+    | MinArea _ -> false
+    | BoundaryCrossing _ -> false
+    | ImplantOutsideWellSpacing _ -> false
+
+let liveRules : Rule list =
+    allRules |> List.filter isLiveEligible
+
+let liveEligibleNames : Set<string> =
+    liveRules |> List.map nameOf |> Set.ofList

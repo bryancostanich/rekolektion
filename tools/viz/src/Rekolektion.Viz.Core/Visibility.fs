@@ -17,6 +17,11 @@ type ToggleState = {
     /// between all-net set and empty.
     VisibleRatlines : Set<string>
     IsolatedBlock   : string option
+    /// Layer that receives interactive edits (routing, drag, etc.).
+    /// `None` means no layer is focused for editing.
+    /// Invariant: when `Some k`, layer `k` must be visible in
+    /// `Layers`. Set only via `setActiveLayer`, which enforces this.
+    ActiveLayer     : LayerKey option
 }
 
 let empty : ToggleState = {
@@ -26,6 +31,7 @@ let empty : ToggleState = {
     HighlightedNets = Set.empty
     VisibleRatlines = Set.empty
     IsolatedBlock = None
+    ActiveLayer = None
 }
 
 let isLayerVisible (s: ToggleState) (key: LayerKey) : bool =
@@ -90,3 +96,15 @@ let setVisibleRatlines (nets: Set<string>) (s: ToggleState) : ToggleState =
 
 let isolateBlock (block: string option) (s: ToggleState) : ToggleState =
     { s with IsolatedBlock = block }
+
+/// Set (or clear) the active edit layer. When setting to `Some k`,
+/// the layer is also forced visible — focus implies visible. Pass
+/// `None` to clear focus; visibility of any other layer is untouched.
+let setActiveLayer (layer: LayerKey option) (s: ToggleState) : ToggleState =
+    match layer with
+    | Some k ->
+        { s with
+            ActiveLayer = Some k
+            Layers = Map.add k true s.Layers }
+    | None ->
+        { s with ActiveLayer = None }

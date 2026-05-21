@@ -46,6 +46,9 @@ type Msg =
     /// stale across renders and broke re-enable.
     | FlipLayer        of LayerKey
     | SetAllLayers     of visible: bool
+    /// Set the active edit layer (or clear with `None`). Auto-shows
+    /// the layer when set. Dispatched by the 0/1/2/3/4 hotkeys.
+    | SetActiveLayer   of LayerKey option
     | ToggleNet        of name: string * visible: bool
     | ToggleBlock      of name: string * visible: bool
     /// Flip the membership of `net` in HighlightedNets (multi-select).
@@ -56,13 +59,15 @@ type Msg =
     | ToggleNetRatline of net: string
     /// Replace VisibleRatlines wholesale (master + W hotkey).
     | SetVisibleRatlines of nets: Set<string>
+    /// Replace the set of ratline-selected net names. Empty = none.
+    | SetSelectedRatlines of nets: Set<string>
     | IsolateBlock     of block: string option
     | SetTab           of Model.Tab
-    | PolygonPicked    of structure: string * index: int
+    | PolygonPicked    of key: Rekolektion.Viz.Core.Layout.Flatten.PolyKey
     /// Replace the polygon Selection with `sel` (empty = nothing
     /// selected). Canvas dispatches this when shift-click extends
     /// or marquee picks polygons in bulk.
-    | SetPolygonSelection of sel: Set<string * int>
+    | SetPolygonSelection of sel: Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>
     | ClearSelection
     /// Replace the current top-instance selection with `indices`
     /// (empty set = nothing selected). The canvas hit-test path
@@ -81,7 +86,7 @@ type Msg =
     | MovePolygonDbu of structure: string * index: int * dxDbu: int64 * dyDbu: int64
     /// Translate every polygon in `sel` by (dxDbu, dyDbu) in one
     /// undo step. Used by polygon multi-drag.
-    | MovePolygonsDbu of sel: Set<string * int> * dxDbu: int64 * dyDbu: int64
+    | MovePolygonsDbu of sel: Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> * dxDbu: int64 * dyDbu: int64
     /// Remove every currently-selected polygon (Selection set) AND
     /// every selected SRef (InstanceSelection) from the active
     /// macro. Labels anchored to a deleted polygon (per the
@@ -107,15 +112,19 @@ type Msg =
     | ToggleDrc
     /// Toggle the major/minor grid dot overlay (G key).
     | ToggleGrid
-    /// Toggle the origin-anchored ruler overlay (U key).
+    /// Toggle the origin-anchored ruler overlay (L key).
     | ToggleRuler
+    /// Toggle the interactive routing tool on/off (W key). When on,
+    /// canvas clicks start/extend a draft route on the ActiveLayer;
+    /// when off, clicks fall through to normal selection.
+    | ToggleRoutingMode
     /// Toggle layout label text rendering (all `(label …)` forms).
     | ToggleLabels
     /// Toggle drag-snap (S key). When on, move + resize land on
     /// the user grid (Config.SnapDefaultUm, or Config.SnapAltUm
     /// with Alt held). When off, drags go raw.
     | ToggleSnap
-    /// Master "all ratlines on/off" — the W hotkey + the TopBar
+    /// Master "all ratlines on/off" — the U hotkey + the TopBar
     /// button. Implemented as: if VisibleRatlines is non-empty,
     /// clear it; otherwise fill it with every known net.
     | ToggleRatlines
@@ -145,6 +154,26 @@ type Msg =
     /// handles whose orientation pre-constrains the drag axis.
     /// Hotkey: E.
     | ToggleEditRoutingMode
+    /// ADR-0002 — begin drawing a new route on `layer` with `width`,
+    /// anchored at the world-coord `anchor`. Initialises
+    /// `Model.DraftRoute`. No-op when no active macro.
+    | StartRoute       of layer: LayerKey * width: int64 * anchor: int64 * int64
+    /// ADR-0002 — update the live cursor position for the in-flight
+    /// draft. Triggers tentative-L recomputation. No-op when no
+    /// DraftRoute is active.
+    | RouteMouseMove   of x: int64 * y: int64
+    /// ADR-0002 — fix the current tentative L into the draft as a
+    /// new corner. Cursor stays at the click position.
+    | RouteFixSegment
+    /// ADR-0002 — pop the last fixed corner (Backspace during routing).
+    | RouteBackspace
+    /// ADR-0002 — flip the L-shape posture for the in-flight draft.
+    | RouteFlipPosture
+    /// ADR-0002 — commit the entire draft (fixed + tentative) into
+    /// the active macro's top cell as one undo step. Clears DraftRoute.
+    | RouteFinish
+    /// ADR-0002 — discard the draft without committing (Esc).
+    | RouteAbort
     /// Commit a finished route-slide drag (track OR post). Each
     /// entry in `adjusts` is
     /// (sourceIndex, mx1X, mx1Y, my1X, my1Y, mx2X, mx2Y, my2X, my2Y) —

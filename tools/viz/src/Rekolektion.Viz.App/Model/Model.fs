@@ -133,6 +133,19 @@ type Model = {
     /// handle reshapes the route; click-drag elsewhere still
     /// orbits / pans. Mode persists across tab switches.
     EditRoutingMode : bool
+    /// Routing tool armed (W key). When true, canvas left-clicks
+    /// start or extend a draft route on the active layer; when
+    /// false, clicks fall through to normal selection. Independent
+    /// from `DraftRoute` (the tool may be armed without an in-flight
+    /// draft, e.g. just after finishing a previous route).
+    RoutingMode : bool
+    /// In-flight route the user is drawing (ADR-0002). `None` when
+    /// no route is being drawn. Each click during routing appends to
+    /// `Points`; FinishRoute commits the whole batch as one undo
+    /// step into the active macro's top cell; AbortRoute discards.
+    /// The renderer composites these as an overlay on top of the
+    /// cell's existing geometry.
+    DraftRoute : Routing.Draft.DraftRoute option
     /// Path of the tab currently in inline-rename mode (file-tab
     /// title swapped for a TextBox). None when no tab is being
     /// renamed. Cleared on Esc, on commit, or when the user
@@ -172,6 +185,8 @@ let empty : Model = {
     SnapEnabled = false
     TightenMode = false
     EditRoutingMode = false
+    RoutingMode = false
+    DraftRoute = None
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }

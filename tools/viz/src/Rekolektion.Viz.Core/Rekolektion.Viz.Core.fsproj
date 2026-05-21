@@ -36,6 +36,7 @@
     <Compile Include="Net/LabelFlood.fs" />
     <Compile Include="Net/Ratlines.fs" />
     <Compile Include="Routing/Detect.fs" />
+    <Compile Include="Routing/Draft.fs" />
     <Compile Include="Drc/Geometry/Region.fs" />
     <Compile Include="Drc/Geometry/Boolean.fs" />
     <Compile Include="Drc/Geometry/Size.fs" />

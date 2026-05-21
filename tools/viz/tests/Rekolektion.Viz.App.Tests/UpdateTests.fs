@@ -64,6 +64,12 @@ let ``SetTab changes ActiveTab`` () =
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 
+/// Construct a PolyKey from a (cell, idx) tuple. Helper so tests
+/// can keep their concise tuple style while the production model
+/// uses the richer key.
+let private pk (cell: string) (idx: int) : Flatten.PolyKey =
+    { Cell = cell; Index = idx; TopInstance = None }
+
 let private mkRectPoly (x0: int64) (y0: int64) (x1: int64) (y1: int64) : Poly = {
     Layer = Named ("sky130", "met1")
     Points = [
@@ -105,6 +111,7 @@ let private fixtureModel () : Model.Model =
         OriginalPath = "/tmp/fixture.gds"
         Dirty = false
         UndoStack = []
+        RedoStack = []
     }
     { Model.empty with
         OpenMacros = [macro]
@@ -126,28 +133,28 @@ let private runUntilQuiescent (msg: Msg.Msg) (model: Model.Model) : Model.Model 
 
 [<Fact>]
 let ``SetPolygonSelection replaces Selection`` () =
-    let model = { Model.empty with Selection = Set.singleton ("A", 1) }
+    let model = { Model.empty with Selection = Set.singleton (pk "A" 1) }
     let next, _ = Update.update stubBackend
-                    (Msg.SetPolygonSelection (Set.ofList [("B", 2); ("C", 3)]))
+                    (Msg.SetPolygonSelection (Set.ofList [pk "B" 2; pk "C" 3]))
                     model
-    next.Selection |> should equal (Set.ofList [("B", 2); ("C", 3)])
+    next.Selection |> should equal (Set.ofList [pk "B" 2; pk "C" 3])
 
 [<Fact>]
 let ``ClearSelection empties Selection`` () =
-    let model = { Model.empty with Selection = Set.ofList [("A", 1); ("B", 2)] }
+    let model = { Model.empty with Selection = Set.ofList [pk "A" 1; pk "B" 2] }
     let next, _ = Update.update stubBackend Msg.ClearSelection model
-    next.Selection |> should equal (Set.empty : Set<string * int>)
+    next.Selection |> should equal (Set.empty : Set<Flatten.PolyKey>)
 
 [<Fact>]
 let ``PolygonPicked replaces Selection with single`` () =
-    let model = { Model.empty with Selection = Set.ofList [("A", 1); ("B", 2)] }
-    let next, _ = Update.update stubBackend (Msg.PolygonPicked ("X", 9)) model
-    next.Selection |> should equal (Set.singleton ("X", 9))
+    let model = { Model.empty with Selection = Set.ofList [pk "A" 1; pk "B" 2] }
+    let next, _ = Update.update stubBackend (Msg.PolygonPicked (pk "X" 9)) model
+    next.Selection |> should equal (Set.singleton (pk "X" 9))
 
 [<Fact>]
 let ``MovePolygonsDbu translates every polygon in selection`` () =
     let model = fixtureModel ()
-    let sel = Set.ofList [("TOP", 0); ("TOP", 1)]
+    let sel = Set.ofList [pk "TOP" 0; pk "TOP" 1]
     let next = runUntilQuiescent (Msg.MovePolygonsDbu (sel, 50L, -25L)) model
     let macro = next.OpenMacros |> List.head
     let elems = (macro.Document.Cells |> List.head).Elements
@@ -170,7 +177,7 @@ let ``MovePolygonsDbu translates every polygon in selection`` () =
 [<Fact>]
 let ``MovePolygonsDbu only touches polygons in selection`` () =
     let model = fixtureModel ()
-    let sel = Set.singleton ("TOP", 0)
+    let sel = Set.singleton (pk "TOP" 0)
     let next = runUntilQuiescent (Msg.MovePolygonsDbu (sel, 10L, 10L)) model
     let macro = next.OpenMacros |> List.head
     let elems = (macro.Document.Cells |> List.head).Elements
@@ -185,7 +192,7 @@ let ``MovePolygonsDbu with zero delta is a no-op`` () =
     let model = fixtureModel ()
     let originalDoc = (List.head model.OpenMacros).Document
     let next, _ = Update.update stubBackend
-                    (Msg.MovePolygonsDbu (Set.singleton ("TOP", 0), 0L, 0L))
+                    (Msg.MovePolygonsDbu (Set.singleton (pk "TOP" 0), 0L, 0L))
                     model
     let macro = next.OpenMacros |> List.head
     macro.Document |> should equal originalDoc
@@ -214,7 +221,115 @@ let ``MovePolygonDbu routes through MovePolygonsDbu and translates one`` () =
 let ``MovePolygonsDbu pushes an undo snapshot`` () =
     let model = fixtureModel ()
     let next = runUntilQuiescent
-                (Msg.MovePolygonsDbu (Set.singleton ("TOP", 0), 5L, 0L)) model
+                (Msg.MovePolygonsDbu (Set.singleton (pk "TOP" 0), 5L, 0L)) model
     let macro = List.head next.OpenMacros
     macro.UndoStack.Length |> should equal 1
     macro.Dirty |> should equal true
+
+// --- ADR-0002 routing tool ---------------------------------------------
+
+let private met1 : Visibility.LayerKey = (68, 20)
+
+[<Fact>]
+let ``StartRoute initialises DraftRoute at the anchor`` () =
+    let model = fixtureModel ()
+    let next, _ = Update.update stubBackend
+                    (Msg.StartRoute (met1, 320L, 100L, 200L)) model
+    match next.DraftRoute with
+    | None -> failwith "expected DraftRoute to be Some after StartRoute"
+    | Some d ->
+        d.Layer |> should equal met1
+        d.Width |> should equal 320L
+        d.Points |> should equal [(100L, 200L)]
+        d.Cursor |> should equal (None : (int64 * int64) option)
+
+[<Fact>]
+let ``StartRoute is a no-op when no active macro`` () =
+    let next, _ = Update.update stubBackend
+                    (Msg.StartRoute (met1, 320L, 0L, 0L)) Model.empty
+    next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+
+[<Fact>]
+let ``RouteMouseMove updates the live cursor`` () =
+    let model = fixtureModel ()
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (500L, 300L)) m1
+    (Option.get m2.DraftRoute).Cursor |> should equal (Some (500L, 300L))
+
+[<Fact>]
+let ``RouteMouseMove is a no-op when DraftRoute is None`` () =
+    let next, _ = Update.update stubBackend
+                    (Msg.RouteMouseMove (500L, 300L)) Model.empty
+    next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+
+[<Fact>]
+let ``RouteFixSegment appends cursor to Points and clears cursor`` () =
+    let model = fixtureModel ()
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (1000L, 0L)) m1
+    let m3, _ = Update.update stubBackend Msg.RouteFixSegment m2
+    let d = Option.get m3.DraftRoute
+    d.Points |> should equal [(0L, 0L); (1000L, 0L)]
+    d.Cursor |> should equal (None : (int64 * int64) option)
+
+[<Fact>]
+let ``RouteAbort discards DraftRoute without touching the document`` () =
+    let model = fixtureModel ()
+    let originalDoc = (List.head model.OpenMacros).Document
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    let m2, _ = Update.update stubBackend Msg.RouteAbort m1
+    m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+    (List.head m2.OpenMacros).Document |> should equal originalDoc
+    (List.head m2.OpenMacros).Dirty |> should equal false
+    (List.head m2.OpenMacros).UndoStack |> should equal ([] : Document list)
+
+[<Fact>]
+let ``RouteFinish commits segments to the active macro and pushes undo`` () =
+    let model = fixtureModel ()
+    let before = (List.head model.OpenMacros).Document.Cells.[0].Elements.Length
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (1000L, 0L)) m1
+    let m3, _ = Update.update stubBackend Msg.RouteFinish m2
+    // Draft cleared.
+    m3.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+    let macro = List.head m3.OpenMacros
+    // Straight horizontal segment → 1 new RectEl appended.
+    let elems = macro.Document.Cells.[0].Elements
+    elems.Length |> should equal (before + 1)
+    match List.last elems with
+    | RectEl r ->
+        r.Layer |> should equal (Named ("sky130", "met1"))
+        r.X1 |> should equal -160L
+        r.X2 |> should equal 1160L
+    | _ -> failwith "expected RectEl appended by RouteFinish"
+    // Undo pushed, dirty flagged.
+    macro.UndoStack.Length |> should equal 1
+    macro.Dirty |> should equal true
+
+[<Fact>]
+let ``RouteFinish on a degenerate draft (no segments) just clears DraftRoute`` () =
+    let model = fixtureModel ()
+    let originalDoc = (List.head model.OpenMacros).Document
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    // No mouse move → no cursor → finishSegments = [] (only anchor).
+    let m2, _ = Update.update stubBackend Msg.RouteFinish m1
+    m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+    (List.head m2.OpenMacros).Document |> should equal originalDoc
+    (List.head m2.OpenMacros).UndoStack |> should equal ([] : Document list)
+
+[<Fact>]
+let ``RouteFinish with no active macro clears DraftRoute and does nothing else`` () =
+    // Manually inject a DraftRoute since StartRoute would refuse
+    // without an active macro.
+    let draft = Routing.Draft.start met1 320L (0L, 0L) |> Routing.Draft.setCursor (1000L, 0L)
+    let model = { Model.empty with DraftRoute = Some draft }
+    let next, _ = Update.update stubBackend Msg.RouteFinish model
+    next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)

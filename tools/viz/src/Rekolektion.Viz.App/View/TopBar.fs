@@ -47,13 +47,13 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.onClick (fun _ -> dispatch Msg.ToggleDrc)
         ] :> IView
     // "On" = at least one net's ratline is visible. Master toggle
-    // (W key / button) flips between all-on and all-off in Update.
+    // (U key / button) flips between all-on and all-off in Update.
     let ratlinesActive = not model.Toggle.VisibleRatlines.IsEmpty
     let ratBg = if ratlinesActive then "#8a6b1c" else "#262626"
     let ratFg = if ratlinesActive then "#ffffff" else "#bbbbbb"
     let ratlinesToggle : IView =
         Button.create [
-            Button.content "Ratlines (W)"
+            Button.content "Ratlines (U)"
             Button.background ratBg
             Button.foreground ratFg
             Button.borderThickness (Thickness(0.0))
@@ -63,7 +63,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ToggleRatlines)
         ] :> IView
-    // Grid / Ruler / Snap mirror the keyboard hotkeys G / U / S.
+    // Grid / Ruler / Snap mirror the keyboard hotkeys G / L / S.
     // Cyan accent when active so they pop alongside the existing
     // overlays without colliding with the amber ratlines or red
     // DRC color slots.
@@ -82,7 +82,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.onClick (fun _ -> dispatch msg)
         ] :> IView
     let gridToggle    = mkToggle "Grid (G)"     model.ShowGrid    "#2c4b6f" Msg.ToggleGrid
-    let rulerToggle   = mkToggle "Ruler (U)"    model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
+    let rulerToggle   = mkToggle "Ruler (L)"    model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
     let labelsToggle  = mkToggle "Labels"       model.ShowLabels  "#2c4b6f" Msg.ToggleLabels
     let snapToggle    = mkToggle "Snap (S)"     model.SnapEnabled "#2c4b6f" Msg.ToggleSnap
     // Tighten mode lives next to the editor-action toggles so the
@@ -97,6 +97,11 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     let editRoutingToggle =
         mkToggle "Edit Routing (E)" model.EditRoutingMode "#a85a1f"
             Msg.ToggleEditRoutingMode
+    // Wire tool — interactive routing on the active layer (ADR-0002).
+    // Hotkey: W. Same accent family as Edit Routing so the two
+    // routing-related modes group visually.
+    let wireToggle =
+        mkToggle "Wire (W)" model.RoutingMode "#a85a1f" Msg.ToggleRoutingMode
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -120,6 +125,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     labelsToggle
                                     tightenToggle
                                     editRoutingToggle
+                                    wireToggle
                                     ratlinesToggle
                                     drcToggle
                                     dimensionsToggle

@@ -148,13 +148,19 @@ type MainWindow() as this =
                 AppDispatch.send Msg.ToggleDrc
                 e.Handled <- true
             | Key.W, KeyModifiers.None ->
+                // W = wire (interactive routing tool, ADR-0002).
+                AppDispatch.send Msg.ToggleRoutingMode
+                e.Handled <- true
+            | Key.U, KeyModifiers.None ->
+                // U = ratlines master on/off.
                 AppDispatch.send Msg.ToggleRatlines
+                e.Handled <- true
+            | Key.L, KeyModifiers.None ->
+                // L = ruler overlay.
+                AppDispatch.send Msg.ToggleRuler
                 e.Handled <- true
             | Key.G, KeyModifiers.None ->
                 AppDispatch.send Msg.ToggleGrid
-                e.Handled <- true
-            | Key.U, KeyModifiers.None ->
-                AppDispatch.send Msg.ToggleRuler
                 e.Handled <- true
             | Key.S, KeyModifiers.None ->
                 AppDispatch.send Msg.ToggleSnap
@@ -192,6 +198,52 @@ type MainWindow() as this =
                 // geometry sprouts gizmo handles for drag-track /
                 // drag-post / Opt-drag-jog operations.
                 AppDispatch.send Msg.ToggleEditRoutingMode
+                e.Handled <- true
+            | Key.OemTilde, KeyModifiers.None ->
+                // Backtick (`) — left of 1 on the number row. Maps to
+                // li1 so the ergonomic order along the row is
+                // li1 / met1 / met2 / met3 / met4.
+                AppDispatch.send (Msg.SetActiveLayer (Some (67, 20)))   // li1
+                e.Handled <- true
+            | Key.D1, KeyModifiers.None ->
+                AppDispatch.send (Msg.SetActiveLayer (Some (68, 20)))   // met1
+                e.Handled <- true
+            | Key.D2, KeyModifiers.None ->
+                AppDispatch.send (Msg.SetActiveLayer (Some (69, 20)))   // met2
+                e.Handled <- true
+            | Key.D3, KeyModifiers.None ->
+                AppDispatch.send (Msg.SetActiveLayer (Some (70, 20)))   // met3
+                e.Handled <- true
+            | Key.D4, KeyModifiers.None ->
+                AppDispatch.send (Msg.SetActiveLayer (Some (71, 20)))   // met4
+                e.Handled <- true
+            // ADR-0002 — in-flight route keys take precedence over the
+            // generic delete / esc bindings when a draft is active.
+            | Key.Escape, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.DraftRoute.IsSome)
+                    |> Option.defaultValue false) ->
+                AppDispatch.send Msg.RouteAbort
+                e.Handled <- true
+            | Key.Enter, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.DraftRoute.IsSome)
+                    |> Option.defaultValue false) ->
+                AppDispatch.send Msg.RouteFinish
+                e.Handled <- true
+            | Key.Back, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.DraftRoute.IsSome)
+                    |> Option.defaultValue false) ->
+                AppDispatch.send Msg.RouteBackspace
+                e.Handled <- true
+            | Key.OemQuestion, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.DraftRoute.IsSome)
+                    |> Option.defaultValue false) ->
+                // Slash (`/`) flips the L-shape posture mid-route.
+                // Avalonia maps `/` on US layouts to OemQuestion.
+                AppDispatch.send Msg.RouteFlipPosture
                 e.Handled <- true
             | Key.Escape, KeyModifiers.None
               when (Services.AppDispatch.currentModel

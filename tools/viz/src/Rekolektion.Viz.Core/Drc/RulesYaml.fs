@@ -427,3 +427,29 @@ let loadEffective
               Errors = Map.empty },
             "<no-override>"
     merge base' basePath over overSource
+
+/// Convert a merged ruleset into a `Rules.RulesetView` for the DRC
+/// engine. Wraps `Rules.viewOf` so consumers don't need to touch
+/// the underlying record shape.
+let toView (m: MergedRuleset) : RulesetView =
+    viewOf m.Rules m.Provenance
+
+/// App-boot entry: locate the base YAML for `pdk` (e.g. `"sky130"`)
+/// via `Rules.tryLocateBaseYaml`, layer the optional override on
+/// top, and return the resulting `RulesetView`. Falls back to
+/// `Rules.defaultView` (the F#-coded rule table) when no base
+/// YAML is on disk — keeps the app working in environments where
+/// the bundled file got stripped.
+let loadEffectiveOrDefault
+        (pdk: string)
+        (overridePath: string option)
+        : RulesetView =
+    match tryLocateBaseYaml pdk with
+    | None -> defaultView
+    | Some basePath ->
+        try
+            loadEffective basePath overridePath |> toView
+        with _ ->
+            // Disk-load failure (corrupt YAML, IO error) must not
+            // break the editor — fall back to defaults.
+            defaultView

@@ -102,6 +102,12 @@ type Model = {
     /// `Drc.Check.checkWithToggles` — any rule whose name appears
     /// here is skipped. Empty by default = run every rule.
     DisabledDrcRules : Set<string>
+    /// ADR-0004 — effective DRC ruleset (base + optional override)
+    /// loaded from disk at boot, or `Rules.defaultView` when no
+    /// YAML files are configured. Flows to the canvas for live +
+    /// commit DRC; the provenance map lets the Inspector surface
+    /// "this rule came from overrides/v1_tapeout.yaml" later.
+    DrcView : Drc.Rules.RulesetView
     /// Grid overlay: major + minor dots. Toggled by G. Per-µm
     /// spacing comes from Services.Config.current. Persists
     /// across tab switches. Independent from ShowRuler.
@@ -179,6 +185,7 @@ let empty : Model = {
     ShowDimensions = false
     ShowDrc = false
     DisabledDrcRules = Set.empty
+    DrcView = Drc.Rules.defaultView
     ShowGrid = true
     ShowRuler = true
     ShowLabels = true

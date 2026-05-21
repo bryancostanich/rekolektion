@@ -312,6 +312,47 @@ let ``Bundled drc/base/sky130.yaml stays in sync with Rules.allRules`` () =
         failwithf "Bundled sky130.yaml is out of date. %s\nRegenerate with `dotnet fsi tools/viz/scripts/dump_drc_yaml.fsx`." hint
 
 [<Fact>]
+let ``tryLocateBaseYaml finds the bundled sky130.yaml on the disk-probe path`` () =
+    // The bundled file is shipped as test Content next to the
+    // test binary; the probe walks ancestors of the assembly dir
+    // looking for `drc/base/<pdk>.yaml`. Should find it cleanly.
+    match Rules.tryLocateBaseYaml "sky130" with
+    | None -> failwith "expected to locate bundled sky130.yaml"
+    | Some p -> File.Exists p |> should equal true
+
+[<Fact>]
+let ``tryLocateBaseYaml returns None for an unknown PDK`` () =
+    Rules.tryLocateBaseYaml "no-such-pdk-xyz"
+    |> should equal (None : string option)
+
+[<Fact>]
+let ``loadEffectiveOrDefault returns the bundled view, not defaultView`` () =
+    let view = RulesYaml.loadEffectiveOrDefault "sky130" None
+    view.Rules.Length |> should equal Rules.allRules.Length
+    // Bundled provenance points at the file the loader found.
+    view.Provenance |> Map.isEmpty |> should equal false
+
+[<Fact>]
+let ``loadEffectiveOrDefault falls back to defaultView for an unknown PDK`` () =
+    let view = RulesYaml.loadEffectiveOrDefault "no-such-pdk-xyz" None
+    view.Rules |> should equal Rules.allRules
+    view.Provenance |> should equal (Map.empty : Map<string, string>)
+
+[<Fact>]
+let ``loadEffectiveOrDefault layers an override file on top of the bundled base`` () =
+    let met1Key : LayerKey = { Number = 68; DataType = 20 }
+    let overPath = writeTempYaml [ Spacing ("met1.2", met1Key, 0.18) ]
+    try
+        let view = RulesYaml.loadEffectiveOrDefault "sky130" (Some overPath)
+        // The override entry replaces the base met1.2 (which is 0.14).
+        view.Rules
+        |> List.find (fun r -> nameOf r = "met1.2")
+        |> should equal (Spacing ("met1.2", met1Key, 0.18))
+        view.Provenance.["met1.2"] |> should equal overPath
+    finally
+        File.Delete overPath
+
+[<Fact>]
 let ``Bundled drc/base/sky130.yaml round-trips back to Rules.allRules content`` () =
     // `Rules.allRules` legitimately re-uses some Magic rule names
     // across kinds (e.g. `poly.9` appears as two CrossSpacings AND

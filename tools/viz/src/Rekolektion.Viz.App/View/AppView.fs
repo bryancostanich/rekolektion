@@ -169,6 +169,11 @@ let private gds2DRouteFinishHandlerAttr
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
         GdsCanvasControl.RouteFinishHandlerProperty, h, ValueNone)
 
+let private gds2DDrcViewAttr
+        (v: Drc.Rules.RulesetView) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Drc.Rules.RulesetView>(
+        GdsCanvasControl.DrcViewProperty, v, ValueNone)
+
 let private stack3DLibraryAttr (v: Document option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Document option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
@@ -286,7 +291,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DRouteFixSegmentHandlerAttr
                   (System.Action(fun () -> dispatch Msg.RouteFixSegment))
               gds2DRouteFinishHandlerAttr
-                  (System.Action(fun () -> dispatch Msg.RouteFinish)) ]
+                  (System.Action(fun () -> dispatch Msg.RouteFinish))
+              gds2DDrcViewAttr model.DrcView ]
 
     let pickedHandler =
         System.Action<Layout.Flatten.PolyKey>(fun pk ->

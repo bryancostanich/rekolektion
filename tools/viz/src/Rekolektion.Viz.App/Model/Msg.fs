@@ -49,6 +49,10 @@ type Msg =
     /// Set the active edit layer (or clear with `None`). Auto-shows
     /// the layer when set. Dispatched by the 0/1/2/3/4 hotkeys.
     | SetActiveLayer   of LayerKey option
+    /// ADR-0004 — replace the effective DRC ruleset. Dispatched at
+    /// app boot once `Drc.Rules.tryLoadEffectiveView` finishes (or
+    /// later if the user picks a new override file).
+    | SetDrcView       of Rekolektion.Viz.Core.Drc.Rules.RulesetView
     | ToggleNet        of name: string * visible: bool
     | ToggleBlock      of name: string * visible: bool
     /// Flip the membership of `net` in HighlightedNets (multi-select).

@@ -357,6 +357,11 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 |> Map.toList
                 |> List.map (fun ((n, d), v) -> (n, d, v)) }
         { model with Toggle = toggle' }, Cmd.none
+    | Msg.SetDrcView view ->
+        Rekolektion.Viz.App.Services.Logger.log "drc.view"
+            {| rules = view.Rules.Length
+               provenance = view.Provenance.Count |}
+        { model with DrcView = view }, Cmd.none
     | Msg.ToggleNet (name, vis) ->
         { model with Toggle = Visibility.toggleNet name vis model.Toggle }, Cmd.none
     | Msg.ToggleBlock (name, vis) ->

@@ -1122,6 +1122,14 @@ type GdsCanvasControl() as this =
         AvaloniaProperty.Register<GdsCanvasControl, Action>(
             "RouteFinishHandler", null)
         with get
+    /// ADR-0004 — effective DRC ruleset (rules + per-rule provenance).
+    /// Flows from Model.DrcView via AppView. The canvas reads this
+    /// for every DRC call (live route DRC + commit DRC overlays).
+    static member val DrcViewProperty
+            : StyledProperty<Drc.Rules.RulesetView> =
+        AvaloniaProperty.Register<GdsCanvasControl, Drc.Rules.RulesetView>(
+            "DrcView", Drc.Rules.defaultView)
+        with get
 
     member this.Library
         with get() : Document option = this.GetValue(GdsCanvasControl.LibraryProperty)
@@ -1302,6 +1310,12 @@ type GdsCanvasControl() as this =
         and set(v: Action) =
             this.SetValue(GdsCanvasControl.RouteFinishHandlerProperty, v) |> ignore
 
+    member this.DrcView
+        with get() : Drc.Rules.RulesetView =
+            this.GetValue(GdsCanvasControl.DrcViewProperty)
+        and set(v: Drc.Rules.RulesetView) =
+            this.SetValue(GdsCanvasControl.DrcViewProperty, v) |> ignore
+
     override _.MeasureOverride(constraint': Size) : Size =
         let w =
             if System.Double.IsInfinity constraint'.Width then 200.0
@@ -1387,7 +1401,8 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.SnapEnabledProperty
              || e.Property = GdsCanvasControl.DraftRouteProperty
              || e.Property = GdsCanvasControl.RoutingModeProperty
-             || e.Property = GdsCanvasControl.ActiveLayerProperty then
+             || e.Property = GdsCanvasControl.ActiveLayerProperty
+             || e.Property = GdsCanvasControl.DrcViewProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
             // (Tighten, drag, rotate, mirror) don't snap the
@@ -1422,7 +1437,7 @@ type GdsCanvasControl() as this =
                             let draftFlat =
                                 Routing.Draft.allSegments r
                                 |> Routing.Draft.toFlatPolygons
-                            Drc.Check.runLive Drc.Rules.defaultView units
+                            Drc.Check.runLive this.DrcView units
                                 this.FlatPolygons draftFlat Map.empty
                                 this.DisabledDrcRules
                 with _ ->
@@ -2696,7 +2711,7 @@ type GdsCanvasControl() as this =
                         let tags = Drc.Implant.tagAll staticFlat
                         let vs =
                             Drc.Check.checkWithToggles
-                                Drc.Rules.defaultView
+                                this.DrcView
                                 lib.Units staticFlat tags disabled
                         cachedDrcFlat <- staticFlat
                         cachedDrcImplantTags <- tags
@@ -2748,7 +2763,7 @@ type GdsCanvasControl() as this =
                             // live state — slow but correct.
                             let tags = Drc.Implant.tagAll renderFlat
                             Drc.Check.checkWithToggles
-                                Drc.Rules.defaultView
+                                this.DrcView
                                 renderLib.Units renderFlat tags disabled
                         else
                             // Affected = union bbox of all
@@ -2803,7 +2818,7 @@ type GdsCanvasControl() as this =
                                 Drc.Implant.tagAll smallFlat
                             let fresh =
                                 Drc.Check.checkWithToggles
-                                    Drc.Rules.defaultView
+                                    this.DrcView
                                     renderLib.Units smallFlat smallTags disabled
                             Array.append kept fresh
                 else

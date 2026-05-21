@@ -573,3 +573,21 @@ let viewOf (rules: Rule list) (provenance: Map<string, string>) : RulesetView = 
     Rules = rules
     Provenance = provenance
 }
+
+/// Probe well-known locations for `drc/base/<pdk>.yaml`, walking
+/// upward from the executing assembly so dev runs (test bin, raw
+/// `dotnet run` from any subdir) and installed copies all resolve.
+/// Returns the first existing path, or `None` if none of the
+/// candidates exist.
+let tryLocateBaseYaml (pdk: string) : string option =
+    let asmDir =
+        System.IO.Path.GetDirectoryName(typeof<RulesetView>.Assembly.Location)
+    let leaf =
+        System.IO.Path.Combine("drc", "base", sprintf "%s.yaml" pdk)
+    let rec ancestors (dir: string) (depth: int) =
+        if depth > 8 || System.String.IsNullOrEmpty dir then []
+        else
+            dir :: ancestors (System.IO.Path.GetDirectoryName dir) (depth + 1)
+    ancestors asmDir 0
+    |> List.map (fun d -> System.IO.Path.Combine(d, leaf))
+    |> List.tryFind System.IO.File.Exists

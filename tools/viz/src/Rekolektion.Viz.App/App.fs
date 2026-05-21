@@ -118,13 +118,23 @@ type MainWindow() as this =
                 sess.Layers
                 |> List.fold (fun t (n, d, v) ->
                     Rekolektion.Viz.Core.Visibility.toggleLayer (n, d) v t) baseToggle
+            // ADR-0004 — load the effective DRC ruleset at boot.
+            // `loadEffectiveOrDefault` falls back to the F#-coded
+            // defaults if the bundled YAML can't be found or fails
+            // to parse, so the editor stays usable in either case.
+            let drcView =
+                Rekolektion.Viz.Core.Drc.RulesYaml.loadEffectiveOrDefault
+                    "sky130" None
             Services.Logger.log "session"
                 {| op = "init"
                    layersFromSession = sess.Layers.Length
-                   toggleLayerEntries = toggle.Layers.Count |}
+                   toggleLayerEntries = toggle.Layers.Count
+                   drcRules = drcView.Rules.Length
+                   drcProvenanceEntries = drcView.Provenance.Count |}
             { Model.empty with
                 RecentFiles = Services.Recents.load ()
-                Toggle = toggle }, Cmd.none
+                Toggle = toggle
+                DrcView = drcView }, Cmd.none
         let update = Update.update backend
         let view = AppView.view
 

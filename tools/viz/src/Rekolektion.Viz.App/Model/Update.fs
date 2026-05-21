@@ -485,20 +485,41 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // sidecar loaded alongside the cell. .rkt cells without a
         // sidecar leave it empty — historically this made the U
         // hotkey + TopBar Ratlines button silently fail. Fall back
-        // to deriving nets directly from the document's labels
-        // (same pass `Net.LabelFlood.derive` already runs for live
-        // DRC) so the toggle works on every cell.
-        let nextSet =
-            if not model.Toggle.VisibleRatlines.IsEmpty then Set.empty
-            else
-                match Model.activeMacro model with
-                | None -> Set.empty
-                | Some m ->
-                    let nets =
-                        if m.Nets.IsEmpty then Net.LabelFlood.derive m.Document
-                        else m.Nets
+        // to deriving nets directly from the document's labels via
+        // `Net.LabelFlood.derive`, AND cache the result back onto
+        // the LoadedMacro so subsequent toggles don't re-derive
+        // (the derive cost is what beachballed the U press the
+        // first time after load).
+        if not model.Toggle.VisibleRatlines.IsEmpty then
+            // Clear path — no derive needed.
+            { model with
+                Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle },
+            Cmd.none
+        else
+            match Model.activeMacro model, model.ActiveMacroPath with
+            | Some m, Some path ->
+                let nets, cachedNew =
+                    if m.Nets.IsEmpty then
+                        Net.LabelFlood.derive m.Document, true
+                    else
+                        m.Nets, false
+                let nextSet =
                     nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
-        { model with Toggle = Visibility.setVisibleRatlines nextSet model.Toggle }, Cmd.none
+                let openMacros' =
+                    if not cachedNew then model.OpenMacros
+                    else
+                        model.OpenMacros
+                        |> List.map (fun mc ->
+                            if mc.Path <> path then mc
+                            else { mc with Nets = nets })
+                { model with
+                    OpenMacros = openMacros'
+                    Toggle = Visibility.setVisibleRatlines nextSet model.Toggle },
+                Cmd.none
+            | _ ->
+                { model with
+                    Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle },
+                Cmd.none
     | Msg.RouteSlideCommit (cell, dxDbu, dyDbu, adjusts, extensions) ->
         if (dxDbu = 0L && dyDbu = 0L)
            || (List.isEmpty adjusts && List.isEmpty extensions) then

@@ -1735,6 +1735,17 @@ type GdsCanvasControl() as this =
                                 startInIdx <- i
                             if cursorInIdx < 0 && inside cursorPt graph.Obstacles.[i] then
                                 cursorInIdx <- i
+                        // How many polygons does the start net actually
+                        // own? Zero means LabelFlood / sidecar didn't
+                        // include the labeled-pin polygon under net
+                        // `startNet`, so `netOf` falls back to None
+                        // and the defensive "unknown → foreign" rule
+                        // makes the user's OWN start patch an obstacle.
+                        let startNetClaimed =
+                            match Map.tryFind key.StartNet key.NetMapRef with
+                            | Some entry -> entry.Polygons.Length
+                            | None -> -1
+                        let netNameCount = key.NetMapRef.Count
                         if swBuild.ElapsedMilliseconds + swSearch.ElapsedMilliseconds >= 2L
                            || pointerMoveCount % 30 = 0
                            || searchOutcome = "noPath" then
@@ -1746,6 +1757,8 @@ type GdsCanvasControl() as this =
                                    corners = result.Length
                                    outcome = searchOutcome
                                    startNet = key.StartNet
+                                   startNetClaimed = startNetClaimed
+                                   netNameCount = netNameCount
                                    startX = startPt.X
                                    startY = startPt.Y
                                    cursorX = cursorPt.X

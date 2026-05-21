@@ -46,6 +46,7 @@
     <Compile Include="Routing/LiveDrc.fs" />
     <Compile Include="Routing/Obstacles.fs" />
     <Compile Include="Routing/VisibilityGraph.fs" />
+    <Compile Include="Routing/WalkAround.fs" />
     <Compile Include="Drc/Geometry/Region.fs" />
     <Compile Include="Drc/Geometry/Boolean.fs" />
     <Compile Include="Drc/Geometry/Size.fs" />

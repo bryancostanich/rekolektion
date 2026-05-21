@@ -42,6 +42,7 @@
     <Compile Include="RoutingLiveDrcTests.fs" />
     <Compile Include="RoutingObstaclesTests.fs" />
     <Compile Include="RoutingVisibilityGraphTests.fs" />
+    <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="UniformGridTests.fs" />
     <Compile Include="LiveDrcTests.fs" />
     <Compile Include="RulesYamlTests.fs" />

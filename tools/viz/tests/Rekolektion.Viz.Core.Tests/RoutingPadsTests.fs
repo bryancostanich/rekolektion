@@ -41,13 +41,15 @@ let ``met3 endpoint pad is 489 nm (met3.6 min-area dominates)`` () =
     |> should equal (Some 489L)
 
 [<Fact>]
-let ``li1 endpoint pad is 330 nm (li.5 around licon dominates)`` () =
-    // li.5 AsymEnclosure(li1, licon1, 0.08, 0.0) + licon.1 width 0.17
-    // → 170 + 2*80 = 330 nm. li.6 min-area 0.0561 µm² → 237 nm.
-    // Max = 330 nm.
+let ``li1 endpoint pad is None — primitives manage their own li1 pin patches`` () =
+    // li1 is explicitly excluded from router-emitted pads. Pin
+    // patches on li1 come from the primitive generators
+    // (gen_*_core → pin_patch). Painting a knuckle here would
+    // either visually duplicate the existing patch or trip
+    // `mcon.2` against the primitive's mcons.
     let li1Key : int * int = (67, 20)
     Pads.endpointPadSide Rules.defaultView units1nm li1Key
-    |> should equal (Some 330L)
+    |> should equal (None : int64 option)
 
 [<Fact>]
 let ``endpointPadSide returns None for a layer absent from the rule table`` () =

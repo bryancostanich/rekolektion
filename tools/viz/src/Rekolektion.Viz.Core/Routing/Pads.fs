@@ -21,11 +21,23 @@ open Rekolektion.Viz.Core.Drc.Rules
 /// view — callers (RouteFinish) skip pad emission and leave the
 /// wire endpoint bare. Add the layer's enclosure rule to expand
 /// coverage.
+/// Layers explicitly excluded from endpoint-pad emission. Pin
+/// patches on these layers are managed by primitive generators
+/// (the `pin_patch` helper in the .rkt workflow), not by the
+/// interactive router — a square knuckle here would stack on top
+/// of an existing patch and either visually duplicate it or trip
+/// `mcon.2` spacing against the primitive's own mcons.
+let private noPadLayers : Set<int * int> = Set.ofList [
+    (67, 20)   // li1 — pin patches come from gen_*_core primitives
+]
+
 let endpointPadSide
         (view: RulesetView)
         (units: Units)
         ((layerNum, layerDt): int * int)
         : int64 option =
+    if noPadLayers.Contains (layerNum, layerDt) then None
+    else
     let umPerDbu = float units.DbuNm * 1.0e-3
     // (number, datatype) → width-in-µm lookup from Width rules.
     let widthByLayer =

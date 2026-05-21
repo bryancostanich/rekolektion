@@ -77,16 +77,59 @@ let private routingContacts : Map<int * int, (int * int) list> =
 let derive (doc: Document) : Map<string, NetEntry> =
     let polys = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
     let labels = Rekolektion.Viz.Core.Layout.Flatten.flattenLabels doc
-    let pointsList (p: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) =
-        Array.toList p.Points
 
-    // Bucket polys by (Layer, DataType) once so every per-label
-    // flood doesn't re-scan the full flat array.
-    let byLayer : Map<int * int, (int * Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) array> =
+    // --- One-time per-polygon caches ---------------------------------
+    // The previous implementation called `Array.toList p.Points` per
+    // `touch` test — for an N-poly cell that's N² fresh List<Point>
+    // allocations in the flood-fill, the GC dominator. Cache them.
+    let n = polys.Length
+    let cachedPts : Point list array = Array.zeroCreate n
+    let cachedBbox : (int64 * int64 * int64 * int64) array = Array.zeroCreate n
+    for i in 0 .. n - 1 do
+        let p = polys.[i]
+        cachedPts.[i] <- Array.toList p.Points
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for pt in p.Points do
+            if pt.X < xMin then xMin <- pt.X
+            if pt.X > xMax then xMax <- pt.X
+            if pt.Y < yMin then yMin <- pt.Y
+            if pt.Y > yMax then yMax <- pt.Y
+        cachedBbox.[i] <- (xMin, yMin, xMax, yMax)
+
+    // Bbox-first touch, indexed: bbox-reject before pointInPolygon
+    // is the second-biggest win after killing the alloc.
+    let touchIdx (a: int) (b: int) : bool =
+        if not (bboxOverlap cachedBbox.[a] cachedBbox.[b]) then false
+        else
+            let aPts = cachedPts.[a]
+            let bPts = cachedPts.[b]
+            aPts |> List.exists (fun p -> pointInPolygon p bPts)
+            || bPts |> List.exists (fun p -> pointInPolygon p aPts)
+
+    // Buckets:
+    //   `byLayer`  — by (Layer, DataType), used by the flood for
+    //                same-layer + contact-layer + cross-routing
+    //                neighbor search.
+    //   `byLayerNum` — by Layer number ONLY, used by the seed
+    //                  lookup since labels and their target polys
+    //                  match on Layer but typically differ on the
+    //                  datatype/texttype axis (e.g. drawing=20 vs
+    //                  label=5). The old code scanned every poly
+    //                  per label; this restricts to the right layer.
+    let byLayer : Map<int * int, int array> =
         polys
         |> Array.mapi (fun i p -> i, p)
         |> Array.groupBy (fun (_, p) -> p.Layer, p.DataType)
-        |> Array.map (fun (k, arr) -> k, arr)
+        |> Array.map (fun (k, arr) -> k, arr |> Array.map fst)
+        |> Map.ofArray
+    let byLayerNum : Map<int, int array> =
+        polys
+        |> Array.mapi (fun i p -> i, p)
+        |> Array.groupBy (fun (_, p) -> p.Layer)
+        |> Array.map (fun (k, arr) -> k, arr |> Array.map fst)
         |> Map.ofArray
 
     labels
@@ -95,11 +138,23 @@ let derive (doc: Document) : Map<string, NetEntry> =
         // (D / G / S / B), not net names. Treating them as nets would
         // collapse every device's gate into one fake "G" entry.
         if lbl.Text = "" || lbl.Kind <> NetName then acc else
+        // Seed lookup: only walk polys on lbl.Layer, and bbox-reject
+        // before the more expensive pointInPolygon test.
         let seedIdx =
-            polys
-            |> Array.tryFindIndex (fun p ->
-                p.Layer = lbl.Layer
-                && pointInPolygon lbl.Origin (pointsList p))
+            match Map.tryFind lbl.Layer byLayerNum with
+            | None -> None
+            | Some arr ->
+                let mutable found = -1
+                let mutable i = 0
+                while found < 0 && i < arr.Length do
+                    let idx = arr.[i]
+                    let (xMin, yMin, xMax, yMax) = cachedBbox.[idx]
+                    if lbl.Origin.X >= xMin && lbl.Origin.X <= xMax
+                       && lbl.Origin.Y >= yMin && lbl.Origin.Y <= yMax
+                       && pointInPolygon lbl.Origin cachedPts.[idx] then
+                        found <- idx
+                    i <- i + 1
+                if found < 0 then None else Some found
         match seedIdx with
         | None -> acc
         | Some i0 ->
@@ -112,15 +167,14 @@ let derive (doc: Document) : Map<string, NetEntry> =
                 let curIdx = queue.Dequeue()
                 let cur = polys.[curIdx]
                 collected.Add cur
-                let curPts = pointsList cur
                 let curKey = cur.Layer, cur.DataType
                 // Same-(layer, datatype) flood: any touching poly
                 // on the same routing layer shares the net.
                 match Map.tryFind curKey byLayer with
                 | Some arr ->
-                    for (cIdx, cand) in arr do
+                    for cIdx in arr do
                         if not (visited.Contains cIdx)
-                           && touch curPts (pointsList cand) then
+                           && touchIdx curIdx cIdx then
                             visited.Add cIdx |> ignore
                             queue.Enqueue cIdx |> ignore
                 | None -> ()
@@ -135,9 +189,8 @@ let derive (doc: Document) : Map<string, NetEntry> =
                     for contactKey in contactKeys do
                         match Map.tryFind contactKey byLayer with
                         | Some contactArr ->
-                            for (_, contactPoly) in contactArr do
-                                let contactPts = pointsList contactPoly
-                                if touch curPts contactPts then
+                            for contactIdx in contactArr do
+                                if touchIdx curIdx contactIdx then
                                     // Routing layers wired by
                                     // THIS contact.
                                     match Map.tryFind contactKey contactBridges with
@@ -146,9 +199,9 @@ let derive (doc: Document) : Map<string, NetEntry> =
                                             if routingKey <> curKey then
                                                 match Map.tryFind routingKey byLayer with
                                                 | Some otherArr ->
-                                                    for (oIdx, otherPoly) in otherArr do
+                                                    for oIdx in otherArr do
                                                         if not (visited.Contains oIdx)
-                                                           && touch contactPts (pointsList otherPoly) then
+                                                           && touchIdx contactIdx oIdx then
                                                             visited.Add oIdx |> ignore
                                                             queue.Enqueue oIdx |> ignore
                                                 | None -> ()

@@ -1675,7 +1675,22 @@ type GdsCanvasControl() as this =
                                 || not (obj.ReferenceEquals(k.FlatPolyRef, key.FlatPolyRef))
                                 || not (obj.ReferenceEquals(k.NetMapRef,  key.NetMapRef))
                         if needRebuild then
+                            // INSTRUMENTATION: graph build is on the
+                            // UI thread for now — if this is slow on
+                            // real cells we'll see it in the log and
+                            // can push the build into the background
+                            // task. flatLen / netCount let us tell
+                            // whether the cost is scaling with cell
+                            // size as expected.
+                            let swBuild = System.Diagnostics.Stopwatch.StartNew()
                             let g = Routing.WalkAround.buildGraph key
+                            swBuild.Stop()
+                            Rekolektion.Viz.App.Services.Logger.log "walkaround.graph.build"
+                                {| ms = swBuild.ElapsedMilliseconds
+                                   flatLen = key.FlatPolyRef.Length
+                                   netCount = key.NetMapRef.Count
+                                   nodes = g.Nodes.Length
+                                   obstacles = g.Obstacles.Length |}
                             cachedWalkGraph <- Some g
                             cachedWalkKey   <- Some key
                             g
@@ -1689,19 +1704,28 @@ type GdsCanvasControl() as this =
                     // already (start and cursor stripped) — the
                     // dispatch layer never sees `Pt`s past this seam.
                     let compute () : (int64 * int64) list =
-                        try
-                            match Routing.WalkAround.route graph startPt cursorPt with
-                            | None -> []
-                            | Some nodes ->
-                                match nodes with
-                                | _ :: rest ->
-                                    rest
-                                    |> List.rev
-                                    |> (fun xs -> match xs with _ :: t -> t | [] -> [])
-                                    |> List.rev
-                                    |> List.map (fun pt -> pt.X, pt.Y)
-                                | [] -> []
-                        with _ -> []
+                        let sw = System.Diagnostics.Stopwatch.StartNew()
+                        let result =
+                            try
+                                match Routing.WalkAround.route graph startPt cursorPt with
+                                | None -> []
+                                | Some nodes ->
+                                    match nodes with
+                                    | _ :: rest ->
+                                        rest
+                                        |> List.rev
+                                        |> (fun xs -> match xs with _ :: t -> t | [] -> [])
+                                        |> List.rev
+                                        |> List.map (fun pt -> pt.X, pt.Y)
+                                    | [] -> []
+                            with _ -> []
+                        sw.Stop()
+                        if sw.ElapsedMilliseconds >= 2L
+                           || pointerMoveCount % 30 = 0 then
+                            Rekolektion.Viz.App.Services.Logger.log "walkaround.search"
+                                {| ms = sw.ElapsedMilliseconds
+                                   corners = result.Length |}
+                        result
                     let postBack (action : unit -> unit) =
                         Avalonia.Threading.Dispatcher.UIThread.Post(System.Action(action))
                     let onAccept (corners : (int64 * int64) list) =

@@ -36,6 +36,7 @@
     <Compile Include="RktLoadTests.fs" />
     <Compile Include="Sky130LayerMapTests.fs" />
     <Compile Include="RoutingDraftTests.fs" />
+    <Compile Include="RoutingPointerTests.fs" />
     <Compile Include="LiveDrcTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>

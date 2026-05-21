@@ -1438,43 +1438,37 @@ type GdsCanvasControl() as this =
         e.Pointer.Capture this
         this.Focus () |> ignore
 
-        // ADR-0002 interactive routing tool. Takes precedence over
-        // other modes when armed or when a draft is in flight.
-        // Right-click during a draft → commit and finish. Left-click
-        // either starts a new route (when armed + no draft) or fixes
-        // the current tentative L (when a draft exists).
+        // ADR-0002 interactive routing tool. Click semantics live in
+        // Routing.Pointer.decideAction so the dispatch matrix can be
+        // unit-tested without an Avalonia harness.
         let draft = this.DraftRoute
-        if draft.IsSome && props.IsRightButtonPressed then
+        let (wx, wy) = this.ScreenToWorld p
+        let action =
+            Routing.Pointer.decideAction
+                this.RoutingMode draft this.ActiveLayer
+                props.IsLeftButtonPressed props.IsRightButtonPressed
+                (68, 20) 320L      // default layer = met1, default width = 320 nm
+                (int64 wx, int64 wy)
+        match action with
+        | Routing.Pointer.StartRoute (layer, width, x, y) ->
+            let cb = this.StartRouteHandler
+            if not (isNull cb) then cb.Invoke(layer, width, x, y)
+            e.Handled <- true
+        | Routing.Pointer.FixSegment ->
+            let cb = this.RouteFixSegmentHandler
+            if not (isNull cb) then cb.Invoke()
+            e.Handled <- true
+        | Routing.Pointer.Finish ->
             let cb = this.RouteFinishHandler
             if not (isNull cb) then cb.Invoke()
             e.Handled <- true
-        elif (this.RoutingMode || draft.IsSome) && props.IsLeftButtonPressed then
-            let (wx, wy) = this.ScreenToWorld p
-            let xDbu = int64 wx
-            let yDbu = int64 wy
-            if draft.IsNone then
-                // Default to met1 when no layer has been picked yet.
-                // Earlier behavior silently no-op'd on no active layer,
-                // which felt like "the wire tool doesn't work" — fall
-                // back so a fresh user can click and draw immediately.
-                let layer =
-                    match this.ActiveLayer with
-                    | Some k -> k
-                    | None -> (68, 20)   // met1
-                let cb = this.StartRouteHandler
-                if not (isNull cb) then
-                    // 320 nm default wire width — refined later
-                    // via per-layer min-width lookup (ADR-0004).
-                    cb.Invoke(layer, 320L, xDbu, yDbu)
-            else
-                let cb = this.RouteFixSegmentHandler
-                if not (isNull cb) then cb.Invoke()
-            e.Handled <- true
+        | Routing.Pointer.Ignore -> ()
+        if not e.Handled then ()
         // Tighten mode: a left click on a numbered label commits
         // that candidate. Other clicks are swallowed so the user
         // doesn't accidentally pan, marquee, or change selection
         // while choosing a tighten direction.
-        elif this.TightenMode && props.IsLeftButtonPressed then
+        if not e.Handled && this.TightenMode && props.IsLeftButtonPressed then
             let hits = !tightenHits
             let pxF = float32 p.X
             let pyF = float32 p.Y

@@ -147,3 +147,72 @@ let ``finishSegments uses just Points when cursor is None`` () =
         |> Draft.setCursor (1000L, 0L)
         |> Draft.fix
     Draft.finishSegments r |> should haveLength 1
+
+// --- Edge cases --------------------------------------------------------
+
+[<Fact>]
+let ``pop after fix leaves cursor None`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 0L)
+        |> Draft.fix
+        |> Draft.pop
+    r.Points |> should equal [(0L, 0L)]
+    r.Cursor |> should equal (None : (int64 * int64) option)
+
+[<Fact>]
+let ``flipPosture rebuilds the existing fixed L-shape under the new posture`` () =
+    // A two-point fixed run from (0,0) → (1000,500) is a diagonal,
+    // so it decomposes into 2 rects. Posture flip should change
+    // which rect-pair we get.
+    let baseRoute =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 500L)
+        |> Draft.fix
+    let h = Draft.fixedSegments baseRoute
+    let v = Draft.fixedSegments (Draft.flipPosture baseRoute)
+    h |> should haveLength 2
+    v |> should haveLength 2
+    // The first rect should differ between the two postures: under
+    // HorizontalFirst it runs along Y=0, under VerticalFirst along X=0.
+    (h.[0].X2 - h.[0].X1) |> should not' (equal (v.[0].X2 - v.[0].X1))
+
+[<Fact>]
+let ``setCursor twice without fix keeps only the latest cursor`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (100L, 100L)
+        |> Draft.setCursor (500L, 500L)
+    r.Cursor |> should equal (Some (500L, 500L))
+    r.Points |> should equal [(0L, 0L)]
+
+[<Fact>]
+let ``allSegments concatenates fixed then tentative in order`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (1000L, 0L)
+        |> Draft.fix
+        |> Draft.setCursor (1000L, 500L)
+    let fixed' = Draft.fixedSegments r
+    let tent = Draft.tentativeSegments r
+    let all = Draft.allSegments r
+    all |> should haveLength (fixed'.Length + tent.Length)
+    all.[0] |> should equal fixed'.[0]
+    all.[fixed'.Length] |> should equal tent.[0]
+
+[<Fact>]
+let ``finishSegments on degenerate same-point fix produces no segments`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (0L, 0L)
+    Draft.finishSegments r |> should be Empty
+
+[<Fact>]
+let ``toFlatPolygons emits closed 5-point rectangles`` () =
+    let segs : Draft.DraftSegment list = [
+        { Layer = met1; X1 = 0L; Y1 = 0L; X2 = 100L; Y2 = 50L }
+    ]
+    let flat = Draft.toFlatPolygons segs
+    flat.[0].Points.Length |> should equal 5
+    // First and last point coincide (closed polygon convention).
+    flat.[0].Points.[0] |> should equal flat.[0].Points.[4]

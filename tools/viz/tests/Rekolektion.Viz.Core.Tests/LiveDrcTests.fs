@@ -165,6 +165,64 @@ let ``cellCrossNetOverlaps stays silent for same-net overlap`` () =
     v |> Array.exists (fun x -> x.Rule.EndsWith ".overlap")
       |> should equal false
 
+// --- Edge cases + perf bound -------------------------------------------
+
+[<Fact>]
+let ``runLive with empty cell and empty draft → no violations`` () =
+    Check.runLive units1nm [||] [||] Map.empty Set.empty
+    |> should be Empty
+
+[<Fact>]
+let ``runLive with empty draft → no violations even on dirty cell`` () =
+    // Even if the cell has a self-overlap, runLive without a draft
+    // should produce nothing (cell-vs-cell lives in cellCrossNetOverlaps).
+    let cell : FlatPolygon array = [|
+        rect (0L, 0L, 500L, 500L) (68, 20)
+        rect (200L, 200L, 700L, 700L) (68, 20)
+    |]
+    Check.runLive units1nm cell [||] Map.empty Set.empty
+    |> should be Empty
+
+[<Fact>]
+let ``runLive region-filter skips cell polys far outside the draft window`` () =
+    // Cell rect is 50 µm = 50000 DBU away — outside the 5 µm
+    // region margin. Region-filter should exclude it and the
+    // standard rule pass should find no violation.
+    let cell : FlatPolygon array = [|
+        rect (50000L, 50000L, 50200L, 50200L) (68, 20)
+    |]
+    let draftSegs : Draft.DraftSegment list = [
+        { Layer = met1; X1 = 0L; Y1 = 0L; X2 = 200L; Y2 = 200L }
+    ]
+    let draftFlat = Draft.toFlatPolygons draftSegs
+    Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    |> should be Empty
+
+[<Fact>]
+let ``runLive perf bound: 1000 cell polys + 2-segment draft under 100 ms`` () =
+    // Synthetic moderate cell: 1000 met1 rects spread across a 1mm
+    // square in a 32x32 grid. Draft is a short 2-segment run near
+    // the origin. Should complete well under 100 ms thanks to
+    // region filtering — a regression here means the per-frame
+    // path lost its O(local) bound.
+    let cell : FlatPolygon array =
+        [|
+            for i in 0 .. 31 do
+                for j in 0 .. 31 do
+                    let x0 = int64 i * 30000L
+                    let y0 = int64 j * 30000L
+                    yield rect (x0, y0, x0 + 200L, y0 + 200L) (68, 20)
+        |]
+    let draftSegs : Draft.DraftSegment list = [
+        { Layer = met1; X1 = 5000L; Y1 = 5000L; X2 = 5500L; Y2 = 5200L }
+        { Layer = met1; X1 = 5500L; Y1 = 5200L; X2 = 6000L; Y2 = 5200L }
+    ]
+    let draftFlat = Draft.toFlatPolygons draftSegs
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+    let _ = Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    sw.Stop()
+    sw.ElapsedMilliseconds |> should be (lessThan 100L)
+
 [<Fact>]
 let ``runLive honors disabledRules from the caller`` () =
     let cell : FlatPolygon array = [|

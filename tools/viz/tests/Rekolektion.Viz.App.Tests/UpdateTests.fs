@@ -328,6 +328,48 @@ let ``RouteFinish on a degenerate draft (no segments) just clears DraftRoute`` (
     (List.head m2.OpenMacros).UndoStack |> should equal ([] : Document list)
 
 [<Fact>]
+let ``RouteStop commits ONLY fixed corners, drops the tentative L`` () =
+    // Draft: anchor at (0,0), fix a corner at (500,0), then move
+    // the cursor to (1000,500). At this point finishSegments would
+    // commit two segments (the fixed straight + the tentative L
+    // to the cursor), but RouteStop should commit ONLY the fixed
+    // straight segment.
+    let model = fixtureModel ()
+    let before =
+        (List.head model.OpenMacros).Document.Cells.[0].Elements.Length
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (500L, 0L)) m1
+    let m3, _ = Update.update stubBackend Msg.RouteFixSegment m2
+    let m4, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (1000L, 500L)) m3
+    let m5, _ = Update.update stubBackend Msg.RouteStop m4
+    m5.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+    let macro = List.head m5.OpenMacros
+    let elems = macro.Document.Cells.[0].Elements
+    // 1 fixed wire (0,0)→(500,0) + 2 pads at anchor + last fixed.
+    // RouteFinish would have produced more elements (extra L from
+    // tentative + extra pad shifted to cursor).
+    elems.Length |> should equal (before + 3)
+    // Last appended element is the wire — should span anchor→(500,0).
+    match List.last elems with
+    | RectEl r ->
+        r.X1 |> should equal -160L
+        r.X2 |> should equal 660L
+    | _ -> failwith "expected wire RectEl as last appended element"
+    // Last pad (second of two) lands at the LAST FIXED point (500,0),
+    // not at (1000,500) where the cursor was at Esc. Pads come first
+    // in the batch — index `before + 1` is the second pad.
+    match elems.[before + 1] with
+    | RectEl r ->
+        r.X1 |> should equal 355L   // 500 - half(290) = 355
+        r.X2 |> should equal 645L
+        r.Y1 |> should equal -145L  // pad centered at Y=0
+        r.Y2 |> should equal 145L
+    | _ -> failwith "expected pad RectEl at last fixed point"
+
+[<Fact>]
 let ``RouteFinish emits DRC-driven endpoint pads on the active layer`` () =
     // met1 pad is 290 nm per Rules.allRules (mcon enclosure
     // dominates min-area). A straight horizontal route from

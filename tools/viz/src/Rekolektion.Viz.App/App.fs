@@ -229,12 +229,16 @@ type MainWindow() as this =
                 e.Handled <- true
             // ADR-0002 — in-flight route keys take precedence over the
             // generic delete / esc bindings when a draft is active.
-            // Esc and Enter both commit + end (matches right-click);
-            // discarding mid-route is rare enough that it doesn't
-            // warrant a key, and users hit Esc expecting "stop, save"
-            // — not "stop, throw away."
+            // Esc commits the FIXED corners only (stops where the
+            // user last clicked, not where the cursor sat at Esc);
+            // Enter (and right-click) commits the tentative L too.
             | Key.Escape, KeyModifiers.None
-            | Key.Enter,  KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.DraftRoute.IsSome)
+                    |> Option.defaultValue false) ->
+                AppDispatch.send Msg.RouteStop
+                e.Handled <- true
+            | Key.Enter, KeyModifiers.None
               when (Services.AppDispatch.currentModel
                     |> Option.map (fun m -> m.DraftRoute.IsSome)
                     |> Option.defaultValue false) ->

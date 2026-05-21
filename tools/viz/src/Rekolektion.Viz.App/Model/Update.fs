@@ -137,6 +137,63 @@ let private appendRectsToTop
                         { c with Elements = c.Elements @ newEls })
             { doc with Cells = cells' }
 
+/// Shared commit machinery for RouteFinish and RouteStop. Picks
+/// the segment set via `getSegs` (`Draft.finishSegments` for the
+/// commit-tentative path, `Draft.fixedSegments` for the stop-at-
+/// last-click path), appends DRC-driven endpoint pads on the
+/// active layer, pushes an undo snapshot, marks dirty, and clears
+/// `DraftRoute`. Returns `(model, Cmd.none)` so the caller can
+/// stitch directly into a match arm.
+let private commitRouteWith
+        (model: Model.Model)
+        (getSegs: Routing.Draft.DraftRoute -> Routing.Draft.DraftSegment list)
+        : Model.Model * Cmd<Msg.Msg> =
+    match model.DraftRoute with
+    | None -> model, Cmd.none
+    | Some d ->
+        let segs = getSegs d
+        if List.isEmpty segs then
+            { model with DraftRoute = None }, Cmd.none
+        else
+            match model.ActiveMacroPath with
+            | None -> { model with DraftRoute = None }, Cmd.none
+            | Some path ->
+                let mutable activePath' = path
+                let openMacros' =
+                    model.OpenMacros
+                    |> List.map (fun mc ->
+                        if mc.Path <> path then mc
+                        else
+                            let pads =
+                                match
+                                    Routing.Pads.endpointPadSide
+                                        model.DrcView mc.Document.Units
+                                        d.Layer with
+                                | Some side -> Routing.Draft.endpointPads side d
+                                | None -> []
+                            let allSegs = pads @ segs
+                            let rects =
+                                allSegs
+                                |> List.map
+                                    (rectOfDraftSegment mc.Document.Pdk)
+                            let doc' = appendRectsToTop rects mc.Document
+                            let flat' = Layout.Flatten.flatten doc'
+                            let inst' = Layout.Instances.enumerate doc'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun mc'' ->
+                                    { mc'' with
+                                        Document = doc'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+                { model with
+                    OpenMacros = openMacros'
+                    ActiveMacroPath = Some activePath'
+                    DraftRoute = None }, Cmd.none
+
 let private msgCaseName (msg: Msg.Msg) : string =
     let info, _ =
         Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(
@@ -583,58 +640,22 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.RouteAbort ->
         { model with DraftRoute = None }, Cmd.none
     | Msg.RouteFinish ->
-        match model.DraftRoute with
-        | None -> model, Cmd.none
-        | Some d ->
-            let segs = Routing.Draft.finishSegments d
-            if List.isEmpty segs then
-                { model with DraftRoute = None }, Cmd.none
-            else
-                match model.ActiveMacroPath with
-                | None -> { model with DraftRoute = None }, Cmd.none
-                | Some path ->
-                    let mutable activePath' = path
-                    let openMacros' =
-                        model.OpenMacros
-                        |> List.map (fun mc ->
-                            if mc.Path <> path then mc
-                            else
-                                // DRC-driven endpoint pads — square
-                                // landing patches on the active layer
-                                // sized so vias going up can drop
-                                // without breaking enclosure. None
-                                // when the layer has no enclosure
-                                // data in the view; wire endpoints
-                                // stay bare in that case.
-                                let pads =
-                                    match
-                                        Routing.Pads.endpointPadSide
-                                            model.DrcView mc.Document.Units
-                                            d.Layer with
-                                    | Some side -> Routing.Draft.endpointPads side d
-                                    | None -> []
-                                let allSegs = pads @ segs
-                                let rects =
-                                    allSegs
-                                    |> List.map
-                                        (rectOfDraftSegment mc.Document.Pdk)
-                                let doc' = appendRectsToTop rects mc.Document
-                                let flat' = Layout.Flatten.flatten doc'
-                                let inst' = Layout.Instances.enumerate doc'
-                                let mc' =
-                                    EditSession.pushUndoSnapshot mc
-                                    |> fun mc'' ->
-                                        { mc'' with
-                                            Document = doc'
-                                            FlatPolygons = flat'
-                                            TopInstances = inst' }
-                                    |> EditSession.markDirty
-                                activePath' <- mc'.Path
-                                mc')
-                    { model with
-                        OpenMacros = openMacros'
-                        ActiveMacroPath = Some activePath'
-                        DraftRoute = None }, Cmd.none
+        commitRouteWith model Routing.Draft.finishSegments
+    | Msg.RouteStop ->
+        // Esc — commit only the FIXED corners (no tentative L from
+        // wherever the cursor was when Esc was pressed). For an
+        // in-flight route whose only segments are tentative (user
+        // clicked once then hit Esc), this yields no rect to commit
+        // and we just clear the draft.
+        //
+        // Cursor must be cleared BEFORE the commit so endpoint pads
+        // land at the last fixed point, not wherever the cursor was
+        // at the moment of Esc.
+        let cleared =
+            match model.DraftRoute with
+            | Some d -> { model with DraftRoute = Some { d with Cursor = None } }
+            | None -> model
+        commitRouteWith cleared Routing.Draft.fixedSegments
     | Msg.ToggleTightenMode ->
         // Toggle on / off. Entering with an empty selection is
         // a no-op (nothing to compute candidates against).

@@ -175,8 +175,14 @@ type Msg =
     | RouteFlipPosture
     /// ADR-0002 — commit the entire draft (fixed + tentative) into
     /// the active macro's top cell as one undo step. Clears DraftRoute.
+    /// Used by right-click and Enter.
     | RouteFinish
-    /// ADR-0002 — discard the draft without committing (Esc).
+    /// ADR-0002 — commit only the FIXED corners of the draft (drop
+    /// the tentative L following the cursor). Used by Esc: the user
+    /// is saying "stop here, where my last click landed."
+    | RouteStop
+    /// ADR-0002 — discard the draft without committing (no key bound
+    /// currently; kept for programmatic / test use).
     | RouteAbort
     /// Commit a finished route-slide drag (track OR post). Each
     /// entry in `adjusts` is

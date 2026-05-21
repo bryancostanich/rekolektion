@@ -1375,6 +1375,16 @@ type GdsCanvasControl() as this =
 
     override this.OnPropertyChanged(e) =
         base.OnPropertyChanged e
+        // ADR-0002 — flip the cursor to a crosshair when the wire
+        // tool is armed so the user gets immediate visual feedback
+        // that clicks now anchor a route. Restored to the platform
+        // default when routing mode is off.
+        if e.Property = GdsCanvasControl.RoutingModeProperty then
+            this.Cursor <-
+                if this.RoutingMode then
+                    new Cursor(StandardCursorType.Cross)
+                else
+                    Cursor.Default
         if e.Property = GdsCanvasControl.MacroPathProperty then
             // Path changed → genuinely new file or rename to a
             // different file. Reset auto-fit so the camera frames
@@ -1462,27 +1472,27 @@ type GdsCanvasControl() as this =
         // unit-tested without an Avalonia harness.
         let draft = this.DraftRoute
         let (wx, wy) = this.ScreenToWorld p
-        // Snap-to-pin on EVERY routing click (start anchor + every
-        // fix-segment corner). Cursor sees a labeled pin centroid
-        // within ~20 px → use the centroid; else raw click. Mid-
-        // route snapping is what makes "draw straight line between
-        // two pins" actually land on the second pin instead of a
-        // few DBU off-axis.
-        let (snapX, snapY) =
+        // Snap to nearest labeled pin centroid within ~20 px. The
+        // Option tells us whether the cursor was actually on a
+        // target — used below to gate StartRoute (no free-air
+        // starts: a wire that doesn't begin at a pin would never
+        // connect to anything).
+        let snapTargetOpt =
             if this.RoutingMode || draft.IsSome then
                 match this.Library with
-                | None -> int64 wx, int64 wy
+                | None -> None
                 | Some doc ->
                     let labels = Layout.Flatten.flattenLabels doc
                     let targets =
                         Routing.Snap.buildTargets labels this.FlatPolygons
                     let radiusDbu =
                         int64 (20.0 / max pixelsPerDbu 0.0001)
-                    match Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu with
-                    | Some t -> t.X, t.Y
-                    | None -> int64 wx, int64 wy
-            else
-                int64 wx, int64 wy
+                    Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu
+            else None
+        let (snapX, snapY) =
+            match snapTargetOpt with
+            | Some t -> t.X, t.Y
+            | None -> int64 wx, int64 wy
         // Default wire width pulled from the active view's per-layer
         // Width rule (e.g. 140 nm for met1, 300 nm for met3). Pads
         // widen the endpoints separately via `Routing.Pads`.
@@ -1502,6 +1512,15 @@ type GdsCanvasControl() as this =
                 props.IsLeftButtonPressed props.IsRightButtonPressed
                 defaultLayer defaultWidth
                 (snapX, snapY)
+        // Snap-required-to-start: if Pointer would StartRoute but
+        // the click missed every snap target, refuse. Stops users
+        // from anchoring wires in free space where they can't
+        // possibly connect to anything.
+        let action =
+            match action with
+            | Routing.Pointer.StartRoute _ when snapTargetOpt.IsNone ->
+                Routing.Pointer.Ignore
+            | other -> other
         match action with
         | Routing.Pointer.StartRoute (layer, width, x, y) ->
             let cb = this.StartRouteHandler
@@ -1516,7 +1535,12 @@ type GdsCanvasControl() as this =
             if not (isNull cb) then cb.Invoke()
             e.Handled <- true
         | Routing.Pointer.Ignore -> ()
-        if not e.Handled then ()
+        // Block non-routing pointer actions while the wire tool is
+        // armed: no instance drag, no polygon move, no marquee, no
+        // resize. Click-through to selection / drag would be too
+        // easy to trigger by accident while routing.
+        if this.RoutingMode && not e.Handled then
+            e.Handled <- true
         // Tighten mode: a left click on a numbered label commits
         // that candidate. Other clicks are swallowed so the user
         // doesn't accidentally pan, marquee, or change selection
@@ -1538,7 +1562,7 @@ type GdsCanvasControl() as this =
             // Swallow regardless — left-click in tighten mode
             // shouldn't initiate pan / marquee / selection.
             ()
-        elif props.IsMiddleButtonPressed || props.IsRightButtonPressed then
+        elif not e.Handled && (props.IsMiddleButtonPressed || props.IsRightButtonPressed) then
             // Middle / right while a left-button drag is already in
             // flight → no dragKind change. PointerMoved checks the
             // live button state and routes to pan handling. Just
@@ -1553,7 +1577,8 @@ type GdsCanvasControl() as this =
                 lastPos <- p
             else
                 dragKind <- PanDrag
-        elif props.IsLeftButtonPressed
+        elif not e.Handled
+             && props.IsLeftButtonPressed
              && this.SelectedPolygons.Count = 1
              && (let handles = !resizeHandleHits
                  let pxF, pyF = float32 p.X, float32 p.Y
@@ -1614,7 +1639,7 @@ type GdsCanvasControl() as this =
                 // Resize-able element vanished between render and
                 // press — treat as no-op, fall through to nothing.
                 ()
-        elif props.IsLeftButtonPressed then
+        elif not e.Handled && props.IsLeftButtonPressed then
             // Left button: hit-test the selectable instances. If we
             // hit something, start (or extend) selection + prep a
             // selection-drag. If we hit empty space, clear the

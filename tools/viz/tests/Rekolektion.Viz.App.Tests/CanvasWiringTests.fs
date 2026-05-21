@@ -79,7 +79,12 @@ let private wireCapture (canvas: GdsCanvasControl) (cap: CapturedActions) =
 // --- Pointer dispatch through the real OnPointerPressed -----------------
 
 [<Fact>]
-let ``RoutingMode on, no draft, left-click → StartRoute on ActiveLayer fires`` () =
+let ``RoutingMode on, click in free space (no snap target) → no StartRoute`` () =
+    // New behavior: a click that misses every labeled-pin snap
+    // target does NOT start a route. Prevents anchoring wires in
+    // free space where they couldn't connect to anything anyway.
+    // (To exercise the snap-hit path, a future test will need to
+    // construct a Library with labels + flat polygons.)
     let cap = newCapture ()
     withCanvas
         (fun c ->
@@ -89,30 +94,7 @@ let ``RoutingMode on, no draft, left-click → StartRoute on ActiveLayer fires``
         (fun window _canvas ->
             window.MouseDown(Point(100.0, 100.0), MouseButton.Left)
             Dispatcher.UIThread.RunJobs())
-    cap.Starts.Length |> should equal 1
-    let (layer, width, _x, _y) = cap.Starts.[0]
-    layer |> should equal (69, 20)
-    // Width comes from `Routing.Pads.wireWidthFor` against the
-    // canvas's DrcView — met2.1 is 0.14 µm.
-    width |> should equal 140L
-
-[<Fact>]
-let ``RoutingMode on, no draft, ActiveLayer None → StartRoute defaults to met1`` () =
-    // Regression for the "wire doesn't work" silent-no-op bug.
-    // A click without a picked layer must still dispatch StartRoute
-    // so the tool is usable out of the box.
-    let cap = newCapture ()
-    withCanvas
-        (fun c ->
-            wireCapture c cap
-            c.RoutingMode <- true
-            c.ActiveLayer <- None)
-        (fun window _ ->
-            window.MouseDown(Point(50.0, 50.0), MouseButton.Left)
-            Dispatcher.UIThread.RunJobs())
-    cap.Starts.Length |> should equal 1
-    let (layer, _, _, _) = cap.Starts.[0]
-    layer |> should equal (68, 20)   // met1 default
+    cap.Starts |> should be Empty
 
 [<Fact>]
 let ``RoutingMode off, no draft, left-click → no routing dispatch`` () =

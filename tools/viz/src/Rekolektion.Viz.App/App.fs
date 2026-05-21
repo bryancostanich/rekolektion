@@ -234,8 +234,13 @@ type MainWindow() as this =
             // Enter (and right-click) commits the tentative L too.
             | Key.Escape, KeyModifiers.None
               when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.DraftRoute.IsSome)
+                    |> Option.map (fun m ->
+                        m.RoutingMode || m.DraftRoute.IsSome)
                     |> Option.defaultValue false) ->
+                // Trigger on RoutingMode too (not only DraftRoute)
+                // so a stale `currentModel` reading right after the
+                // StartRoute click can't skip the Esc. RouteStop is
+                // a clean no-op when there's no draft to commit.
                 AppDispatch.send Msg.RouteStop
                 e.Handled <- true
             | Key.Enter, KeyModifiers.None

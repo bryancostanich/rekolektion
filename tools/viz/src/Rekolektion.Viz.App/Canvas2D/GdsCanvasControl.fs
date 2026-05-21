@@ -1462,12 +1462,32 @@ type GdsCanvasControl() as this =
         // unit-tested without an Avalonia harness.
         let draft = this.DraftRoute
         let (wx, wy) = this.ScreenToWorld p
+        // Snap-to-pin on route start: when armed and no draft is
+        // active, look for a labeled pin centroid within ~20 px of
+        // the cursor and use that as the anchor. Subsequent clicks
+        // (mid-route) use the raw cursor so the user keeps fine
+        // control of the L-shape posture.
+        let (snapX, snapY) =
+            if this.RoutingMode && draft.IsNone then
+                match this.Library with
+                | None -> int64 wx, int64 wy
+                | Some doc ->
+                    let labels = Layout.Flatten.flattenLabels doc
+                    let targets =
+                        Routing.Snap.buildTargets labels this.FlatPolygons
+                    let radiusDbu =
+                        int64 (20.0 / max pixelsPerDbu 0.0001)
+                    match Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu with
+                    | Some t -> t.X, t.Y
+                    | None -> int64 wx, int64 wy
+            else
+                int64 wx, int64 wy
         let action =
             Routing.Pointer.decideAction
                 this.RoutingMode draft this.ActiveLayer
                 props.IsLeftButtonPressed props.IsRightButtonPressed
                 (68, 20) 320L      // default layer = met1, default width = 320 nm
-                (int64 wx, int64 wy)
+                (snapX, snapY)
         match action with
         | Routing.Pointer.StartRoute (layer, width, x, y) ->
             let cb = this.StartRouteHandler

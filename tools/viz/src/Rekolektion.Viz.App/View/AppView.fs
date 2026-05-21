@@ -161,8 +161,14 @@ let private gds2DRouteAutoComputedHandlerAttr
 
 let private gds2DNetMapAttr
         (v: Map<string, Sidecar.Types.NetEntry>) : IAttr<GdsCanvasControl> =
+    // FuncUI's default comparer for F# Map<,> is doing the wrong thing
+    // — the appview.netmap.bind probe shows count=22, but the canvas
+    // never sees a NetMap property change. Force the comparer to
+    // always report "different" so SetValue fires every render. The
+    // walkaround dispatch is gated by DraftRoute.IsSome, so extra
+    // sets cost nothing when not actively routing.
     AttrBuilder<GdsCanvasControl>.CreateProperty<Map<string, Sidecar.Types.NetEntry>>(
-        GdsCanvasControl.NetMapProperty, v, ValueNone)
+        GdsCanvasControl.NetMapProperty, v, ValueSome (fun (_a, _b) -> false))
 
 let private gds2DRouteMouseMoveHandlerAttr
         (h: System.Action<int64, int64>) : IAttr<GdsCanvasControl> =

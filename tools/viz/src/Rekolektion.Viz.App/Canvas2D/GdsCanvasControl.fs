@@ -938,6 +938,13 @@ type GdsCanvasControl() as this =
     /// reference on every edit / re-flatten).
     let mutable cachedCellIndex : Spatial.UniformGrid.Index option = None
     let mutable cachedCellIndexFor : FlatPolygon array = [||]
+    /// Cached snap targets for the active macro. `OnPointerMoved`
+    /// was rebuilding these on EVERY frame (flattenLabels + per-
+    /// label linear scan over FlatPolygons), which made wire-mode
+    /// hover lag on big cells. Built once on geometry change,
+    /// reused on every move until FlatPolygons identity flips.
+    let mutable cachedSnapTargets : Routing.Snap.SnapTarget array = [||]
+    let mutable cachedSnapTargetsFor : FlatPolygon array = [||]
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1396,6 +1403,27 @@ type GdsCanvasControl() as this =
 
     /// Build the ViewBox the painter draws into, derived from the
     /// current center+scale and canvas pixel size.
+    /// Lazy + cached snap-target lookup for wire-mode hover & click.
+    /// Rebuilds only when `this.FlatPolygons` is replaced (edit /
+    /// re-flatten); subsequent calls return the same array.
+    member private this.SnapTargets () : Routing.Snap.SnapTarget array =
+        if obj.ReferenceEquals(cachedSnapTargetsFor, this.FlatPolygons)
+           && cachedSnapTargets.Length > 0 then
+            cachedSnapTargets
+        else
+            match this.Library with
+            | None ->
+                cachedSnapTargets <- [||]
+                cachedSnapTargetsFor <- this.FlatPolygons
+                cachedSnapTargets
+            | Some doc ->
+                let labels = Layout.Flatten.flattenLabels doc
+                let targets =
+                    Routing.Snap.buildTargets labels this.FlatPolygons
+                cachedSnapTargets <- targets
+                cachedSnapTargetsFor <- this.FlatPolygons
+                targets
+
     member private this.MakeViewBox () : LayerPainter.ViewBox =
         let w = max (int this.Bounds.Width) 1
         let h = max (int this.Bounds.Height) 1
@@ -1553,12 +1581,9 @@ type GdsCanvasControl() as this =
         // connect to anything).
         let snapTargetOpt =
             if this.RoutingMode || draft.IsSome then
-                match this.Library with
-                | None -> None
-                | Some doc ->
-                    let labels = Layout.Flatten.flattenLabels doc
-                    let targets =
-                        Routing.Snap.buildTargets labels this.FlatPolygons
+                let targets = this.SnapTargets ()
+                if targets.Length = 0 then None
+                else
                     let radiusDbu =
                         int64 (20.0 / max pixelsPerDbu 0.0001)
                     Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu
@@ -2486,12 +2511,9 @@ type GdsCanvasControl() as this =
         if this.RoutingMode || (this.DraftRoute).IsSome then
             let (wx, wy) = this.ScreenToWorld p
             let target =
-                match this.Library with
-                | None -> None
-                | Some doc ->
-                    let labels = Layout.Flatten.flattenLabels doc
-                    let targets =
-                        Routing.Snap.buildTargets labels this.FlatPolygons
+                let targets = this.SnapTargets ()
+                if targets.Length = 0 then None
+                else
                     let radiusDbu =
                         int64 (20.0 / max pixelsPerDbu 0.0001)
                     Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu

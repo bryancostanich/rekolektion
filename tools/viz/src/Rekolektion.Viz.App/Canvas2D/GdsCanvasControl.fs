@@ -121,7 +121,8 @@ type private SkiaDraw(bounds: Rect,
                       tightenHitsOut: TightenOverlay.LabelHit array ref,
                       resizeHitsOut: ResizeHandleHit array ref,
                       draftRoute: Routing.Draft.DraftRoute option,
-                      routeLiveViolations: Drc.Check.Violation array) =
+                      routeLiveViolations: Drc.Check.Violation array,
+                      drcProvenance: Map<string, string>) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -415,7 +416,9 @@ type private SkiaDraw(bounds: Rect,
                         | _ -> ()
 
                 if overlay.Violations.Length > 0 then
-                    DrcOverlay.render canvas vb (float lib.Units.DbuNm * 1.0e-3) overlay.Violations
+                    DrcOverlay.render canvas vb
+                        (float lib.Units.DbuNm * 1.0e-3)
+                        drcProvenance overlay.Violations
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
@@ -2949,7 +2952,7 @@ type GdsCanvasControl() as this =
                   ShowGrid = this.ShowGrid
                   ShowRuler = this.ShowRuler
                   ShowLabels = this.ShowLabels }
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, cachedRouteLiveViolations))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, cachedRouteLiveViolations, this.DrcView.Provenance))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

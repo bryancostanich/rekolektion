@@ -21,6 +21,7 @@
     <Compile Include="LabelPainterTests.fs" />
     <Compile Include="ExtruderTests.fs" />
     <Compile Include="MeshPickingTests.fs" />
+    <Compile Include="DrcOverlayTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

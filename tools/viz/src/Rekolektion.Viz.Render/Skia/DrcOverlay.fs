@@ -19,6 +19,24 @@ let private bboxToSkRect (vb: LayerPainter.ViewBox)
     let p2 = worldToScreen vb (float x2) (float y2)
     SKRect(min p1.X p2.X, min p1.Y p2.Y, max p1.X p2.X, max p1.Y p2.Y)
 
+/// Build the label string shown above a violation's bbox. Pure
+/// so unit tests can pin the format without a render pipeline.
+/// `provenance` is the `RulesetView.Provenance` map; when an
+/// entry exists for `v.Rule`, the rule name is annotated with the
+/// source file's basename: `met2.2 (overrides/v1.yaml)`.
+let formatLabel
+        (provenance: Map<string, string>)
+        (umPerDbu: float)
+        (v: Check.Violation) : string =
+    let measuredUm = float v.MeasuredDbu * umPerDbu
+    let limitUm = float v.LimitDbu * umPerDbu
+    let ruleLabel =
+        match Map.tryFind v.Rule provenance with
+        | Some src when not (System.String.IsNullOrEmpty src) ->
+            sprintf "%s (%s)" v.Rule (System.IO.Path.GetFileName src)
+        | _ -> v.Rule
+    sprintf "%s: %.3f<%.3f um" ruleLabel measuredUm limitUm
+
 type private Side = | Right | Left | Top | Bottom
 
 let private classifySide
@@ -61,10 +79,17 @@ let private orthEndpoints
 /// showing the rule name and measured/limit gap. Spacing
 /// violations connect their two bboxes with a red line so the
 /// user sees which pair triggered.
+///
+/// `provenance` (ADR-0004) lets the label include the source
+/// file the rule came from, e.g.
+/// `"met2.2 (overrides/v1.yaml): 0.139<0.140 um"`. Pass
+/// `Map.empty` when there's no view-derived provenance (legacy
+/// callers / `Rules.defaultView`).
 let render
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
         (umPerDbu: float)
+        (provenance: Map<string, string>)
         (violations: Check.Violation array) =
     if violations.Length = 0 then () else
     use stroke =
@@ -116,10 +141,7 @@ let render
                 // gracefully without a diagonal scribble.
                 ()
         // Label sits above the first bbox.
-        let measuredUm = float v.MeasuredDbu * umPerDbu
-        let limitUm = float v.LimitDbu * umPerDbu
-        // ASCII "um" — Skia default typeface lacks U+00B5.
-        let label = sprintf "%s: %.3f<%.3f um" v.Rule measuredUm limitUm
+        let label = formatLabel provenance umPerDbu v
         let mutable bounds = SKRect()
         text.MeasureText(label, &bounds) |> ignore
         let padX = 4.0f

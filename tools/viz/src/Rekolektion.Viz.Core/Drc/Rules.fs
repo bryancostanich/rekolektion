@@ -543,3 +543,33 @@ let liveRules : Rule list =
 
 let liveEligibleNames : Set<string> =
     liveRules |> List.map nameOf |> Set.ofList
+
+// --- ADR-0004 RulesetView -----------------------------------------------
+//
+// A bundle of (rules + provenance) that flows through Drc.Check. The
+// view replaces the previous direct use of `Rules.allRules` inside
+// the engine, so a loaded YAML ruleset can drive DRC the same way
+// the F#-coded defaults do. Provenance carries from the loader
+// through to where the UI surfaces "this rule came from X".
+
+type RulesetView = {
+    Rules : Rule list
+    /// Per-rule source attribution keyed by `nameOf rule`. Empty
+    /// map for `defaultView` (every rule is internal). Populated by
+    /// `RulesYaml.merge` and friends.
+    Provenance : Map<string, string>
+}
+
+/// Internal F# default — provenance empty (every rule is "compiled
+/// in"). Drc.Check.check falls back to this when no view is given.
+let defaultView : RulesetView = {
+    Rules = allRules
+    Provenance = Map.empty
+}
+
+/// Build a view from a rules list + provenance map. Convenience for
+/// `RulesYaml.merge` consumers and ad-hoc test cases.
+let viewOf (rules: Rule list) (provenance: Map<string, string>) : RulesetView = {
+    Rules = rules
+    Provenance = provenance
+}

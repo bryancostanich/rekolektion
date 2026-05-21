@@ -246,6 +246,7 @@ let private condMatches
 /// want neighborhood-restriction further if any single layer
 /// crosses ~10k polys.
 let checkWithToggles
+        (view: Rules.RulesetView)
         (units: Units)
         (flat: FlatPolygon array)
         (tags: Implant.ImplantTags array)
@@ -740,7 +741,7 @@ let checkWithToggles
                                 BboxA = (x1, y1, x2, y2)
                                 BboxB = None }
 
-    for rule in Rules.allRules do
+    for rule in view.Rules do
         checkRule rule
 
     // Post-pass: drop COREID-waived violations. The waiver test
@@ -880,9 +881,13 @@ let checkWithToggles
 /// Tests + callers without a tag pipeline call this; the canvas
 /// uses `checkWithToggles` directly so the tag computation is
 /// shared with other consumers.
-let check (units: Units) (flat: FlatPolygon array) : Violation array =
+let check
+        (view: Rules.RulesetView)
+        (units: Units)
+        (flat: FlatPolygon array)
+        : Violation array =
     let tags = Implant.tagAll flat
-    checkWithToggles units flat tags Set.empty
+    checkWithToggles view units flat tags Set.empty
 
 /// ADR-0003 — precompute the cross-net overlap violations within
 /// the cell itself (no draft involved). O(N²) over `cellFlat` so
@@ -968,6 +973,7 @@ let cellCrossNetOverlaps
 /// once per cell by `Net.LabelFlood.derive`). Empty map disables
 /// the cross-net pass entirely — unlabeled designs skip it.
 let runLive
+        (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
         (draftFlat: FlatPolygon array)
@@ -1003,12 +1009,12 @@ let runLive
     let combined = Array.append regionFiltered draftFlat
     let tags = Implant.tagAll combined
     let nonLiveDisabled =
-        Rules.allRules
+        view.Rules
         |> List.filter (Rules.isLiveEligible >> not)
         |> List.map Rules.nameOf
         |> Set.ofList
     let disabled' = Set.union disabledRules nonLiveDisabled
-    let standardViolations = checkWithToggles units combined tags disabled'
+    let standardViolations = checkWithToggles view units combined tags disabled'
 
     // (Structure, Index) → net name. A polygon not in the map
     // belongs to no labeled net (or to a draft) and is treated as

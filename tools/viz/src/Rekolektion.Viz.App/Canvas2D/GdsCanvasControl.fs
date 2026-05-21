@@ -1422,8 +1422,9 @@ type GdsCanvasControl() as this =
                             let draftFlat =
                                 Routing.Draft.allSegments r
                                 |> Routing.Draft.toFlatPolygons
-                            Drc.Check.runLive units this.FlatPolygons
-                                draftFlat Map.empty this.DisabledDrcRules
+                            Drc.Check.runLive Drc.Rules.defaultView units
+                                this.FlatPolygons draftFlat Map.empty
+                                this.DisabledDrcRules
                 with _ ->
                     cachedRouteLiveViolations <- [||]
             this.InvalidateVisual()
@@ -2695,6 +2696,7 @@ type GdsCanvasControl() as this =
                         let tags = Drc.Implant.tagAll staticFlat
                         let vs =
                             Drc.Check.checkWithToggles
+                                Drc.Rules.defaultView
                                 lib.Units staticFlat tags disabled
                         cachedDrcFlat <- staticFlat
                         cachedDrcImplantTags <- tags
@@ -2746,6 +2748,7 @@ type GdsCanvasControl() as this =
                             // live state — slow but correct.
                             let tags = Drc.Implant.tagAll renderFlat
                             Drc.Check.checkWithToggles
+                                Drc.Rules.defaultView
                                 renderLib.Units renderFlat tags disabled
                         else
                             // Affected = union bbox of all
@@ -2800,6 +2803,7 @@ type GdsCanvasControl() as this =
                                 Drc.Implant.tagAll smallFlat
                             let fresh =
                                 Drc.Check.checkWithToggles
+                                    Drc.Rules.defaultView
                                     renderLib.Units smallFlat smallTags disabled
                             Array.append kept fresh
                 else

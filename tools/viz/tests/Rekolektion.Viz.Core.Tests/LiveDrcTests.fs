@@ -7,6 +7,7 @@ open Rekolektion.Viz.Core.Layout.Flatten
 open Rekolektion.Viz.Core.Drc
 open Rekolektion.Viz.Core.Routing
 open Rekolektion.Viz.Core.Sidecar.Types
+open Rekolektion.Viz.Core.Drc.Rules
 
 let private met1 = (68, 20)
 let private units1nm : Units = { DbuNm = 1; UuUm = 1 }
@@ -77,7 +78,7 @@ let ``runLive on draft violating met1 spacing fires the violation`` () =
         { Layer = met1; X1 = 339L; Y1 = 0L; X2 = 539L; Y2 = 200L }
     ]
     let draftFlat = Draft.toFlatPolygons draftSegs
-    let v = Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    let v = Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty Set.empty
     v |> Array.exists (fun x -> x.Rule = "met1.2")
       |> should equal true
 
@@ -91,7 +92,7 @@ let ``runLive on a clean draft produces zero violations`` () =
         { Layer = met1; X1 = 700L; Y1 = 0L; X2 = 900L; Y2 = 200L }
     ]
     let draftFlat = Draft.toFlatPolygons draftSegs
-    let v = Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    let v = Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty Set.empty
     v |> should be Empty
 
 [<Fact>]
@@ -106,7 +107,7 @@ let ``runLive flags draft fully overlapping a cell rect on same layer`` () =
         { Layer = met1; X1 = 100L; Y1 = 100L; X2 = 300L; Y2 = 300L }
     ]
     let draftFlat = Draft.toFlatPolygons draftSegs
-    let v = Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    let v = Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty Set.empty
     v |> Array.exists (fun x -> x.Rule = "met1.overlap")
       |> should equal true
 
@@ -119,7 +120,7 @@ let ``runLive overlap violation only fires when layers match`` () =
         { Layer = met1; X1 = 100L; Y1 = 100L; X2 = 300L; Y2 = 300L }
     ]
     let draftFlat = Draft.toFlatPolygons draftSegs
-    let v = Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    let v = Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty Set.empty
     v |> Array.exists (fun x -> x.Rule.EndsWith ".overlap")
       |> should equal false
 
@@ -169,7 +170,7 @@ let ``cellCrossNetOverlaps stays silent for same-net overlap`` () =
 
 [<Fact>]
 let ``runLive with empty cell and empty draft → no violations`` () =
-    Check.runLive units1nm [||] [||] Map.empty Set.empty
+    Check.runLive Rules.defaultView units1nm [||] [||] Map.empty Set.empty
     |> should be Empty
 
 [<Fact>]
@@ -180,7 +181,7 @@ let ``runLive with empty draft → no violations even on dirty cell`` () =
         rect (0L, 0L, 500L, 500L) (68, 20)
         rect (200L, 200L, 700L, 700L) (68, 20)
     |]
-    Check.runLive units1nm cell [||] Map.empty Set.empty
+    Check.runLive Rules.defaultView units1nm cell [||] Map.empty Set.empty
     |> should be Empty
 
 [<Fact>]
@@ -195,7 +196,7 @@ let ``runLive region-filter skips cell polys far outside the draft window`` () =
         { Layer = met1; X1 = 0L; Y1 = 0L; X2 = 200L; Y2 = 200L }
     ]
     let draftFlat = Draft.toFlatPolygons draftSegs
-    Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty Set.empty
     |> should be Empty
 
 [<Fact>]
@@ -219,9 +220,68 @@ let ``runLive perf bound: 1000 cell polys + 2-segment draft under 100 ms`` () =
     ]
     let draftFlat = Draft.toFlatPolygons draftSegs
     let sw = System.Diagnostics.Stopwatch.StartNew()
-    let _ = Check.runLive units1nm cell draftFlat Map.empty Set.empty
+    let _ = Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty Set.empty
     sw.Stop()
     sw.ElapsedMilliseconds |> should be (lessThan 100L)
+
+// --- ADR-0004: RulesetView threading ----------------------------------
+
+[<Fact>]
+let ``runLive with a custom view fires only the view's rules`` () =
+    // A view with ONLY a tighter met1 spacing rule (1000 nm) →
+    // the cell+draft separation under 1000 nm triggers it. The
+    // default met1.2 (140 nm) would NOT fire at this distance.
+    let met1Key : LayerKey = { Number = 68; DataType = 20 }
+    let tightView : Rules.RulesetView =
+        { Rules = [ Spacing ("custom.met1.spacing", met1Key, 1.0) ]
+          Provenance = Map.ofList [ "custom.met1.spacing", "test.yaml" ] }
+    let cell : FlatPolygon array = [|
+        rect (0L, 0L, 200L, 200L) (68, 20)
+    |]
+    let draftSegs : Draft.DraftSegment list = [
+        // 500 nm gap — under custom.met1.spacing's 1000 nm limit,
+        // over the default met1.2's 140 nm.
+        { Layer = met1; X1 = 700L; Y1 = 0L; X2 = 900L; Y2 = 200L }
+    ]
+    let draftFlat = Draft.toFlatPolygons draftSegs
+    let v = Check.runLive tightView units1nm cell draftFlat Map.empty Set.empty
+    v |> Array.exists (fun x -> x.Rule = "custom.met1.spacing")
+      |> should equal true
+
+[<Fact>]
+let ``runLive with an empty view fires no rule violations on dirty geometry`` () =
+    // Empty rule list → no rule check fires, even though the
+    // geometry has a sub-min-spacing pair under the default rules.
+    // (The synthetic <layer>.overlap pass still fires on overlap,
+    //  but a clean gap of 139 nm produces nothing here.)
+    let emptyView : Rules.RulesetView =
+        { Rules = []; Provenance = Map.empty }
+    let cell : FlatPolygon array = [|
+        rect (0L, 0L, 200L, 200L) (68, 20)
+    |]
+    let draftSegs : Draft.DraftSegment list = [
+        { Layer = met1; X1 = 339L; Y1 = 0L; X2 = 539L; Y2 = 200L }
+    ]
+    let draftFlat = Draft.toFlatPolygons draftSegs
+    let v = Check.runLive emptyView units1nm cell draftFlat Map.empty Set.empty
+    v |> Array.exists (fun x -> x.Rule.EndsWith ".spacing"
+                                || x.Rule = "met1.2")
+      |> should equal false
+
+[<Fact>]
+let ``Rules.defaultView mirrors Rules.allRules with empty provenance`` () =
+    Rules.defaultView.Rules |> should equal Rules.allRules
+    Rules.defaultView.Provenance
+    |> should equal (Map.empty : Map<string, string>)
+
+[<Fact>]
+let ``viewOf carries rules and provenance through unchanged`` () =
+    let met1Key : LayerKey = { Number = 68; DataType = 20 }
+    let rs = [ Spacing ("r1", met1Key, 0.14) ]
+    let prov = Map.ofList [ "r1", "src.yaml" ]
+    let view = Rules.viewOf rs prov
+    view.Rules |> should equal rs
+    view.Provenance |> should equal prov
 
 [<Fact>]
 let ``runLive honors disabledRules from the caller`` () =
@@ -234,6 +294,6 @@ let ``runLive honors disabledRules from the caller`` () =
     let draftFlat = Draft.toFlatPolygons draftSegs
     // User silenced met1.2 → no violation should fire.
     let disabled = Set.singleton "met1.2"
-    let v = Check.runLive units1nm cell draftFlat Map.empty disabled
+    let v = Check.runLive Rules.defaultView units1nm cell draftFlat Map.empty disabled
     v |> Array.exists (fun x -> x.Rule = "met1.2")
       |> should equal false

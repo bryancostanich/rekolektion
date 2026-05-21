@@ -34,6 +34,11 @@ type DraftRoute = {
     /// they all become Points. Empty = straight-L behaviour (the
     /// caller didn't compute an auto-jog path).
     Auto    : (int64 * int64) list
+    /// Name of the net the route started on (ADR-0006). Captured
+    /// from the snap target at `StartRoute` time and used by the
+    /// walk-around dispatch to classify other licons / vias as
+    /// "ours" vs "theirs". Empty when no net was attached.
+    StartNet : string
 }
 
 /// Decompose p1 → p2 into 0, 1, or 2 axis-aligned rectangles. Zero
@@ -79,7 +84,15 @@ let start
     Points = [ anchor ]
     Cursor = None
     Auto = []
+    StartNet = ""
 }
+
+/// Stamp the route's StartNet (ADR-0006). The dispatch layer calls
+/// this immediately after `start` with the net pulled from the snap
+/// target the user clicked. Empty net leaves walk-around in its
+/// "treat everything as foreign" default.
+let setStartNet (net: string) (r: DraftRoute) : DraftRoute =
+    { r with StartNet = net }
 
 /// Update the live cursor position. Tentative L re-derives off this.
 /// Clears any walk-around corners — the new cursor position invalidates

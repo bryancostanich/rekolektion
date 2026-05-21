@@ -331,7 +331,7 @@ let private met1 : Visibility.LayerKey = (68, 20)
 let ``StartRoute initialises DraftRoute at the anchor`` () =
     let model = fixtureModel ()
     let next, _ = Update.update stubBackend
-                    (Msg.StartRoute (met1, 320L, 100L, 200L)) model
+                    (Msg.StartRoute (met1, 320L, "VGND", 100L, 200L)) model
     match next.DraftRoute with
     | None -> failwith "expected DraftRoute to be Some after StartRoute"
     | Some d ->
@@ -343,14 +343,14 @@ let ``StartRoute initialises DraftRoute at the anchor`` () =
 [<Fact>]
 let ``StartRoute is a no-op when no active macro`` () =
     let next, _ = Update.update stubBackend
-                    (Msg.StartRoute (met1, 320L, 0L, 0L)) Model.empty
+                    (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) Model.empty
     next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
 
 [<Fact>]
 let ``RouteMouseMove updates the live cursor`` () =
     let model = fixtureModel ()
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (500L, 300L)) m1
     (Option.get m2.DraftRoute).Cursor |> should equal (Some (500L, 300L))
@@ -365,7 +365,7 @@ let ``RouteMouseMove is a no-op when DraftRoute is None`` () =
 let ``RouteFixSegment appends cursor to Points and clears cursor`` () =
     let model = fixtureModel ()
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (1000L, 0L)) m1
     let m3, _ = Update.update stubBackend Msg.RouteFixSegment m2
@@ -378,7 +378,7 @@ let ``RouteAbort discards DraftRoute without touching the document`` () =
     let model = fixtureModel ()
     let originalDoc = (List.head model.OpenMacros).Document
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend Msg.RouteAbort m1
     m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
     (List.head m2.OpenMacros).Document |> should equal originalDoc
@@ -390,7 +390,7 @@ let ``RouteFinish commits segments to the active macro and pushes undo`` () =
     let model = fixtureModel ()
     let before = (List.head model.OpenMacros).Document.Cells.[0].Elements.Length
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (1000L, 0L)) m1
     let m3, _ = Update.update stubBackend Msg.RouteFinish m2
@@ -417,7 +417,7 @@ let ``RouteFinish on a degenerate draft (no segments) just clears DraftRoute`` (
     let model = fixtureModel ()
     let originalDoc = (List.head model.OpenMacros).Document
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     // No mouse move → no cursor → finishSegments = [] (only anchor).
     let m2, _ = Update.update stubBackend Msg.RouteFinish m1
     m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
@@ -435,7 +435,7 @@ let ``RouteStop commits ONLY fixed corners, drops the tentative L`` () =
     let before =
         (List.head model.OpenMacros).Document.Cells.[0].Elements.Length
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (500L, 0L)) m1
     let m3, _ = Update.update stubBackend Msg.RouteFixSegment m2
@@ -478,7 +478,7 @@ let ``RouteFinish emits DRC-driven endpoint pads on the active layer`` () =
     let before =
         (List.head model.OpenMacros).Document.Cells.[0].Elements.Length
     let m1, _ = Update.update stubBackend
-                  (Msg.StartRoute (met1, 320L, 0L, 0L)) model
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (1000L, 0L)) m1
     let m3, _ = Update.update stubBackend Msg.RouteFinish m2
@@ -504,3 +504,46 @@ let ``RouteFinish with no active macro clears DraftRoute and does nothing else``
     let model = { Model.empty with DraftRoute = Some draft }
     let next, _ = Update.update stubBackend Msg.RouteFinish model
     next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+
+// ---- ADR-0006 — walk-around dispatch -------------------------
+
+[<Fact>]
+let ``StartRoute stamps the StartNet on the new DraftRoute`` () =
+    let model = fixtureModel ()
+    let next, _ = Update.update stubBackend
+                    (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
+    (Option.get next.DraftRoute).StartNet |> should equal "VGND"
+
+[<Fact>]
+let ``RouteAutoComputed sets Auto corners on the active DraftRoute`` () =
+    let model = fixtureModel ()
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (1000L, 1000L)) m1
+    let m3, _ = Update.update stubBackend
+                  (Msg.RouteAutoComputed [ (500L, 0L); (500L, 1000L) ]) m2
+    (Option.get m3.DraftRoute).Auto
+    |> should equal [ (500L, 0L); (500L, 1000L) ]
+
+[<Fact>]
+let ``RouteAutoComputed is a no-op when no DraftRoute is active`` () =
+    let next, _ = Update.update stubBackend
+                    (Msg.RouteAutoComputed [ (100L, 100L) ]) Model.empty
+    next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
+
+[<Fact>]
+let ``RouteMouseMove clears Auto so a stale path can't outlive a move`` () =
+    // Auto is set, then a fresh mouse-move triggers setCursor which
+    // must invalidate Auto. The dispatch layer will repopulate Auto
+    // once its background recompute lands.
+    let model = fixtureModel ()
+    let m1, _ = Update.update stubBackend
+                  (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
+    let m2, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (1000L, 1000L)) m1
+    let m3, _ = Update.update stubBackend
+                  (Msg.RouteAutoComputed [ (500L, 0L); (500L, 1000L) ]) m2
+    let m4, _ = Update.update stubBackend
+                  (Msg.RouteMouseMove (2000L, 2000L)) m3
+    (Option.get m4.DraftRoute).Auto |> should be Empty

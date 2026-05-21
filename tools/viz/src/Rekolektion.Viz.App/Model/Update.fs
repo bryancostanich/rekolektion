@@ -672,12 +672,19 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with
             RoutingMode = next
             DraftRoute = if next then model.DraftRoute else None }, Cmd.none
-    | Msg.StartRoute (layer, width, x, y) ->
+    | Msg.StartRoute (layer, width, startNet, x, y) ->
         match model.ActiveMacroPath with
         | None -> model, Cmd.none
         | Some _ ->
-            let draft = Routing.Draft.start layer width (x, y)
+            let draft =
+                Routing.Draft.start layer width (x, y)
+                |> Routing.Draft.setStartNet startNet
             { model with DraftRoute = Some draft }, Cmd.none
+    | Msg.RouteAutoComputed corners ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with DraftRoute = Some (Routing.Draft.setAuto corners d) }, Cmd.none
     | Msg.RouteMouseMove (x, y) ->
         match model.DraftRoute with
         | None -> model, Cmd.none

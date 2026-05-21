@@ -955,6 +955,16 @@ type GdsCanvasControl() as this =
     /// the 1.4–1.5 s recompute.
     let liveDrcState : Routing.LiveDrc.State<Drc.Check.Violation array> =
         Routing.LiveDrc.create [||]
+    /// ADR-0006 — background-task state for the walk-around router.
+    /// Same staleness-drop pattern as `liveDrcState`; the `Latest`
+    /// slot holds the most recently accepted corner list.
+    let walkAroundState : Routing.LiveDrc.State<(int64 * int64) list> =
+        Routing.LiveDrc.create []
+    /// Cached `VisibilityGraph.Prebuilt` for the walk-around. Built
+    /// once per `BuildKey` change (layer, start net, clearance,
+    /// FlatPolygons identity, NetMap identity); reused per move.
+    let mutable cachedWalkGraph : Routing.VisibilityGraph.Prebuilt option = None
+    let mutable cachedWalkKey   : Routing.WalkAround.BuildKey option = None
     /// Snapshot of the last-rendered ratline routes. Computed in
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
@@ -1162,10 +1172,28 @@ type GdsCanvasControl() as this =
     /// Dispatched on left-click when RoutingMode is on and no draft
     /// is in flight. Args: layer, width, x, y (all in DBU).
     static member val StartRouteHandlerProperty
-            : StyledProperty<Action<Visibility.LayerKey, int64, int64, int64>> =
+            : StyledProperty<Action<Visibility.LayerKey, int64, string, int64, int64>> =
         AvaloniaProperty.Register<GdsCanvasControl,
-                                  Action<Visibility.LayerKey, int64, int64, int64>>(
+                                  Action<Visibility.LayerKey, int64, string, int64, int64>>(
             "StartRouteHandler", null)
+        with get
+    /// ADR-0006 — invoked from the walk-around background dispatch
+    /// with the latest corner sequence. Update arm calls
+    /// `Draft.setAuto corners` so the tentative polyline re-renders
+    /// through the auto-jog path.
+    static member val RouteAutoComputedHandlerProperty
+            : StyledProperty<Action<(int64 * int64) list>> =
+        AvaloniaProperty.Register<GdsCanvasControl,
+                                  Action<(int64 * int64) list>>(
+            "RouteAutoComputedHandler", null)
+        with get
+    /// ADR-0006 — net membership map driving the walk-around
+    /// obstacle classification (same map Macro.Nets carries).
+    static member val NetMapProperty
+            : StyledProperty<Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>> =
+        AvaloniaProperty.Register<GdsCanvasControl,
+                                  Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>>(
+            "NetMap", Map.empty)
         with get
     /// Dispatched on every mouse-move when a draft is in flight.
     /// Args: x, y in DBU.
@@ -1353,10 +1381,22 @@ type GdsCanvasControl() as this =
             this.SetValue(GdsCanvasControl.ActiveLayerProperty, v) |> ignore
 
     member this.StartRouteHandler
-        with get() : Action<Visibility.LayerKey, int64, int64, int64> =
+        with get() : Action<Visibility.LayerKey, int64, string, int64, int64> =
             this.GetValue(GdsCanvasControl.StartRouteHandlerProperty)
-        and set(v: Action<Visibility.LayerKey, int64, int64, int64>) =
+        and set(v: Action<Visibility.LayerKey, int64, string, int64, int64>) =
             this.SetValue(GdsCanvasControl.StartRouteHandlerProperty, v) |> ignore
+
+    member this.RouteAutoComputedHandler
+        with get() : Action<(int64 * int64) list> =
+            this.GetValue(GdsCanvasControl.RouteAutoComputedHandlerProperty)
+        and set(v: Action<(int64 * int64) list>) =
+            this.SetValue(GdsCanvasControl.RouteAutoComputedHandlerProperty, v) |> ignore
+
+    member this.NetMap
+        with get() : Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry> =
+            this.GetValue(GdsCanvasControl.NetMapProperty)
+        and set(v: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>) =
+            this.SetValue(GdsCanvasControl.NetMapProperty, v) |> ignore
 
     member this.RouteMouseMoveHandler
         with get() : Action<int64, int64> =
@@ -1591,6 +1631,83 @@ type GdsCanvasControl() as this =
                                violations = result.Length |}
                 Routing.LiveDrc.schedule liveDrcState compute postBack onAccept
                 |> ignore
+            // ADR-0006 — walk-around dispatch. Same background-task
+            // pattern as live DRC; results land via the
+            // RouteAutoComputedHandler which the Update arm wires to
+            // `Draft.setAuto`.
+            if (e.Property = GdsCanvasControl.DraftRouteProperty
+                || e.Property = GdsCanvasControl.FlatPolygonsProperty
+                || e.Property = GdsCanvasControl.NetMapProperty
+                || e.Property = GdsCanvasControl.ActiveLayerProperty)
+               && this.DraftRoute.IsSome then
+                let draft = this.DraftRoute.Value
+                match draft.Cursor with
+                | None -> ()       // no cursor yet, nothing to route to
+                | Some (cx, cy) ->
+                    // Last fixed point — walk-around runs from there.
+                    let lastPt =
+                        match List.tryLast draft.Points with
+                        | Some pt -> pt
+                        | None    -> (cx, cy)
+                    let layerKey : Routing.Obstacles.LayerKey =
+                        { Number = fst draft.Layer; DataType = snd draft.Layer }
+                    // Clearance = half wire width for v1. A future
+                    // pass can pull foreign-net spacing from the DRC
+                    // view; for now half-width keeps the wire's
+                    // edges out of foreign features.
+                    let clearance = max 0L (draft.Width / 2L)
+                    let key : Routing.WalkAround.BuildKey =
+                        { Layer = layerKey
+                          StartNet = draft.StartNet
+                          Clearance = clearance
+                          FlatPolyRef = this.FlatPolygons
+                          NetMapRef = this.NetMap }
+                    let graph =
+                        // Rebuild on identity flip of any of the
+                        // four bound inputs; reuse otherwise.
+                        let needRebuild =
+                            match cachedWalkKey with
+                            | None -> true
+                            | Some k ->
+                                k.Layer <> key.Layer
+                                || k.StartNet <> key.StartNet
+                                || k.Clearance <> key.Clearance
+                                || not (obj.ReferenceEquals(k.FlatPolyRef, key.FlatPolyRef))
+                                || not (obj.ReferenceEquals(k.NetMapRef,  key.NetMapRef))
+                        if needRebuild then
+                            let g = Routing.WalkAround.buildGraph key
+                            cachedWalkGraph <- Some g
+                            cachedWalkKey   <- Some key
+                            g
+                        else cachedWalkGraph.Value
+                    let startPt : Routing.VisibilityGraph.Pt =
+                        { X = fst lastPt; Y = snd lastPt }
+                    let cursorPt : Routing.VisibilityGraph.Pt =
+                        { X = cx; Y = cy }
+                    let cb = this.RouteAutoComputedHandler
+                    // Compute returns the intermediate corner list
+                    // already (start and cursor stripped) — the
+                    // dispatch layer never sees `Pt`s past this seam.
+                    let compute () : (int64 * int64) list =
+                        try
+                            match Routing.WalkAround.route graph startPt cursorPt with
+                            | None -> []
+                            | Some nodes ->
+                                match nodes with
+                                | _ :: rest ->
+                                    rest
+                                    |> List.rev
+                                    |> (fun xs -> match xs with _ :: t -> t | [] -> [])
+                                    |> List.rev
+                                    |> List.map (fun pt -> pt.X, pt.Y)
+                                | [] -> []
+                        with _ -> []
+                    let postBack (action : unit -> unit) =
+                        Avalonia.Threading.Dispatcher.UIThread.Post(System.Action(action))
+                    let onAccept (corners : (int64 * int64) list) =
+                        if not (isNull cb) then cb.Invoke(corners)
+                    Routing.LiveDrc.schedule walkAroundState compute postBack onAccept
+                    |> ignore
             this.InvalidateVisual()
 
     // ---- Pointer-driven select / drag / pan + wheel zoom ----
@@ -1657,7 +1774,15 @@ type GdsCanvasControl() as this =
         match action with
         | Routing.Pointer.StartRoute (layer, width, x, y) ->
             let cb = this.StartRouteHandler
-            if not (isNull cb) then cb.Invoke(layer, width, x, y)
+            // Net comes from the snap target the user clicked. The
+            // snap-required-to-start gate above guarantees this is
+            // Some when StartRoute fires; defensive default to ""
+            // (walk-around treats it as unknown → route around all).
+            let startNet =
+                match snapTargetOpt with
+                | Some t -> t.Net
+                | None -> ""
+            if not (isNull cb) then cb.Invoke(layer, width, startNet, x, y)
             e.Handled <- true
         | Routing.Pointer.FixSegment ->
             let cb = this.RouteFixSegmentHandler

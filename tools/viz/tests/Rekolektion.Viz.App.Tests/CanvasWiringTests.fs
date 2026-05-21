@@ -52,7 +52,7 @@ let private withCanvas
 /// Capture every invocation of the canvas's routing handlers so
 /// tests can assert what the wiring dispatched.
 type private CapturedActions = {
-    mutable Starts : (Visibility.LayerKey * int64 * int64 * int64) list
+    mutable Starts : (Visibility.LayerKey * int64 * string * int64 * int64) list
     mutable Fixes  : int
     mutable Finishes : int
     mutable Moves  : (int64 * int64) list
@@ -67,8 +67,8 @@ let private newCapture () : CapturedActions = {
 
 let private wireCapture (canvas: GdsCanvasControl) (cap: CapturedActions) =
     canvas.StartRouteHandler <-
-        Action<Visibility.LayerKey, int64, int64, int64>(fun l w x y ->
-            cap.Starts <- cap.Starts @ [(l, w, x, y)])
+        Action<Visibility.LayerKey, int64, string, int64, int64>(fun l w net x y ->
+            cap.Starts <- cap.Starts @ [(l, w, net, x, y)])
     canvas.RouteFixSegmentHandler <-
         Action(fun () -> cap.Fixes <- cap.Fixes + 1)
     canvas.RouteFinishHandler <-

@@ -149,10 +149,20 @@ let private gds2DActiveLayerAttr
         GdsCanvasControl.ActiveLayerProperty, v, ValueNone)
 
 let private gds2DStartRouteHandlerAttr
-        (h: System.Action<Visibility.LayerKey, int64, int64, int64>)
+        (h: System.Action<Visibility.LayerKey, int64, string, int64, int64>)
         : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Visibility.LayerKey, int64, int64, int64>>(
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Visibility.LayerKey, int64, string, int64, int64>>(
         GdsCanvasControl.StartRouteHandlerProperty, h, ValueNone)
+
+let private gds2DRouteAutoComputedHandlerAttr
+        (h: System.Action<(int64 * int64) list>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<(int64 * int64) list>>(
+        GdsCanvasControl.RouteAutoComputedHandlerProperty, h, ValueNone)
+
+let private gds2DNetMapAttr
+        (v: Map<string, Sidecar.Types.NetEntry>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Map<string, Sidecar.Types.NetEntry>>(
+        GdsCanvasControl.NetMapProperty, v, ValueNone)
 
 let private gds2DRouteMouseMoveHandlerAttr
         (h: System.Action<int64, int64>) : IAttr<GdsCanvasControl> =
@@ -283,8 +293,8 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DDraftRouteAttr  model.DraftRoute
               gds2DActiveLayerAttr model.Toggle.ActiveLayer
               gds2DStartRouteHandlerAttr
-                  (System.Action<Visibility.LayerKey, int64, int64, int64>(fun layer w x y ->
-                      dispatch (Msg.StartRoute (layer, w, x, y))))
+                  (System.Action<Visibility.LayerKey, int64, string, int64, int64>(fun layer w net x y ->
+                      dispatch (Msg.StartRoute (layer, w, net, x, y))))
               gds2DRouteMouseMoveHandlerAttr
                   (System.Action<int64, int64>(fun x y ->
                       dispatch (Msg.RouteMouseMove (x, y))))
@@ -292,7 +302,13 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                   (System.Action(fun () -> dispatch Msg.RouteFixSegment))
               gds2DRouteFinishHandlerAttr
                   (System.Action(fun () -> dispatch Msg.RouteFinish))
-              gds2DDrcViewAttr model.DrcView ]
+              gds2DDrcViewAttr model.DrcView
+              // ADR-0006 walk-around router wiring
+              gds2DNetMapAttr
+                  (active |> Option.map (fun m -> m.Nets) |> Option.defaultValue Map.empty)
+              gds2DRouteAutoComputedHandlerAttr
+                  (System.Action<(int64 * int64) list>(fun corners ->
+                      dispatch (Msg.RouteAutoComputed corners))) ]
 
     let pickedHandler =
         System.Action<Layout.Flatten.PolyKey>(fun pk ->

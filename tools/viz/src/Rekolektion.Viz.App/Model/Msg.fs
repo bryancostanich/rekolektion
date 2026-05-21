@@ -161,7 +161,11 @@ type Msg =
     /// ADR-0002 — begin drawing a new route on `layer` with `width`,
     /// anchored at the world-coord `anchor`. Initialises
     /// `Model.DraftRoute`. No-op when no active macro.
-    | StartRoute       of layer: LayerKey * width: int64 * anchor: int64 * int64
+    | StartRoute       of layer: LayerKey * width: int64 * startNet: string * anchor: int64 * int64
+    /// ADR-0006 — walk-around corner sequence from the background
+    /// dispatch. Replaces the active draft's Auto field. An empty
+    /// list resets to the straight-L fallback.
+    | RouteAutoComputed of corners: (int64 * int64) list
     /// ADR-0002 — update the live cursor position for the in-flight
     /// draft. Triggers tentative-L recomputation. No-op when no
     /// DraftRoute is active.

@@ -1,0 +1,481 @@
+version: 1
+pdk: sky130
+rules:
+- name: difftap.1
+  kind: width
+  layer:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.15
+- name: difftap.3
+  kind: spacing
+  layer:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.27
+- name: difftap.8a
+  kind: enclosure
+  outer:
+    number: 64
+    datatype: 20
+    name: nwell
+  inner:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.18
+  cond: psdm-overlaps
+- name: difftap.2
+  kind: width
+  layer:
+    number: 65
+    datatype: 44
+    name: tap
+  min-um: 0.26
+- name: difftap.3a
+  kind: spacing
+  layer:
+    number: 65
+    datatype: 44
+    name: tap
+  min-um: 0.27
+- name: nwell.1
+  kind: width
+  layer:
+    number: 64
+    datatype: 20
+    name: nwell
+  min-um: 0.84
+- name: nwell.2a
+  kind: spacing
+  layer:
+    number: 64
+    datatype: 20
+    name: nwell
+  min-um: 1.27
+- name: nwell.5
+  kind: enclosure
+  outer:
+    number: 64
+    datatype: 20
+    name: nwell
+  inner:
+    number: 94
+    datatype: 20
+    name: psdm
+  min-um: 0.18
+  cond: overlaps-diff
+- name: nsdm.1
+  kind: width
+  layer:
+    number: 93
+    datatype: 44
+    name: nsdm
+  min-um: 0.38
+- name: nsdm.2
+  kind: spacing
+  layer:
+    number: 93
+    datatype: 44
+    name: nsdm
+  min-um: 0.38
+- name: nsdm.5a
+  kind: enclosure
+  outer:
+    number: 93
+    datatype: 44
+    name: nsdm
+  inner:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.125
+  cond: nsdm-overlaps
+- name: psdm.1
+  kind: width
+  layer:
+    number: 94
+    datatype: 20
+    name: psdm
+  min-um: 0.38
+- name: psdm.2
+  kind: spacing
+  layer:
+    number: 94
+    datatype: 20
+    name: psdm
+  min-um: 0.38
+- name: psdm.5a
+  kind: enclosure
+  outer:
+    number: 94
+    datatype: 20
+    name: psdm
+  inner:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.125
+  cond: psdm-overlaps
+- name: poly.1a
+  kind: width
+  layer:
+    number: 66
+    datatype: 20
+    name: poly
+  min-um: 0.15
+- name: poly.2
+  kind: spacing
+  layer:
+    number: 66
+    datatype: 20
+    name: poly
+  min-um: 0.21
+- name: poly.8
+  kind: endcap
+  source:
+    number: 66
+    datatype: 20
+    name: poly
+  reference:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.13
+- name: poly.7
+  kind: endcap
+  source:
+    number: 65
+    datatype: 20
+    name: diff
+  reference:
+    number: 66
+    datatype: 20
+    name: poly
+  min-um: 0.25
+- name: poly.4
+  kind: cross-spacing
+  layer-a:
+    number: 66
+    datatype: 20
+    name: poly
+  layer-b:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.075
+  cond-a: always
+  cond-b: always
+- name: rpm.3-6-nsd.5a
+  kind: cross-spacing
+  layer-a:
+    number: 66
+    datatype: 13
+  layer-b:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.525
+  cond-a: always
+  cond-b: nsdm-not-in-nwell
+- name: rpm.3-7
+  kind: cross-spacing
+  layer-a:
+    number: 66
+    datatype: 13
+  layer-b:
+    number: 66
+    datatype: 20
+    name: poly
+  min-um: 0.4
+  cond-a: always
+  cond-b: always
+- name: poly.9
+  kind: cross-spacing
+  layer-a:
+    number: 66
+    datatype: 13
+  layer-b:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.48
+  cond-a: always
+  cond-b: always
+- name: poly.9
+  kind: cross-spacing
+  layer-a:
+    number: 66
+    datatype: 13
+  layer-b:
+    number: 66
+    datatype: 20
+    name: poly
+  min-um: 0.48
+  cond-a: always
+  cond-b: always
+- name: poly.9
+  kind: spacing
+  layer:
+    number: 66
+    datatype: 13
+  min-um: 0.48
+- name: diff/tap.9
+  kind: implant-outside-well-spacing
+  implant:
+    number: 93
+    datatype: 44
+    name: nsdm
+  active:
+    number: 65
+    datatype: 20
+    name: diff
+  well:
+    number: 64
+    datatype: 20
+    name: nwell
+  min-um: 0.34
+- name: licon.1
+  kind: width
+  layer:
+    number: 66
+    datatype: 44
+    name: licon1
+  min-um: 0.17
+- name: licon.2
+  kind: spacing
+  layer:
+    number: 66
+    datatype: 44
+    name: licon1
+  min-um: 0.17
+- name: licon.5a
+  kind: asym-enclosure
+  outer:
+    number: 65
+    datatype: 20
+    name: diff
+  inner:
+    number: 66
+    datatype: 44
+    name: licon1
+  one-dir-um: 0.06
+  other-dir-um: 0.04
+  cond: overlaps-diff
+- name: licon.8
+  kind: asym-enclosure
+  outer:
+    number: 66
+    datatype: 20
+    name: poly
+  inner:
+    number: 66
+    datatype: 44
+    name: licon1
+  one-dir-um: 0.08
+  other-dir-um: 0.05
+  cond: overlaps-poly
+- name: li.5
+  kind: asym-enclosure
+  outer:
+    number: 67
+    datatype: 20
+    name: li1
+  inner:
+    number: 66
+    datatype: 44
+    name: licon1
+  one-dir-um: 0.08
+  other-dir-um: 0
+  cond: always
+- name: li.1
+  kind: width
+  layer:
+    number: 67
+    datatype: 20
+    name: li1
+  min-um: 0.17
+- name: li.3
+  kind: spacing
+  layer:
+    number: 67
+    datatype: 20
+    name: li1
+  min-um: 0.17
+- name: li.6
+  kind: min-area
+  layer:
+    number: 67
+    datatype: 20
+    name: li1
+  min-um2: 0.0561
+- name: mcon.1
+  kind: width
+  layer:
+    number: 67
+    datatype: 44
+    name: mcon
+  min-um: 0.17
+- name: mcon.2
+  kind: spacing
+  layer:
+    number: 67
+    datatype: 44
+    name: mcon
+  min-um: 0.19
+- name: met1.5
+  kind: asym-enclosure
+  outer:
+    number: 68
+    datatype: 20
+    name: met1
+  inner:
+    number: 67
+    datatype: 44
+    name: mcon
+  one-dir-um: 0.06
+  other-dir-um: 0.03
+  cond: always
+- name: met1.1
+  kind: width
+  layer:
+    number: 68
+    datatype: 20
+    name: met1
+  min-um: 0.14
+- name: met1.2
+  kind: spacing
+  layer:
+    number: 68
+    datatype: 20
+    name: met1
+  min-um: 0.14
+- name: met1.6
+  kind: min-area
+  layer:
+    number: 68
+    datatype: 20
+    name: met1
+  min-um2: 0.083
+- name: via.1
+  kind: width
+  layer:
+    number: 68
+    datatype: 44
+    name: via
+  min-um: 0.15
+- name: via.2
+  kind: spacing
+  layer:
+    number: 68
+    datatype: 44
+    name: via
+  min-um: 0.17
+- name: via.4a
+  kind: enclosure
+  outer:
+    number: 68
+    datatype: 20
+    name: met1
+  inner:
+    number: 68
+    datatype: 44
+    name: via
+  min-um: 0.055
+  cond: always
+- name: via.5a
+  kind: enclosure
+  outer:
+    number: 69
+    datatype: 20
+    name: met2
+  inner:
+    number: 68
+    datatype: 44
+    name: via
+  min-um: 0.055
+  cond: always
+- name: met2.1
+  kind: width
+  layer:
+    number: 69
+    datatype: 20
+    name: met2
+  min-um: 0.14
+- name: met2.2
+  kind: spacing
+  layer:
+    number: 69
+    datatype: 20
+    name: met2
+  min-um: 0.14
+- name: met2.6
+  kind: min-area
+  layer:
+    number: 69
+    datatype: 20
+    name: met2
+  min-um2: 0.0676
+- name: via2.1
+  kind: width
+  layer:
+    number: 69
+    datatype: 44
+    name: via2
+  min-um: 0.2
+- name: via2.2
+  kind: spacing
+  layer:
+    number: 69
+    datatype: 44
+    name: via2
+  min-um: 0.2
+- name: via2.4
+  kind: asym-enclosure
+  outer:
+    number: 69
+    datatype: 20
+    name: met2
+  inner:
+    number: 69
+    datatype: 44
+    name: via2
+  one-dir-um: 0.085
+  other-dir-um: 0.04
+  cond: always
+- name: via2.5
+  kind: asym-enclosure
+  outer:
+    number: 70
+    datatype: 20
+    name: met3
+  inner:
+    number: 69
+    datatype: 44
+    name: via2
+  one-dir-um: 0.095
+  other-dir-um: 0.065
+  cond: always
+- name: met3.1
+  kind: width
+  layer:
+    number: 70
+    datatype: 20
+    name: met3
+  min-um: 0.3
+- name: met3.2
+  kind: spacing
+  layer:
+    number: 70
+    datatype: 20
+    name: met3
+  min-um: 0.3
+- name: met3.6
+  kind: min-area
+  layer:
+    number: 70
+    datatype: 20
+    name: met3
+  min-um2: 0.24

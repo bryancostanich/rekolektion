@@ -267,6 +267,14 @@ let private serializer =
     SerializerBuilder()
         .WithNamingConvention(HyphenatedNamingConvention.Instance)
         .DisableAliases()
+        // Skip null fields and unset Nullables — every Rule kind
+        // uses only a subset of the YamlRule's optional layer/value
+        // slots, and emitting them as `field:` (empty) blows the
+        // file up with 25+ noise lines per rule.
+        .ConfigureDefaultValuesHandling(
+            DefaultValuesHandling.OmitNull
+            ||| DefaultValuesHandling.OmitEmptyCollections
+            ||| DefaultValuesHandling.OmitDefaults)
         .Build()
 
 let private deserializer =

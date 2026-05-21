@@ -280,3 +280,50 @@ let ``loadEffective with override path pointing at missing file falls back to ba
         merged.Provenance.["met1.2"] |> should equal basePath
     finally
         File.Delete basePath
+
+// --- Bundled sky130.yaml ---------------------------------------------
+
+[<Fact>]
+let ``Bundled drc/base/sky130.yaml stays in sync with Rules.allRules`` () =
+    // The bundled YAML is a serialised snapshot of Rules.allRules.
+    // When the F# table changes, regenerate the bundle with:
+    //   dotnet fsi tools/viz/scripts/dump_drc_yaml.fsx
+    // (or any equivalent driver that calls
+    //  RulesYaml.serialize "sky130" Rules.allRules).
+    // This test catches drift before it ships.
+    let bundledPath =
+        Path.Combine(
+            Path.GetDirectoryName(typeof<RulesYaml.ParsedRuleset>.Assembly.Location),
+            "drc", "base", "sky130.yaml")
+    File.Exists bundledPath |> should equal true
+    let expected = RulesYaml.serialize "sky130" Rules.allRules
+    let actual = File.ReadAllText bundledPath
+    if expected <> actual then
+        // Print the first divergence point so the dev can spot it.
+        let pair =
+            Seq.zip (expected.Split('\n')) (actual.Split('\n'))
+            |> Seq.indexed
+            |> Seq.tryFind (fun (_, (e, a)) -> e <> a)
+        let hint =
+            match pair with
+            | Some (i, (e, a)) ->
+                sprintf "first divergence at line %d:\n  expected: %s\n  actual:   %s" i e a
+            | None -> "files differ in length only"
+        failwithf "Bundled sky130.yaml is out of date. %s\nRegenerate with `dotnet fsi tools/viz/scripts/dump_drc_yaml.fsx`." hint
+
+[<Fact>]
+let ``Bundled drc/base/sky130.yaml round-trips back to Rules.allRules content`` () =
+    // `Rules.allRules` legitimately re-uses some Magic rule names
+    // across kinds (e.g. `poly.9` appears as two CrossSpacings AND
+    // a Spacing). The parser preserves list order, so the right
+    // comparison is element-wise — not by-name (which would collapse
+    // duplicates).
+    let bundledPath =
+        Path.Combine(
+            Path.GetDirectoryName(typeof<RulesYaml.ParsedRuleset>.Assembly.Location),
+            "drc", "base", "sky130.yaml")
+    let parsed = RulesYaml.parseFile bundledPath
+    parsed.Errors |> should equal (Map.empty : Map<string, string>)
+    parsed.Rules |> List.length |> should equal Rules.allRules.Length
+    List.zip parsed.Rules Rules.allRules
+    |> List.iter (fun (b, a) -> b |> should equal a)

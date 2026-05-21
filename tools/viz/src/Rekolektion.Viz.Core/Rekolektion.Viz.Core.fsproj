@@ -6,6 +6,9 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="YamlDotNet" Version="16.2.0" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Include="Gds/Types.fs" />
     <Compile Include="Mag/Types.fs" />
     <Compile Include="Mag/LayerMap.fs" />
@@ -43,6 +46,7 @@
     <Compile Include="Drc/Geometry/Size.fs" />
     <Compile Include="Drc/Geometry/Components.fs" />
     <Compile Include="Drc/Rules.fs" />
+    <Compile Include="Drc/RulesYaml.fs" />
     <Compile Include="Drc/Implant.fs" />
     <Compile Include="Drc/Waiver.fs" />
     <Compile Include="Drc/Check.fs" />

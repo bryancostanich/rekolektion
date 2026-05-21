@@ -379,3 +379,43 @@ let merge
         Rules = List.ofSeq effective
         Provenance = Map.ofSeq (Seq.map (fun (kvp: KeyValuePair<_,_>) -> kvp.Key, kvp.Value) provenance)
     }
+
+// --- Disk loaders -------------------------------------------------------
+
+/// Read a YAML file and parse it. Throws on missing file or YAML
+/// syntax errors; per-rule content errors stay in `ParsedRuleset.Errors`.
+let parseFile (path: string) : ParsedRuleset =
+    System.IO.File.ReadAllText path
+    |> parse
+
+/// Read a YAML file when it exists; return `None` when it doesn't.
+/// Use for the override slot — `None` means "no overrides, use the
+/// base ruleset unmodified".
+let tryParseFile (path: string) : ParsedRuleset option =
+    if System.IO.File.Exists path then
+        Some (parseFile path)
+    else
+        None
+
+/// Convenience top-level loader: read the base file, optionally read
+/// an override file (skipping cleanly when the override path is
+/// `None` or the file doesn't exist), and merge them. Returns the
+/// effective `Rule` list with per-rule provenance attribution.
+///
+/// `overridePath = None` reproduces the base ruleset 1:1 with
+/// provenance pointing at the base file for every rule.
+let loadEffective
+        (basePath: string)
+        (overridePath: string option)
+        : MergedRuleset =
+    let base' = parseFile basePath
+    let over, overSource =
+        match overridePath |> Option.bind tryParseFile, overridePath with
+        | Some p, Some src -> p, src
+        | _ ->
+            { Pdk = base'.Pdk
+              Rules = []
+              DisabledNames = Set.empty
+              Errors = Map.empty },
+            "<no-override>"
+    merge base' basePath over overSource

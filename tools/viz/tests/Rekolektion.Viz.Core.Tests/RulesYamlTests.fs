@@ -204,3 +204,79 @@ let ``Merge: rule unique to base stays attributed to base file`` () =
 // recognises and ignores it; propagation through the merger is not
 // yet wired (see comment in RulesYaml.parse). When that ships, add
 // the override test here.
+
+// --- Disk loaders ----------------------------------------------------
+
+open System.IO
+
+let private writeTempYaml (rules: Rule list) : string =
+    let path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".yaml")
+    File.WriteAllText(path, RulesYaml.serialize "sky130" rules)
+    path
+
+[<Fact>]
+let ``parseFile reads a YAML file from disk`` () =
+    let path = writeTempYaml [ Spacing ("met1.2", met1, 0.14) ]
+    try
+        let parsed = RulesYaml.parseFile path
+        parsed.Rules |> List.length |> should equal 1
+        parsed.Rules.[0] |> should equal (Spacing ("met1.2", met1, 0.14))
+    finally
+        File.Delete path
+
+[<Fact>]
+let ``tryParseFile returns None for a missing path`` () =
+    let path = Path.Combine(Path.GetTempPath(), "definitely-not-there.yaml")
+    if File.Exists path then File.Delete path
+    RulesYaml.tryParseFile path |> should equal (None : RulesYaml.ParsedRuleset option)
+
+[<Fact>]
+let ``tryParseFile returns Some for an existing path`` () =
+    let path = writeTempYaml [ Width ("met1.1", met1, 0.14) ]
+    try
+        match RulesYaml.tryParseFile path with
+        | Some p -> p.Rules |> List.length |> should equal 1
+        | None -> failwith "expected Some for an existing file"
+    finally
+        File.Delete path
+
+[<Fact>]
+let ``loadEffective with no override returns base rules unchanged`` () =
+    let basePath =
+        writeTempYaml [
+            Spacing ("met1.2", met1, 0.14)
+            Spacing ("met2.2", met2, 0.14)
+        ]
+    try
+        let merged = RulesYaml.loadEffective basePath None
+        merged.Rules |> List.length |> should equal 2
+        merged.Provenance.["met1.2"] |> should equal basePath
+        merged.Provenance.["met2.2"] |> should equal basePath
+    finally
+        File.Delete basePath
+
+[<Fact>]
+let ``loadEffective merges base + override from disk`` () =
+    let basePath = writeTempYaml [ Spacing ("met1.2", met1, 0.14) ]
+    let overPath = writeTempYaml [ Spacing ("met1.2", met1, 0.18) ]
+    try
+        let merged = RulesYaml.loadEffective basePath (Some overPath)
+        merged.Rules
+        |> List.find (fun r -> nameOf r = "met1.2")
+        |> should equal (Spacing ("met1.2", met1, 0.18))
+        merged.Provenance.["met1.2"] |> should equal overPath
+    finally
+        File.Delete basePath
+        File.Delete overPath
+
+[<Fact>]
+let ``loadEffective with override path pointing at missing file falls back to base`` () =
+    let basePath = writeTempYaml [ Spacing ("met1.2", met1, 0.14) ]
+    let missingOver = Path.Combine(Path.GetTempPath(), "not-here.yaml")
+    if File.Exists missingOver then File.Delete missingOver
+    try
+        let merged = RulesYaml.loadEffective basePath (Some missingOver)
+        merged.Rules |> List.length |> should equal 1
+        merged.Provenance.["met1.2"] |> should equal basePath
+    finally
+        File.Delete basePath

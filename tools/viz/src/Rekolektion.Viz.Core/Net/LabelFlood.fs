@@ -83,9 +83,16 @@ let derive (doc: Document) : Map<string, NetEntry> =
     // The previous implementation called `Array.toList p.Points` per
     // `touch` test — for an N-poly cell that's N² fresh List<Point>
     // allocations in the flood-fill, the GC dominator. Cache them.
+    // Also classify each polygon as an axis-aligned rectangle —
+    // when both polys of a touch test are rectangles, the bbox
+    // overlap IS the touch result (no vertex-in-polygon walk needed).
+    // For SKY130 the vast majority of routing geometry (wires,
+    // pads, contacts, vias) is axis-aligned rectangles, so this
+    // short-circuits the hot path almost everywhere.
     let n = polys.Length
     let cachedPts : Point list array = Array.zeroCreate n
     let cachedBbox : (int64 * int64 * int64 * int64) array = Array.zeroCreate n
+    let isRect : bool array = Array.zeroCreate n
     for i in 0 .. n - 1 do
         let p = polys.[i]
         cachedPts.[i] <- Array.toList p.Points
@@ -99,11 +106,31 @@ let derive (doc: Document) : Map<string, NetEntry> =
             if pt.Y < yMin then yMin <- pt.Y
             if pt.Y > yMax then yMax <- pt.Y
         cachedBbox.[i] <- (xMin, yMin, xMax, yMax)
+        // Axis-aligned rectangle iff every point sits at one of the
+        // two bbox X-extremes AND one of the two bbox Y-extremes.
+        // Cheap to verify: walk once and check membership. Holds for
+        // both 4-point open and 5-point closed (first=last) forms.
+        let mutable rectish = p.Points.Length > 0
+        let mutable i' = 0
+        while rectish && i' < p.Points.Length do
+            let pt = p.Points.[i']
+            if not ((pt.X = xMin || pt.X = xMax)
+                    && (pt.Y = yMin || pt.Y = yMax))
+            then rectish <- false
+            i' <- i' + 1
+        // Also require both bbox dimensions to be positive — a
+        // degenerate 1D rect (line) is not a meaningful "rectangle"
+        // for the touch shortcut.
+        isRect.[i] <- rectish && xMax > xMin && yMax > yMin
 
-    // Bbox-first touch, indexed: bbox-reject before pointInPolygon
-    // is the second-biggest win after killing the alloc.
+    // Bbox-first touch, indexed. When BOTH polys are axis-aligned
+    // rectangles, bbox overlap already encodes touch — skip the
+    // vertex-in-polygon walk entirely. Falls back to the original
+    // semantics (bbox overlap + at least one vertex inside the
+    // other) for non-rectilinear polygons.
     let touchIdx (a: int) (b: int) : bool =
         if not (bboxOverlap cachedBbox.[a] cachedBbox.[b]) then false
+        elif isRect.[a] && isRect.[b] then true
         else
             let aPts = cachedPts.[a]
             let bPts = cachedPts.[b]

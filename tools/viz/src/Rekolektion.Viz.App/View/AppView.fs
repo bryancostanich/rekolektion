@@ -305,7 +305,10 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DDrcViewAttr model.DrcView
               // ADR-0006 walk-around router wiring
               gds2DNetMapAttr
-                  (active |> Option.map (fun m -> m.Nets) |> Option.defaultValue Map.empty)
+                  (let nm = active |> Option.map (fun m -> m.Nets) |> Option.defaultValue Map.empty
+                   Rekolektion.Viz.App.Services.Logger.log "appview.netmap.bind"
+                       {| count = nm.Count |}
+                   nm)
               gds2DRouteAutoComputedHandlerAttr
                   (System.Action<(int64 * int64) list>(fun corners ->
                       dispatch (Msg.RouteAutoComputed corners))) ]

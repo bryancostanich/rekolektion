@@ -36,6 +36,7 @@
     <Compile Include="Layout/LayoutLoader.fs" />
     <Compile Include="Sidecar/Types.fs" />
     <Compile Include="Sidecar/Loader.fs" />
+    <Compile Include="Spatial/UniformGrid.fs" />
     <Compile Include="Net/LabelFlood.fs" />
     <Compile Include="Net/Ratlines.fs" />
     <Compile Include="Routing/Detect.fs" />

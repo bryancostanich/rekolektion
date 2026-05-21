@@ -1,5 +1,6 @@
 module Rekolektion.Viz.Core.Net.LabelFlood
 
+open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Sidecar.Types
 open Rekolektion.Viz.Core.Layout.Picking
@@ -132,6 +133,33 @@ let derive (doc: Document) : Map<string, NetEntry> =
         |> Array.map (fun (k, arr) -> k, arr |> Array.map fst)
         |> Map.ofArray
 
+    // Per-(layer, datatype) uniform-grid spatial index. The flood
+    // step "find neighbors of poly X on layer L" used to walk
+    // every poly on L (O(layer-size) per step); the index gives
+    // just the polys whose bbox sits in X's grid cells
+    // (O(local-density) per step). One index per layer so the
+    // query returns only candidates on the right layer.
+    let cellSize = Spatial.UniformGrid.suggestCellSize cachedBbox
+    let layerIndex : Map<int * int, Spatial.UniformGrid.Index> =
+        byLayer
+        |> Map.map (fun _ idxs ->
+            let bboxes = idxs |> Array.map (fun i -> cachedBbox.[i])
+            // Build over a synthetic "indices in this layer" array;
+            // map back via the bucket array.
+            let layerLocalIndex =
+                Spatial.UniformGrid.build cellSize bboxes
+            layerLocalIndex)
+    /// Visit every poly index on `layerKey` whose bbox overlaps
+    /// `queryBbox`. Returns global poly indices (into `polys`),
+    /// not layer-local indices.
+    let visitNeighbors (layerKey: int * int) (queryBbox: int64 * int64 * int64 * int64)
+                       (callback: int -> unit) : unit =
+        match Map.tryFind layerKey byLayer, Map.tryFind layerKey layerIndex with
+        | Some layerArr, Some idx ->
+            Spatial.UniformGrid.queryBbox idx queryBbox (fun localI ->
+                callback layerArr.[localI])
+        | _ -> ()
+
     labels
     |> Array.fold (fun (acc: Map<string, NetEntry>) (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel) ->
         // Skip DeviceTerminal labels — those are FET port annotations
@@ -168,45 +196,38 @@ let derive (doc: Document) : Map<string, NetEntry> =
                 let cur = polys.[curIdx]
                 collected.Add cur
                 let curKey = cur.Layer, cur.DataType
-                // Same-(layer, datatype) flood: any touching poly
-                // on the same routing layer shares the net.
-                match Map.tryFind curKey byLayer with
-                | Some arr ->
-                    for cIdx in arr do
-                        if not (visited.Contains cIdx)
-                           && touchIdx curIdx cIdx then
-                            visited.Add cIdx |> ignore
-                            queue.Enqueue cIdx |> ignore
-                | None -> ()
+                let curBbox = cachedBbox.[curIdx]
+                // Same-(layer, datatype) flood: spatial-index query
+                // returns only polys whose bbox overlaps the current
+                // poly's bbox on the same layer.
+                visitNeighbors curKey curBbox (fun cIdx ->
+                    if not (visited.Contains cIdx)
+                       && touchIdx curIdx cIdx then
+                        visited.Add cIdx |> ignore
+                        queue.Enqueue cIdx |> ignore)
                 // Cross-layer flood via the contact/via stack.
-                // For every contact layer that bridges this
-                // routing layer, find contact polys touching the
-                // current poly. Each such contact connects to a
-                // set of routing layers; OTHER-layer polys
-                // touching the contact join the flood.
+                // For every contact layer that bridges this routing
+                // layer, query the index for contact polys near the
+                // current poly. Each contact poly that actually
+                // touches the current poly then radiates to OTHER
+                // routing layers via the same contact, again via
+                // the spatial index.
                 match Map.tryFind curKey routingContacts with
                 | Some contactKeys ->
                     for contactKey in contactKeys do
-                        match Map.tryFind contactKey byLayer with
-                        | Some contactArr ->
-                            for contactIdx in contactArr do
-                                if touchIdx curIdx contactIdx then
-                                    // Routing layers wired by
-                                    // THIS contact.
-                                    match Map.tryFind contactKey contactBridges with
-                                    | Some routingKeys ->
-                                        for routingKey in routingKeys do
-                                            if routingKey <> curKey then
-                                                match Map.tryFind routingKey byLayer with
-                                                | Some otherArr ->
-                                                    for oIdx in otherArr do
-                                                        if not (visited.Contains oIdx)
-                                                           && touchIdx contactIdx oIdx then
-                                                            visited.Add oIdx |> ignore
-                                                            queue.Enqueue oIdx |> ignore
-                                                | None -> ()
-                                    | None -> ()
-                        | None -> ()
+                        visitNeighbors contactKey curBbox (fun contactIdx ->
+                            if touchIdx curIdx contactIdx then
+                                let contactBbox = cachedBbox.[contactIdx]
+                                match Map.tryFind contactKey contactBridges with
+                                | Some routingKeys ->
+                                    for routingKey in routingKeys do
+                                        if routingKey <> curKey then
+                                            visitNeighbors routingKey contactBbox (fun oIdx ->
+                                                if not (visited.Contains oIdx)
+                                                   && touchIdx contactIdx oIdx then
+                                                    visited.Add oIdx |> ignore
+                                                    queue.Enqueue oIdx |> ignore)
+                                | None -> ())
                 | None -> ()
             let polyRefs =
                 collected

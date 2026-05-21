@@ -42,15 +42,19 @@ module HeadlessRender =
     /// Sets `REKOLEKTION_VIZ_HEADLESS=1` before boot so App.fs skips binding
     /// the ScreenshotListener socket — otherwise this would fight with a
     /// live `rekolektion viz` process for the same unix socket file.
-    let renderToPng
+    /// Render the MainWindow under an EXISTING Avalonia.Headless
+    /// session. Test code calls this with a shared session so a
+    /// single test process can run multiple headless tests (the
+    /// `avares://` URI scheme registers globally and refuses a
+    /// second `StartNew`).
+    let renderToPngWithSession
+            (session: HeadlessUnitTestSession)
             (outputPath: string)
             (width: int)
             (height: int)
             (holdMs: int)
             (preRenderMsgs: Model.Msg.Msg list) : int =
         Environment.SetEnvironmentVariable("REKOLEKTION_VIZ_HEADLESS", "1")
-
-        use session = HeadlessUnitTestSession.StartNew(typeof<HeadlessApp>)
         let task =
             session.Dispatch((fun () ->
                 // Avalonia.Headless' ApplicationLifetime is NOT a classic
@@ -92,3 +96,16 @@ module HeadlessRender =
                 frame.Save outputPath), CancellationToken.None)
         task.GetAwaiter().GetResult()
         0
+
+    /// CLI entry: bootstrap a fresh headless session and render.
+    /// Use this from one-shot processes (the `rekolektion viz-render`
+    /// command, MCP `rekolektion_viz_render` tool). Tests should
+    /// call `renderToPngWithSession` against a shared session.
+    let renderToPng
+            (outputPath: string)
+            (width: int)
+            (height: int)
+            (holdMs: int)
+            (preRenderMsgs: Model.Msg.Msg list) : int =
+        use session = HeadlessUnitTestSession.StartNew(typeof<HeadlessApp>)
+        renderToPngWithSession session outputPath width height holdMs preRenderMsgs

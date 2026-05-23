@@ -172,10 +172,17 @@ let private commitRouteWith
                                 | Some side -> Routing.Draft.endpointPads side d
                                 | None -> []
                             let allSegs = pads @ segs
+                            // Stamp every rect in this commit with
+                            // the same WireId — the wire and its
+                            // endpoint pads are one editable unit.
+                            // ID is monotonic per-document and
+                            // never reused (see Routing.Wire).
+                            let wireId = Routing.Wire.nextWireId mc.Document
                             let rects =
                                 allSegs
                                 |> List.map
-                                    (rectOfDraftSegment mc.Document.Pdk)
+                                    (rectOfDraftSegment mc.Document.Pdk
+                                     >> Routing.Wire.setWireId wireId)
                             let doc' = appendRectsToTop rects mc.Document
                             let flat' = Layout.Flatten.flatten doc'
                             let inst' = Layout.Instances.enumerate doc'

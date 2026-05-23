@@ -39,6 +39,7 @@
     <Compile Include="Spatial/UniformGrid.fs" />
     <Compile Include="Net/LabelFlood.fs" />
     <Compile Include="Net/Ratlines.fs" />
+    <Compile Include="Routing/Wire.fs" />
     <Compile Include="Routing/Detect.fs" />
     <Compile Include="Routing/Draft.fs" />
     <Compile Include="Routing/Pointer.fs" />

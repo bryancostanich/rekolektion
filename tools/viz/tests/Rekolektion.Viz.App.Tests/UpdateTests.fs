@@ -411,6 +411,16 @@ let ``RouteFinish commits segments to the active macro and pushes undo`` () =
     // Undo pushed, dirty flagged.
     macro.UndoStack.Length |> should equal 1
     macro.Dirty |> should equal true
+    // Every committed rect (wire + 2 endpoint pads) shares the same
+    // monotonic WireId — they're one editable unit. ID starts at 1
+    // on an empty document.
+    let newRects =
+        elems
+        |> List.skip before
+        |> List.choose (function RectEl r -> Some r | _ -> None)
+    newRects |> List.length |> should equal 3
+    let ids = newRects |> List.map Routing.Wire.getWireId |> List.distinct
+    ids |> should equal [ Some 1 ]
 
 [<Fact>]
 let ``RouteFinish on a degenerate draft (no segments) just clears DraftRoute`` () =

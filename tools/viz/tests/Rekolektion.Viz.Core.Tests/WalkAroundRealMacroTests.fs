@@ -21,6 +21,93 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
         doc
 
     [<Fact>]
+    member _.``IDEAL: drn_R bottom→top wire goes UP-first, minimum-jog Z-shape, returns to cursor.X column`` () =
+        // This is the bar. The user's expected behaviour:
+        //   - Wire goes UP from start at start.X column (no horizontal stub first)
+        //   - When it must dodge, jogs LEFT or RIGHT just past the obstacle's
+        //     expanded clearance edge (within `tol` units)
+        //   - After clearing, returns to cursor.X column
+        //   - Ends at cursor
+        // Until this test passes, do NOT report the walkaround as fixed.
+        if not (hasMacro ()) then () else
+
+        let doc = loadDoc ()
+        let flat = Layout.Flatten.flatten doc
+        let nets = Net.LabelFlood.derive doc
+
+        let layer : Obstacles.LayerKey = { Number = 67; DataType = 20 }
+        let startPt : Pt = { X = -392L; Y = 6225L }
+        let cursorPt : Pt = { X = -393L; Y = 8023L }
+        let clearance = 85L + 170L
+
+        let dxAbs = abs (cursorPt.X - startPt.X)
+        let dyAbs = abs (cursorPt.Y - startPt.Y)
+        let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+        let macroBounds : WalkAround.MacroBounds =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+        let key : WalkAround.BuildKey =
+            { Layer = layer; StartNet = "drn_R"; Clearance = clearance
+              FlatPolyRef = flat; NetMapRef = nets }
+        let result = WalkAround.routeAdaptive key startPt cursorPt initialMargin macroBounds 0
+        let path =
+            match result.Path with
+            | Some p -> p
+            | None -> failwith "expected a path, got None"
+
+        out.WriteLine(sprintf "Path nodes (%d):" path.Length)
+        for p in path do out.WriteLine(sprintf "  (%d, %d)" p.X p.Y)
+
+        // 1) UP-FIRST: first move from start must be a Y change
+        //    (segment's X is start.X), not a horizontal stub.
+        let firstAfterStart =
+            match path with
+            | _ :: next :: _ -> next
+            | _ -> failwith "path too short"
+        let firstMoveIsVertical = firstAfterStart.X = startPt.X
+        firstMoveIsVertical
+        |> should equal true
+
+        // 2) MINIMUM LATERAL DEVIATION: max |x - start.X| across the
+        //    path must be at most `clearance + obstacle.Width/2`-ish.
+        //    Tight cap: 4× clearance ≈ 1020. Practical wires shouldn't
+        //    jog more than that on this layout.
+        let maxLateral =
+            path
+            |> List.map (fun p ->
+                let dx = abs (p.X - startPt.X)
+                let dy = abs (p.X - cursorPt.X)
+                min dx dy)
+            |> List.max
+        let lateralCap = clearance * 4L  // 1020 DBU
+        out.WriteLine(sprintf "max lateral deviation from nearest column: %d (cap %d)"
+                        maxLateral lateralCap)
+        maxLateral
+        |> should be (lessThanOrEqualTo lateralCap)
+
+        // 3) RETURNS TO CURSOR COLUMN: the LAST move before reaching
+        //    cursor must be a Y change at cursor.X (vertical segment
+        //    bringing the wire home).
+        let beforeCursor =
+            path
+            |> List.rev
+            |> function
+               | _ :: prev :: _ -> prev
+               | _ -> failwith "path too short"
+        let lastMoveIsVertical = beforeCursor.X = cursorPt.X
+        lastMoveIsVertical
+        |> should equal true
+
+    [<Fact>]
     member _.``REPRO: vertical wire drn_R top→bottom should jog around foreign features`` () =
         if not (hasMacro ()) then () else
 

@@ -271,16 +271,31 @@ let derive (doc: Document) : Map<string, NetEntry> =
                     { Structure = p.SourceStructure
                       Layer = p.Layer
                       DataType = p.DataType
-                      Index = p.SourceIndex })
+                      Index = p.SourceIndex
+                      TopInstanceIndex = p.TopInstanceIndex })
                 |> Seq.distinct
                 |> Seq.toList
+            // The seed polygon — the one the label sits inside —
+            // is the direct claim. Tracked separately so
+            // `Obstacles.buildNetIndex` can prioritise it over
+            // flooded claims from OTHER labels that crossed through
+            // this polygon's contact stack.
+            let seedPoly = polys.[i0]
+            let seedRef : PolygonRef =
+                { Structure = seedPoly.SourceStructure
+                  Layer = seedPoly.Layer
+                  DataType = seedPoly.DataType
+                  Index = seedPoly.SourceIndex
+                  TopInstanceIndex = seedPoly.TopInstanceIndex }
             let entry =
                 match Map.tryFind lbl.Text acc with
                 | Some existing ->
                     { existing with
-                        Polygons = existing.Polygons @ polyRefs |> List.distinct }
+                        Polygons = existing.Polygons @ polyRefs |> List.distinct
+                        SeedPolygons = existing.SeedPolygons @ [seedRef] |> List.distinct }
                 | None ->
                     { Name = lbl.Text
                       Class = classOfName lbl.Text
-                      Polygons = polyRefs }
+                      Polygons = polyRefs
+                      SeedPolygons = [seedRef] }
             Map.add lbl.Text entry acc) Map.empty

@@ -78,69 +78,105 @@ let isRoutingLayer (layer : LayerKey) : bool =
 /// up to the same name.
 [<Struct>]
 type private PolyId = {
-    Structure : string
-    Layer     : int
-    DataType  : int
-    Index     : int
+    Structure       : string
+    Layer           : int
+    DataType        : int
+    Index           : int
+    /// Distinguishes physical instances that share the same source
+    /// (Structure, Index) — without it, a single PolyId collides
+    /// across instances and a polygon labeled SIGN in one instance
+    /// gets claimed by drn_R via another instance's label, making
+    /// foreign features invisible to the walkaround.
+    TopInstanceIndex: int option
 }
 
-/// Many-to-one: a single (Structure, Layer, DataType, Index) can be
-/// claimed by multiple nets when the same subcell is instanced more
-/// than once at the top level and a different net label hits the same
-/// polygon in each instance. The classifier asks "is the start net
-/// among the claimants?" rather than "what's THE net?" so multi-
-/// instance pin polygons aren't misclassified as foreign.
+/// Per-polygon claim set. Each PolyId (which now disambiguates
+/// physical instances via TopInstanceIndex) maps to the set of
+/// nets whose flood reached it. A wire's startNet counts the
+/// polygon as "ours" if startNet is in the set — even when other
+/// nets also flooded to it through contacts. That last case
+/// indicates electrical connectivity (a polygon shared across
+/// multiple labels, e.g. a FET source touching two diff regions);
+/// for routing purposes the wire is allowed to extend across any
+/// polygon that floods from the start net's label.
 type NetIndex = private NetIndex of Map<PolyId, Set<string>>
 
 let private polyIdOf (p : PolygonRef) : PolyId =
-    { Structure = p.Structure
-      Layer     = p.Layer
-      DataType  = p.DataType
-      Index     = p.Index }
+    { Structure        = p.Structure
+      Layer            = p.Layer
+      DataType         = p.DataType
+      Index            = p.Index
+      TopInstanceIndex = p.TopInstanceIndex }
 
 let private flatPolyId (fp : FlatPolygon) : PolyId =
-    { Structure = fp.SourceStructure
-      Layer     = fp.Layer
-      DataType  = fp.DataType
-      Index     = fp.SourceIndex }
+    { Structure        = fp.SourceStructure
+      Layer            = fp.Layer
+      DataType         = fp.DataType
+      Index            = fp.SourceIndex
+      TopInstanceIndex = fp.TopInstanceIndex }
 
-/// Build the reverse index. O(Σ |net.Polygons|) — one pass over the
-/// net map. Cached by the caller; rebuilt on `Macro.Nets` change.
-/// A single PolyId can map to multiple net names when the source
-/// polygon is reused across instances on different nets.
-let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
+// Cache for buildNetIndex keyed by Map reference identity. The
+// canvas holds the same `nets` Map until LabelFlood re-derives
+// (doc change), so caching here turns the per-walkaround-frame
+// rebuild (76 ms with 1k+ polygons in one net) into a single hit.
+// Trim to the last few entries to bound memory.
+let private indexCache : System.Collections.Generic.Dictionary<obj, NetIndex> =
+    System.Collections.Generic.Dictionary<obj, NetIndex>(HashIdentity.Reference)
+
+let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
     let mutable m : Map<PolyId, Set<string>> = Map.empty
+    let addClaim (pRef : PolygonRef) (name : string) =
+        let pid = polyIdOf pRef
+        let existing =
+            match Map.tryFind pid m with
+            | Some s -> s
+            | None -> Set.empty
+        m <- Map.add pid (Set.add name existing) m
     for KeyValue (netName, entry) in nets do
         for pRef in entry.Polygons do
-            let pid = polyIdOf pRef
-            let existing =
-                match Map.tryFind pid m with
-                | Some s -> s
-                | None -> Set.empty
-            m <- Map.add pid (Set.add netName existing) m
+            addClaim pRef netName
+    for KeyValue (netName, entry) in nets do
+        for pRef in entry.SeedPolygons do
+            addClaim pRef netName
     NetIndex m
 
-/// True if `startNet` is among the nets that claim this polygon.
-/// Used by the obstacle classifier to decide "ours vs theirs" —
-/// a polygon counts as ours iff its claimant set INCLUDES startNet.
-/// Polygons no one claims return false (defensive: route around
-/// unknown features).
+/// Memoised view of `buildNetIndexFresh`. Reference-identity cache
+/// on the `nets` Map — same Map instance returns the same NetIndex
+/// without rebuilding. Live-draw cost drops from 76 ms/frame (the
+/// fresh build dominates the per-frame walkaround compute) to a
+/// dictionary lookup. Cache is trimmed when it grows; safe to call
+/// from any thread since the canvas only ever passes ONE Map per
+/// active document.
+let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
+    let key = box nets
+    match indexCache.TryGetValue(key) with
+    | true, idx -> idx
+    | _ ->
+        let idx = buildNetIndexFresh nets
+        if indexCache.Count >= 4 then indexCache.Clear()
+        indexCache.[key] <- idx
+        idx
+
+/// True when `startNet` is among the polygon's claimants. With
+/// multi-claim semantics, a polygon counts as "ours" as soon as
+/// startNet's flood touched it — even if another net's flood
+/// reached it too. That handles FET source/drain regions where
+/// the layout legitimately shares a polygon across labels.
 let isOurs (NetIndex m) (startNet : string) (fp : FlatPolygon) : bool =
     match Map.tryFind (flatPolyId fp) m with
     | Some claimants -> Set.contains startNet claimants
     | None -> false
 
-/// All nets that claim this polygon. Empty set when nothing does.
-/// Diagnostics + visibility into multi-instance overlaps.
+/// All nets that claim this polygon. Diagnostic helper.
 let claimantsOf (NetIndex m) (fp : FlatPolygon) : Set<string> =
     match Map.tryFind (flatPolyId fp) m with
     | Some s -> s
     | None -> Set.empty
 
-/// Deprecated single-net lookup. Returns one of the claimants if any
-/// (which one is unspecified for multi-claim polygons). Kept so older
-/// tests that don't care about ambiguity keep compiling. New code
-/// should use `isOurs` or `claimantsOf`.
+/// Deprecated single-net lookup (returns one of the claimants if
+/// any). Kept so older callers that don't care about ambiguity
+/// keep compiling. New code should prefer `isOurs` /
+/// `claimantsOf`.
 let netOf (NetIndex m) (fp : FlatPolygon) : string option =
     match Map.tryFind (flatPolyId fp) m with
     | Some s when not (Set.isEmpty s) -> Some (Set.minElement s)

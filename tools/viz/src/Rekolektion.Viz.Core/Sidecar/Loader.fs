@@ -12,18 +12,33 @@ let private classOfString (s: string) : NetClass =
     | _        -> Signal
 
 let private parsePolyRef (el: JsonElement) : PolygonRef =
+    // `top_instance_index` is optional for backward compat with
+    // sidecars written before per-instance net claims were
+    // introduced. Missing field → None → degrades to "any
+    // instance" matching (single-claim behaviour) for that polygon.
+    let topInst =
+        match el.TryGetProperty "top_instance_index" with
+        | true, v when v.ValueKind = JsonValueKind.Number -> Some (v.GetInt32())
+        | _ -> None
     { Structure = el.GetProperty("structure").GetString()
       Layer     = el.GetProperty("layer").GetInt32()
       DataType  = el.GetProperty("datatype").GetInt32()
-      Index     = el.GetProperty("index").GetInt32() }
+      Index     = el.GetProperty("index").GetInt32()
+      TopInstanceIndex = topInst }
 
 let private parseNetEntry (name: string) (el: JsonElement) : NetEntry =
+    let seeds =
+        match el.TryGetProperty "seed_polygons" with
+        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+            arr.EnumerateArray() |> Seq.map parsePolyRef |> Seq.toList
+        | _ -> []  // legacy sidecar, no seeds tracked
     { Name = name
       Class = classOfString (el.GetProperty("class").GetString())
       Polygons =
           el.GetProperty("polygons").EnumerateArray()
           |> Seq.map parsePolyRef
-          |> Seq.toList }
+          |> Seq.toList
+      SeedPolygons = seeds }
 
 /// Load a `<gds>.nets.json` sidecar.
 ///

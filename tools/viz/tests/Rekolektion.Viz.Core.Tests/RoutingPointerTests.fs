@@ -14,7 +14,13 @@ let private decide
         routingMode draft activeLayer left right =
     Pointer.decideAction
         routingMode draft activeLayer left right
-        defaultLayer defaultWidth worldPoint
+        defaultLayer defaultWidth worldPoint false
+
+let private decideOnSnap
+        routingMode draft activeLayer left right =
+    Pointer.decideAction
+        routingMode draft activeLayer left right
+        defaultLayer defaultWidth worldPoint true
 
 let private startedDraft () : Draft.DraftRoute =
     Draft.start met1 320L (0L, 0L)
@@ -40,7 +46,7 @@ let ``RoutingMode on, no draft, no click (drag-only) → Ignore`` () =
 
 [<Fact>]
 let ``Right-click without a draft → Ignore`` () =
-    // Right-click finishing only makes sense mid-route.
+    // Right-click is reserved for pan; not a routing action.
     decide true None (Some met1) false true
     |> should equal Pointer.Ignore
 
@@ -62,14 +68,14 @@ let ``RoutingMode on, no draft, left-click, ActiveLayer None → StartRoute on d
 let ``StartRoute carries the world-coord click point through`` () =
     let action =
         Pointer.decideAction true None (Some met1)
-            true false defaultLayer defaultWidth (42L, -17L)
+            true false defaultLayer defaultWidth (42L, -17L) false
     action |> should equal (Pointer.StartRoute (met1, defaultWidth, 42L, -17L))
 
 [<Fact>]
 let ``StartRoute carries the default width through`` () =
     let action =
         Pointer.decideAction true None (Some met1)
-            true false defaultLayer 170L (0L, 0L)
+            true false defaultLayer 170L (0L, 0L) false
     match action with
     | Pointer.StartRoute (_, w, _, _) -> w |> should equal 170L
     | other -> failwithf "expected StartRoute, got %A" other
@@ -82,9 +88,9 @@ let ``Draft Some, left-click → FixSegment`` () =
     |> should equal Pointer.FixSegment
 
 [<Fact>]
-let ``Draft Some, right-click → Finish`` () =
+let ``Draft Some, right-click → Ignore (right-click is reserved for pan)`` () =
     decide true (Some (startedDraft ())) (Some met1) false true
-    |> should equal Pointer.Finish
+    |> should equal Pointer.Ignore
 
 [<Fact>]
 let ``Draft Some still dispatches even after RoutingMode toggled off`` () =
@@ -95,7 +101,24 @@ let ``Draft Some still dispatches even after RoutingMode toggled off`` () =
     |> should equal Pointer.FixSegment
 
 [<Fact>]
-let ``Right-click takes precedence over left-click when a draft is active`` () =
-    // Both buttons pressed simultaneously — right wins, finishes.
+let ``Both buttons pressed during a draft → FixSegment (left wins; right is pan)`` () =
+    // Both buttons pressed simultaneously — left-click wins as a
+    // free-space FixSegment. Right-click is reserved for pan and
+    // doesn't commit. (Use Enter to finish, or land on snap target.)
     decide true (Some (startedDraft ())) (Some met1) true true
+    |> should equal Pointer.FixSegment
+
+[<Fact>]
+let ``Draft Some, left-click on a snap target → Finish`` () =
+    // Landing the wire on a labeled pin terminates the route. To
+    // continue, the user must click the same pin again — that
+    // starts a fresh draft (no draft = StartRoute).
+    decideOnSnap true (Some (startedDraft ())) (Some met1) true false
     |> should equal Pointer.Finish
+
+[<Fact>]
+let ``Draft Some, left-click in free space (no snap target) → FixSegment`` () =
+    // Explicit complement of the snap-target case: free-space click
+    // adds a corner instead of committing.
+    decide true (Some (startedDraft ())) (Some met1) true false
+    |> should equal Pointer.FixSegment

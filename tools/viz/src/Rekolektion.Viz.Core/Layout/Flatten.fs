@@ -18,7 +18,34 @@ type FlatPolygon = {
     Points: Point array
     SourceStructure: string
     SourceIndex: int
+    /// Index of the top-cell element (SRef / ARef) this polygon
+    /// descends from. `None` when the polygon is authored directly
+    /// in the top cell. Distinguishes polygons that share
+    /// `(SourceStructure, SourceIndex)` because the same subcell is
+    /// referenced more than once at the top level — without it the
+    /// selection halo and any per-instance operation can't tell two
+    /// instances apart.
+    TopInstanceIndex: int option
 }
+
+/// Unique identifier for a selected polygon. Mirrors `FlatPolygon`'s
+/// identity triple: which cell the rect was authored in, its index
+/// within that cell, and which top-cell SRef / ARef instance
+/// produced this physical copy. `TopInstance = None` for polygons
+/// authored directly in the top cell; `Some i` for polygons that
+/// arrived through the top-cell element at index `i`.
+[<Struct>]
+type PolyKey = {
+    Cell: string
+    Index: int
+    TopInstance: int option
+}
+
+/// Build a `PolyKey` from a `FlatPolygon`.
+let polyKeyOf (fp: FlatPolygon) : PolyKey =
+    { Cell = fp.SourceStructure
+      Index = fp.SourceIndex
+      TopInstance = fp.TopInstanceIndex }
 
 /// One label after the hierarchy has been walked. `Origin` is in
 /// flat (top-cell) DBU coordinates so spatial tests against
@@ -133,7 +160,13 @@ let flatten (doc: Document) : FlatPolygon array =
         let byName = doc.Cells |> List.map (fun c -> c.Name, c) |> Map.ofList
         let top = findTop doc
         let result = System.Collections.Generic.List<FlatPolygon>()
-        let rec walk (cell: Cell) (xform: Affine) =
+        // `topInst` is the index of the TOP-cell SRef / ARef element
+        // this poly descends from. `None` while walking the top cell
+        // directly; set to `Some idx` on the first descent into an
+        // SRef / ARef and inherited unchanged through nested walks
+        // — so a polygon five levels deep still attributes back to
+        // the outermost top-cell instance that produced it.
+        let rec walk (cell: Cell) (xform: Affine) (topInst: int option) =
             cell.Elements
             |> List.iteri (fun idx el ->
                 match el with
@@ -148,7 +181,8 @@ let flatten (doc: Document) : FlatPolygon array =
                         DataType = d
                         Points = pts
                         SourceStructure = cell.Name
-                        SourceIndex = idx }
+                        SourceIndex = idx
+                        TopInstanceIndex = topInst }
                 | RectEl r ->
                     let pts =
                         rectPoints r.X1 r.Y1 r.X2 r.Y2
@@ -160,12 +194,17 @@ let flatten (doc: Document) : FlatPolygon array =
                         DataType = d
                         Points = pts
                         SourceStructure = cell.Name
-                        SourceIndex = idx }
+                        SourceIndex = idx
+                        TopInstanceIndex = topInst }
                 | SRefEl sr ->
                     match Map.tryFind sr.Cell byName with
                     | None -> ()
                     | Some child ->
-                        walk child (compose xform (fromSref sr))
+                        let childInst =
+                            match topInst with
+                            | None -> Some idx
+                            | _    -> topInst
+                        walk child (compose xform (fromSref sr)) childInst
                 | ARefEl ar ->
                     match Map.tryFind ar.Cell byName with
                     | None -> ()
@@ -175,16 +214,20 @@ let flatten (doc: Document) : FlatPolygon array =
                         let colStepY = (float ar.ColPitch.Y - float ar.Origin.Y) / float ar.Cols
                         let rowStepX = (float ar.RowPitch.X - float ar.Origin.X) / float ar.Rows
                         let rowStepY = (float ar.RowPitch.Y - float ar.Origin.Y) / float ar.Rows
+                        let childInst =
+                            match topInst with
+                            | None -> Some idx
+                            | _    -> topInst
                         for r in 0 .. ar.Rows - 1 do
                             for c in 0 .. ar.Cols - 1 do
                                 let instXform =
                                     { baseXform with
                                         Tx = baseXform.Tx + float c * colStepX + float r * rowStepX
                                         Ty = baseXform.Ty + float c * colStepY + float r * rowStepY }
-                                walk child (compose xform instXform)
+                                walk child (compose xform instXform) childInst
                     | _ -> ()
                 | _ -> ())
-        walk top identityXform
+        walk top identityXform None
         result.ToArray()
 
 /// Same hierarchy walk as `flatten`, but emits Label elements with
@@ -362,7 +405,8 @@ let flattenInstance (doc: Document) (topInstanceIdx: int) : FlatPolygon array =
                                 DataType = d
                                 Points = pts
                                 SourceStructure = cell.Name
-                                SourceIndex = idx }
+                                SourceIndex = idx
+                                TopInstanceIndex = Some topInstanceIdx }
                         | RectEl r ->
                             let pts =
                                 rectPoints r.X1 r.Y1 r.X2 r.Y2
@@ -374,7 +418,8 @@ let flattenInstance (doc: Document) (topInstanceIdx: int) : FlatPolygon array =
                                 DataType = d
                                 Points = pts
                                 SourceStructure = cell.Name
-                                SourceIndex = idx }
+                                SourceIndex = idx
+                                TopInstanceIndex = Some topInstanceIdx }
                         | SRefEl sr2 ->
                             match Map.tryFind sr2.Cell byName with
                             | None -> ()
@@ -422,7 +467,8 @@ let flattenTopCellDirect (doc: Document) : FlatPolygon array =
                     DataType = d
                     Points = p.Points |> List.toArray
                     SourceStructure = top.Name
-                    SourceIndex = idx }
+                    SourceIndex = idx
+                    TopInstanceIndex = None }
             | RectEl r ->
                 let n, d = layerPair r.Layer
                 let pts = rectPoints r.X1 r.Y1 r.X2 r.Y2 |> List.toArray
@@ -431,7 +477,8 @@ let flattenTopCellDirect (doc: Document) : FlatPolygon array =
                     DataType = d
                     Points = pts
                     SourceStructure = top.Name
-                    SourceIndex = idx }
+                    SourceIndex = idx
+                    TopInstanceIndex = None }
             | PathEl p ->
                 let n, d = layerPair p.Layer
                 result.Add {
@@ -439,6 +486,7 @@ let flattenTopCellDirect (doc: Document) : FlatPolygon array =
                     DataType = d
                     Points = p.Points |> List.toArray
                     SourceStructure = top.Name
-                    SourceIndex = idx }
+                    SourceIndex = idx
+                    TopInstanceIndex = None }
             | _ -> ())
         result.ToArray()

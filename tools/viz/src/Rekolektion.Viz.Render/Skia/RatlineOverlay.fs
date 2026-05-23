@@ -69,7 +69,8 @@ let render
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
         (routes: Ratlines.NetRoute array)
-        (visibleNets: Set<string>) =
+        (visibleNets: Set<string>)
+        (selectedNets: Set<string>) =
     if routes.Length = 0 || visibleNets.IsEmpty then () else
     let visible =
         routes |> Array.filter (fun r -> visibleNets.Contains r.Name)
@@ -77,13 +78,13 @@ let render
     use paintLine =
         new SKPaint(
             Style = SKPaintStyle.Stroke,
-            Color = SKColor(0xFFuy, 0xC8uy, 0x40uy, 0xE0uy),  // amber
+            Color = SKColor(0xFFuy, 0x33uy, 0x33uy, 0xE0uy),  // red — matches 3D
             StrokeWidth = 1.0f,
             IsAntialias = true)
     use paintNode =
         new SKPaint(
             Style = SKPaintStyle.Fill,
-            Color = SKColor(0xFFuy, 0xE8uy, 0x80uy, 0xFFuy),
+            Color = SKColor(0xFFuy, 0x70uy, 0x70uy, 0xFFuy),
             IsAntialias = true)
     use paintText =
         new SKPaint(
@@ -96,5 +97,22 @@ let render
             Style = SKPaintStyle.Fill,
             Color = SKColor(0x00uy, 0x00uy, 0x00uy, 0xB0uy),
             IsAntialias = true)
+    // Selected ratlines paint over the normal pass with a brighter,
+    // thicker stroke so the user can tell at a glance which net's
+    // MST they just clicked.
+    use paintLineSel =
+        new SKPaint(
+            Style = SKPaintStyle.Stroke,
+            Color = SKColor(0xFFuy, 0xB0uy, 0x20uy, 0xFFuy),  // orange — selected
+            StrokeWidth = 2.5f,
+            IsAntialias = true)
+    use paintNodeSel =
+        new SKPaint(
+            Style = SKPaintStyle.Fill,
+            Color = SKColor(0xFFuy, 0xD0uy, 0x60uy, 0xFFuy),
+            IsAntialias = true)
     for r in visible do
-        drawRoute canvas vb paintLine paintNode paintText paintTextBg r
+        if selectedNets.Contains r.Name then
+            drawRoute canvas vb paintLineSel paintNodeSel paintText paintTextBg r
+        else
+            drawRoute canvas vb paintLine paintNode paintText paintTextBg r

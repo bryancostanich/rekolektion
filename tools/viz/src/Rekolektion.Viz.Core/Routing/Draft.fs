@@ -95,10 +95,17 @@ let setStartNet (net: string) (r: DraftRoute) : DraftRoute =
     { r with StartNet = net }
 
 /// Update the live cursor position. Tentative L re-derives off this.
-/// Clears any walk-around corners — the new cursor position invalidates
-/// the prior path; the dispatch layer recomputes and calls `setAuto`.
+/// Updates the cursor for the live tentative segment. Auto is
+/// PRESERVED across cursor moves so the wire keeps rendering the
+/// latest walk-around corners while the BG search recomputes for
+/// the new position. Previously this cleared Auto on every move,
+/// which kept the tentative segment as a straight L 95% of the time
+/// — the BG result would land and immediately get wiped by the next
+/// mouse-move. Holding the old corners produces brief visual lag
+/// during fast drags but actually shows the auto-jog. Auto is fully
+/// reset on `fix` / `start` / commit.
 let setCursor (cursor: int64 * int64) (r: DraftRoute) : DraftRoute =
-    { r with Cursor = Some cursor; Auto = [] }
+    { r with Cursor = Some cursor }
 
 /// Set the walk-around corner sequence between the last fixed Point
 /// and the Cursor (ADR-0006). Empty list resets to straight-L.

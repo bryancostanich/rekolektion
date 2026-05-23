@@ -133,14 +133,15 @@ let ``cellCrossNetOverlaps flags overlap between two committed cross-net polys``
         rectIdx 0 (0L, 0L, 500L, 500L) (68, 20)
         rectIdx 1 (200L, 200L, 700L, 700L) (68, 20)
     |]
+    let pref s l d i : PolygonRef =
+        { Structure = s; Layer = l; DataType = d; Index = i
+          TopInstanceIndex = None }
+    let mkEntry n c ps : NetEntry =
+        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps }
     let nets : Map<string, NetEntry> =
         Map.ofList [
-            "BL", { Name = "BL"; Class = Signal
-                    Polygons = [ { Structure = "test"; Layer = 68
-                                   DataType = 20; Index = 0 } ] }
-            "WL", { Name = "WL"; Class = Signal
-                    Polygons = [ { Structure = "test"; Layer = 68
-                                   DataType = 20; Index = 1 } ] }
+            "BL", mkEntry "BL" Signal [ pref "test" 68 20 0 ]
+            "WL", mkEntry "WL" Signal [ pref "test" 68 20 1 ]
         ]
     let v = Check.cellCrossNetOverlaps cell nets
     v |> Array.exists (fun x -> x.Rule = "met1.overlap")
@@ -152,15 +153,14 @@ let ``cellCrossNetOverlaps stays silent for same-net overlap`` () =
         rectIdx 0 (0L, 0L, 500L, 500L) (68, 20)
         rectIdx 1 (200L, 200L, 700L, 700L) (68, 20)
     |]
+    let pref s l d i : PolygonRef =
+        { Structure = s; Layer = l; DataType = d; Index = i
+          TopInstanceIndex = None }
+    let mkEntry n c ps : NetEntry =
+        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps }
     let nets : Map<string, NetEntry> =
         Map.ofList [
-            "BL", { Name = "BL"; Class = Signal
-                    Polygons = [
-                        { Structure = "test"; Layer = 68
-                          DataType = 20; Index = 0 }
-                        { Structure = "test"; Layer = 68
-                          DataType = 20; Index = 1 }
-                    ] }
+            "BL", mkEntry "BL" Signal [ pref "test" 68 20 0; pref "test" 68 20 1 ]
         ]
     let v = Check.cellCrossNetOverlaps cell nets
     v |> Array.exists (fun x -> x.Rule.EndsWith ".overlap")

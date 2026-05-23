@@ -61,6 +61,12 @@ type Prebuilt = {
     /// stored once to keep the structure compact, and the search
     /// walks both directions.
     Adjacency  : (int * int64) array array
+    /// Clearance the obstacle bboxes were expanded by at build
+    /// time. `shortestPath` uses this to test "inside the
+    /// ORIGINAL polygon" (= shrunk expanded bbox) for the
+    /// endpoint exemption — so a pin doesn't accidentally exempt
+    /// every neighbour within its clearance margin.
+    Clearance  : int64
 }
 
 /// True if the closed segment from `(x1,y) → (x2,y)` (inclusive)
@@ -141,7 +147,8 @@ let build (clearance : int64) (obstacles : FlatPolygon array) : Prebuilt =
                 if manhattanVisible bboxes from toN then
                     acc.Add((j, manhattanCost from toN))
             acc.ToArray())
-    { Nodes = nodes; Obstacles = bboxes; Adjacency = adjacency }
+    { Nodes = nodes; Obstacles = bboxes; Adjacency = adjacency
+      Clearance = clearance }
 
 /// Shortest-path query: splice `start` and `goal` into the prebuilt
 /// graph, run Dijkstra, return the manhattan node sequence from
@@ -163,56 +170,152 @@ let shortestPath
     let inside (pt : Pt) (b : Bbox) =
         pt.X > b.XMin && pt.X < b.XMax
         && pt.Y > b.YMin && pt.Y < b.YMax
-    // Obstacles to test visibility against from start/goal's seat.
-    let endpointObstacles =
-        graph.Obstacles
-        |> Array.filter (fun b -> not (inside start b) && not (inside goal b))
-    // Adjacency for the augmented graph: prebuilt corners +
-    // {start, goal} appended. Augment edges are computed lazily on
-    // demand so we don't allocate a full N+2 adjacency table.
+    // Per-edge-type exemption, against the EXPANDED bbox. Looser
+    // than the strict-original-bbox variant — lets the wire escape
+    // a tight pin AND reach a cursor that mid-drag passes near a
+    // foreign feature. Trade-off: the corner↔goal edge may briefly
+    // cross a foreign clearance zone if the cursor sits in it,
+    // producing a path the live-DRC overlay flags. Pin landings
+    // (snap targets) sit at polygon centroids well clear of
+    // foreign expanded bboxes, so committed wires are DRC-clean.
+    //   • start↔corner edges: skip obstacles whose EXPANDED bbox
+    //     contains start.
+    //   • corner↔goal edges: skip obstacles whose EXPANDED bbox
+    //     contains goal.
+    //   • corner↔corner edges: FULL obstacle set (prebuilt).
+    //   • direct start↔goal: FULL obstacle set, no exemption —
+    //     prevents trivialStraight shortcuts.
+    let startObstacles =
+        graph.Obstacles |> Array.filter (fun b -> not (inside start b))
+    let goalObstacles =
+        graph.Obstacles |> Array.filter (fun b -> not (inside goal b))
+    // Steiner points on the start/goal X columns aligned with each
+    // obstacle's expanded Y boundaries. Without these the only
+    // graph nodes are obstacle bbox corners, so the shortest path
+    // tends to use a corner at start's Y or goal's Y — the wire
+    // then renders as "horizontal stub + vertical" instead of
+    // "vertical, jog OUT, vertical, jog BACK, vertical." Steiner
+    // points give the search exit/return points on the wire's
+    // intended column. Tested only for obstacles whose Y range
+    // overlaps the corridor between start and goal, to keep the
+    // node count bounded.
+    let yLo = min start.Y goal.Y
+    let yHi = max start.Y goal.Y
+    let xLo = min start.X goal.X
+    let xHi = max start.X goal.X
+    let steiners : Pt array =
+        let acc = System.Collections.Generic.List<Pt>()
+        for b in graph.Obstacles do
+            // Only consider obstacles in the corridor — their
+            // expanded bbox must overlap the start/goal rectangle.
+            let overlaps =
+                b.XMin < xHi && b.XMax > xLo
+                && b.YMin < yHi && b.YMax > yLo
+            if overlaps then
+                if start.X <> goal.X then
+                    acc.Add { X = start.X; Y = b.YMin - 1L }
+                    acc.Add { X = start.X; Y = b.YMax + 1L }
+                    acc.Add { X = goal.X;  Y = b.YMin - 1L }
+                    acc.Add { X = goal.X;  Y = b.YMax + 1L }
+                else
+                    // Single-column route: only one set needed.
+                    acc.Add { X = start.X; Y = b.YMin - 1L }
+                    acc.Add { X = start.X; Y = b.YMax + 1L }
+        acc.ToArray()
     let n = graph.Nodes.Length
-    let startIdx = n
-    let goalIdx  = n + 1
+    let s = steiners.Length
+    // Index layout: [0..n-1] obstacle corners, [n..n+s-1] Steiner
+    // points, n+s = startIdx, n+s+1 = goalIdx.
+    let steinerBase = n
+    let startIdx = n + s
+    let goalIdx  = n + s + 1
     let nodeOf idx =
         if idx < n then graph.Nodes.[idx]
+        elif idx < startIdx then steiners.[idx - steinerBase]
         elif idx = startIdx then start
         else goal
+    // Tiebreaker discount: edges landing on a Steiner point shave
+    // 1 DBU off the manhattan cost. Two paths with identical raw
+    // manhattan distances — one via Steiners, one direct — would
+    // otherwise tie and Dijkstra picks arbitrarily. The discount
+    // breaks the tie toward Steiner-rich paths, which keep the wire
+    // on the start.X / goal.X columns and produce V-first / V-last
+    // movements. Magnitude is small enough that it never overrides
+    // an actually-shorter non-Steiner path.
+    let steinerDiscount (v : int) (cost : int64) : int64 =
+        if v >= steinerBase && v < startIdx then max 0L (cost - 1L)
+        else cost
     let neighbours (i : int) : (int * int64) seq =
         seq {
             if i < n then
-                // Prebuilt adjacency — already manhattan-visible
-                // under the full obstacle set.
+                // Corner node. Prebuilt corner↔corner adjacency
+                // (full obstacle set).
                 for (j, c) in graph.Adjacency.[i] do
                     yield (j, c)
-                // Reverse edges (other i's adjacency listed us; we
-                // need them on this side too for the search).
                 for k in 0 .. (n - 1) do
                     if k < i then
                         for (j, c) in graph.Adjacency.[k] do
                             if j = i then yield (k, c)
-                // start / goal augment edges use the endpoint-
-                // exempted obstacle set so the wire can escape
-                // a tight pin.
                 let a = graph.Nodes.[i]
-                if manhattanVisible endpointObstacles a start then
+                // Edges to Steiner points — full obstacle set.
+                for sIdx in 0 .. (s - 1) do
+                    let sp = steiners.[sIdx]
+                    if manhattanVisible graph.Obstacles a sp then
+                        let v = steinerBase + sIdx
+                        yield (v, steinerDiscount v (manhattanCost a sp))
+                // Augment edges to start / goal — exempt obstacles
+                // containing the respective endpoint.
+                if manhattanVisible startObstacles a start then
                     yield (startIdx, manhattanCost a start)
-                if manhattanVisible endpointObstacles a goal then
+                if manhattanVisible goalObstacles a goal then
                     yield (goalIdx, manhattanCost a goal)
-            else
-                let here = nodeOf i
+            elif i < startIdx then
+                // Steiner node. Edges to corner nodes (full
+                // obstacle set), other Steiner nodes (full), and
+                // start/goal (the column-aligned start↔Steiner or
+                // goal↔Steiner edge uses the respective endpoint
+                // exemption so the Steiner just outside a foreign
+                // bbox can still be reached from a start that
+                // shares its column).
+                let here = steiners.[i - steinerBase]
                 for k in 0 .. (n - 1) do
                     let nk = graph.Nodes.[k]
-                    if manhattanVisible endpointObstacles here nk then
+                    if manhattanVisible graph.Obstacles here nk then
                         yield (k, manhattanCost here nk)
+                for sk in 0 .. (s - 1) do
+                    if sk <> (i - steinerBase) then
+                        let sp = steiners.[sk]
+                        if manhattanVisible graph.Obstacles here sp then
+                            let v = steinerBase + sk
+                            yield (v, steinerDiscount v (manhattanCost here sp))
+                if manhattanVisible startObstacles here start then
+                    yield (startIdx, manhattanCost here start)
+                if manhattanVisible goalObstacles here goal then
+                    yield (goalIdx, manhattanCost here goal)
+            else
+                // start or goal endpoint.
+                let here = nodeOf i
+                let augmentObstacles =
+                    if i = startIdx then startObstacles else goalObstacles
+                for k in 0 .. (n - 1) do
+                    let nk = graph.Nodes.[k]
+                    if manhattanVisible augmentObstacles here nk then
+                        yield (k, manhattanCost here nk)
+                for sk in 0 .. (s - 1) do
+                    let sp = steiners.[sk]
+                    if manhattanVisible augmentObstacles here sp then
+                        let v = steinerBase + sk
+                        yield (v, steinerDiscount v (manhattanCost here sp))
+                // Direct start↔goal edge: FULL obstacle set.
                 if i = startIdx then
-                    if manhattanVisible endpointObstacles here goal then
+                    if manhattanVisible graph.Obstacles here goal then
                         yield (goalIdx, manhattanCost here goal)
                 else
-                    if manhattanVisible endpointObstacles here start then
+                    if manhattanVisible graph.Obstacles here start then
                         yield (startIdx, manhattanCost here start)
         }
     // Dijkstra with a System.Collections.Generic.PriorityQueue.
-    let total = n + 2
+    let total = n + s + 2
     let dist = Array.create total System.Int64.MaxValue
     let prev = Array.create total -1
     dist.[startIdx] <- 0L
@@ -235,4 +338,57 @@ let shortestPath
         let rec walk acc i =
             if i < 0 then acc
             else walk ((nodeOf i) :: acc) prev.[i]
-        Some (walk [] goalIdx)
+        let raw = walk [] goalIdx
+        // Post-process to emit AXIS-ALIGNED segments. Between any two
+        // consecutive path nodes that differ on both axes, insert an
+        // explicit bend point so the renderer doesn't have to guess
+        // a posture — manhattanVisible accepts EITHER L-shape, but
+        // only ONE may actually be clear of obstacles. The bend
+        // point is at (b.X, a.Y) when H-first is clear, otherwise
+        // (a.X, b.Y) (V-first).
+        let obstaclesFor (a : Pt) (b : Pt) : Bbox array =
+            // For augment edges involving start/goal, use the
+            // respective endpoint-filtered set so the renderer
+            // matches what the search accepted. For pure
+            // corner-to-corner or Steiner-to-corner, use full.
+            let isStart (p : Pt) = p.X = start.X && p.Y = start.Y
+            let isGoal (p : Pt) = p.X = goal.X && p.Y = goal.Y
+            if isStart a || isStart b then startObstacles
+            elif isGoal a || isGoal b then goalObstacles
+            else graph.Obstacles
+        let withBends (pts : Pt list) : Pt list =
+            let rec loop acc (xs : Pt list) =
+                match xs with
+                | [] | [_] -> List.rev (List.append xs acc)
+                | a :: (b :: _ as tail) ->
+                    if a.X = b.X || a.Y = b.Y then
+                        loop (a :: acc) tail
+                    else
+                        let obs = obstaclesFor a b
+                        let hFirstClear = lClear obs true a b
+                        let vFirstClear = lClear obs false a b
+                        // Match `lShape`'s posture rule: dy > dx
+                        // prefers V-first, dx > dy prefers H-first.
+                        // When both Ls are clear, pick the posture
+                        // the renderer would pick so the path that
+                        // gets drawn matches the path that was
+                        // verified clear.
+                        let dx = abs (b.X - a.X)
+                        let dy = abs (b.Y - a.Y)
+                        let preferVFirst = dy > dx
+                        let bend =
+                            if preferVFirst && vFirstClear then
+                                { X = a.X; Y = b.Y }
+                            elif hFirstClear then
+                                { X = b.X; Y = a.Y }
+                            elif vFirstClear then
+                                { X = a.X; Y = b.Y }
+                            else
+                                // Neither clear (rare; the search
+                                // accepted the edge because EITHER L
+                                // is clear, so this shouldn't fire).
+                                // Fall back to H-first.
+                                { X = b.X; Y = a.Y }
+                        loop (bend :: a :: acc) tail
+            loop [] pts
+        Some (withBends raw)

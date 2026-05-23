@@ -233,16 +233,18 @@ let ``setAuto stores the corner list on the route`` () =
     r.Auto |> should equal [ (500L, 0L); (500L, 1000L) ]
 
 [<Fact>]
-let ``setCursor clears any prior Auto corners`` () =
-    // The dispatch layer recomputes the walk-around on every move;
-    // setCursor must invalidate the stale path so the renderer
-    // doesn't keep drawing an out-of-date polyline.
+let ``setCursor preserves Auto corners (live walk-around stays visible)`` () =
+    // Cursor moves don't invalidate Auto — the most recent BG
+    // walk-around result keeps rendering while the next compute
+    // is in flight. Without this, mouse-move clobbers Auto faster
+    // than the BG task can replace it and the tentative segment
+    // degrades to a straight L for nearly the entire drag.
     let r =
         Draft.start met1 width (0L, 0L)
         |> Draft.setCursor (1000L, 1000L)
         |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
         |> Draft.setCursor (2000L, 2000L)
-    r.Auto |> should be Empty
+    r.Auto |> should equal [ (500L, 0L); (500L, 1000L) ]
     r.Cursor |> should equal (Some (2000L, 2000L))
 
 [<Fact>]

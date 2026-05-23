@@ -227,6 +227,12 @@ type MainWindow() as this =
             | Key.D4, KeyModifiers.None ->
                 AppDispatch.send (Msg.SetActiveLayer (Some (71, 20)))   // met4
                 e.Handled <- true
+            | Key.D0, KeyModifiers.None
+            | Key.NumPad0, KeyModifiers.None ->
+                // 0 = clear layer focus; matches the all-layers-shown
+                // state the doc opens in.
+                AppDispatch.send (Msg.SetActiveLayer None)
+                e.Handled <- true
             // ADR-0002 — in-flight route keys take precedence over the
             // generic delete / esc bindings when a draft is active.
             // Esc commits the FIXED corners only (stops where the

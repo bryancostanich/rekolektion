@@ -34,6 +34,16 @@ let private rect (cell : string) (layer : int) (dt : int) (idx : int)
 let private li1Layer  : Obstacles.LayerKey = { Number = 67; DataType = 20 }
 let private met1Layer : Obstacles.LayerKey = { Number = 68; DataType = 20 }
 
+let private pref (cell : string) (layer : int) (dt : int) (idx : int) : PolygonRef =
+    { Structure = cell; Layer = layer; DataType = dt; Index = idx
+      TopInstanceIndex = None }
+
+let private mkEntry (name : string) (cls : NetClass)
+                    (polys : PolygonRef list) : NetEntry =
+    // Tests use synthetic obstacle sets without contact-flood
+    // ambiguity, so the polygon list IS the seed list.
+    { Name = name; Class = cls; Polygons = polys; SeedPolygons = polys }
+
 let private buildKey layer startNet clearance flat nets : WalkAround.BuildKey =
     { Layer = layer
       StartNet = startNet
@@ -62,9 +72,7 @@ let ``li1 wire dodges a foreign-net licon directly in its path`` () =
     let foreignLicon = rect "nfet" 66 44 0  100 0 200 100
     let nets =
         Map.ofList [
-            "BL", { Name = "BL"; Class = Signal
-                    Polygons =
-                      [ { Structure = "nfet"; Layer = 66; DataType = 44; Index = 0 } ] }
+            "BL", mkEntry "BL" Signal [ pref "nfet" 66 44 0 ]
         ]
     let key = buildKey li1Layer "VGND" 0L [| foreignLicon |] nets
     let g = WalkAround.buildGraph key
@@ -86,9 +94,7 @@ let ``li1 wire passes through same-net licons unaffected`` () =
     let ourLicon = rect "nfet" 66 44 0  100 0 200 100
     let nets =
         Map.ofList [
-            "VGND", { Name = "VGND"; Class = Ground
-                      Polygons =
-                        [ { Structure = "nfet"; Layer = 66; DataType = 44; Index = 0 } ] }
+            "VGND", mkEntry "VGND" Ground [ pref "nfet" 66 44 0 ]
         ]
     let key = buildKey li1Layer "VGND" 0L [| ourLicon |] nets
     let g = WalkAround.buildGraph key
@@ -107,13 +113,8 @@ let ``FET-wall escape: route threads the gap between adjacent foreign licons`` (
     let l2 = rect "nfet" 66 44 2  200 0 250 100   // far right
     let nets =
         Map.ofList [
-            "BL",  { Name = "BL"; Class = Signal
-                     Polygons =
-                       [ { Structure = "nfet"; Layer = 66; DataType = 44; Index = 0 }
-                         { Structure = "nfet"; Layer = 66; DataType = 44; Index = 2 } ] }
-            "WL",  { Name = "WL"; Class = Signal
-                     Polygons =
-                       [ { Structure = "nfet"; Layer = 66; DataType = 44; Index = 1 } ] }
+            "BL",  mkEntry "BL" Signal [ pref "nfet" 66 44 0; pref "nfet" 66 44 2 ]
+            "WL",  mkEntry "WL" Signal [ pref "nfet" 66 44 1 ]
         ]
     let key = buildKey li1Layer "VGND" 0L [| l0; l1; l2 |] nets
     let g = WalkAround.buildGraph key
@@ -133,9 +134,7 @@ let ``met1 wire dodges a foreign-net via1 in its path`` () =
     let foreignVia = rect "x" 68 44 0  100 0 200 100
     let nets =
         Map.ofList [
-            "Foreign", { Name = "Foreign"; Class = Signal
-                         Polygons =
-                           [ { Structure = "x"; Layer = 68; DataType = 44; Index = 0 } ] }
+            "Foreign", mkEntry "Foreign" Signal [ pref "x" 68 44 0 ]
         ]
     let key = buildKey met1Layer "Ours" 0L [| foreignVia |] nets
     let g = WalkAround.buildGraph key
@@ -153,9 +152,7 @@ let ``goal sitting inside a foreign-net polygon returns no path`` () =
     let foreign = rect "x" 67 20 0   50 50 150 150
     let nets =
         Map.ofList [
-            "F", { Name = "F"; Class = Signal
-                   Polygons =
-                     [ { Structure = "x"; Layer = 67; DataType = 20; Index = 0 } ] }
+            "F", mkEntry "F" Signal [ pref "x" 67 20 0 ]
         ]
     let key = buildKey li1Layer "Ours" 0L [| foreign |] nets
     let g = WalkAround.buildGraph key

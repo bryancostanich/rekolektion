@@ -179,13 +179,62 @@ let private commitRouteWith
                             let doc' = appendRectsToTop rects mc.Document
                             let flat' = Layout.Flatten.flatten doc'
                             let inst' = Layout.Instances.enumerate doc'
+                            // Incrementally update the macro's NetEntry
+                            // for d.StartNet so the new wire rects are
+                            // claimed without re-running LabelFlood
+                            // (30-60s on dense macros). The rects are
+                            // top-cell-direct (TopInstanceIndex = None)
+                            // at known sequential indices appended to
+                            // the top cell. Without this, the new rects
+                            // are foreign to the next walkaround call
+                            // and the wire detours around its OWN just-
+                            // committed segments.
+                            let nets' =
+                                let topName =
+                                    mc.Document.TopCell
+                                    |> Option.orElseWith (fun () ->
+                                        mc.Document.Cells
+                                        |> List.tryHead
+                                        |> Option.map (fun c -> c.Name))
+                                let topElemCount =
+                                    match topName with
+                                    | None -> 0
+                                    | Some n ->
+                                        mc.Document.Cells
+                                        |> List.tryFind (fun c -> c.Name = n)
+                                        |> Option.map (fun c -> List.length c.Elements)
+                                        |> Option.defaultValue 0
+                                if d.StartNet = "" || topName.IsNone then mc.Nets
+                                else
+                                    let (layerNum, layerDt) = d.Layer
+                                    let newRefs : PolygonRef list =
+                                        rects
+                                        |> List.mapi (fun i _ ->
+                                            { Structure = topName.Value
+                                              Layer = layerNum
+                                              DataType = layerDt
+                                              Index = topElemCount + i
+                                              TopInstanceIndex = None })
+                                    let entry =
+                                        match Map.tryFind d.StartNet mc.Nets with
+                                        | Some e ->
+                                            { e with
+                                                Polygons = e.Polygons @ newRefs
+                                                SeedPolygons = e.SeedPolygons @ newRefs }
+                                        | None ->
+                                            { Name = d.StartNet
+                                              Class = Signal
+                                              Polygons = newRefs
+                                              SeedPolygons = newRefs }
+                                    Map.add d.StartNet entry mc.Nets
                             let mc' =
                                 EditSession.pushUndoSnapshot mc
                                 |> fun mc'' ->
                                     { mc'' with
                                         Document = doc'
                                         FlatPolygons = flat'
-                                        TopInstances = inst' }
+                                        TopInstances = inst'
+                                        Nets = nets' }
                                 |> EditSession.markDirty
                             activePath' <- mc'.Path
                             mc')

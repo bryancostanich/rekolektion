@@ -1644,7 +1644,15 @@ type GdsCanvasControl() as this =
                 || e.Property = GdsCanvasControl.FlatPolygonsProperty
                 || e.Property = GdsCanvasControl.NetMapProperty
                 || e.Property = GdsCanvasControl.ActiveLayerProperty)
-               && this.DraftRoute.IsSome then
+               && this.DraftRoute.IsSome
+               // LabelFlood derives nets asynchronously and can take
+               // 60+ seconds on dense macros. Running walkaround
+               // against an empty NetMap treats every polygon as
+               // foreign — the wire takes catastrophic detours to
+               // avoid every li1 polygon on the macro. Defer until
+               // NetsLoaded populates the map. Logged so the user
+               // can see why the auto-jog is silent.
+               && this.NetMap.Count > 0 then
                 let draft = this.DraftRoute.Value
                 match draft.Cursor with
                 | None -> ()       // no cursor yet, nothing to route to
@@ -1656,15 +1664,14 @@ type GdsCanvasControl() as this =
                         | None    -> (cx, cy)
                     let layerKey : Routing.Obstacles.LayerKey =
                         { Number = fst draft.Layer; DataType = snd draft.Layer }
-                    // Clearance = wire_half_width + min_spacing on
-                    // this layer. The wire's CENTERLINE has to stay
-                    // at least this far from any foreign obstacle's
-                    // edge so the wire's own edge clears the
-                    // spacing rule. The visibility graph expands
-                    // each obstacle by this clearance; obstacles
-                    // containing start/cursor are exempted by
-                    // VisibilityGraph.shortestPath so a tight pin
-                    // doesn't trap the wire.
+                    // Clearance = wire_half_width + min_spacing. The
+                    // wire's centerline must stay at least this far
+                    // from any foreign obstacle so its outer edge
+                    // clears the spacing rule. The visibility graph
+                    // expands every obstacle by this clearance; the
+                    // per-edge-type exemption in
+                    // `VisibilityGraph.shortestPath` lets pin-tight
+                    // starts/goals escape their neighbours.
                     let units =
                         match this.Library with
                         | Some d -> d.Units
@@ -1685,53 +1692,77 @@ type GdsCanvasControl() as this =
                         { X = cx; Y = cy }
                     // Region-bound the obstacle set to a bbox around
                     // (start, cursor) expanded by the manhattan
-                    // distance — the search can find detours up to
-                    // about twice as long as the direct route, which
-                    // is plenty for FET-wall escape. Caps total
-                    // obstacle count and keeps the per-move graph
-                    // build sub-millisecond on real cells.
+                    // distance. Region-bounding is an optimization;
+                    // `routeAdaptive` retries with a larger region on
+                    // noPath so the search preserves "noPath means no
+                    // path exists in the full macro." Initial margin
+                    // is tight so the common case stays sub-ms.
                     let dxAbs = abs (cursorPt.X - startPt.X)
                     let dyAbs = abs (cursorPt.Y - startPt.Y)
-                    let margin = max (dxAbs + dyAbs) (clearance * 4L)
-                    let region : Routing.Obstacles.Region =
-                        { XMin = (min startPt.X cursorPt.X) - margin
-                          YMin = (min startPt.Y cursorPt.Y) - margin
-                          XMax = (max startPt.X cursorPt.X) + margin
-                          YMax = (max startPt.Y cursorPt.Y) + margin }
+                    let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+                    // Macro bounds — region won't grow past this.
+                    // Scanned from FlatPolygons each dispatch; cheap
+                    // even on thousands of polys and avoids stale
+                    // cache bugs when geometry changes.
+                    let macroBounds : Routing.WalkAround.MacroBounds =
+                        let flat = this.FlatPolygons
+                        if flat.Length = 0 then
+                            { XMin = startPt.X; YMin = startPt.Y
+                              XMax = cursorPt.X; YMax = cursorPt.Y }
+                        else
+                            let mutable xMin = System.Int64.MaxValue
+                            let mutable yMin = System.Int64.MaxValue
+                            let mutable xMax = System.Int64.MinValue
+                            let mutable yMax = System.Int64.MinValue
+                            for fp in flat do
+                                for pt in fp.Points do
+                                    if pt.X < xMin then xMin <- pt.X
+                                    if pt.X > xMax then xMax <- pt.X
+                                    if pt.Y < yMin then yMin <- pt.Y
+                                    if pt.Y > yMax then yMax <- pt.Y
+                            { XMin = xMin; YMin = yMin
+                              XMax = xMax; YMax = yMax }
                     let cb = this.RouteAutoComputedHandler
                     let compute () : (int64 * int64) list =
                         let swBuild = System.Diagnostics.Stopwatch.StartNew()
-                        let graph =
-                            try Routing.WalkAround.buildGraphInRegion key region
-                            with _ -> Routing.VisibilityGraph.build 0L [||]
+                        let adaptive =
+                            try
+                                Routing.WalkAround.routeAdaptive
+                                    key startPt cursorPt
+                                    initialMargin macroBounds 3
+                            with _ ->
+                                { Path = None
+                                  FinalRegion =
+                                      { XMin = 0L; YMin = 0L
+                                        XMax = 0L; YMax = 0L }
+                                  Expansions = 0 }
                         swBuild.Stop()
+                        let graph =
+                            try Routing.WalkAround.buildGraphInRegion key adaptive.FinalRegion
+                            with _ -> Routing.VisibilityGraph.build 0L [||]
                         let swSearch = System.Diagnostics.Stopwatch.StartNew()
                         let mutable searchOutcome = "unknown"
                         let result =
-                            try
-                                match Routing.WalkAround.route graph startPt cursorPt with
-                                | None ->
-                                    searchOutcome <- "noPath"
-                                    []
-                                | Some nodes ->
-                                    match nodes with
-                                    | _ :: rest ->
-                                        let corners =
-                                            rest
-                                            |> List.rev
-                                            |> (fun xs -> match xs with _ :: t -> t | [] -> [])
-                                            |> List.rev
-                                            |> List.map (fun pt -> pt.X, pt.Y)
-                                        searchOutcome <-
-                                            if corners.IsEmpty then "trivialStraight"
-                                            else "jogged"
-                                        corners
-                                    | [] ->
-                                        searchOutcome <- "emptyNodes"
-                                        []
-                            with _ ->
-                                searchOutcome <- "exception"
+                            match adaptive.Path with
+                            | None ->
+                                searchOutcome <- "noPath"
                                 []
+                            | Some nodes ->
+                                match nodes with
+                                | _ :: rest ->
+                                    let corners =
+                                        rest
+                                        |> List.rev
+                                        |> (fun xs -> match xs with _ :: t -> t | [] -> [])
+                                        |> List.rev
+                                        |> List.map (fun pt -> pt.X, pt.Y)
+                                    searchOutcome <-
+                                        if corners.IsEmpty then "trivialStraight"
+                                        else "jogged"
+                                    corners
+                                | [] ->
+                                    searchOutcome <- "emptyNodes"
+                                    []
                         swSearch.Stop()
                         // Containment check: which (if any) obstacle's
                         // interior contains start/cursor. Strict
@@ -1762,13 +1793,24 @@ type GdsCanvasControl() as this =
                         if swBuild.ElapsedMilliseconds + swSearch.ElapsedMilliseconds >= 2L
                            || pointerMoveCount % 30 = 0
                            || searchOutcome = "noPath" then
+                            // Emit corner coordinates so the diagnostic
+                            // log shows WHERE the path bends — not just
+                            // count. Without coords we can't tell a
+                            // detour-style jog from a degenerate
+                            // same-as-L-bend corner.
+                            let cornerCoords =
+                                result
+                                |> List.map (fun (x, y) -> sprintf "(%d,%d)" x y)
+                                |> String.concat " "
                             Rekolektion.Viz.App.Services.Logger.log "walkaround"
                                 {| buildMs = swBuild.ElapsedMilliseconds
                                    searchMs = swSearch.ElapsedMilliseconds
                                    obstacles = graph.Obstacles.Length
                                    nodes = graph.Nodes.Length
                                    corners = result.Length
+                                   cornerCoords = cornerCoords
                                    outcome = searchOutcome
+                                   expansions = adaptive.Expansions
                                    startNet = key.StartNet
                                    startNetClaimed = startNetClaimed
                                    netNameCount = netNameCount
@@ -1839,6 +1881,7 @@ type GdsCanvasControl() as this =
                 props.IsLeftButtonPressed props.IsRightButtonPressed
                 defaultLayer defaultWidth
                 (snapX, snapY)
+                snapTargetOpt.IsSome
         // Snap-required-to-start: if Pointer would StartRoute but
         // the click missed every snap target, refuse. Stops users
         // from anchoring wires in free space where they can't
@@ -1866,15 +1909,122 @@ type GdsCanvasControl() as this =
             if not (isNull cb) then cb.Invoke()
             e.Handled <- true
         | Routing.Pointer.Finish ->
-            let cb = this.RouteFinishHandler
-            if not (isNull cb) then cb.Invoke()
+            // BG walkaround may not have completed for the click's
+            // cursor position, leaving draft.Auto stale or empty —
+            // the commit would then write a straight L. Run ONE
+            // bounded synchronous attempt (maxExpansions=0, initial
+            // region only) and dispatch the corners before Finish.
+            // Bounded so it never blocks the UI for more than the
+            // initial-region cost (~20-50ms on real macros). If the
+            // initial region returns noPath, accept current Auto.
+            let cbAuto = this.RouteAutoComputedHandler
+            let cbFinish = this.RouteFinishHandler
+            (match this.DraftRoute with
+             | None -> ()
+             | Some d ->
+                let lastPt =
+                    match List.tryLast d.Points with
+                    | Some pt -> pt
+                    | None -> (snapX, snapY)
+                let layerKey : Routing.Obstacles.LayerKey =
+                    { Number = fst d.Layer; DataType = snd d.Layer }
+                let units =
+                    match this.Library with
+                    | Some lib -> lib.Units
+                    | None -> { DbuNm = 1; UuUm = 1 }
+                let spacing =
+                    Routing.Pads.spacingFor this.DrcView units d.Layer
+                    |> Option.defaultValue 0L
+                let clearance = max 0L (d.Width / 2L + spacing)
+                let key : Routing.WalkAround.BuildKey =
+                    { Layer = layerKey
+                      StartNet = d.StartNet
+                      Clearance = clearance
+                      FlatPolyRef = this.FlatPolygons
+                      NetMapRef = this.NetMap }
+                let startPtV : Routing.VisibilityGraph.Pt =
+                    { X = fst lastPt; Y = snd lastPt }
+                let cursorPtV : Routing.VisibilityGraph.Pt =
+                    { X = snapX; Y = snapY }
+                let dxAbs = abs (cursorPtV.X - startPtV.X)
+                let dyAbs = abs (cursorPtV.Y - startPtV.Y)
+                let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+                let macroBounds : Routing.WalkAround.MacroBounds =
+                    let flat = this.FlatPolygons
+                    if flat.Length = 0 then
+                        { XMin = startPtV.X; YMin = startPtV.Y
+                          XMax = cursorPtV.X; YMax = cursorPtV.Y }
+                    else
+                        let mutable xMin = System.Int64.MaxValue
+                        let mutable yMin = System.Int64.MaxValue
+                        let mutable xMax = System.Int64.MinValue
+                        let mutable yMax = System.Int64.MinValue
+                        for fp in flat do
+                            for pt in fp.Points do
+                                if pt.X < xMin then xMin <- pt.X
+                                if pt.X > xMax then xMax <- pt.X
+                                if pt.Y < yMin then yMin <- pt.Y
+                                if pt.Y > yMax then yMax <- pt.Y
+                        { XMin = xMin; YMin = yMin
+                          XMax = xMax; YMax = yMax }
+                let sw = System.Diagnostics.Stopwatch.StartNew()
+                let adaptive =
+                    try
+                        Routing.WalkAround.routeAdaptive
+                            key startPtV cursorPtV
+                            initialMargin macroBounds 0  // no retries
+                    with _ ->
+                        { Path = None
+                          FinalRegion =
+                              { XMin = 0L; YMin = 0L
+                                XMax = 0L; YMax = 0L }
+                          Expansions = 0 }
+                sw.Stop()
+                match adaptive.Path with
+                | Some nodes ->
+                    let corners =
+                        match nodes with
+                        | _ :: rest ->
+                            rest
+                            |> List.rev
+                            |> (fun xs -> match xs with _ :: t -> t | [] -> [])
+                            |> List.rev
+                            |> List.map (fun pt -> pt.X, pt.Y)
+                        | [] -> []
+                    Rekolektion.Viz.App.Services.Logger.log "walkaround.finish"
+                        {| ms = sw.ElapsedMilliseconds
+                           corners = corners.Length
+                           cornerCoords =
+                               corners
+                               |> List.map (fun (x, y) -> sprintf "(%d,%d)" x y)
+                               |> String.concat " "
+                           startX = startPtV.X
+                           startY = startPtV.Y
+                           cursorX = cursorPtV.X
+                           cursorY = cursorPtV.Y
+                           outcome = "ok" |}
+                    if not (isNull cbAuto) then cbAuto.Invoke(corners)
+                | None ->
+                    // noPath at initial region — keep current Auto.
+                    Rekolektion.Viz.App.Services.Logger.log "walkaround.finish"
+                        {| ms = sw.ElapsedMilliseconds
+                           corners = 0
+                           cornerCoords = ""
+                           startX = startPtV.X
+                           startY = startPtV.Y
+                           cursorX = cursorPtV.X
+                           cursorY = cursorPtV.Y
+                           outcome = "noPath" |})
+            if not (isNull cbFinish) then cbFinish.Invoke()
             e.Handled <- true
         | Routing.Pointer.Ignore -> ()
-        // Block non-routing pointer actions while the wire tool is
-        // armed: no instance drag, no polygon move, no marquee, no
-        // resize. Click-through to selection / drag would be too
-        // easy to trigger by accident while routing.
-        if this.RoutingMode && not e.Handled then
+        // Block non-routing LEFT-clicks while the wire tool is armed
+        // (no accidental instance drag / polygon move / marquee /
+        // resize). Middle-click (pan) and right-click (finish or
+        // pan-while-route-inactive) pass through to the pan handler
+        // below — panning around the macro is essential during wire
+        // routing.
+        if this.RoutingMode && props.IsLeftButtonPressed && not e.Handled then
             e.Handled <- true
         // Tighten mode: a left click on a numbered label commits
         // that candidate. Other clicks are swallowed so the user

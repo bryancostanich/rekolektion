@@ -24,11 +24,15 @@ let private flat (cell : string) (layer : int) (dt : int) (idx : int)
 
 /// Wrap a (cell, layer, dt, idx) tuple as the PolygonRef Sidecar uses.
 let private pref cell layer dt idx : PolygonRef =
-    { Structure = cell; Layer = layer; DataType = dt; Index = idx }
+    { Structure = cell; Layer = layer; DataType = dt; Index = idx
+      TopInstanceIndex = None }
 
 let private netEntry (name : string) (cls : NetClass)
                      (refs : PolygonRef list) : NetEntry =
-    { Name = name; Class = cls; Polygons = refs }
+    // Treat every poly as direct-seeded in tests so the obstacle
+    // classifier sees the test's intended ownership rather than
+    // being subject to the flood-vs-seed priority pass.
+    { Name = name; Class = cls; Polygons = refs; SeedPolygons = refs }
 
 let private li1Layer  : LayerKey = { Number = 67; DataType = 20 }
 let private met1Layer : LayerKey = { Number = 68; DataType = 20 }
@@ -79,14 +83,22 @@ let ``netOf returns None for a polygon no entry claims`` () =
     |> should equal (None : string option)
 
 [<Fact>]
-let ``two flat polygons from the same source share a net`` () =
-    // Same (Structure, Layer, DataType, Index) → same PolyId → same net.
+let ``net claims key on (source + TopInstanceIndex), not source alone`` () =
+    // PolyId includes TopInstanceIndex so two physical instances
+    // of the same source polygon are distinguishable. Without this,
+    // a polygon labeled SIGN in one top-instance collapses with the
+    // same source polygon labeled drn_R in another top-instance —
+    // walkaround then sees the SIGN polygon as drn_R's own and
+    // routes through it.
     let nets = Map.ofList [ "VGND", netEntry "VGND" Ground [ pref "nfet" 67 20 0 ] ]
     let idx = buildNetIndex nets
+    // `pref` defaults to TopInstanceIndex = None — matches a flat
+    // polygon authored directly in the top cell.
     let a = flat "nfet" 67 20 0 []
-    let b = { flat "nfet" 67 20 0 [] with TopInstanceIndex = Some 7 }
     netOf idx a |> should equal (Some "VGND")
-    netOf idx b |> should equal (Some "VGND")
+    // Different top-instance → different PolyId → no match.
+    let b = { flat "nfet" 67 20 0 [] with TopInstanceIndex = Some 7 }
+    netOf idx b |> should equal (None : string option)
 
 // ---- obstaclesFor — same-layer foreign-net polygons ------------
 

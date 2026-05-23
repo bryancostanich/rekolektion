@@ -10,11 +10,14 @@ type PointerAction =
     /// the user left-clicks, and no draft is in flight yet.
     | StartRoute of Layer: (int * int) * Width: int64 * X: int64 * Y: int64
     /// Commit the tentative L of the in-flight draft as a fixed
-    /// corner. Fires on a left-click while a draft is active.
+    /// corner. Fires on a left-click in free space while a draft
+    /// is active.
     | FixSegment
-    /// Commit and end the in-flight draft. Fires on a right-click
-    /// while a draft is active. Maps to RouteFinish at the dispatch
-    /// layer.
+    /// Commit and end the in-flight draft. Fires on Enter, or on a
+    /// left-click that lands on a labeled snap target (treat the
+    /// pin as the route's endpoint). Right-click is reserved for
+    /// canvas pan during wire mode and does NOT finish the route.
+    /// Maps to RouteFinish at the dispatch layer.
     | Finish
     /// The click is not a routing action — the canvas should fall
     /// through to its normal selection / pan / etc. handling.
@@ -38,15 +41,23 @@ let decideAction
         (defaultLayer: int * int)
         (defaultWidth: int64)
         (worldPoint: int64 * int64)
+        (onSnapTarget: bool)
         : PointerAction =
     let (x, y) = worldPoint
-    if draft.IsSome && isRightClick then
-        Finish
-    elif (routingMode || draft.IsSome) && isLeftClick then
+    // Right-click during wire mode is reserved for pan (the canvas
+    // handler falls through to its pan path when this returns
+    // Ignore). Enter and snap-target-landing left-click are the
+    // commit paths.
+    if (routingMode || draft.IsSome) && isLeftClick then
         match draft with
         | None ->
             let layer = activeLayer |> Option.defaultValue defaultLayer
             StartRoute(layer, defaultWidth, x, y)
+        | Some _ when onSnapTarget ->
+            // Click landed on a labeled pin — terminate the route
+            // here. The user clicks the same pin again to start a
+            // new route from it.
+            Finish
         | Some _ ->
             FixSegment
     else

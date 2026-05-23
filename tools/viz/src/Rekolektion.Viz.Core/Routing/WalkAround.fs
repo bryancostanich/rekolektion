@@ -79,3 +79,69 @@ let route
     (start  : VisibilityGraph.Pt)
     (cursor : VisibilityGraph.Pt) : VisibilityGraph.Pt list option =
     VisibilityGraph.shortestPath graph start cursor
+
+/// Outer bounding box of the macro — the region search will never
+/// grow past this. Caller supplies it (typically the FlatPolygons'
+/// overall bbox or the cell's library bounds).
+type MacroBounds = {
+    XMin : int64
+    YMin : int64
+    XMax : int64
+    YMax : int64
+}
+
+/// Outcome of an adaptive search: the path (if found), the region
+/// the successful (or final) attempt used, and how many expansions
+/// happened. `Expansions = 0` means the initial region succeeded;
+/// higher counts mean the search retried with a larger region.
+type AdaptiveResult = {
+    Path        : VisibilityGraph.Pt list option
+    FinalRegion : Obstacles.Region
+    Expansions  : int
+}
+
+/// Adaptive region-bounded routing. Region-bounding is an
+/// optimization, but the semantic guarantee is
+/// "noPath means no path exists in the full macro." This wrapper
+/// preserves that: builds the graph in a margin-bounded region,
+/// runs `shortestPath`; on `None`, doubles the margin and retries
+/// until either a path is found, the region encloses
+/// `macroBounds`, or `maxExpansions` is hit.
+///
+/// `initialMargin` is the padding added on each side of the
+/// (start, cursor) bbox for the first attempt. The same bbox is
+/// re-padded with `initialMargin * 2 ^ n` on each retry.
+///
+/// Region edges are clamped to `macroBounds`, so a sufficiently
+/// large margin collapses to the full macro and the search runs
+/// against every same-layer obstacle.
+let routeAdaptive
+    (key            : BuildKey)
+    (start          : VisibilityGraph.Pt)
+    (cursor         : VisibilityGraph.Pt)
+    (initialMargin  : int64)
+    (macroBounds    : MacroBounds)
+    (maxExpansions  : int)
+    : AdaptiveResult =
+    let regionFromMargin (m : int64) : Obstacles.Region =
+        { XMin = max macroBounds.XMin ((min start.X cursor.X) - m)
+          YMin = max macroBounds.YMin ((min start.Y cursor.Y) - m)
+          XMax = min macroBounds.XMax ((max start.X cursor.X) + m)
+          YMax = min macroBounds.YMax ((max start.Y cursor.Y) + m) }
+    let regionCoversMacro (r : Obstacles.Region) =
+        r.XMin <= macroBounds.XMin
+        && r.YMin <= macroBounds.YMin
+        && r.XMax >= macroBounds.XMax
+        && r.YMax >= macroBounds.YMax
+    let rec loop margin attempt =
+        let region = regionFromMargin margin
+        let graph = buildGraphInRegion key region
+        match route graph start cursor with
+        | Some path ->
+            { Path = Some path; FinalRegion = region; Expansions = attempt }
+        | None ->
+            if attempt >= maxExpansions || regionCoversMacro region then
+                { Path = None; FinalRegion = region; Expansions = attempt }
+            else
+                loop (margin * 2L) (attempt + 1)
+    loop initialMargin 0

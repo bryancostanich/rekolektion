@@ -164,12 +164,14 @@ let markDirty (mc: LoadedMacro) : LoadedMacro =
 /// production-macro Document sizes the total stays under ~20 MB.
 let undoLimit = 200
 
-/// Push the current `Document` onto `mc.UndoStack` so a future Undo
-/// can restore it. Trims to `undoLimit` from the end. Used by
-/// Update.fs *before* applying any edit. Clears `RedoStack` —
-/// any new edit invalidates the redo history (standard undo/redo).
+/// Push the current `(Document, Nets)` onto `mc.UndoStack` so a
+/// future Undo can restore both together. Trims to `undoLimit` from
+/// the end. Used by Update.fs *before* applying any edit. Clears
+/// `RedoStack` — any new edit invalidates the redo history
+/// (standard undo/redo).
 let pushUndoSnapshot (mc: LoadedMacro) : LoadedMacro =
-    let stack = mc.Document :: mc.UndoStack
+    let snap : EditSnapshot = { Document = mc.Document; Nets = mc.Nets }
+    let stack = snap :: mc.UndoStack
     let trimmed =
         if stack.Length > undoLimit then List.truncate undoLimit stack
         else stack

@@ -261,3 +261,204 @@ let obstaclesInRegion
             if not (onLayer fp || onBridge fp) then false
             elif not (polyIntersectsRegion fp region) then false
             else not (isOurs idx startNet fp))
+
+// =========================================================================
+// Obstacle snapshot + uniform-grid spatial index
+//
+// `obstaclesInRegion` is called once per walk-around frame (every cursor
+// move). It used to iterate the FULL FlatPolygon array and run isOurs +
+// layer/bridge checks per polygon. For identity-stable inputs (the
+// canvas keeps the same FlatPolygons + NetMap until a commit lands),
+// the FULL obstacle set is the same across frames — only the region
+// clip changes. ObstacleSet caches the filtered obstacles + their bboxes
+// + a uniform grid keyed by reference identity of the inputs, so:
+//   - First frame: O(allFlatPolygons) to build the snapshot.
+//   - Subsequent frames: O(obstacles in region) via the grid.
+// =========================================================================
+
+/// One obstacle's axis-aligned bbox, paired with the polygon it belongs
+/// to. Stored contiguously inside `ObstacleSet` so the grid query
+/// returns indices that resolve in one array lookup.
+[<Struct>]
+type private ObstacleBbox = {
+    XMin : int64
+    YMin : int64
+    XMax : int64
+    YMax : int64
+}
+
+/// Uniform-grid spatial index over an obstacle set's bboxes. Each
+/// grid cell holds the indices of obstacles whose bbox overlaps that
+/// cell. Query iterates only the cells covered by the query region
+/// and unions their index lists.
+///
+/// Cell size is heuristic: roughly the macro span / sqrt(N) so the
+/// average cell holds ~1 obstacle. Capped to a sensible minimum so
+/// degenerate cases (tiny macros, single obstacle) don't blow up.
+type private SpatialGrid = {
+    CellSize : int64
+    OriginX  : int64
+    OriginY  : int64
+    Cols     : int
+    Rows     : int
+    /// `Cells.[col + row*Cols]` = obstacle indices overlapping that cell.
+    /// `null` for empty cells to save the allocation.
+    Cells    : int[] array
+}
+
+/// Snapshot of every obstacle in the macro for a given
+/// (Layer, StartNet) plus the inputs that drive obstacle classification
+/// (FlatPolygons identity, NetMap identity). Cached and reused across
+/// frames; invalidated whenever either input reference flips.
+type ObstacleSet = private {
+    Polygons : FlatPolygon array
+    Bboxes   : ObstacleBbox array
+    Grid     : SpatialGrid
+}
+
+let private bboxOf (fp : FlatPolygon) : ObstacleBbox =
+    let (xMin, yMin, xMax, yMax) = polyBbox fp
+    { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+
+let private buildGrid (bboxes : ObstacleBbox array) : SpatialGrid =
+    let n = bboxes.Length
+    if n = 0 then
+        { CellSize = 1L; OriginX = 0L; OriginY = 0L
+          Cols = 0; Rows = 0; Cells = [||] }
+    else
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for b in bboxes do
+            if b.XMin < xMin then xMin <- b.XMin
+            if b.YMin < yMin then yMin <- b.YMin
+            if b.XMax > xMax then xMax <- b.XMax
+            if b.YMax > yMax then yMax <- b.YMax
+        let spanX = max 1L (xMax - xMin)
+        let spanY = max 1L (yMax - yMin)
+        // Target ~1 obstacle per cell. sqrt(N) cells per axis means
+        // span/sqrt(N) DBU per cell. Floor at 100 DBU (0.1 µm in
+        // sky130) so the grid stays sane on small macros.
+        let sqrtN = max 1.0 (sqrt (float n))
+        let target = int64 (max 100.0 (float (max spanX spanY) / sqrtN))
+        let cellSize = max 100L target
+        let cols = int ((spanX + cellSize - 1L) / cellSize) |> max 1
+        let rows = int ((spanY + cellSize - 1L) / cellSize) |> max 1
+        let buckets =
+            Array.init (cols * rows) (fun _ -> ResizeArray<int>())
+        for i in 0 .. n - 1 do
+            let b = bboxes.[i]
+            let c0 = int ((b.XMin - xMin) / cellSize) |> max 0 |> min (cols - 1)
+            let c1 = int ((b.XMax - xMin) / cellSize) |> max 0 |> min (cols - 1)
+            let r0 = int ((b.YMin - yMin) / cellSize) |> max 0 |> min (rows - 1)
+            let r1 = int ((b.YMax - yMin) / cellSize) |> max 0 |> min (rows - 1)
+            for r in r0 .. r1 do
+                for c in c0 .. c1 do
+                    buckets.[c + r * cols].Add(i)
+        let cells =
+            buckets
+            |> Array.map (fun b ->
+                if b.Count = 0 then null else b.ToArray())
+        { CellSize = cellSize; OriginX = xMin; OriginY = yMin
+          Cols = cols; Rows = rows; Cells = cells }
+
+let private buildObstacleSetFresh
+        (layer    : LayerKey)
+        (startNet : string)
+        (idx      : NetIndex)
+        (flat     : FlatPolygon array) : ObstacleSet =
+    if not (isRoutingLayer layer) then
+        { Polygons = [||]
+          Bboxes   = [||]
+          Grid     = buildGrid [||] }
+    else
+        let bridges = Set.ofList (bridgesOf layer)
+        let onLayer (fp : FlatPolygon) =
+            fp.Layer = layer.Number && fp.DataType = layer.DataType
+        let onBridge (fp : FlatPolygon) =
+            bridges |> Set.contains { Number = fp.Layer; DataType = fp.DataType }
+        let kept = ResizeArray<FlatPolygon>()
+        let boxes = ResizeArray<ObstacleBbox>()
+        for fp in flat do
+            if (onLayer fp || onBridge fp) && not (isOurs idx startNet fp) then
+                kept.Add(fp)
+                boxes.Add(bboxOf fp)
+        let polys = kept.ToArray()
+        let bbs   = boxes.ToArray()
+        { Polygons = polys; Bboxes = bbs; Grid = buildGrid bbs }
+
+// Composite key on (Layer.Number, Layer.DataType, StartNet) plus
+// reference identity for FlatPolygons and the upstream net map.
+// Stored as a tuple so the cache dictionary keys on structural
+// equality of the layer+net + reference identity of the arrays.
+[<Struct>]
+type private ObstacleSetKey = {
+    Layer    : LayerKey
+    StartNet : string
+    FlatRef  : obj
+    IdxRef   : obj
+}
+
+let private obstacleSetCache : System.Collections.Generic.Dictionary<ObstacleSetKey, ObstacleSet> =
+    System.Collections.Generic.Dictionary<ObstacleSetKey, ObstacleSet>(HashIdentity.Structural)
+
+/// Memoised obstacle snapshot for `(layer, startNet, flat, idx)`.
+/// Cache key uses reference identity for `flat` and the NetIndex's
+/// underlying Map, so a doc edit (which re-flattens) or a re-derive
+/// (which produces a new NetIndex) invalidates the entry. Cache
+/// trimmed when it grows; safe across threads since the canvas
+/// passes ONE active set per draft.
+let obstacleSet
+        (layer    : LayerKey)
+        (startNet : string)
+        (netMap   : Map<string, NetEntry>)
+        (idx      : NetIndex)
+        (flat     : FlatPolygon array) : ObstacleSet =
+    let key : ObstacleSetKey =
+        { Layer = layer; StartNet = startNet
+          FlatRef = box flat; IdxRef = box netMap }
+    match obstacleSetCache.TryGetValue(key) with
+    | true, s -> s
+    | _ ->
+        let s = buildObstacleSetFresh layer startNet idx flat
+        if obstacleSetCache.Count >= 8 then obstacleSetCache.Clear()
+        obstacleSetCache.[key] <- s
+        s
+
+/// Same semantic as `obstaclesInRegion`, served from the cached
+/// snapshot via the uniform grid. First call builds the snapshot;
+/// subsequent calls clip via the grid in O(obstacles in region).
+let obstaclesInRegionCached
+        (set    : ObstacleSet)
+        (region : Region) : FlatPolygon array =
+    let g = set.Grid
+    if g.Cols = 0 || g.Rows = 0 || set.Polygons.Length = 0 then [||]
+    else
+        let c0 = int ((region.XMin - g.OriginX) / g.CellSize) |> max 0 |> min (g.Cols - 1)
+        let c1 = int ((region.XMax - g.OriginX) / g.CellSize) |> max 0 |> min (g.Cols - 1)
+        let r0 = int ((region.YMin - g.OriginY) / g.CellSize) |> max 0 |> min (g.Rows - 1)
+        let r1 = int ((region.YMax - g.OriginY) / g.CellSize) |> max 0 |> min (g.Rows - 1)
+        // Dedup via a visited bitmap — obstacles spanning multiple
+        // cells appear in several buckets. n is the snapshot size
+        // (small), so a bool array is cheaper than a HashSet.
+        let visited = Array.zeroCreate<bool> set.Polygons.Length
+        let out = ResizeArray<FlatPolygon>()
+        for r in r0 .. r1 do
+            for c in c0 .. c1 do
+                let bucket = g.Cells.[c + r * g.Cols]
+                if not (isNull bucket) then
+                    for idx in bucket do
+                        if not visited.[idx] then
+                            visited.[idx] <- true
+                            let b = set.Bboxes.[idx]
+                            // Final bbox-vs-region check — the grid
+                            // bucket is conservative (covers cell,
+                            // not the obstacle), so an obstacle in
+                            // the cell might still miss the region.
+                            if not (b.XMax < region.XMin
+                                    || b.XMin > region.XMax
+                                    || b.YMax < region.YMin
+                                    || b.YMin > region.YMax) then
+                                out.Add(set.Polygons.[idx])
+        out.ToArray()

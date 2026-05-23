@@ -1314,7 +1314,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         | Some mc ->
             match mc.UndoStack with
             | [] -> model, Cmd.none
-            | prevLib :: rest ->
+            | prevSnap :: rest ->
+                let prevLib = prevSnap.Document
+                let prevNets = prevSnap.Nets
                 let flat' = Layout.Flatten.flatten prevLib
                 let inst' = Layout.Instances.enumerate prevLib
                 let stillDirty = not (List.isEmpty rest)
@@ -1337,15 +1339,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun m ->
                         if m.Path <> mc.Path then m
                         else
+                            // Snapshot the CURRENT (pre-undo)
+                            // (Document, Nets) onto the redo stack
+                            // so Cmd+Shift+Z restores both together.
+                            let redoSnap : Model.EditSnapshot =
+                                { Document = mc.Document; Nets = mc.Nets }
                             { m with
                                 Document = prevLib
                                 FlatPolygons = flat'
                                 TopInstances = inst'
+                                Nets = prevNets
                                 UndoStack = rest
-                                // Push the CURRENT (pre-undo)
-                                // document onto the redo stack so
-                                // Cmd+Shift+Z can put it back.
-                                RedoStack = mc.Document :: mc.RedoStack
+                                RedoStack = redoSnap :: mc.RedoStack
                                 Dirty = stillDirty
                                 Path = pathRestored })
                 let activePath' =
@@ -1360,7 +1365,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         | Some mc ->
             match mc.RedoStack with
             | [] -> model, Cmd.none
-            | nextLib :: rest ->
+            | nextSnap :: rest ->
+                let nextLib = nextSnap.Document
+                let nextNets = nextSnap.Nets
                 let flat' = Layout.Flatten.flatten nextLib
                 let inst' = Layout.Instances.enumerate nextLib
                 // Re-applying a redone edit makes the doc dirty
@@ -1376,13 +1383,17 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     |> List.map (fun m ->
                         if m.Path <> mc.Path then m
                         else
+                            let undoSnap : Model.EditSnapshot =
+                                { Document = mc.Document; Nets = mc.Nets }
                             { m with
                                 Document = nextLib
                                 FlatPolygons = flat'
                                 TopInstances = inst'
-                                // Current doc goes back on the undo
-                                // stack so a follow-up Cmd+Z works.
-                                UndoStack = mc.Document :: mc.UndoStack
+                                Nets = nextNets
+                                // Current snapshot goes back on the
+                                // undo stack so a follow-up Cmd+Z
+                                // restores both Document and Nets.
+                                UndoStack = undoSnap :: mc.UndoStack
                                 RedoStack = rest
                                 Dirty = true
                                 Path = editedPath })

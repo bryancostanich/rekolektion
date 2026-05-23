@@ -59,10 +59,18 @@ let buildGraph (key : BuildKey) : VisibilityGraph.Prebuilt =
 /// The caller picks the region (typically (start, cursor) bbox
 /// expanded by 1-2× the manhattan distance) so detours that have to
 /// leave the direct corridor can still be found.
+///
+/// Backed by `Obstacles.obstacleSet`: the full obstacle universe is
+/// computed once per (Layer, StartNet, FlatPolyRef, NetMapRef) and
+/// region clips run via the cached uniform grid. The cost on a
+/// 60-obstacle macro drops from O(all polygons) per call to
+/// O(obstacles in region) — typically a handful.
 let buildGraphInRegion (key : BuildKey) (region : Obstacles.Region) : VisibilityGraph.Prebuilt =
     let netIdx = Obstacles.buildNetIndex key.NetMapRef
-    let obstacles =
-        Obstacles.obstaclesInRegion key.Layer key.StartNet netIdx region key.FlatPolyRef
+    let set =
+        Obstacles.obstacleSet
+            key.Layer key.StartNet key.NetMapRef netIdx key.FlatPolyRef
+    let obstacles = Obstacles.obstaclesInRegionCached set region
     VisibilityGraph.build key.Clearance obstacles
 
 /// Run the walk-around. `graph` is a cached `Prebuilt` matching

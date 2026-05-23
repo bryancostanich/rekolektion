@@ -197,7 +197,7 @@ let ``MovePolygonsDbu with zero delta is a no-op`` () =
     let macro = next.OpenMacros |> List.head
     macro.Document |> should equal originalDoc
     macro.Dirty |> should equal false
-    macro.UndoStack |> should equal ([] : Document list)
+    macro.UndoStack |> should equal ([] : Model.EditSnapshot list)
 
 [<Fact>]
 let ``MovePolygonsDbu with empty selection is a no-op`` () =
@@ -383,7 +383,7 @@ let ``RouteAbort discards DraftRoute without touching the document`` () =
     m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
     (List.head m2.OpenMacros).Document |> should equal originalDoc
     (List.head m2.OpenMacros).Dirty |> should equal false
-    (List.head m2.OpenMacros).UndoStack |> should equal ([] : Document list)
+    (List.head m2.OpenMacros).UndoStack |> should equal ([] : Model.EditSnapshot list)
 
 [<Fact>]
 let ``RouteFinish commits segments to the active macro and pushes undo`` () =
@@ -422,7 +422,7 @@ let ``RouteFinish on a degenerate draft (no segments) just clears DraftRoute`` (
     let m2, _ = Update.update stubBackend Msg.RouteFinish m1
     m2.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
     (List.head m2.OpenMacros).Document |> should equal originalDoc
-    (List.head m2.OpenMacros).UndoStack |> should equal ([] : Document list)
+    (List.head m2.OpenMacros).UndoStack |> should equal ([] : Model.EditSnapshot list)
 
 [<Fact>]
 let ``RouteStop commits ONLY fixed corners, drops the tentative L`` () =
@@ -533,17 +533,21 @@ let ``RouteAutoComputed is a no-op when no DraftRoute is active`` () =
     next.DraftRoute |> should equal (None : Routing.Draft.DraftRoute option)
 
 [<Fact>]
-let ``RouteMouseMove clears Auto so a stale path can't outlive a move`` () =
-    // Auto is set, then a fresh mouse-move triggers setCursor which
-    // must invalidate Auto. The dispatch layer will repopulate Auto
-    // once its background recompute lands.
+let ``RouteMouseMove preserves Auto so the live walk-around stays rendered across drag`` () =
+    // setCursor used to clear Auto on every move. That made the
+    // BG walk-around result land and immediately get wiped by the
+    // next mouse-move, so the tentative segment rendered as a
+    // straight L 95% of the time. New contract: Auto persists until
+    // the next BG result replaces it (or the route is committed /
+    // started fresh).
     let model = fixtureModel ()
     let m1, _ = Update.update stubBackend
                   (Msg.StartRoute (met1, 320L, "VGND", 0L, 0L)) model
     let m2, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (1000L, 1000L)) m1
+    let auto = [ (500L, 0L); (500L, 1000L) ]
     let m3, _ = Update.update stubBackend
-                  (Msg.RouteAutoComputed [ (500L, 0L); (500L, 1000L) ]) m2
+                  (Msg.RouteAutoComputed auto) m2
     let m4, _ = Update.update stubBackend
                   (Msg.RouteMouseMove (2000L, 2000L)) m3
-    (Option.get m4.DraftRoute).Auto |> should be Empty
+    (Option.get m4.DraftRoute).Auto |> should equal auto

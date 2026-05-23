@@ -131,7 +131,10 @@ let ``Draft in flight, left-click → RouteFixSegment fires`` () =
     cap.Starts |> should be Empty
 
 [<Fact>]
-let ``Draft in flight, right-click → RouteFinish fires`` () =
+let ``Draft in flight, right-click does NOT fire RouteFinish (right-click pans)`` () =
+    // Right-click in wire mode passes through to pan so the user
+    // can navigate while routing. Finish happens on left-click on a
+    // snap target. Asserts the canvas does not consume right-clicks.
     let cap = newCapture ()
     let draft =
         Routing.Draft.start (68, 20) 320L (0L, 0L)
@@ -145,7 +148,7 @@ let ``Draft in flight, right-click → RouteFinish fires`` () =
         (fun window _ ->
             window.MouseDown(Point(50.0, 50.0), MouseButton.Right)
             Dispatcher.UIThread.RunJobs())
-    cap.Finishes |> should equal 1
+    cap.Finishes |> should equal 0
     cap.Fixes |> should equal 0
 
 [<Fact>]

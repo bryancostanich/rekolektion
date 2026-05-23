@@ -36,16 +36,31 @@ type LoadedMacro = {
     /// saved. Drives the title-bar "[edited]" indicator and the
     /// close-with-unsaved-changes prompt.
     Dirty : bool
-    /// Per-macro undo stack — snapshots of `Document` from before
-    /// each edit (newest first). Capped to keep memory bounded.
-    /// Cmd+Z pops and restores; the popped document replaces the
-    /// current one and re-derives FlatPolygons / TopInstances.
-    UndoStack : Document list
-    /// Redo stack — when Undo pops, the CURRENT document goes here
+    /// Per-macro undo stack — snapshots of (Document, Nets) from
+    /// before each edit (newest first). Capped to keep memory
+    /// bounded. Cmd+Z pops and restores; the popped snapshot
+    /// replaces the current state and re-derives FlatPolygons /
+    /// TopInstances.
+    ///
+    /// `Nets` is snapshotted alongside `Document` because the
+    /// commit-time incremental update in `commitRouteWith`
+    /// appends PolygonRefs into the active net entry. Without
+    /// snapshotting Nets, undo would restore the prior Document
+    /// but leave the post-commit net entries in place, with refs
+    /// pointing to indices that no longer exist in the restored
+    /// geometry.
+    UndoStack : EditSnapshot list
+    /// Redo stack — when Undo pops, the CURRENT snapshot goes here
     /// so Cmd+Shift+Z can put it back. Any new edit clears this
-    /// stack (standard undo/redo semantics: a new branch invalidates
-    /// the redo history).
-    RedoStack : Document list
+    /// stack (standard undo/redo semantics).
+    RedoStack : EditSnapshot list
+}
+/// One step of edit history: paired (Document, Nets) so undo/redo
+/// restores them together and keeps PolygonRef indices consistent
+/// with the geometry they describe.
+and EditSnapshot = {
+    Document : Document
+    Nets     : Map<string, NetEntry>
 }
 
 type RunState =

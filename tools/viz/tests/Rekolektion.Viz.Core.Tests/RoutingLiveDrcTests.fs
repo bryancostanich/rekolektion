@@ -95,10 +95,16 @@ let ``schedule returns BEFORE the compute finishes`` () =
     s.Latest |> should equal 77
 
 [<Fact>]
-let ``two concurrent schedules: the LATER capture is what writes back, the earlier one is dropped`` () =
+let ``single-flight + coalesce: pending schedule waits for the in-flight one, then runs once the slow compute returns`` () =
+    // Contract under single-flight: at most one compute runs at a
+    // time. A schedule arriving while another is in flight stashes
+    // its closure as Pending instead of starting a parallel Task.
+    // When the in-flight task finishes:
+    //   - its writeback runs but DROPS via tryAccept (version moved
+    //     on), so its onAccept never fires;
+    //   - the pending closure is dequeued and run via its OWN
+    //     postBack + onAccept (the latest one wins).
     let s = LiveDrc.create 0
-    // First (slow) compute — gated so we can hold it open while a
-    // second schedule lands.
     let firstStarted   = new ManualResetEventSlim(false)
     let firstReleased  = new ManualResetEventSlim(false)
     let firstWriteback = new ManualResetEventSlim(false)
@@ -110,27 +116,35 @@ let ``two concurrent schedules: the LATER capture is what writes back, the earli
     let firstPostBack action = action (); firstWriteback.Set()
     let v1 = LiveDrc.schedule s slowCompute firstPostBack (fun _ -> firstAccept := true)
     firstStarted.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
-    // Second (fast) compute — overtakes the first and writes back
-    // immediately on this thread (inline postBack).
+    // Second schedule arrives while the first compute is gated. It
+    // does NOT start a parallel Task — its closure is stashed in
+    // Pending. secondWriteback only fires after the slow compute
+    // finishes AND the chained pending run completes.
     let secondWriteback = new ManualResetEventSlim(false)
     let secondAccept    = ref false
+    let secondValue     = ref 0
     let v2 =
         LiveDrc.schedule
             s
             (fun () -> 200)
             (fun action -> action (); secondWriteback.Set())
-            (fun _ -> secondAccept := true)
-    waitFor secondWriteback
+            (fun v -> secondAccept := true; secondValue := v)
     v1 |> should equal 1
     v2 |> should equal 2
-    s.Latest |> should equal 200
-    !secondAccept |> should equal true
-    // Now release the slow compute; its writeback should silently
-    // drop because the version moved on.
+    // The pending hasn't run yet — Latest is still the initial 0
+    // because the in-flight slow compute is gated.
+    s.Latest |> should equal 0
+    !secondAccept |> should equal false
+    // Release the slow compute. Its writeback drops (version moved
+    // from 1 to 2), then the chained pending fires through the
+    // SECOND postBack / onAccept.
     firstReleased.Set()
-    waitFor firstWriteback
-    s.Latest |> should equal 200          // still the newer value
-    !firstAccept |> should equal false    // older onAccept never fired
+    waitFor firstWriteback        // slow compute's writeback ran
+    waitFor secondWriteback       // pending writeback ran (latest wins)
+    s.Latest |> should equal 200
+    !firstAccept |> should equal false    // older onAccept dropped
+    !secondAccept |> should equal true
+    !secondValue |> should equal 200
 
 [<Fact>]
 let ``onAccept fires exactly once per accepted writeback`` () =

@@ -1790,9 +1790,13 @@ type GdsCanvasControl() as this =
                             | Some entry -> entry.Polygons.Length
                             | None -> -1
                         let netNameCount = key.NetMapRef.Count
-                        if swBuild.ElapsedMilliseconds + swSearch.ElapsedMilliseconds >= 2L
-                           || pointerMoveCount % 30 = 0
-                           || searchOutcome = "noPath" then
+                        // Log EVERY walkaround compute so post-mortem
+                        // can see exactly what the algorithm returned
+                        // for each cursor position. Previously gated
+                        // (every 30 frames + slow), which hid the
+                        // path the wire actually rendered during fast
+                        // drags.
+                        if true then
                             // Emit corner coordinates so the diagnostic
                             // log shows WHERE the path bends — not just
                             // count. Without coords we can't tell a

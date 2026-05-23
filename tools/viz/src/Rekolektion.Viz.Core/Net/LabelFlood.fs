@@ -187,12 +187,16 @@ let derive (doc: Document) : Map<string, NetEntry> =
                 callback layerArr.[localI])
         | _ -> ()
 
-    labels
-    |> Array.fold (fun (acc: Map<string, NetEntry>) (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel) ->
+    // Per-label flood payload: the label's name and class, the
+    // polygons reached, and the seed (direct-label) polygon. Built
+    // in parallel per label, then merged sequentially below.
+    let perLabel
+        (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel)
+        : (string * NetClass * PolygonRef list * PolygonRef) option =
         // Skip DeviceTerminal labels — those are FET port annotations
         // (D / G / S / B), not net names. Treating them as nets would
         // collapse every device's gate into one fake "G" entry.
-        if lbl.Text = "" || lbl.Kind <> NetName then acc else
+        if lbl.Text = "" || lbl.Kind <> NetName then None else
         // Seed lookup: only walk polys on lbl.Layer, and bbox-reject
         // before the more expensive pointInPolygon test.
         let seedIdx =
@@ -211,7 +215,7 @@ let derive (doc: Document) : Map<string, NetEntry> =
                     i <- i + 1
                 if found < 0 then None else Some found
         match seedIdx with
-        | None -> acc
+        | None -> None
         | Some i0 ->
             let visited = System.Collections.Generic.HashSet<int>()
             let queue = System.Collections.Generic.Queue<int>()
@@ -287,15 +291,30 @@ let derive (doc: Document) : Map<string, NetEntry> =
                   DataType = seedPoly.DataType
                   Index = seedPoly.SourceIndex
                   TopInstanceIndex = seedPoly.TopInstanceIndex }
-            let entry =
-                match Map.tryFind lbl.Text acc with
+            Some (lbl.Text, classOfName lbl.Text, polyRefs, seedRef)
+
+    // Parallel per-label flood. Each label's BFS is independent
+    // (reads shared immutable spatial indices, builds its own
+    // visited/queue/collected). Only the final merge into the
+    // Map<string, NetEntry> is serial. Expect a 4-6× speedup on
+    // multi-core for the initial nets.derive on a dense macro.
+    let perLabelResults =
+        labels
+        |> Array.Parallel.map perLabel
+    perLabelResults
+    |> Array.fold (fun (acc: Map<string, NetEntry>) entry ->
+        match entry with
+        | None -> acc
+        | Some (name, cls, polyRefs, seedRef) ->
+            let merged =
+                match Map.tryFind name acc with
                 | Some existing ->
                     { existing with
                         Polygons = existing.Polygons @ polyRefs |> List.distinct
                         SeedPolygons = existing.SeedPolygons @ [seedRef] |> List.distinct }
                 | None ->
-                    { Name = lbl.Text
-                      Class = classOfName lbl.Text
+                    { Name = name
+                      Class = cls
                       Polygons = polyRefs
                       SeedPolygons = [seedRef] }
-            Map.add lbl.Text entry acc) Map.empty
+            Map.add name merged acc) Map.empty

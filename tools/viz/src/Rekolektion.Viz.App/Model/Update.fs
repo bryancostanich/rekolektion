@@ -738,6 +738,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         match model.DraftRoute with
         | None -> model, Cmd.none
         | Some d ->
+            // Log cursor coords on every move so post-mortem can
+            // reconstruct drag speed + path. Replaces the gated
+            // pointer.move sampling (every 30 frames) which hides
+            // fast drags.
+            Rekolektion.Viz.App.Services.Logger.log "route.cursor"
+                {| x = x; y = y |}
             { model with DraftRoute = Some (Routing.Draft.setCursor (x, y) d) }, Cmd.none
     | Msg.RouteFixSegment ->
         match model.DraftRoute with

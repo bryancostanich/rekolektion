@@ -90,13 +90,54 @@ type MacroBounds = {
     YMax : int64
 }
 
+/// Reference-identity cache of FlatPolygons → bbox. The polygon
+/// array doesn't change between cursor moves on the same macro, but
+/// the canvas was rescanning every dispatch (O(polygons · points)).
+/// Trimmed when it grows so a long session doesn't pin every macro.
+let private macroBoundsCache : System.Collections.Generic.Dictionary<obj, MacroBounds> =
+    System.Collections.Generic.Dictionary<obj, MacroBounds>(HashIdentity.Reference)
+
+/// Bounding box of every point in `flat`. Returns `None` when the
+/// array is empty so the caller picks its own fallback (start/cursor
+/// bbox is the canvas convention). Result is memoised by array
+/// reference identity — pass the SAME array instance to hit cache.
+let macroBoundsOf (flat : FlatPolygon array) : MacroBounds option =
+    if flat.Length = 0 then None
+    else
+        let key = box flat
+        match macroBoundsCache.TryGetValue(key) with
+        | true, b -> Some b
+        | _ ->
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            let b = { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+            if macroBoundsCache.Count >= 4 then macroBoundsCache.Clear()
+            macroBoundsCache.[key] <- b
+            Some b
+
 /// Outcome of an adaptive search: the path (if found), the region
-/// the successful (or final) attempt used, and how many expansions
-/// happened. `Expansions = 0` means the initial region succeeded;
-/// higher counts mean the search retried with a larger region.
+/// the successful (or final) attempt used, the visibility graph
+/// that was built for that region, and how many expansions happened.
+/// `Expansions = 0` means the initial region succeeded; higher
+/// counts mean the search retried with a larger region.
+///
+/// `Graph` is returned so callers that need to inspect the obstacle
+/// universe (containment checks, logging) reuse the work instead of
+/// calling `buildGraphInRegion` a second time. The graph matches
+/// `FinalRegion` — i.e., for noPath outcomes the graph is the one
+/// from the LAST attempted region (the most-expanded one).
 type AdaptiveResult = {
     Path        : VisibilityGraph.Pt list option
     FinalRegion : Obstacles.Region
+    Graph       : VisibilityGraph.Prebuilt
     Expansions  : int
 }
 
@@ -138,10 +179,10 @@ let routeAdaptive
         let graph = buildGraphInRegion key region
         match route graph start cursor with
         | Some path ->
-            { Path = Some path; FinalRegion = region; Expansions = attempt }
+            { Path = Some path; FinalRegion = region; Graph = graph; Expansions = attempt }
         | None ->
             if attempt >= maxExpansions || regionCoversMacro region then
-                { Path = None; FinalRegion = region; Expansions = attempt }
+                { Path = None; FinalRegion = region; Graph = graph; Expansions = attempt }
             else
                 loop (margin * 2L) (attempt + 1)
     loop initialMargin 0

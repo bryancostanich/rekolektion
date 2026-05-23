@@ -1701,30 +1701,22 @@ type GdsCanvasControl() as this =
                     let dyAbs = abs (cursorPt.Y - startPt.Y)
                     let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
                     // Macro bounds — region won't grow past this.
-                    // Scanned from FlatPolygons each dispatch; cheap
-                    // even on thousands of polys and avoids stale
-                    // cache bugs when geometry changes.
+                    // Cached by FlatPolygons reference identity in
+                    // WalkAround.macroBoundsOf; the array doesn't
+                    // change between cursor moves on the same macro,
+                    // so this collapses to a dict lookup after the
+                    // first dispatch. Empty flat → fallback bbox
+                    // around (start, cursor).
                     let macroBounds : Routing.WalkAround.MacroBounds =
-                        let flat = this.FlatPolygons
-                        if flat.Length = 0 then
+                        match Routing.WalkAround.macroBoundsOf this.FlatPolygons with
+                        | Some b -> b
+                        | None ->
                             { XMin = startPt.X; YMin = startPt.Y
                               XMax = cursorPt.X; YMax = cursorPt.Y }
-                        else
-                            let mutable xMin = System.Int64.MaxValue
-                            let mutable yMin = System.Int64.MaxValue
-                            let mutable xMax = System.Int64.MinValue
-                            let mutable yMax = System.Int64.MinValue
-                            for fp in flat do
-                                for pt in fp.Points do
-                                    if pt.X < xMin then xMin <- pt.X
-                                    if pt.X > xMax then xMax <- pt.X
-                                    if pt.Y < yMin then yMin <- pt.Y
-                                    if pt.Y > yMax then yMax <- pt.Y
-                            { XMin = xMin; YMin = yMin
-                              XMax = xMax; YMax = yMax }
                     let cb = this.RouteAutoComputedHandler
                     let compute () : (int64 * int64) list =
                         let swBuild = System.Diagnostics.Stopwatch.StartNew()
+                        let emptyGraph () = Routing.VisibilityGraph.build 0L [||]
                         let adaptive =
                             try
                                 Routing.WalkAround.routeAdaptive
@@ -1735,11 +1727,15 @@ type GdsCanvasControl() as this =
                                   FinalRegion =
                                       { XMin = 0L; YMin = 0L
                                         XMax = 0L; YMax = 0L }
+                                  Graph = emptyGraph ()
                                   Expansions = 0 }
                         swBuild.Stop()
-                        let graph =
-                            try Routing.WalkAround.buildGraphInRegion key adaptive.FinalRegion
-                            with _ -> Routing.VisibilityGraph.build 0L [||]
+                        // Reuse the graph that routeAdaptive already
+                        // built for FinalRegion. Calling
+                        // buildGraphInRegion a second time here cost
+                        // ~50% of the per-frame compute on dense
+                        // macros.
+                        let graph = adaptive.Graph
                         let swSearch = System.Diagnostics.Stopwatch.StartNew()
                         let mutable searchOutcome = "unknown"
                         let result =
@@ -1982,6 +1978,7 @@ type GdsCanvasControl() as this =
                           FinalRegion =
                               { XMin = 0L; YMin = 0L
                                 XMax = 0L; YMax = 0L }
+                          Graph = Routing.VisibilityGraph.build 0L [||]
                           Expansions = 0 }
                 sw.Stop()
                 match adaptive.Path with

@@ -3612,7 +3612,15 @@ type GdsCanvasControl() as this =
                   ShowGrid = this.ShowGrid
                   ShowRuler = this.ShowRuler
                   ShowLabels = this.ShowLabels }
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, cachedRouteLiveViolations, this.DrcView.Provenance, hoveredSnapTarget))
+            // Gate the route-live overlay on the same `ShowDrc`
+            // toggle the static DRC overlay uses. Otherwise the
+            // route-live red boxes render even with the top-bar
+            // DRC button off — looks like ghost violations the
+            // user can't clear without finding a way to retrigger
+            // the live-DRC pass.
+            let routeLiveViolations' =
+                if this.ShowDrc then cachedRouteLiveViolations else [||]
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

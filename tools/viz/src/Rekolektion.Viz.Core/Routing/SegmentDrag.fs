@@ -53,6 +53,12 @@ type DragState = {
     /// this is the Y delta (segment slides up/down); for Vertical
     /// it's the X delta.
     Delta      : int64
+    /// Shift state at pickup. Captured at mouse-down so the
+    /// modifier release mid-drag doesn't change the click's
+    /// selection semantics. Only consumed by the click-without-
+    /// drag path (delta = 0 commit → wire selection); ignored by
+    /// the actual segment drag.
+    ShiftAtPickup : bool
 }
 
 /// Begin a drag at the picked-up rect. Auto-groups collinear-
@@ -66,6 +72,7 @@ let start
         (r : Rectangle)
         (pickupX : int64)
         (pickupY : int64)
+        (shiftAtPickup : bool)
         (doc : Document) : DragState =
     let group = Wire.collinearGroupOf cellName idx doc
     let groupIndices, groupRects =
@@ -77,7 +84,8 @@ let start
     { WireId = wireId; CellName = cellName; SegmentIdx = idx
       GroupIndices = groupIndices
       Original = virtualRect; Axis = Wire.segmentAxis virtualRect
-      PickupX = pickupX; PickupY = pickupY; Delta = 0L }
+      PickupX = pickupX; PickupY = pickupY; Delta = 0L
+      ShiftAtPickup = shiftAtPickup }
 
 /// Update the drag with the live cursor position. Off-axis cursor
 /// motion is ignored — Manhattan-only is the explicit v1

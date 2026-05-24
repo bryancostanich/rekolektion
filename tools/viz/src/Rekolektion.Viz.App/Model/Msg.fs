@@ -197,6 +197,7 @@ type Msg =
         wireId: int option * cellName: string * segIdx: int
         * rect: Rekolektion.Viz.Core.Rkt.Types.Rectangle
         * pickupX: int64 * pickupY: int64
+        * shift: bool
     /// Mouse-move while a segment drag is in flight. Updates
     /// the live cursor; the projected geometry re-derives on
     /// each move. No commit until SegmentDragCommit.
@@ -210,8 +211,11 @@ type Msg =
     | SegmentDragCancel
     /// Click without drag in idle state — select the wire
     /// (connected component of same-net top-cell rects, terminating
-    /// at labeled pin polygons). Args: world-coord x, y.
-    | WireSelectAt of x: int64 * y: int64
+    /// at labeled pin polygons). Args: world-coord x, y, shift
+    /// modifier. With shift: toggle the wire's membership in the
+    /// existing selection (add if not present, remove if all
+    /// already present). Without shift: replace.
+    | WireSelectAt of x: int64 * y: int64 * shift: bool
     /// Commit a finished route-slide drag (track OR post). Each
     /// entry in `adjusts` is
     /// (sourceIndex, mx1X, mx1Y, my1X, my1Y, mx2X, mx2Y, my2X, my2Y) —

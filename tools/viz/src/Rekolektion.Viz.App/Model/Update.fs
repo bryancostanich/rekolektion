@@ -769,7 +769,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             { model with DraftRoute = Some (Routing.Draft.flipPosture d) }, Cmd.none
     | Msg.RouteAbort ->
         { model with DraftRoute = None }, Cmd.none
-    | Msg.SegmentDragStart (wireId, cellName, segIdx, rect, px, py) ->
+    | Msg.SegmentDragStart (wireId, cellName, segIdx, rect, px, py, shift) ->
         // SegmentDrag.start walks the doc to find the picked
         // rect's collinear-abutting group. Read the active macro's
         // doc here — if there's no active macro, drop silently.
@@ -785,7 +785,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         | Some doc ->
             let drag =
                 Routing.SegmentDrag.start
-                    wireId cellName segIdx rect px py doc
+                    wireId cellName segIdx rect px py shift doc
             { model with SegmentDrag = Some drag }, Cmd.none
     | Msg.SegmentDragMove (x, y) ->
         match model.SegmentDrag with
@@ -795,7 +795,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             { model with SegmentDrag = Some s' }, Cmd.none
     | Msg.SegmentDragCancel ->
         { model with SegmentDrag = None }, Cmd.none
-    | Msg.WireSelectAt (x, y) ->
+    | Msg.WireSelectAt (x, y, shift) ->
         // Find the connected component of same-net top-cell rects
         // reachable from the picked rect, terminating at labeled
         // pin polygons. The result populates `Selection` (same
@@ -811,9 +811,13 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 let doc = mc.Document
                 match Routing.Wire.findSegmentAt x y doc with
                 | None ->
-                    // Click landed on no wire-shaped rect — clear
-                    // selection rather than leave a stale highlight.
-                    { model with Selection = Set.empty }, Cmd.none
+                    // Click landed on no wire-shaped rect. With
+                    // shift: leave selection alone (don't punish
+                    // a misclick). Without: clear, matching the
+                    // standard "click empty space deselects"
+                    // behaviour.
+                    if shift then model, Cmd.none
+                    else { model with Selection = Set.empty }, Cmd.none
                 | Some (_, cellName, seedIdx, _) ->
                     let topCellName =
                         doc.TopCell
@@ -894,19 +898,31 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                        Index = i
                                        TopInstance = None } : Layout.Flatten.PolyKey))
                                 |> Set.ofList
-                            { model with Selection = polyKeys }, Cmd.none
+                            let newSel =
+                                if not shift then polyKeys
+                                else
+                                    // Toggle: if the new wire is
+                                    // already fully selected, drop
+                                    // it; otherwise add it on top
+                                    // of the existing selection.
+                                    let allPresent =
+                                        Set.isSubset polyKeys model.Selection
+                                    if allPresent then
+                                        Set.difference model.Selection polyKeys
+                                    else
+                                        Set.union model.Selection polyKeys
+                            { model with Selection = newSel }, Cmd.none
     | Msg.SegmentDragCommit ->
         match model.SegmentDrag, model.ActiveMacroPath with
         | None, _ | _, None ->
             { model with SegmentDrag = None }, Cmd.none
         | Some s, Some path when s.Delta = 0L ->
-            // Click-without-move = wire selection. The segment-drag
-            // pickup captured (PickupX, PickupY); reuse them as the
-            // selection click coords. Selection is computed by
-            // dispatching WireSelectAt as a follow-up so its handler
-            // owns the lookup logic.
+            // Click-without-move = wire selection. Use the pickup
+            // coords + the shift state captured at mouse-down (the
+            // user may have released shift mid-drag, but the click
+            // intent is fixed at mouse-down).
             { model with SegmentDrag = None },
-            Cmd.ofMsg (Msg.WireSelectAt (s.PickupX, s.PickupY))
+            Cmd.ofMsg (Msg.WireSelectAt (s.PickupX, s.PickupY, s.ShiftAtPickup))
         | Some s, Some path ->
             let mutable activePath' = path
             let openMacros' =

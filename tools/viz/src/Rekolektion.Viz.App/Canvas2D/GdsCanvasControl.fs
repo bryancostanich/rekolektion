@@ -1284,13 +1284,15 @@ type GdsCanvasControl() as this =
         with get
     /// Dispatched on mouse-down over a routing-layer rect (idle
     /// state). Args: wireId?, cellName, segIdx, rect, pickupX,
-    /// pickupY. WireId is None for rects authored without a
-    /// wire tag (pre-WireId or hand-edited geometry); the commit
-    /// path allocates a fresh WireId for the new rects in that
-    /// case so future drags find them as a first-class wire.
+    /// pickupY, shift modifier. WireId is None for rects authored
+    /// without a wire tag (pre-WireId or hand-edited geometry);
+    /// the commit path allocates a fresh WireId for the new
+    /// rects. Shift state is captured at mouse-down so a
+    /// click-without-drag commit knows whether to replace the
+    /// selection (no shift) or toggle the picked wire (shift).
     static member val SegmentDragStartHandlerProperty
-            : StyledProperty<Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>> =
-        AvaloniaProperty.Register<GdsCanvasControl, Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>>(
+            : StyledProperty<Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64, bool>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64, bool>>(
             "SegmentDragStartHandler", null)
         with get
     /// Dispatched on every mouse-move while a segment drag is active.
@@ -1477,9 +1479,9 @@ type GdsCanvasControl() as this =
             this.SetValue(GdsCanvasControl.SegmentDragProperty, v) |> ignore
 
     member this.SegmentDragStartHandler
-        with get() : Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64> =
+        with get() : Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64, bool> =
             this.GetValue(GdsCanvasControl.SegmentDragStartHandlerProperty)
-        and set(v: Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>) =
+        and set(v: Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64, bool>) =
             this.SetValue(GdsCanvasControl.SegmentDragStartHandlerProperty, v) |> ignore
 
     member this.SegmentDragMoveHandler
@@ -2099,9 +2101,11 @@ type GdsCanvasControl() as this =
                 match Routing.Wire.findSegmentAt (int64 wxIdle) (int64 wyIdle) doc with
                 | Some (wireIdOpt, cellName, idx, rect) ->
                     let cb = this.SegmentDragStartHandler
+                    let shiftHeld =
+                        e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift)
                     if not (isNull cb) then
                         cb.Invoke(wireIdOpt, cellName, idx, rect,
-                                  int64 wxIdle, int64 wyIdle)
+                                  int64 wxIdle, int64 wyIdle, shiftHeld)
                     e.Handled <- true
                 | None -> ()
             | None -> ()

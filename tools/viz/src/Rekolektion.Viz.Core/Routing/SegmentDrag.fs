@@ -108,47 +108,165 @@ let private verticalBridge
         Y1 = yEndpoint - halfW
         Y2 = yEndpoint + halfW }
 
+// Normalised bbox helpers — work in (xLo, yLo, xHi, yHi) so the
+// stretch math doesn't have to track which of X1/X2 is the lower
+// coordinate (RectEls aren't normalised on disk).
+let private bounds (r : Rectangle) =
+    min r.X1 r.X2, min r.Y1 r.Y2, max r.X1 r.X2, max r.Y1 r.Y2
+
+let private fromBounds
+        (template : Rectangle)
+        (xLo : int64) (yLo : int64) (xHi : int64) (yHi : int64) : Rectangle =
+    { template with X1 = xLo; Y1 = yLo; X2 = xHi; Y2 = yHi }
+
+/// Which end of the dragged segment does the neighbour `n` touch?
+/// Decided by the overlap region on the dragged's PARALLEL axis
+/// (its long axis). LowEnd = the X1/Y1 side of dragged, HighEnd =
+/// X2/Y2. Returns None when there's no clean touching, OR when n
+/// overlaps both ends (rare; n is then longer than dragged on that
+/// axis and the stretch is ambiguous).
+type private TouchedEnd = LowEnd | HighEnd
+
+let private touchedEnd
+        (dragged : Rectangle)
+        (axis : Wire.SegmentAxis)
+        (n : Rectangle) : TouchedEnd option =
+    let (dxLo, dyLo, dxHi, dyHi) = bounds dragged
+    let (nxLo, nyLo, nxHi, nyHi) = bounds n
+    match axis with
+    | Wire.Horizontal ->
+        // Dragged is horizontal; its parallel axis is X. n touches
+        // dragged at either the left (X1) or right (X2) endpoint.
+        let lowOverlap  = nxLo <= dxLo && nxHi >= dxLo
+        let highOverlap = nxLo <= dxHi && nxHi >= dxHi
+        match lowOverlap, highOverlap with
+        | true, false -> Some LowEnd
+        | false, true -> Some HighEnd
+        | _ -> None
+    | Wire.Vertical ->
+        let lowOverlap  = nyLo <= dyLo && nyHi >= dyLo
+        let highOverlap = nyLo <= dyHi && nyHi >= dyHi
+        match lowOverlap, highOverlap with
+        | true, false -> Some LowEnd
+        | false, true -> Some HighEnd
+        | _ -> None
+
+/// Stretch a perpendicular neighbour `n` so its near face follows
+/// the dragged segment by `delta`. The "near face" is the bbox
+/// face of n that lay inside dragged's bounds on the perpendicular
+/// axis. Far face stays put. Result preserves the wire's width on
+/// `n`'s parallel axis — only the perpendicular extent changes.
+let private stretchPerpendicular
+        (dragged : Rectangle)
+        (axis : Wire.SegmentAxis)
+        (delta : int64)
+        (n : Rectangle) : Rectangle =
+    let (dxLo, dyLo, dxHi, dyHi) = bounds dragged
+    let (nxLo, nyLo, nxHi, nyHi) = bounds n
+    match axis with
+    | Wire.Horizontal ->
+        // dragged moves in Y by delta. n is vertical; its Y faces
+        // (top = nyHi, bottom = nyLo) are the candidates for the
+        // near face. Pick whichever lies INSIDE dragged's Y range.
+        let topInside = nyHi >= dyLo && nyHi <= dyHi
+        let botInside = nyLo >= dyLo && nyLo <= dyHi
+        if topInside && not botInside then
+            fromBounds n nxLo nyLo nxHi (nyHi + delta)
+        elif botInside && not topInside then
+            fromBounds n nxLo (nyLo + delta) nxHi nyHi
+        else
+            n
+    | Wire.Vertical ->
+        let rightInside = nxHi >= dxLo && nxHi <= dxHi
+        let leftInside  = nxLo >= dxLo && nxLo <= dxHi
+        if rightInside && not leftInside then
+            fromBounds n nxLo nyLo (nxHi + delta) nyHi
+        elif leftInside && not rightInside then
+            fromBounds n (nxLo + delta) nyLo nxHi nyHi
+        else
+            n
+
 /// Project the new full set of wire rects after the drag commits.
-/// The caller replaces every rect carrying `s.WireId` in the
-/// document with this list and pushes one undo snapshot.
+/// The caller replaces every rect carrying `s.WireId` in `s.CellName`
+/// with this list and pushes one undo snapshot.
 ///
-/// MVP scope: handles the single-segment-wire case (the wire was
-/// one rect; drag produces three — left bridge, dragged segment,
-/// right bridge). Multi-segment wires fall back to "drag just
-/// the picked segment, leave the rest untouched" — visually
-/// disconnected at the drag's endpoints until the user fixes it
-/// up. Stretch-of-flanking-segments is a follow-up.
+/// Behaviour per endpoint of the dragged segment:
+///   - Perpendicular flanking neighbour present → STRETCH that
+///     neighbour so its near face follows the new position.
+///   - No such neighbour → INSERT an L-corner bridge segment to
+///     bridge the original endpoint coord to the new position.
+///
+/// Parallel-axis neighbours (rare — implies a degenerate wire) are
+/// left untouched; the user sees a visual gap and can re-route.
 ///
 /// Zero-delta drag returns the original rect unchanged so a
 /// click without movement is a no-op commit.
 let projectGeometry (s : DragState) (doc : Document) : Rectangle list =
     if s.Delta = 0L then [ s.Original ]
     else
-        let allWireRects = Wire.segmentsOf s.WireId doc
-        let singleSegment = List.length allWireRects = 1
         let dragged = draggedSegment s
-        if not singleSegment then
-            // Multi-segment: replace the dragged rect only.
-            // Other rects in the wire stay as-is (caller handles
-            // the per-rect substitution). See module-doc for
-            // the stretch-flanking follow-up.
-            allWireRects
-            |> List.map (fun (_, idx, r) ->
-                if idx = s.SegmentIdx then dragged else r)
-        else
-            let orig = s.Original
+        let orig = s.Original
+        let perpAxis =
+            match s.Axis with
+            | Wire.Horizontal -> Wire.Vertical
+            | Wire.Vertical -> Wire.Horizontal
+        let neighbours =
+            Wire.neighborsOf s.WireId s.CellName s.SegmentIdx orig doc
+        // Classify each neighbour: perpendicular (stretch
+        // candidate) vs parallel (leave alone). For each
+        // perpendicular neighbour, note which end of dragged it
+        // touches so the bridge-emit step knows which ends are
+        // already handled.
+        let mutable lowHandled = false
+        let mutable highHandled = false
+        let updatedNeighbours =
+            neighbours
+            |> List.map (fun (idx, n) ->
+                if Wire.segmentAxis n <> perpAxis then
+                    // Parallel neighbour — out of MVP scope.
+                    (idx, n)
+                else
+                    match touchedEnd orig s.Axis n with
+                    | Some LowEnd ->
+                        lowHandled <- true
+                        idx, stretchPerpendicular orig s.Axis s.Delta n
+                    | Some HighEnd ->
+                        highHandled <- true
+                        idx, stretchPerpendicular orig s.Axis s.Delta n
+                    | None ->
+                        // No clean touching — couldn't tell which
+                        // end. Leave the neighbour as-is.
+                        (idx, n))
+        // Bridges for the dragged endpoints that didn't get a
+        // perpendicular stretch (true terminus, anchored to a pin).
+        let bridges =
             match s.Axis with
             | Wire.Horizontal ->
                 let halfW = (orig.Y2 - orig.Y1) / 2L
-                let xLeft  = (min orig.X1 orig.X2) + halfW
-                let xRight = (max orig.X1 orig.X2) - halfW
-                [ horizontalBridge xLeft  orig s.Delta
-                  dragged
-                  horizontalBridge xRight orig s.Delta ]
+                let xLowCenter  = (min orig.X1 orig.X2) + halfW
+                let xHighCenter = (max orig.X1 orig.X2) - halfW
+                [ if not lowHandled  then horizontalBridge xLowCenter  orig s.Delta
+                  if not highHandled then horizontalBridge xHighCenter orig s.Delta ]
             | Wire.Vertical ->
                 let halfW = (orig.X2 - orig.X1) / 2L
-                let yBot = (min orig.Y1 orig.Y2) + halfW
-                let yTop = (max orig.Y1 orig.Y2) - halfW
-                [ verticalBridge yBot orig s.Delta
-                  dragged
-                  verticalBridge yTop orig s.Delta ]
+                let yLowCenter  = (min orig.Y1 orig.Y2) + halfW
+                let yHighCenter = (max orig.Y1 orig.Y2) - halfW
+                [ if not lowHandled  then verticalBridge yLowCenter  orig s.Delta
+                  if not highHandled then verticalBridge yHighCenter orig s.Delta ]
+        // Final composition: every wire rect, with the dragged one
+        // moved and the perpendicular neighbours stretched, plus
+        // any anchor bridges.
+        let allWireRects = Wire.segmentsOf s.WireId doc
+        let updatedMap =
+            updatedNeighbours
+            |> List.map (fun (idx, r) -> idx, r)
+            |> Map.ofList
+        let body =
+            allWireRects
+            |> List.map (fun (_, idx, r) ->
+                if idx = s.SegmentIdx then dragged
+                else
+                    match Map.tryFind idx updatedMap with
+                    | Some r' -> r'
+                    | None -> r)
+        body @ bridges

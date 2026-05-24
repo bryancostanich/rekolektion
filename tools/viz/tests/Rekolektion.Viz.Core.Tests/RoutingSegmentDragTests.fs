@@ -88,28 +88,25 @@ let ``projectGeometry: zero delta returns the original rect unchanged`` () =
 [<Fact>]
 let ``projectGeometry: horizontal single-segment wire produces 3 rects`` () =
     // Horizontal wire (0,0)-(1000,320). Drag down by 500 (Y goes
-    // from 160 to 660). Expected: left bridge + dragged + right
-    // bridge, all wire-width = 320.
+    // from 160 to 660). Expected: dragged segment + two L-corner
+    // bridges (one at each anchored end). Tests look up rects by
+    // content so the projection's emit order isn't load-bearing.
     let r = mkRect (0L, 0L, 1000L, 320L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ r ] ]
     let s = SegmentDrag.start 1 "top" 0 r 500L 160L
             |> SegmentDrag.setCursor 500L 660L
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 3
-    // Left bridge: vertical rect at x=0 spanning Y=0 to Y=820.
-    let lb = geom.[0]
-    (lb.X1, lb.X2) |> should equal (0L, 320L)
-    // Wait — bridge width = original wire width = 320. xL endpoint
-    // = 0 + half = 160. Bridge rect = (160-160, ...) to (160+160, ...)
-    // = (0, ...) to (320, ...). ✓
+    // Dragged segment — full original X span, Y shifted by 500.
+    let dragged = geom |> List.find (fun rr -> rr.X1 = 0L && rr.X2 = 1000L)
+    (dragged.Y1, dragged.Y2) |> should equal (500L, 820L)
+    // Left bridge — vertical, spans Y from original top (0) to
+    // dragged bottom (820), width = wire width (320) centered at
+    // x = 160.
+    let lb = geom |> List.find (fun rr -> rr.X1 = 0L && rr.X2 = 320L)
     (lb.Y1, lb.Y2) |> should equal (0L, 820L)
-    // Dragged segment.
-    let mid = geom.[1]
-    (mid.X1, mid.Y1, mid.X2, mid.Y2)
-    |> should equal (0L, 500L, 1000L, 820L)
-    // Right bridge: vertical at x=1000.
-    let rb = geom.[2]
-    (rb.X1, rb.X2) |> should equal (680L, 1000L)
+    // Right bridge — same on the other side.
+    let rb = geom |> List.find (fun rr -> rr.X1 = 680L && rr.X2 = 1000L)
     (rb.Y1, rb.Y2) |> should equal (0L, 820L)
 
 [<Fact>]
@@ -120,27 +117,22 @@ let ``projectGeometry: vertical single-segment wire produces 3 rects`` () =
             |> SegmentDrag.setCursor 660L 500L  // dx = 500
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 3
-    // Bottom bridge: horizontal at y=0 spanning x=0 to x=820.
-    let bb = geom.[0]
+    let dragged = geom |> List.find (fun rr -> rr.Y1 = 0L && rr.Y2 = 1000L)
+    (dragged.X1, dragged.X2) |> should equal (500L, 820L)
+    let bb = geom |> List.find (fun rr -> rr.Y1 = 0L && rr.Y2 = 320L)
     (bb.X1, bb.X2) |> should equal (0L, 820L)
-    (bb.Y1, bb.Y2) |> should equal (0L, 320L)
-    // Dragged.
-    let mid = geom.[1]
-    (mid.X1, mid.Y1, mid.X2, mid.Y2)
-    |> should equal (500L, 0L, 820L, 1000L)
-    // Top bridge.
-    let tb = geom.[2]
+    let tb = geom |> List.find (fun rr -> rr.Y1 = 680L && rr.Y2 = 1000L)
     (tb.X1, tb.X2) |> should equal (0L, 820L)
-    (tb.Y1, tb.Y2) |> should equal (680L, 1000L)
 
-// --- projectGeometry: multi-segment wire (MVP fallback) ----------------
+// --- projectGeometry: multi-segment wire (stretching) ------------------
 
 [<Fact>]
-let ``projectGeometry: multi-segment wire replaces only the dragged rect`` () =
-    // Three-segment wire (Z-shape). Drag the middle vertical
-    // sideways. MVP behaviour: the other two segments stay put;
-    // the dragged segment moves. Visually disconnected at the
-    // bend points — the stretch-flanking case is a follow-up.
+let ``projectGeometry: Z-shape wire stretches both flanking segments`` () =
+    // Z-shape: horizontal (0..500) → vertical (400..500, 0..500) →
+    // horizontal (400..1000, 400..500). Drag the middle vertical
+    // right by 300. The two horizontals must follow so the wire
+    // stays continuous; no bridges (both ends had perpendicular
+    // neighbours).
     let h1 = mkRect (0L,    0L,   500L,  100L) |> Wire.setWireId 1
     let v  = mkRect (400L,  0L,   500L,  500L) |> Wire.setWireId 1
     let h2 = mkRect (400L,  400L, 1000L, 500L) |> Wire.setWireId 1
@@ -149,7 +141,43 @@ let ``projectGeometry: multi-segment wire replaces only the dragged rect`` () =
             |> SegmentDrag.setCursor 750L 250L  // dx = 300
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 3
-    // h1 and h2 unchanged; v translated by 300 on X.
-    let dragged = geom |> List.find (fun r -> r.X1 = 700L)
+    // Dragged vertical at new X.
+    let dragged = geom |> List.find (fun r -> r.X1 = 700L && r.Y1 = 0L && r.Y2 = 500L)
     (dragged.X1, dragged.Y1, dragged.X2, dragged.Y2)
     |> should equal (700L, 0L, 800L, 500L)
+    // h1 stretched to the right (its right edge follows the
+    // dragged vertical). Original right was 500; new right = 800.
+    let h1' = geom |> List.find (fun r -> r.X1 = 0L && r.Y2 = 100L)
+    (h1'.X1, h1'.Y1, h1'.X2, h1'.Y2) |> should equal (0L, 0L, 800L, 100L)
+    // h2 stretched on the left (its left edge follows). Original
+    // left = 400; new left = 700.
+    let h2' = geom |> List.find (fun r -> r.X2 = 1000L && r.Y2 = 500L)
+    (h2'.X1, h2'.Y1, h2'.X2, h2'.Y2) |> should equal (700L, 400L, 1000L, 500L)
+
+[<Fact>]
+let ``projectGeometry: L-shape wire stretches the one perpendicular neighbour and bridges the anchored end`` () =
+    // L-shape: just two segments. Drag the vertical. The horizontal
+    // stretches to follow; the vertical's far end (top) was a
+    // terminus → gets a bridge segment.
+    let h = mkRect (0L,   0L,   500L, 100L) |> Wire.setWireId 1
+    let v = mkRect (400L, 0L,   500L, 800L) |> Wire.setWireId 1
+    let doc = mkDoc [ mkCell "top" [ h; v ] ]
+    let s = SegmentDrag.start 1 "top" 1 v 450L 400L
+            |> SegmentDrag.setCursor 750L 400L  // dx = 300
+    let geom = SegmentDrag.projectGeometry s doc
+    // Dragged + stretched h + 1 bridge for the top terminus = 3 rects.
+    geom |> List.length |> should equal 3
+    let dragged = geom |> List.find (fun r -> r.X1 = 700L && r.Y2 = 800L)
+    (dragged.X1, dragged.X2) |> should equal (700L, 800L)
+    let h' = geom |> List.find (fun r -> r.X1 = 0L)
+    (h'.X1, h'.X2) |> should equal (0L, 800L)
+    // The remaining rect is the top-terminus bridge: a horizontal
+    // segment from old-top (450) to new-top (750) at the top end
+    // (yCenter near 800-halfW = 750, since wire width 100).
+    let bridge = geom |> List.find (fun r -> r <> dragged && r <> h')
+    let bxLo = min bridge.X1 bridge.X2
+    let bxHi = max bridge.X1 bridge.X2
+    // Spans from original top center (450) to new top center (750)
+    // plus halfW on each side.
+    bxLo |> should equal 400L
+    bxHi |> should equal 800L

@@ -203,3 +203,67 @@ let ``neighborsOf excludes the segment itself and ignores other wires`` () =
     let r2 = mkRect (400L, 0L, 500L, 500L) |> Wire.setWireId 2  // different wire, touching
     let doc = mkDoc [ mkCell "top" [ r1; r2 ] ]
     Wire.neighborsOf 1 "top" 0 r1 doc |> should be Empty
+
+// --- bboxesTouch + connectedComponent ----------------------------------
+
+[<Fact>]
+let ``bboxesTouch: edge-to-edge abutting counts as touching`` () =
+    let a = mkRect (0L, 0L, 100L, 100L)
+    let b = mkRect (100L, 0L, 200L, 100L)   // right edge of a = left edge of b
+    Wire.bboxesTouch a b |> should equal true
+
+[<Fact>]
+let ``bboxesTouch: gap = NOT touching`` () =
+    let a = mkRect (0L, 0L, 100L, 100L)
+    let b = mkRect (101L, 0L, 200L, 100L)
+    Wire.bboxesTouch a b |> should equal false
+
+[<Fact>]
+let ``connectedComponent: walks bbox-touching chain`` () =
+    // Three abutting rects forming a line.
+    let r0 = mkRect (0L,    0L, 1000L, 100L)
+    let r1 = mkRect (1000L, 0L, 2000L, 100L)
+    let r2 = mkRect (2000L, 0L, 3000L, 100L)
+    let doc = mkDoc [ mkCell "top" [ r0; r1; r2 ] ]
+    let always _ _ = true
+    Wire.connectedComponent "top" 0 always always doc
+    |> List.sort |> should equal [0; 1; 2]
+
+[<Fact>]
+let ``connectedComponent: propagate=false on a rect blocks expansion through it`` () =
+    // Three abutting rects. The middle one is a "terminus" (pin).
+    // Starting from r0, BFS reaches r1 (which is terminated) and
+    // INCLUDES it, but doesn't expand through it to r2.
+    let r0 = mkRect (0L,    0L, 1000L, 100L)
+    let r1 = mkRect (1000L, 0L, 2000L, 100L)
+    let r2 = mkRect (2000L, 0L, 3000L, 100L)
+    let doc = mkDoc [ mkCell "top" [ r0; r1; r2 ] ]
+    let always _ _ = true
+    // r1 (idx=1) is the terminus.
+    let propagate i _ = i <> 1
+    Wire.connectedComponent "top" 0 always propagate doc
+    |> List.sort |> should equal [0; 1]
+
+[<Fact>]
+let ``connectedComponent: seed always seeds expansion even if it's a pin`` () =
+    // Seed is a "pin" (propagate=false). It should still find its
+    // neighbours on the first pass — otherwise clicking on the
+    // pin would select just the pin, not the wire connected to it.
+    let r0 = mkRect (0L,    0L, 1000L, 100L)   // seed (pin)
+    let r1 = mkRect (1000L, 0L, 2000L, 100L)   // wire
+    let doc = mkDoc [ mkCell "top" [ r0; r1 ] ]
+    let always _ _ = true
+    let propagate i _ = i <> 0  // r0 is a pin
+    Wire.connectedComponent "top" 0 always propagate doc
+    |> List.sort |> should equal [0; 1]
+
+[<Fact>]
+let ``connectedComponent: keep=false on a rect excludes it from the set`` () =
+    // Two rects, but the second isn't "ours" per the keep filter.
+    let r0 = mkRect (0L,    0L, 1000L, 100L)
+    let r1 = mkRect (1000L, 0L, 2000L, 100L)
+    let doc = mkDoc [ mkCell "top" [ r0; r1 ] ]
+    let keep i _ = i = 0
+    let always _ _ = true
+    Wire.connectedComponent "top" 0 keep always doc
+    |> should equal [0]

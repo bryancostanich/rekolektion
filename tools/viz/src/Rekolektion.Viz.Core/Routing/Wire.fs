@@ -203,6 +203,86 @@ let collinearGroupOf
                         | _ -> ()
             result |> List.ofSeq
 
+/// True when two rects' bboxes touch or overlap (inclusive
+/// boundaries). Used by wire selection to walk the connected
+/// component of top-cell rects from a picked rect — corner
+/// touching, edge-to-edge abutting, and full overlap all count.
+let bboxesTouch (a : Rectangle) (b : Rectangle) : bool =
+    let aXLo = min a.X1 a.X2
+    let aYLo = min a.Y1 a.Y2
+    let aXHi = max a.X1 a.X2
+    let aYHi = max a.Y1 a.Y2
+    let bXLo = min b.X1 b.X2
+    let bYLo = min b.Y1 b.Y2
+    let bXHi = max b.X1 b.X2
+    let bYHi = max b.Y1 b.Y2
+    aXHi >= bXLo && bXHi >= aXLo
+    && aYHi >= bYLo && bYHi >= aYLo
+
+/// Connected component of bbox-touching rects in one cell, starting
+/// from `seedIdx`. Two predicates:
+///   - `keep i r`: include rect `i` in the result set
+///   - `propagate i r`: expand the BFS from rect `i` to its
+///     neighbours. Returning `false` makes `r` a terminus —
+///     it stays in the result but its neighbours aren't visited
+///     through it. Used for pin polygons in wire selection: the
+///     pin is part of the wire that terminates at it, but the
+///     wire on the OTHER side of the pin (different wire that
+///     shares the same physical anchor) is NOT reached.
+///
+/// Returns rect indices in document order. Empty when the seed
+/// itself fails `keep`, or when the cell isn't in the document.
+let connectedComponent
+        (cellName : string)
+        (seedIdx : int)
+        (keep : int -> Rectangle -> bool)
+        (propagate : int -> Rectangle -> bool)
+        (doc : Document) : int list =
+    let cellOpt = doc.Cells |> List.tryFind (fun c -> c.Name = cellName)
+    match cellOpt with
+    | None -> []
+    | Some c ->
+        let indexed = c.Elements |> List.indexed
+        let seedRect =
+            indexed
+            |> List.tryPick (fun (i, el) ->
+                if i = seedIdx then
+                    match el with RectEl r -> Some r | _ -> None
+                else None)
+        match seedRect with
+        | None -> []
+        | Some seed when not (keep seedIdx seed) -> []
+        | Some seed ->
+            let visited = System.Collections.Generic.HashSet<int>()
+            let result = System.Collections.Generic.List<int>()
+            let queue = System.Collections.Generic.Queue<int * Rectangle>()
+            visited.Add seedIdx |> ignore
+            result.Add seedIdx
+            // Seed always seeds expansion, even if it's a pin —
+            // otherwise clicking a pin selects only the pin, not
+            // the wire connected to it. Subsequent pins reached
+            // by the BFS DO terminate (per `propagate`), so wire
+            // selection still stops at the OTHER side of a shared
+            // pin.
+            queue.Enqueue (seedIdx, seed)
+            while queue.Count > 0 do
+                let (curIdx, cur) = queue.Dequeue()
+                for (i, el) in indexed do
+                    if not (visited.Contains i) then
+                        match el with
+                        | RectEl r when keep i r && bboxesTouch cur r ->
+                            visited.Add i |> ignore
+                            result.Add i
+                            // Only enqueue if THIS rect (the one
+                            // we just added) is allowed to
+                            // propagate. The check ignores curIdx
+                            // — propagation is a property of the
+                            // ADDED rect, not the source.
+                            if propagate i r then
+                                queue.Enqueue (i, r)
+                        | _ -> ()
+            result |> List.ofSeq
+
 /// Axis-aligned bbox of the union of `rects`. Used to materialise
 /// a collinear-abutting group as one virtual segment for drag.
 /// Empty list returns a degenerate (0,0,0,0) rect; callers should

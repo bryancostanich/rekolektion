@@ -41,33 +41,45 @@ type BuildKey = {
     NetMapRef    : Map<string, NetEntry>
 }
 
-/// Region-bounded graph build. The ONE entry point — there's no
-/// "full-cell" build any more (the previous `buildGraph` variant was
-/// a bug-compat trap that called the unseeded obstacle filter).
-///
-/// Filters the obstacle universe to the supplied bbox before
-/// constructing the visibility graph — the whole point of ADR-0006's
-/// "continuous mode" is that the relevant obstacles are the ones
-/// near (start, cursor); the visibility-graph build is too costly
-/// to run against the full cell on every frame. Callers wanting
-/// the whole macro pass a region covering the macro bounds.
-///
-/// The caller picks the region (typically (start, cursor) bbox
-/// expanded by 1-2× the manhattan distance) so detours that have to
-/// leave the direct corridor can still be found.
-///
-/// Backed by `Obstacles.obstacleSet`: the full obstacle universe is
-/// computed once per (Layer, StartNet, FlatPolyRef, NetIndex) and
-/// region clips run via the cached uniform grid. The cost on a
-/// 60-obstacle macro drops from O(all polygons) per call to
-/// O(obstacles in region) — typically a handful.
-let buildGraphInRegion (key : BuildKey) (region : Obstacles.Region) : VisibilityGraph.Prebuilt =
+// Prebuilt graph cache. Keyed on (ObstacleSet reference identity,
+// clearance). VisibilityGraph.build is O(N²·N) on obstacle count —
+// 14s on a 744-obstacle macro per measurement. The region-clipped
+// approach in the prior implementation rebuilt every cursor frame
+// because the region changed; the graph was never reused. Caching
+// the FULL obstacle graph trades one slow build for fast reuse
+// across every subsequent draft frame on the same geometry.
+// Invalidation contract: see `tools/viz/docs/routing_caches.md`.
+let private graphCache : System.Collections.Concurrent.ConcurrentDictionary<obj * int64, VisibilityGraph.Prebuilt> =
+    System.Collections.Concurrent.ConcurrentDictionary<obj * int64, VisibilityGraph.Prebuilt>(HashIdentity.Structural)
+
+/// Build the visibility graph for the picked (Layer, StartNet)
+/// against EVERY obstacle in the macro. First call is slow on
+/// dense macros (~15s on 744 obstacles); subsequent calls for the
+/// same (obstacleSet, clearance) hit the cache and are O(1). The
+/// `region` argument is accepted for backwards-compat but no longer
+/// clips the obstacle set — region clipping at build time was the
+/// reason the graph kept rebuilding per cursor frame and never
+/// produced a stable result for the user during interactive
+/// routing. The search side (`VisibilityGraph.shortestPath`)
+/// handles the start/cursor positions per query without needing a
+/// new graph.
+let buildGraphInRegion (key : BuildKey) (_region : Obstacles.Region) : VisibilityGraph.Prebuilt =
     let netIdx = Obstacles.buildNetIndex key.NetMapRef
     let set =
         Obstacles.obstacleSet
             key.Layer key.StartNet netIdx key.FlatPolyRef
-    let obstacles = Obstacles.obstaclesInRegionCached set region
-    VisibilityGraph.build key.Clearance obstacles
+    let cacheKey = box set, key.Clearance
+    match graphCache.TryGetValue(cacheKey) with
+    | true, g -> g
+    | _ ->
+        let fullObs = Obstacles.polygonsOf set
+        let g = VisibilityGraph.build key.Clearance fullObs
+        // Trim if cache grows; reference-identity keys mean once
+        // an ObstacleSet is collected the entry is unreachable
+        // anyway, but explicit bound keeps memory predictable.
+        if graphCache.Count >= 4 then graphCache.Clear()
+        graphCache.[cacheKey] <- g
+        g
 
 /// Run the walk-around. `graph` is a cached `Prebuilt` matching
 /// the current `BuildKey`; `start` and `cursor` are world DBU

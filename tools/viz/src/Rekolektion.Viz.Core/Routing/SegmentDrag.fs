@@ -27,13 +27,22 @@ type DragState = {
     /// commit path stamps a fresh WireId on the new rects.
     WireId     : int option
     CellName   : string
-    /// Index of the dragged rect in the cell at pickup time.
-    /// The commit path looks neighbours up by WireId when
-    /// present; falls back to SegmentIdx for the no-WireId case.
+    /// Index of the seed rect the user clicked on. The commit
+    /// path uses this together with `GroupIndices` to know which
+    /// rects to remove from the cell.
     SegmentIdx : int
-    /// Original rect at pickup. Drag is computed against this
-    /// snapshot — moving the mouse doesn't accumulate, it
-    /// re-projects.
+    /// Indices of every rect in the seed's collinear-abutting
+    /// group (always includes `SegmentIdx`). Three abutting rects
+    /// that share a Y line are dragged as one virtual segment;
+    /// commit replaces them with a single merged rect at the new
+    /// position.
+    GroupIndices : int list
+    /// The virtual segment: bbox-union of every rect in the
+    /// collinear group, projected as one Rectangle. Drag is
+    /// computed against this synthesised rect, so the user's
+    /// click on any group member moves the whole group together.
+    /// When the group is just the seed (no abutting rects), this
+    /// is the seed rect verbatim.
     Original   : Rectangle
     Axis       : Wire.SegmentAxis
     /// World-coord pickup point. Mouse-move computes
@@ -46,16 +55,28 @@ type DragState = {
     Delta      : int64
 }
 
-/// Begin a drag at the picked-up segment.
+/// Begin a drag at the picked-up rect. Auto-groups collinear-
+/// abutting rects in the same cell into a single virtual segment
+/// so a wire stored as multiple legs along one Y line drags as
+/// one piece (and merges to one rect on commit).
 let start
         (wireId : int option)
         (cellName : string)
         (idx : int)
         (r : Rectangle)
         (pickupX : int64)
-        (pickupY : int64) : DragState =
+        (pickupY : int64)
+        (doc : Document) : DragState =
+    let group = Wire.collinearGroupOf cellName idx doc
+    let groupIndices, groupRects =
+        if List.isEmpty group then [ idx ], [ r ]
+        else group |> List.unzip
+    let (uXLo, uYLo, uXHi, uYHi) = Wire.unionBbox groupRects
+    let virtualRect : Rectangle =
+        { r with X1 = uXLo; Y1 = uYLo; X2 = uXHi; Y2 = uYHi }
     { WireId = wireId; CellName = cellName; SegmentIdx = idx
-      Original = r; Axis = Wire.segmentAxis r
+      GroupIndices = groupIndices
+      Original = virtualRect; Axis = Wire.segmentAxis virtualRect
       PickupX = pickupX; PickupY = pickupY; Delta = 0L }
 
 /// Update the drag with the live cursor position. Off-axis cursor

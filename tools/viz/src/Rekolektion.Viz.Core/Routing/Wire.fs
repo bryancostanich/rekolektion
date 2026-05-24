@@ -121,6 +121,110 @@ let findSegmentAt (x : int64) (y : int64) (doc : Document)
             | _ -> ()
     result
 
+/// True when two rects are "collinear and abutting" — they are
+/// effectively one logical segment that's stored as multiple
+/// rects (common when a wire is drawn as several adjacent legs).
+/// Requirements:
+///   - same layer
+///   - same perpendicular axis bounds (a horizontal pair shares Y1
+///     and Y2 exactly; a vertical pair shares X1 and X2)
+///   - long-axis ranges overlap or touch
+///   - if both carry a WireId, they must match (untagged + tagged
+///     mixes are allowed; the merge picks the tagged id)
+let private sameLayer (a : Rectangle) (b : Rectangle) =
+    a.Layer = b.Layer
+
+let private wireIdsCompatible (a : Rectangle) (b : Rectangle) =
+    match getWireId a, getWireId b with
+    | Some x, Some y -> x = y
+    | _ -> true
+
+let collinearAbut (a : Rectangle) (b : Rectangle) : bool =
+    if not (sameLayer a b) then false
+    elif not (wireIdsCompatible a b) then false
+    else
+        let axA = segmentAxis a
+        let axB = segmentAxis b
+        if axA <> axB then false
+        else
+            let (aXLo, aYLo, aXHi, aYHi) =
+                min a.X1 a.X2, min a.Y1 a.Y2, max a.X1 a.X2, max a.Y1 a.Y2
+            let (bXLo, bYLo, bXHi, bYHi) =
+                min b.X1 b.X2, min b.Y1 b.Y2, max b.X1 b.X2, max b.Y1 b.Y2
+            match axA with
+            | Horizontal ->
+                aYLo = bYLo && aYHi = bYHi
+                && aXHi >= bXLo && bXHi >= aXLo
+            | Vertical ->
+                aXLo = bXLo && aXHi = bXHi
+                && aYHi >= bYLo && bYHi >= aYLo
+
+/// Transitive closure of `collinearAbut` starting from the rect at
+/// `(cellName, seedIdx)`. Returns all rects (with their indices)
+/// that form one logical segment with the seed. Always includes
+/// the seed itself. Used by segment-drag to treat a chain of
+/// collinear abutting rects as one virtual segment for both
+/// pickup hit-test and commit (the chain is replaced by a single
+/// merged rect).
+let collinearGroupOf
+        (cellName : string)
+        (seedIdx : int)
+        (doc : Document) : (int * Rectangle) list =
+    let cellOpt = doc.Cells |> List.tryFind (fun c -> c.Name = cellName)
+    match cellOpt with
+    | None -> []
+    | Some c ->
+        let indexed = c.Elements |> List.indexed
+        let seedRect =
+            indexed
+            |> List.tryPick (fun (i, el) ->
+                if i = seedIdx then
+                    match el with RectEl r -> Some r | _ -> None
+                else None)
+        match seedRect with
+        | None -> []
+        | Some seed ->
+            // BFS over the indexed rects, queue = indices to expand.
+            let visited = System.Collections.Generic.HashSet<int>()
+            let result = System.Collections.Generic.List<int * Rectangle>()
+            let queue = System.Collections.Generic.Queue<int * Rectangle>()
+            visited.Add seedIdx |> ignore
+            queue.Enqueue (seedIdx, seed)
+            result.Add (seedIdx, seed)
+            while queue.Count > 0 do
+                let (_, cur) = queue.Dequeue()
+                for (i, el) in indexed do
+                    if not (visited.Contains i) then
+                        match el with
+                        | RectEl r when collinearAbut cur r ->
+                            visited.Add i |> ignore
+                            result.Add (i, r)
+                            queue.Enqueue (i, r)
+                        | _ -> ()
+            result |> List.ofSeq
+
+/// Axis-aligned bbox of the union of `rects`. Used to materialise
+/// a collinear-abutting group as one virtual segment for drag.
+/// Empty list returns a degenerate (0,0,0,0) rect; callers should
+/// guard.
+let unionBbox (rects : Rectangle list) : int64 * int64 * int64 * int64 =
+    if List.isEmpty rects then (0L, 0L, 0L, 0L)
+    else
+        let mutable xLo = System.Int64.MaxValue
+        let mutable yLo = System.Int64.MaxValue
+        let mutable xHi = System.Int64.MinValue
+        let mutable yHi = System.Int64.MinValue
+        for r in rects do
+            let rxLo = min r.X1 r.X2
+            let ryLo = min r.Y1 r.Y2
+            let rxHi = max r.X1 r.X2
+            let ryHi = max r.Y1 r.Y2
+            if rxLo < xLo then xLo <- rxLo
+            if ryLo < yLo then yLo <- ryLo
+            if rxHi > xHi then xHi <- rxHi
+            if ryHi > yHi then yHi <- ryHi
+        (xLo, yLo, xHi, yHi)
+
 /// Same-wire segments in the cell touching `r` at its endpoints.
 /// "Touching" = sharing a bbox edge along the wire's long axis,
 /// i.e., the next segment in the polyline. Returns up to two

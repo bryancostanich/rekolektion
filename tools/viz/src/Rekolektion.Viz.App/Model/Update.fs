@@ -770,9 +770,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.RouteAbort ->
         { model with DraftRoute = None }, Cmd.none
     | Msg.SegmentDragStart (wireId, cellName, segIdx, rect, px, py) ->
-        let drag =
-            Routing.SegmentDrag.start wireId cellName segIdx rect px py
-        { model with SegmentDrag = Some drag }, Cmd.none
+        // SegmentDrag.start walks the doc to find the picked
+        // rect's collinear-abutting group. Read the active macro's
+        // doc here — if there's no active macro, drop silently.
+        let docOpt =
+            match model.ActiveMacroPath with
+            | None -> None
+            | Some path ->
+                model.OpenMacros
+                |> List.tryFind (fun mc -> mc.Path = path)
+                |> Option.map (fun mc -> mc.Document)
+        match docOpt with
+        | None -> model, Cmd.none
+        | Some doc ->
+            let drag =
+                Routing.SegmentDrag.start
+                    wireId cellName segIdx rect px py doc
+            { model with SegmentDrag = Some drag }, Cmd.none
     | Msg.SegmentDragMove (x, y) ->
         match model.SegmentDrag with
         | None -> model, Cmd.none
@@ -809,14 +823,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             |> List.map (Routing.Wire.setWireId outId)
                         // Removal predicate: when WireId is known,
                         // drop every rect carrying it (the wire's
-                        // full set). When unknown, drop only the
-                        // picked-up rect by its (cell, idx).
+                        // full set). When unknown, drop every rect
+                        // in the seed's collinear-abutting group
+                        // (typically three abutting rects along
+                        // one Y line — merged into the projected
+                        // single rect by the commit append).
+                        let groupSet = Set.ofList s.GroupIndices
                         let shouldRemoveAt (idx : int) (el : Rekolektion.Viz.Core.Rkt.Types.Element) =
                             match el with
                             | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
                                 match s.WireId with
                                 | Some id -> Routing.Wire.getWireId r = Some id
-                                | None -> idx = s.SegmentIdx
+                                | None -> Set.contains idx groupSet
                             | _ -> false
                         let cells' =
                             mc.Document.Cells

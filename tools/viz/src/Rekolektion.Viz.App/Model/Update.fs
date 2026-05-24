@@ -874,13 +874,24 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 |> Array.exists (fun l ->
                                     l.Origin.X >= xLo && l.Origin.X <= xHi
                                     && l.Origin.Y >= yLo && l.Origin.Y <= yHi)
-                            // Keep predicate: same-net OR (when
-                            // picked rect has no net claim, just
-                            // bbox-touching — supports untagged
-                            // hand-drawn wires that LabelFlood
-                            // didn't classify).
+                            // Keep predicate:
+                            //   - SAME LAYER as the picked rect
+                            //     (cross-layer rects that share a
+                            //     net via contacts shouldn't get
+                            //     pulled into a wire selection —
+                            //     they're a different wire on a
+                            //     different layer, even though
+                            //     electrically the same net)
+                            //   - same-net OR (when picked rect has
+                            //     no net claim, just bbox-touching
+                            //     — supports untagged hand-drawn
+                            //     wires that LabelFlood didn't
+                            //     classify)
+                            let sameLayer (r : Rkt.Types.Rectangle) =
+                                r.Layer = seed.Layer
                             let keep (i : int) (r : Rkt.Types.Rectangle) =
-                                if Set.isEmpty pickedClaims then true
+                                if not (sameLayer r) then false
+                                elif Set.isEmpty pickedClaims then true
                                 else
                                     let claims =
                                         Routing.Obstacles.claimantsOf netIdx (fpOf i r)
@@ -955,15 +966,20 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             s.Extras
                             |> List.collect (fun ex -> ex.GroupIndices)
                             |> Set.ofList
+                        let touchingIndexSet =
+                            s.TouchingNeighbors
+                            |> List.map fst
+                            |> Set.ofList
                         let shouldRemoveAt (idx : int) (el : Rekolektion.Viz.Core.Rkt.Types.Element) =
                             match el with
                             | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
                                 let inExtras = Set.contains idx extraIndexSet
+                                let inTouching = Set.contains idx touchingIndexSet
                                 let inPicked =
                                     match s.WireId with
                                     | Some id -> Routing.Wire.getWireId r = Some id
                                     | None -> Set.contains idx groupSet
-                                inPicked || inExtras
+                                inPicked || inExtras || inTouching
                             | _ -> false
                         let cells' =
                             mc.Document.Cells

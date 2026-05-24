@@ -65,6 +65,14 @@ type DragState = {
     /// collinear-abutting rects) that gets translated by the
     /// same vector as the picked group.
     Extras : DragExtra list
+    /// Cross-wire perpendicular neighbours that touch the picked
+    /// wire's pre-drag bbox. Each one gets its near face stretched
+    /// to follow the picked wire's new position — same logic as
+    /// same-WireId neighbours, just extended to any touching rect.
+    /// Picked group + extras are excluded; only perpendicular-axis
+    /// neighbours are kept (parallel touches are ambiguous and
+    /// left alone).
+    TouchingNeighbors : (int * Rectangle) list
 }
 
 /// One "extra" wire that follows the picked drag. Mirrors the
@@ -135,12 +143,35 @@ let start
                               Original = exRect
                               Axis = Wire.segmentAxis exRect }
             acc |> List.ofSeq
+    // Cross-wire perpendicular neighbours touching the picked
+    // wire's pre-drag bbox. Excluded: picked group, all same-
+    // WireId rects (handled by the existing same-wire neighbour
+    // path in projectGeometry), and extras (they translate
+    // rigidly). Kept: perpendicular-axis only — parallel
+    // touches are ambiguous and left alone.
+    let pickedAxis = Wire.segmentAxis virtualRect
+    let touchingNeighbors =
+        let sameWireSet =
+            match wireId with
+            | Some id ->
+                Wire.segmentsOf id doc
+                |> List.map (fun (_, i, _) -> i)
+                |> Set.ofList
+            | None -> Set.empty
+        let extrasSet =
+            extras
+            |> List.collect (fun e -> e.GroupIndices)
+            |> Set.ofList
+        let excludeSet = Set.unionMany [ pickedSet; sameWireSet; extrasSet ]
+        Wire.touchingNeighbors cellName excludeSet virtualRect doc
+        |> List.filter (fun (_, n) -> Wire.segmentAxis n <> pickedAxis)
     { WireId = wireId; CellName = cellName; SegmentIdx = idx
       GroupIndices = groupIndices
-      Original = virtualRect; Axis = Wire.segmentAxis virtualRect
+      Original = virtualRect; Axis = pickedAxis
       PickupX = pickupX; PickupY = pickupY; Delta = 0L
       ShiftAtPickup = shiftAtPickup
-      Extras = extras }
+      Extras = extras
+      TouchingNeighbors = touchingNeighbors }
 
 /// Update the drag with the live cursor position. Off-axis cursor
 /// motion is ignored — Manhattan-only is the explicit v1
@@ -411,4 +442,13 @@ let projectGeometry (s : DragState) (doc : Document) : Rectangle list =
                 [ dragged ]
         let extraRects =
             s.Extras |> List.collect (fun ex -> projectExtra s ex doc)
-        body @ bridges @ extraRects
+        // Cross-wire touching neighbours stretch the same way as
+        // same-WireId perpendicular neighbours — the math is
+        // identical, just applied to rects from outside the picked
+        // wire's group. Without this, dragging wire A doesn't
+        // affect wire B even if B's endpoint touches A.
+        let touchingStretched =
+            s.TouchingNeighbors
+            |> List.map (fun (_, n) ->
+                stretchPerpendicular orig s.Axis s.Delta n)
+        body @ bridges @ extraRects @ touchingStretched

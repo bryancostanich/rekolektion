@@ -283,6 +283,26 @@ let connectedComponent
                         | _ -> ()
             result |> List.ofSeq
 
+/// All top-cell RectEls in `cellName` whose bbox touches `r`,
+/// excluding indices in `excludeIndices` (typically the picked
+/// wire's own group + extras). Used by segment-drag to find
+/// attached cross-wire neighbours that should stretch when the
+/// picked wire moves.
+let touchingNeighbors
+        (cellName : string)
+        (excludeIndices : Set<int>)
+        (r : Rectangle)
+        (doc : Document) : (int * Rectangle) list =
+    let cellOpt = doc.Cells |> List.tryFind (fun c -> c.Name = cellName)
+    match cellOpt with
+    | None -> []
+    | Some c ->
+        [ for idx, el in List.indexed c.Elements do
+              if not (Set.contains idx excludeIndices) then
+                  match el with
+                  | RectEl r' when bboxesTouch r r' -> yield (idx, r')
+                  | _ -> () ]
+
 /// Axis-aligned bbox of the union of `rects`. Used to materialise
 /// a collinear-abutting group as one virtual segment for drag.
 /// Empty list returns a degenerate (0,0,0,0) rect; callers should

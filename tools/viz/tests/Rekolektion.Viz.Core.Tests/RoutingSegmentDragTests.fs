@@ -149,7 +149,25 @@ let ``start: extras empty when picked rect isn't in selection`` () =
     s.Extras |> should be Empty
 
 [<Fact>]
-let ``projectGeometry: extras translate by the drag vector`` () =
+let ``projectGeometry: cross-wire touching neighbour stretches with the drag`` () =
+    // Picked horizontal wire A. Vertical wire B has a DIFFERENT
+    // WireId but its bottom touches A's body. Drag A down: B's
+    // bottom should follow (top stays put). Mirrors the real
+    // user case where multiple wires attached at corners must
+    // stretch with the drag.
+    let a = mkRect (0L,   0L,   1000L, 100L) |> Wire.setWireId 1
+    let b = mkRect (400L, 0L,   500L,  800L) |> Wire.setWireId 2  // different wire
+    let doc = mkDoc [ mkCell "top" [ a; b ] ]
+    let s = SegmentDrag.start (Some 1) "top" 0 a 500L 50L false Set.empty doc
+            |> SegmentDrag.setCursor 500L 250L  // dy = 200
+    let geom = SegmentDrag.projectGeometry s doc
+    // B should appear stretched. Its bottom face was inside a's
+    // Y range, so the bottom shifts by +200. Top stays at 800.
+    let bStretched =
+        geom
+        |> List.find (fun rr ->
+            rr.X1 = 400L && rr.X2 = 500L && rr.Y2 = 800L)
+    bStretched.Y1 |> should equal 200L
     // Two wires, both selected. Drag wire A down by 500.
     // Wire B should translate by (0, 500) in lockstep.
     let a = mkRect (0L,    0L, 1000L, 320L)

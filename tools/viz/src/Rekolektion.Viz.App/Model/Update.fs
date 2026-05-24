@@ -828,19 +828,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         // Wire selection is top-cell only.
                         { model with Selection = Set.empty }, Cmd.none
                     else
-                        let netIdx = Routing.Obstacles.buildNetIndex mc.Nets
-                        // FlatPolygon for net classification —
-                        // identity-only (Points unused by claimantsOf).
-                        let fpOf (idx : int) (r : Rkt.Types.Rectangle) : Layout.Flatten.FlatPolygon =
-                            let (n, d) = Rkt.ToGds.layerToGds r.Layer
-                            { Layer = n; DataType = d
-                              Points = [||]
-                              SourceStructure = topCellName
-                              SourceIndex = idx
-                              TopInstanceIndex = None }
                         let topCell =
                             doc.Cells |> List.find (fun c -> c.Name = topCellName)
-                        // Resolve the picked rect, then its net.
+                        // Resolve the picked rect.
                         let pickedRect =
                             topCell.Elements
                             |> List.indexed
@@ -853,56 +843,32 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         match pickedRect with
                         | None -> model, Cmd.none
                         | Some seed ->
-                            let pickedClaims =
-                                Routing.Obstacles.claimantsOf netIdx (fpOf seedIdx seed)
-                            // Pin set: top-cell rects that contain
-                            // any NetName label's origin. These are
-                            // the wire-terminus polygons (a wire
-                            // ends at its label-anchored pin; a
-                            // different wire on the other side of
-                            // the same pin is a separate component).
-                            let labels =
-                                Layout.Flatten.flattenLabels doc
-                                |> Array.filter (fun l ->
-                                    l.Kind = Rkt.Types.LabelKind.NetName)
-                            let isPinRect (r : Rkt.Types.Rectangle) =
-                                let xLo = min r.X1 r.X2
-                                let xHi = max r.X1 r.X2
-                                let yLo = min r.Y1 r.Y2
-                                let yHi = max r.Y1 r.Y2
-                                labels
-                                |> Array.exists (fun l ->
-                                    l.Origin.X >= xLo && l.Origin.X <= xHi
-                                    && l.Origin.Y >= yLo && l.Origin.Y <= yHi)
-                            // Keep predicate:
-                            //   - SAME LAYER as the picked rect
-                            //     (cross-layer rects that share a
-                            //     net via contacts shouldn't get
-                            //     pulled into a wire selection —
-                            //     they're a different wire on a
-                            //     different layer, even though
-                            //     electrically the same net)
-                            //   - same-net OR (when picked rect has
-                            //     no net claim, just bbox-touching
-                            //     — supports untagged hand-drawn
-                            //     wires that LabelFlood didn't
-                            //     classify)
-                            let sameLayer (r : Rkt.Types.Rectangle) =
-                                r.Layer = seed.Layer
-                            let keep (i : int) (r : Rkt.Types.Rectangle) =
-                                if not (sameLayer r) then false
-                                elif Set.isEmpty pickedClaims then true
-                                else
-                                    let claims =
-                                        Routing.Obstacles.claimantsOf netIdx (fpOf i r)
-                                    not (Set.isEmpty (Set.intersect claims pickedClaims))
-                            // Propagate predicate: don't expand
-                            // from pin rects (they're termini).
-                            let propagate (_i : int) (r : Rkt.Types.Rectangle) =
-                                not (isPinRect r)
+                            // Selection rule (route_editing_plan §wire-id):
+                            //   - WireId-tagged: select EXACTLY the rects
+                            //     carrying this WireId. The route tool
+                            //     stamps every rect in a wire with one
+                            //     id at commit time, so this is the
+                            //     authoritative wire grouping — no BFS,
+                            //     no cross-net pull-in.
+                            //   - Untagged (pre-WireId / hand-edited):
+                            //     fall back to the collinear-abutting
+                            //     group at the picked rect. Same one
+                            //     the segment-drag auto-group uses.
                             let indices =
-                                Routing.Wire.connectedComponent
-                                    topCellName seedIdx keep propagate doc
+                                match Routing.Wire.getWireId seed with
+                                | Some wid ->
+                                    topCell.Elements
+                                    |> List.indexed
+                                    |> List.choose (fun (i, el) ->
+                                        match el with
+                                        | Rkt.Types.RectEl r when
+                                                Routing.Wire.getWireId r = Some wid ->
+                                            Some i
+                                        | _ -> None)
+                                | None ->
+                                    Routing.Wire.collinearGroupOf
+                                        topCellName seedIdx doc
+                                    |> List.map fst
                             let polyKeys : Set<Layout.Flatten.PolyKey> =
                                 indices
                                 |> List.map (fun i ->

@@ -322,6 +322,39 @@ let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
                                     (if polySel.Count = 1 then "" else "s"))
                             TextBlock.foreground "#CCC"
                         ] :> IView
+                        // Net summary: when every selected polygon
+                        // shares the same net, show it. This is the
+                        // common case for a clicked wire (all rects
+                        // claimed by the same net via the route
+                        // tool's commit-time NetMap update).
+                        match Model.activeMacro model with
+                        | None -> ()
+                        | Some m ->
+                            let netsOfSelected =
+                                polySel
+                                |> Set.toList
+                                |> List.map (fun pk ->
+                                    m.Nets
+                                    |> Map.toList
+                                    |> List.choose (fun (name, entry) ->
+                                        let matches =
+                                            entry.Polygons
+                                            |> List.exists (fun r ->
+                                                r.Structure = pk.Cell
+                                                && r.Index = pk.Index)
+                                        if matches then Some name else None)
+                                    |> Set.ofList)
+                            let common =
+                                match netsOfSelected with
+                                | [] -> Set.empty
+                                | first :: rest ->
+                                    rest |> List.fold Set.intersect first
+                            for name in common do
+                                yield TextBlock.create [
+                                    TextBlock.text (sprintf "net: %s" name)
+                                    TextBlock.foreground "#a0d8ff"
+                                    TextBlock.fontWeight FontWeight.SemiBold
+                                ] :> IView
                 if not ratSel.IsEmpty then
                     yield! ratlineDetails model
         ]

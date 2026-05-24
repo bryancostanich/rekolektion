@@ -936,29 +936,16 @@ type private SkiaDraw(bounds: Rect,
                         let b = max sy1 sy2
                         canvas.DrawRect(SKRect(l, t, r, b), obFill)
                         canvas.DrawRect(SKRect(l, t, r, b), obStroke)
-                    // Corner nodes: build the visibility graph at
-                    // the current clearance and paint each corner
-                    // as a small dot. If the user's "clear path"
-                    // has NO corners near it, the graph is too
-                    // sparse to find a route there even if no
-                    // obstacle is in the way.
-                    let units =
-                        // Best-effort: assume DBU=1 if no doc.
-                        match segmentDragDoc with
-                        | Some doc -> doc.Units
-                        | None -> { DbuNm = 1; UuUm = 1 }
-                    let spacingOpt = Routing.Pads.spacingFor (Drc.Rules.defaultView) units d.Layer
-                    let spacing = spacingOpt |> Option.defaultValue 0L
-                    let clearance = max 0L (d.Width / 2L + spacing)
-                    let prebuilt = Routing.VisibilityGraph.build clearance obstaclePolys
-                    use nodePaint =
-                        new SKPaint(
-                            Style = SKPaintStyle.Fill,
-                            IsAntialias = true,
-                            Color = SKColor(0x40uy, 0xFFuy, 0xFFuy, 0xC0uy))
-                    for n in prebuilt.Nodes do
-                        let (sx, sy) = toScrDbg n.X n.Y
-                        canvas.DrawCircle(sx, sy, 3.0f, nodePaint)
+                    // Corner-node rendering DROPPED: building the
+                    // visibility graph for ~700 obstacles is O(N³)
+                    // ≈ 400M ops on the UI thread per render frame.
+                    // It froze the first draft frame for seconds.
+                    // Obstacles + chosen path are the load-bearing
+                    // diagnostic; nodes are nice-to-have and need
+                    // either UI-thread offloading or a cached
+                    // prebuilt graph borrowed from the BG walkaround
+                    // before they come back.
+                    //
                     // Last computed path (from Draft.Auto if any)
                     // — paint as bright connected lines so user can
                     // see what the search settled on.

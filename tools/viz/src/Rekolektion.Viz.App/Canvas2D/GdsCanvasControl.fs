@@ -936,6 +936,56 @@ type private SkiaDraw(bounds: Rect,
                         let b = max sy1 sy2
                         canvas.DrawRect(SKRect(l, t, r, b), obFill)
                         canvas.DrawRect(SKRect(l, t, r, b), obStroke)
+                    // Corner nodes: build the visibility graph at
+                    // the current clearance and paint each corner
+                    // as a small dot. If the user's "clear path"
+                    // has NO corners near it, the graph is too
+                    // sparse to find a route there even if no
+                    // obstacle is in the way.
+                    let units =
+                        // Best-effort: assume DBU=1 if no doc.
+                        match segmentDragDoc with
+                        | Some doc -> doc.Units
+                        | None -> { DbuNm = 1; UuUm = 1 }
+                    let spacingOpt = Routing.Pads.spacingFor (Drc.Rules.defaultView) units d.Layer
+                    let spacing = spacingOpt |> Option.defaultValue 0L
+                    let clearance = max 0L (d.Width / 2L + spacing)
+                    let prebuilt = Routing.VisibilityGraph.build clearance obstaclePolys
+                    use nodePaint =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = true,
+                            Color = SKColor(0x40uy, 0xFFuy, 0xFFuy, 0xC0uy))
+                    for n in prebuilt.Nodes do
+                        let (sx, sy) = toScrDbg n.X n.Y
+                        canvas.DrawCircle(sx, sy, 3.0f, nodePaint)
+                    // Last computed path (from Draft.Auto if any)
+                    // — paint as bright connected lines so user can
+                    // see what the search settled on.
+                    match d.Auto with
+                    | [] -> ()
+                    | corners ->
+                        use pathPaint =
+                            new SKPaint(
+                                Style = SKPaintStyle.Stroke,
+                                IsAntialias = true,
+                                StrokeWidth = 2.5f,
+                                Color = SKColor(0x00uy, 0xFFuy, 0x80uy, 0xFFuy))
+                        let pts =
+                            match List.tryLast d.Points with
+                            | Some last -> last :: corners
+                            | None -> corners
+                        let pts =
+                            match d.Cursor with
+                            | Some c -> pts @ [c]
+                            | None -> pts
+                        let arr = pts |> List.toArray
+                        for i in 0 .. arr.Length - 2 do
+                            let (x1, y1) = arr.[i]
+                            let (x2, y2) = arr.[i + 1]
+                            let (sx1, sy1) = toScrDbg x1 y1
+                            let (sx2, sy2) = toScrDbg x2 y2
+                            canvas.DrawLine(sx1, sy1, sx2, sy2, pathPaint)
                 | _ -> ()
 
                 canvas.RestoreToCount saved

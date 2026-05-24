@@ -58,7 +58,7 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
         let key : WalkAround.BuildKey =
             { Layer = layer; StartNet = "drn_R"; Clearance = clearance
               FlatPolyRef = flat; NetMapRef = nets }
-        let result = WalkAround.routeAdaptive key startPt cursorPt initialMargin macroBounds 0
+        let result = WalkAround.routeAdaptive VisibilityGraph.NoPreference key startPt cursorPt initialMargin macroBounds 0
         let path =
             match result.Path with
             | Some p -> p
@@ -148,7 +148,8 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
         // polygon so we know what we're routing around.
         let netIdxDump = Obstacles.buildNetIndex nets
         let obstaclePolys =
-            Obstacles.obstaclesInRegion layer "drn_R" netIdxDump region flat
+            let set = Obstacles.obstacleSet layer "drn_R" netIdxDump flat
+            Obstacles.obstaclesInRegionCached set region
         for i in 0 .. graph.Obstacles.Length - 1 do
             let b = graph.Obstacles.[i]
             // The graph's bbox is EXPANDED by clearance. The unexpanded
@@ -247,7 +248,7 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
                             fp.Layer fp.DataType xMin yMin xMax yMax claimants
                             fp.SourceStructure fp.SourceIndex)
 
-        let path = WalkAround.route graph startPt cursorPt
+        let path = WalkAround.route VisibilityGraph.NoPreference graph startPt cursorPt
         match path with
         | None -> out.WriteLine "PATH=None"
         | Some pts ->
@@ -301,7 +302,8 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
 
         let netIdx = Obstacles.buildNetIndex nets
         let obstaclePolys =
-            Obstacles.obstaclesInRegion layer "drn_R" netIdx region flat
+            let set = Obstacles.obstacleSet layer "drn_R" netIdx flat
+            Obstacles.obstaclesInRegionCached set region
         out.WriteLine(sprintf "obstacles in region: %d" obstaclePolys.Length)
 
         let bboxOf (fp : FlatPolygon) : int64 * int64 * int64 * int64 =

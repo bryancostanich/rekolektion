@@ -977,20 +977,51 @@ let cellCrossNetOverlaps
 /// per-frame region query is O(local-density) instead of O(cell-size).
 /// Index indices must be aligned 1:1 with `cellFlat` positions —
 /// `UniformGrid.build` over each polygon's bbox does that naturally.
-let runLiveWithIndex
+/// Phase-level timing of a single `runLiveWithIndex` call. Captured
+/// by the caller so the log can show where any slow recomputes are
+/// burning ms. All timings are wall-clock milliseconds for that
+/// phase only — they sum to roughly the function's total time.
+type LivePhaseTimings = {
+    mutable RegionFilterMs : int64
+    mutable TagAllMs       : int64
+    mutable StandardMs     : int64
+    mutable NetIndexMs     : int64
+    mutable OverlapMs      : int64
+    mutable RegionFilterCount : int
+    mutable CombinedCount     : int
+}
+
+let newPhaseTimings () : LivePhaseTimings = {
+    RegionFilterMs = 0L; TagAllMs = 0L; StandardMs = 0L
+    NetIndexMs = 0L; OverlapMs = 0L
+    RegionFilterCount = 0; CombinedCount = 0
+}
+
+let runLiveWithIndexTimed
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
         (cellIndex: Rekolektion.Viz.Core.Spatial.UniformGrid.Index)
         (draftFlat: FlatPolygon array)
         (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
+        (draftStartNet: string option)
         (disabledRules: Set<string>)
+        (timings: LivePhaseTimings)
         : Violation array =
+    let phaseSw = System.Diagnostics.Stopwatch()
     // Region-filter the cell to a bbox of (draft + margin) before
     // running the standard rule pass. Keeps per-frame cost bounded
     // by the route's neighborhood, not the whole macro. 5 µm margin
     // is comfortably wider than any single-layer SKY130 spacing rule.
-    let regionMarginDbu = int64 (5000.0 * (1.0 / umPerDbuOf units))
+    //
+    // Bug history: the previous formula
+    //   `5000.0 * (1.0 / umPerDbuOf units)`
+    // computed 5 µm × (1000 DBU/µm) = 5,000,000 DBU = **5 mm**, an
+    // off-by-1000 that expanded the bbox to cover the entire macro
+    // and effectively disabled the region filter. The correct
+    // formula is just `5.0 µm / (µm/DBU)` = 5000 DBU on a 1nm grid.
+    phaseSw.Restart()
+    let regionMarginDbu = int64 (5.0 / umPerDbuOf units)
     let regionFiltered =
         if draftFlat.Length = 0 then cellFlat
         else
@@ -1016,7 +1047,17 @@ let runLiveWithIndex
                     cellIndex (rx1, ry1, rx2, ry2)
             hits |> Array.map (fun i -> cellFlat.[i])
     let combined = Array.append regionFiltered draftFlat
+    phaseSw.Stop()
+    timings.RegionFilterMs <- phaseSw.ElapsedMilliseconds
+    timings.RegionFilterCount <- regionFiltered.Length
+    timings.CombinedCount <- combined.Length
+
+    phaseSw.Restart()
     let tags = Implant.tagAll combined
+    phaseSw.Stop()
+    timings.TagAllMs <- phaseSw.ElapsedMilliseconds
+
+    phaseSw.Restart()
     let nonLiveDisabled =
         view.Rules
         |> List.filter (Rules.isLiveEligible >> not)
@@ -1024,10 +1065,13 @@ let runLiveWithIndex
         |> Set.ofList
     let disabled' = Set.union disabledRules nonLiveDisabled
     let standardViolations = checkWithToggles view units combined tags disabled'
+    phaseSw.Stop()
+    timings.StandardMs <- phaseSw.ElapsedMilliseconds
 
     // (Structure, Index) → net name. A polygon not in the map
     // belongs to no labeled net (or to a draft) and is treated as
     // `None` in the cross-net check.
+    phaseSw.Restart()
     let polyToNet =
         let acc = System.Collections.Generic.Dictionary<string * int, string>()
         for kv in nets do
@@ -1035,7 +1079,12 @@ let runLiveWithIndex
                 acc.[(pr.Structure, pr.Index)] <- kv.Key
         acc
     let netOf (p: FlatPolygon) : string option =
-        if p.SourceStructure = "<draft-route>" then None
+        if p.SourceStructure = "<draft-route>" then
+            // Draft segments belong to the route's StartNet (the
+            // pin the user clicked to begin the route). Without
+            // this, the live-DRC cross-net check flags the draft
+            // overlapping its own start polygon as a short.
+            draftStartNet
         else
             match polyToNet.TryGetValue((p.SourceStructure, p.SourceIndex)) with
             | true, n -> Some n
@@ -1068,19 +1117,24 @@ let runLiveWithIndex
     let isCrossNet (a: FlatPolygon) (b: FlatPolygon) : bool =
         let na = netOf a
         let nb = netOf b
-        if isDraft a || isDraft b then
-            // Draft vs anything labeled → potential short. Draft vs
-            // unlabeled cell poly we still flag because we can't
-            // tell which net it would join.
-            true
-        else
-            match na, nb with
-            | Some x, Some y -> x <> y
-            | _ -> false   // unlabeled cell↔cell overlap: skip
+        match na, nb with
+        | Some x, Some y -> x <> y
+        | _ ->
+            // One side is unlabeled. If either side is a draft and
+            // we know its StartNet, na/nb hit the Some branch above
+            // — so falling here means the cell poly is unlabeled.
+            // Flag draft↔unlabeled overlaps as before (we can't
+            // prove they're safe); skip cell↔unlabeled overlaps
+            // (existing behaviour — labeled-net-only DRC).
+            isDraft a || isDraft b
+
+    phaseSw.Stop()
+    timings.NetIndexMs <- phaseSw.ElapsedMilliseconds
 
     // Draft vs cell only — cell-vs-cell overlap is O(N²) and lives
     // in `cellCrossNetOverlaps` (callers cache its result). Iterate
     // over the region-filtered cell so we only touch nearby polys.
+    phaseSw.Restart()
     let overlapViolations = System.Collections.Generic.List<Violation>()
     for d in draftFlat do
         for c in regionFiltered do
@@ -1089,7 +1143,26 @@ let runLiveWithIndex
                 match mkOverlap d c with
                 | Some v -> overlapViolations.Add v
                 | None -> ()
+    phaseSw.Stop()
+    timings.OverlapMs <- phaseSw.ElapsedMilliseconds
     Array.append standardViolations (overlapViolations.ToArray())
+
+/// Untimed wrapper preserving the original signature so callers
+/// that don't want phase breakdown stay simple. Production canvas
+/// uses the `Timed` variant + log.
+let runLiveWithIndex
+        (view: Rules.RulesetView)
+        (units: Units)
+        (cellFlat: FlatPolygon array)
+        (cellIndex: Rekolektion.Viz.Core.Spatial.UniformGrid.Index)
+        (draftFlat: FlatPolygon array)
+        (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
+        (draftStartNet: string option)
+        (disabledRules: Set<string>)
+        : Violation array =
+    runLiveWithIndexTimed
+        view units cellFlat cellIndex draftFlat nets draftStartNet
+        disabledRules (newPhaseTimings ())
 
 /// `runLive` convenience: builds the spatial index inline from
 /// `cellFlat` and delegates to `runLiveWithIndex`. Used by tests
@@ -1103,13 +1176,15 @@ let runLive
         (cellFlat: FlatPolygon array)
         (draftFlat: FlatPolygon array)
         (nets: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>)
+        (draftStartNet: string option)
         (disabledRules: Set<string>)
         : Violation array =
     let bboxes = cellFlat |> Array.map bboxOf
     let cellSize = Rekolektion.Viz.Core.Spatial.UniformGrid.suggestCellSize bboxes
     let cellIndex =
         Rekolektion.Viz.Core.Spatial.UniformGrid.build cellSize bboxes
-    runLiveWithIndex view units cellFlat cellIndex draftFlat nets disabledRules
+    runLiveWithIndex
+        view units cellFlat cellIndex draftFlat nets draftStartNet disabledRules
 
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),

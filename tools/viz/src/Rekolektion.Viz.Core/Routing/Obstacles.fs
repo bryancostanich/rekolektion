@@ -90,16 +90,19 @@ type private PolyId = {
     TopInstanceIndex: int option
 }
 
-/// Per-polygon claim set. Each PolyId (which now disambiguates
-/// physical instances via TopInstanceIndex) maps to the set of
-/// nets whose flood reached it. A wire's startNet counts the
-/// polygon as "ours" if startNet is in the set — even when other
-/// nets also flooded to it through contacts. That last case
-/// indicates electrical connectivity (a polygon shared across
-/// multiple labels, e.g. a FET source touching two diff regions);
-/// for routing purposes the wire is allowed to extend across any
-/// polygon that floods from the start net's label.
-type NetIndex = private NetIndex of Map<PolyId, Set<string>>
+/// Per-polygon claim set + per-net seed set, kept together so the
+/// "is this poly ours?" answer is one lookup against one structure.
+///
+/// `Claims : Map<PolyId, Set<string>>` — every net whose flood
+///   touched this polygon. A wire's startNet counts the polygon
+///   as "ours" if startNet is in the set.
+///
+/// `Seeds  : Map<string, HashSet<PolyId>>` — for each net, the
+///   polys whose interior contains a label point of that net (the
+///   LabelFlood `SeedPolygons` set). Used by `isOurs` to apply
+///   the SRef-internal exemption: a sub-cell poly claimed via the
+///   contact flood is NOT ours unless it was directly seeded.
+type NetIndex = private NetIndex of Map<PolyId, Set<string>> * Map<string, System.Collections.Generic.HashSet<PolyId>>
 
 let private polyIdOf (p : PolygonRef) : PolyId =
     { Structure        = p.Structure
@@ -120,25 +123,49 @@ let private flatPolyId (fp : FlatPolygon) : PolyId =
 // (doc change), so caching here turns the per-walkaround-frame
 // rebuild (76 ms with 1k+ polygons in one net) into a single hit.
 // Trim to the last few entries to bound memory.
-let private indexCache : System.Collections.Generic.Dictionary<obj, NetIndex> =
-    System.Collections.Generic.Dictionary<obj, NetIndex>(HashIdentity.Reference)
+// Invalidation contract: see `tools/viz/docs/routing_caches.md`.
+// ConcurrentDictionary, not Dictionary: tests run in parallel across
+// xUnit collections, and the BG walkaround in production can race
+// with another task touching the same cache. Locked reads/writes,
+// no torn state, no surprise NullRef on Clear races.
+let private indexCache : System.Collections.Concurrent.ConcurrentDictionary<obj, NetIndex> =
+    System.Collections.Concurrent.ConcurrentDictionary<obj, NetIndex>(HashIdentity.Reference)
 
 let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
-    let mutable m : Map<PolyId, Set<string>> = Map.empty
+    let mutable claims : Map<PolyId, Set<string>> = Map.empty
+    let seeds = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<PolyId>>()
     let addClaim (pRef : PolygonRef) (name : string) =
         let pid = polyIdOf pRef
         let existing =
-            match Map.tryFind pid m with
+            match Map.tryFind pid claims with
             | Some s -> s
             | None -> Set.empty
-        m <- Map.add pid (Set.add name existing) m
+        claims <- Map.add pid (Set.add name existing) claims
+    let addSeed (pRef : PolygonRef) (name : string) =
+        let pid = polyIdOf pRef
+        let set =
+            match seeds.TryGetValue name with
+            | true, s -> s
+            | _ ->
+                let s = System.Collections.Generic.HashSet<PolyId>()
+                seeds.[name] <- s
+                s
+        set.Add(pid) |> ignore
     for KeyValue (netName, entry) in nets do
         for pRef in entry.Polygons do
             addClaim pRef netName
-    for KeyValue (netName, entry) in nets do
+        // Seeds count as claims AND as direct-seed marks. Order
+        // matters only for completeness, not correctness — the
+        // Polygons list in production is a superset of
+        // SeedPolygons, so the second loop is mostly defensive.
         for pRef in entry.SeedPolygons do
             addClaim pRef netName
-    NetIndex m
+            addSeed  pRef netName
+    let seedsMap =
+        seeds
+        |> Seq.map (fun kv -> kv.Key, kv.Value)
+        |> Map.ofSeq
+    NetIndex (claims, seedsMap)
 
 /// Memoised view of `buildNetIndexFresh`. Reference-identity cache
 /// on the `nets` Map — same Map instance returns the same NetIndex
@@ -157,28 +184,51 @@ let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
         indexCache.[key] <- idx
         idx
 
-/// True when `startNet` is among the polygon's claimants. With
-/// multi-claim semantics, a polygon counts as "ours" as soon as
-/// startNet's flood touched it — even if another net's flood
-/// reached it too. That handles FET source/drain regions where
-/// the layout legitimately shares a polygon across labels.
-let isOurs (NetIndex m) (startNet : string) (fp : FlatPolygon) : bool =
-    match Map.tryFind (flatPolyId fp) m with
-    | Some claimants -> Set.contains startNet claimants
-    | None -> false
+/// True when `startNet` claims this polygon AND, for SRef-internal
+/// polys, the claim came from a direct label seed (not the cross-
+/// layer contact flood).
+///
+/// **Why the SRef-internal exemption matters.** LabelFlood
+/// propagates claims through licon1/mcon stacks; a drn_R seed in
+/// one cell can reach another device's source/drain pin via shared
+/// metal+contacts and claim it as drn_R. The classification is
+/// electrically correct in the abstract, but for routing it means
+/// the walkaround would happily run the user's wire THROUGH an
+/// unrelated device's pin. The seed check restores intent: only
+/// polys whose interior literally contains a startNet label point
+/// (the LabelFlood multi-seed set) are "ours" when inside an
+/// SRef. Top-cell rects (TopInstanceIndex = None) skip the seed
+/// check — they're user-drawn routing rails or label-adjacent
+/// metal, safe to extend across.
+///
+/// The seed set is carried inside `NetIndex` so callers don't
+/// need to thread it separately. Single source of truth — no
+/// "is this caller using seeds or not?" trap.
+let isOurs (NetIndex (claims, seeds)) (startNet : string) (fp : FlatPolygon) : bool =
+    let pid = flatPolyId fp
+    let claimedByStart =
+        match Map.tryFind pid claims with
+        | Some claimants -> Set.contains startNet claimants
+        | None -> false
+    if not claimedByStart then false
+    else
+        match fp.TopInstanceIndex with
+        | None -> true
+        | Some _ ->
+            match Map.tryFind startNet seeds with
+            | Some seedSet -> seedSet.Contains pid
+            | None -> false
 
 /// All nets that claim this polygon. Diagnostic helper.
-let claimantsOf (NetIndex m) (fp : FlatPolygon) : Set<string> =
-    match Map.tryFind (flatPolyId fp) m with
+let claimantsOf (NetIndex (claims, _)) (fp : FlatPolygon) : Set<string> =
+    match Map.tryFind (flatPolyId fp) claims with
     | Some s -> s
     | None -> Set.empty
 
-/// Deprecated single-net lookup (returns one of the claimants if
-/// any). Kept so older callers that don't care about ambiguity
-/// keep compiling. New code should prefer `isOurs` /
-/// `claimantsOf`.
-let netOf (NetIndex m) (fp : FlatPolygon) : string option =
-    match Map.tryFind (flatPolyId fp) m with
+/// Single-net lookup (returns one of the claimants if any). Used by
+/// diagnostic dumps where the caller doesn't care about ambiguity.
+let netOf (NetIndex (claims, _)) (fp : FlatPolygon) : string option =
+    match Map.tryFind (flatPolyId fp) claims with
     | Some s when not (Set.isEmpty s) -> Some (Set.minElement s)
     | _ -> None
 
@@ -204,63 +254,6 @@ let private polyBbox (fp : FlatPolygon) : int64 * int64 * int64 * int64 =
 let private polyIntersectsRegion (fp : FlatPolygon) (r : Region) : bool =
     let (xMin, yMin, xMax, yMax) = polyBbox fp
     not (xMax < r.XMin || xMin > r.XMax || yMax < r.YMin || yMin > r.YMax)
-
-/// The obstacle set for a wire of net `startNet` on layer `layer`.
-/// Returns the FlatPolygons (subset of `flat`) the walk-around must
-/// route around. Order matches input order; callers that need a
-/// spatial index over the result build one separately.
-///
-/// A polygon p is an obstacle when:
-///   - p.Layer == layer AND netOf(p) ≠ startNet, OR
-///   - p.Layer ∈ bridgesOf(layer) AND netOf(p) ≠ startNet
-///
-/// Polygons whose net is unknown (`netOf` returns `None`) are
-/// treated as foreign by default — the walk-around cannot prove
-/// they're safe, so it routes around them.
-let obstaclesFor
-    (layer    : LayerKey)
-    (startNet : string)
-    (idx      : NetIndex)
-    (flat     : FlatPolygon array)
-    : FlatPolygon array =
-    if not (isRoutingLayer layer) then [||]
-    else
-        let bridges = Set.ofList (bridgesOf layer)
-        let onLayer (fp : FlatPolygon) =
-            fp.Layer = layer.Number && fp.DataType = layer.DataType
-        let onBridge (fp : FlatPolygon) =
-            bridges |> Set.contains { Number = fp.Layer; DataType = fp.DataType }
-        flat
-        |> Array.filter (fun fp ->
-            if not (onLayer fp || onBridge fp) then false
-            else not (isOurs idx startNet fp))
-
-/// Region-bounded obstacle set. Same classification as `obstaclesFor`
-/// but only returns polygons whose bbox intersects `region`. The
-/// visibility-graph build is O(N²·M) where M = obstacles; clipping
-/// to a local neighbourhood is what makes continuous walk-around
-/// affordable on real cells. The caller picks the region — typically
-/// a bbox around (start, cursor) with a margin so the search can
-/// still find detours.
-let obstaclesInRegion
-    (layer    : LayerKey)
-    (startNet : string)
-    (idx      : NetIndex)
-    (region   : Region)
-    (flat     : FlatPolygon array)
-    : FlatPolygon array =
-    if not (isRoutingLayer layer) then [||]
-    else
-        let bridges = Set.ofList (bridgesOf layer)
-        let onLayer (fp : FlatPolygon) =
-            fp.Layer = layer.Number && fp.DataType = layer.DataType
-        let onBridge (fp : FlatPolygon) =
-            bridges |> Set.contains { Number = fp.Layer; DataType = fp.DataType }
-        flat
-        |> Array.filter (fun fp ->
-            if not (onLayer fp || onBridge fp) then false
-            elif not (polyIntersectsRegion fp region) then false
-            else not (isOurs idx startNet fp))
 
 // =========================================================================
 // Obstacle snapshot + uniform-grid spatial index
@@ -381,17 +374,19 @@ let private buildObstacleSetFresh
         let kept = ResizeArray<FlatPolygon>()
         let boxes = ResizeArray<ObstacleBbox>()
         for fp in flat do
-            if (onLayer fp || onBridge fp) && not (isOurs idx startNet fp) then
+            if (onLayer fp || onBridge fp)
+               && not (isOurs idx startNet fp) then
                 kept.Add(fp)
                 boxes.Add(bboxOf fp)
         let polys = kept.ToArray()
         let bbs   = boxes.ToArray()
         { Polygons = polys; Bboxes = bbs; Grid = buildGrid bbs }
 
-// Composite key on (Layer.Number, Layer.DataType, StartNet) plus
-// reference identity for FlatPolygons and the upstream net map.
-// Stored as a tuple so the cache dictionary keys on structural
-// equality of the layer+net + reference identity of the arrays.
+// Composite key on (Layer, StartNet) plus reference identity for
+// FlatPolygons and the NetIndex itself. NetIndex is reference-stable
+// per Map<string,NetEntry> instance via `indexCache`, so an
+// IdxRef change means LabelFlood re-derived → cache miss.
+// Invalidation contract: see `tools/viz/docs/routing_caches.md`.
 [<Struct>]
 type private ObstacleSetKey = {
     Layer    : LayerKey
@@ -400,24 +395,23 @@ type private ObstacleSetKey = {
     IdxRef   : obj
 }
 
-let private obstacleSetCache : System.Collections.Generic.Dictionary<ObstacleSetKey, ObstacleSet> =
-    System.Collections.Generic.Dictionary<ObstacleSetKey, ObstacleSet>(HashIdentity.Structural)
+let private obstacleSetCache : System.Collections.Concurrent.ConcurrentDictionary<ObstacleSetKey, ObstacleSet> =
+    System.Collections.Concurrent.ConcurrentDictionary<ObstacleSetKey, ObstacleSet>(HashIdentity.Structural)
 
 /// Memoised obstacle snapshot for `(layer, startNet, flat, idx)`.
-/// Cache key uses reference identity for `flat` and the NetIndex's
-/// underlying Map, so a doc edit (which re-flattens) or a re-derive
-/// (which produces a new NetIndex) invalidates the entry. Cache
-/// trimmed when it grows; safe across threads since the canvas
-/// passes ONE active set per draft.
+/// Cache key uses reference identity for `flat` and `idx`, so a doc
+/// edit (which re-flattens) or a re-derive (which produces a new
+/// NetIndex) invalidates the entry. Cache trimmed when it grows;
+/// safe across threads since the canvas passes ONE active set per
+/// draft.
 let obstacleSet
         (layer    : LayerKey)
         (startNet : string)
-        (netMap   : Map<string, NetEntry>)
         (idx      : NetIndex)
         (flat     : FlatPolygon array) : ObstacleSet =
     let key : ObstacleSetKey =
         { Layer = layer; StartNet = startNet
-          FlatRef = box flat; IdxRef = box netMap }
+          FlatRef = box flat; IdxRef = box idx }
     match obstacleSetCache.TryGetValue(key) with
     | true, s -> s
     | _ ->
@@ -462,3 +456,9 @@ let obstaclesInRegionCached
                                     || b.YMin > region.YMax) then
                                 out.Add(set.Polygons.[idx])
         out.ToArray()
+
+/// Every obstacle in `set`, no region clip. Used by tests and
+/// diagnostic logging where the full universe is wanted. Live
+/// rendering should use `obstaclesInRegionCached` instead so the
+/// grid clipping pays off.
+let polygonsOf (set : ObstacleSet) : FlatPolygon array = set.Polygons

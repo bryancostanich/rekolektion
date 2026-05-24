@@ -163,32 +163,53 @@ let build (clearance : int64) (obstacles : FlatPolygon array) : Prebuilt =
 /// straight L. Edges between non-start/goal corner nodes still use
 /// the FULL obstacle set, so the search can't sneak through a
 /// foreign feature mid-route.
+/// Preferred posture for `shortestPath`'s corner placement.
+/// `NoPreference` falls back to geometric `dy > dx` ratio — the
+/// historical behaviour. `PreferHFirst` / `PreferVFirst` are
+/// honoured whenever the chosen L is clear; if blocked, the
+/// search uses whichever L IS clear.
+type PreferredPosture =
+    | NoPreference
+    | PreferHFirst
+    | PreferVFirst
+
 let shortestPath
+    (preferred : PreferredPosture)
     (graph : Prebuilt)
     (start : Pt)
     (goal  : Pt) : Pt list option =
     let inside (pt : Pt) (b : Bbox) =
         pt.X > b.XMin && pt.X < b.XMax
         && pt.Y > b.YMin && pt.Y < b.YMax
-    // Per-edge-type exemption, against the EXPANDED bbox. Looser
-    // than the strict-original-bbox variant — lets the wire escape
-    // a tight pin AND reach a cursor that mid-drag passes near a
-    // foreign feature. Trade-off: the corner↔goal edge may briefly
-    // cross a foreign clearance zone if the cursor sits in it,
-    // producing a path the live-DRC overlay flags. Pin landings
-    // (snap targets) sit at polygon centroids well clear of
-    // foreign expanded bboxes, so committed wires are DRC-clean.
+    // True when `pt` sits inside the ORIGINAL polygon (the expanded
+    // bbox shrunk back by `Clearance`). The same-net pin's own
+    // poly stack is classified as "ours" upstream (LabelFlood
+    // seeds + Obstacles.isOurs) and never appears in this
+    // obstacle set, so a same-net endpoint is never strictly
+    // inside an obstacle. Only foreign polys appear here; an
+    // endpoint inside one is an electrical short and must
+    // return noPath.
+    let insideOriginal (pt : Pt) (b : Bbox) =
+        let c = graph.Clearance
+        pt.X > b.XMin + c && pt.X < b.XMax - c
+        && pt.Y > b.YMin + c && pt.Y < b.YMax - c
+    // Per-edge-type exemption (ADR-0006 intent):
     //   • start↔corner edges: skip obstacles whose EXPANDED bbox
-    //     contains start.
-    //   • corner↔goal edges: skip obstacles whose EXPANDED bbox
-    //     contains goal.
+    //     contains start AND whose ORIGINAL bbox does NOT —
+    //     start sits in the clearance margin only.
+    //   • corner↔goal edges: same rule for `goal`.
     //   • corner↔corner edges: FULL obstacle set (prebuilt).
     //   • direct start↔goal: FULL obstacle set, no exemption —
     //     prevents trivialStraight shortcuts.
+    // Endpoint strictly inside a foreign obstacle (interior, not
+    // margin): NO exemption → obstacle still blocks → noPath.
+    // That's the correct behaviour; a wire whose pin sits inside
+    // a foreign poly is physically a short.
+    let exempt (pt : Pt) (b : Bbox) = inside pt b && not (insideOriginal pt b)
     let startObstacles =
-        graph.Obstacles |> Array.filter (fun b -> not (inside start b))
+        graph.Obstacles |> Array.filter (fun b -> not (exempt start b))
     let goalObstacles =
-        graph.Obstacles |> Array.filter (fun b -> not (inside goal b))
+        graph.Obstacles |> Array.filter (fun b -> not (exempt goal b))
     // Steiner points on the start/goal X columns aligned with each
     // obstacle's expanded Y boundaries. Without these the only
     // graph nodes are obstacle bbox corners, so the shortest path
@@ -367,18 +388,26 @@ let shortestPath
                         let obs = obstaclesFor a b
                         let hFirstClear = lClear obs true a b
                         let vFirstClear = lClear obs false a b
-                        // Match `lShape`'s posture rule: dy > dx
-                        // prefers V-first, dx > dy prefers H-first.
-                        // When both Ls are clear, pick the posture
-                        // the renderer would pick so the path that
-                        // gets drawn matches the path that was
-                        // verified clear.
+                        // Posture priority: caller-supplied
+                        // preference > geometric ratio. The user's
+                        // first decisive cursor motion locks a
+                        // posture in `Draft.setCursor`; passing it
+                        // through here means the corner stops
+                        // flipping when dy/dx crosses mid-drag.
+                        // Fall back to dy>dx only when the caller
+                        // has no preference.
                         let dx = abs (b.X - a.X)
                         let dy = abs (b.Y - a.Y)
-                        let preferVFirst = dy > dx
+                        let preferVFirst =
+                            match preferred with
+                            | PreferVFirst -> true
+                            | PreferHFirst -> false
+                            | NoPreference -> dy > dx
                         let bend =
                             if preferVFirst && vFirstClear then
                                 { X = a.X; Y = b.Y }
+                            elif not preferVFirst && hFirstClear then
+                                { X = b.X; Y = a.Y }
                             elif hFirstClear then
                                 { X = b.X; Y = a.Y }
                             elif vFirstClear then

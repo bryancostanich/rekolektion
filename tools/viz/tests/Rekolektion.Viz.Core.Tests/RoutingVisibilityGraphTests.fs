@@ -58,7 +58,7 @@ let ``clearance expands obstacle corners outward`` () =
 [<Fact>]
 let ``no obstacles: shortest path is just start and goal`` () =
     let g = build 0L [||]
-    let path = shortestPath g (p 0 0) (p 100 100)
+    let path = shortestPath NoPreference g (p 0 0) (p 100 100)
     path.IsSome |> should equal true
     path.Value |> List.head |> should equal (p 0 0)
     path.Value |> List.last |> should equal (p 100 100)
@@ -66,7 +66,7 @@ let ``no obstacles: shortest path is just start and goal`` () =
 [<Fact>]
 let ``start equals goal: path has the single point`` () =
     let g = build 0L [||]
-    let path = shortestPath g (p 50 50) (p 50 50)
+    let path = shortestPath NoPreference g (p 50 50) (p 50 50)
     path.IsSome |> should equal true
     // Start and goal are two distinct slots in the augmented graph
     // even when they share coordinates; the path lists both.
@@ -82,7 +82,7 @@ let ``single obstacle in the direct path forces a detour`` () =
     // interior. The path must turn at one of the expanded corners.
     let obs = rect 50 0 150 100
     let g = build 0L [| obs |]
-    let path = shortestPath g (p 0 50) (p 200 50)
+    let path = shortestPath NoPreference g (p 0 50) (p 200 50)
     path.IsSome |> should equal true
     // Detour: route to a corner of the obstacle and out the other
     // side. With clearance = 0, corners are at the obstacle's own
@@ -101,7 +101,7 @@ let ``single obstacle in the direct path forces a detour`` () =
 let ``clearance pushes the detour outside the obstacle by the margin`` () =
     let obs = rect 50 0 150 100
     let g = build 5L [| obs |]
-    let path = shortestPath g (p 0 50) (p 200 50)
+    let path = shortestPath NoPreference g (p 0 50) (p 200 50)
     path.IsSome |> should equal true
     // No corner-node on the path should sit inside the EXPANDED
     // bbox (45..155, -5..105). The endpoints (0,50) and (200,50)
@@ -118,7 +118,7 @@ let ``two parallel obstacles force routing through the channel between them`` ()
     // y ∈ (40, 60) plus the open region above y=100 should let it
     // through without forcing a wide detour.
     let g = build 0L [| rect 0 0 100 40; rect 0 60 100 100 |]
-    let path = shortestPath g (p 50 50) (p 50 200)
+    let path = shortestPath NoPreference g (p 50 50) (p 50 200)
     path.IsSome |> should equal true
     path.Value |> List.head |> should equal (p 50 50)
     path.Value |> List.last |> should equal (p 50 200)
@@ -132,5 +132,5 @@ let ``goal strictly inside an obstacle interior returns no path`` () =
     // crossing the obstacle.
     let obs = rect 50 50 150 150
     let g = build 0L [| obs |]
-    let path = shortestPath g (p 0 0) (p 100 100)
+    let path = shortestPath NoPreference g (p 0 0) (p 100 100)
     path |> should equal (None : Pt list option)

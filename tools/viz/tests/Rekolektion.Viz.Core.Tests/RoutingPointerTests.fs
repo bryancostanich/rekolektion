@@ -122,3 +122,64 @@ let ``Draft Some, left-click in free space (no snap target) → FixSegment`` () 
     // adds a corner instead of committing.
     decide true (Some (startedDraft ())) (Some met1) true false
     |> should equal Pointer.FixSegment
+
+// --- Snap filter ↔ decideAction chain ------------------------------------
+// These verify the wiring the canvas does at OnPointerPressed:
+//   raw snap targets → Snap.forStartNet startNet → Snap.nearest →
+//   Pointer.decideAction with onSnapTarget = nearestOpt.IsSome.
+// A foreign-net pin must NOT cause Finish; same-net must.
+
+let private snap x y net : Snap.SnapTarget = {
+    X = int64 x; Y = int64 y; Net = net
+    Layer = 68; DataType = 20
+    Source = "test", 0
+}
+
+let private resolveAction
+        (startNet: string)
+        (cursor: int64 * int64)
+        (targets: Snap.SnapTarget array)
+        : Pointer.PointerAction =
+    let filtered = Snap.forStartNet startNet targets
+    let nearestOpt = Snap.nearest filtered cursor 100L
+    let snapXY =
+        match nearestOpt with
+        | Some t -> t.X, t.Y
+        | None -> cursor
+    Pointer.decideAction
+        true (Some (startedDraft ()))
+        (Some met1) true false
+        defaultLayer defaultWidth snapXY nearestOpt.IsSome
+
+[<Fact>]
+let ``snap chain: click on foreign-net pin while drawing drn_R → FixSegment`` () =
+    // The pin at (1000, 1000) belongs to drn_L. Filter hides it; the
+    // click misses every same-net target; decideAction returns
+    // FixSegment (free-space corner) instead of Finish — no cross-
+    // net short can land in the .rkt.
+    let targets = [|
+        snap 0 0 "drn_R"
+        snap 1000 1000 "drn_L"
+    |]
+    resolveAction "drn_R" (1000L, 1000L) targets
+    |> should equal Pointer.FixSegment
+
+[<Fact>]
+let ``snap chain: click on a same-net pin while drawing drn_R → Finish`` () =
+    let targets = [|
+        snap 0 0 "drn_R"
+        snap 1000 1000 "drn_L"
+        snap 1100 1100 "drn_R"   // valid target nearby
+    |]
+    resolveAction "drn_R" (1100L, 1100L) targets
+    |> should equal Pointer.Finish
+
+[<Fact>]
+let ``snap chain: empty startNet → filter is pass-through, foreign pin can Finish`` () =
+    // Pre-draft / unknown-net path keeps legacy behaviour. The
+    // snap-required-to-start gate elsewhere prevents this state
+    // from co-existing with a draft in practice, but the filter
+    // itself must stay a no-op when startNet is unknown.
+    let targets = [| snap 1000 1000 "drn_L" |]
+    resolveAction "" (1000L, 1000L) targets
+    |> should equal Pointer.Finish

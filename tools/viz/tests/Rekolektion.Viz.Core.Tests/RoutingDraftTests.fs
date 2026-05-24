@@ -73,6 +73,36 @@ let ``flipPosture alternates HorizontalFirst and VerticalFirst`` () =
     r3.Posture |> should equal Draft.HorizontalFirst
 
 [<Fact>]
+let ``setCursor auto-flips posture to HorizontalFirst on dominant X motion`` () =
+    // Starting posture VerticalFirst; user drags strongly right
+    // (dx >> dy) → posture should flip to HorizontalFirst so the L
+    // tracks the direction the cursor is moving in.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.flipPosture          // VerticalFirst
+        |> Draft.setCursor (10L, 5L)  // seed cursor; no flip (first set)
+        |> Draft.setCursor (1000L, 6L) // dx=990, dy=1 → HorizontalFirst
+    r.Posture |> should equal Draft.HorizontalFirst
+
+[<Fact>]
+let ``setCursor auto-flips posture to VerticalFirst on dominant Y motion`` () =
+    let r =
+        Draft.start met1 width (0L, 0L)  // HorizontalFirst by default
+        |> Draft.setCursor (5L, 10L)
+        |> Draft.setCursor (6L, 1000L)   // dy=990, dx=1 → VerticalFirst
+    r.Posture |> should equal Draft.VerticalFirst
+
+[<Fact>]
+let ``setCursor keeps posture when motion is roughly diagonal`` () =
+    // dx and dy comparable — neither axis dominates by 2× — posture
+    // sticks. Prevents jitter on natural diagonal drags.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (10L, 10L)
+        |> Draft.setCursor (500L, 400L)  // dx=490, dy=390 → ratio < 2
+    r.Posture |> should equal Draft.HorizontalFirst  // unchanged
+
+[<Fact>]
 let ``axis-aligned segment produces exactly one rect`` () =
     let r =
         Draft.start met1 width (0L, 0L)

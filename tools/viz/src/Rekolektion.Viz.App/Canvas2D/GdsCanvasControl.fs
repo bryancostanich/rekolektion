@@ -943,8 +943,18 @@ type GdsCanvasControl() as this =
     /// label linear scan over FlatPolygons), which made wire-mode
     /// hover lag on big cells. Built once on geometry change,
     /// reused on every move until FlatPolygons identity flips.
+    /// Invalidation contract: see `tools/viz/docs/routing_caches.md`.
     let mutable cachedSnapTargets : Routing.Snap.SnapTarget array = [||]
     let mutable cachedSnapTargetsFor : FlatPolygon array = [||]
+    /// Cached cell↔cell cross-net overlap violations. Recomputed
+    /// only when FlatPolygons OR the NetMap changes — the
+    /// existing draft↔cell pass inside `runLiveWithIndex` only
+    /// fires during an active draft, so post-commit cell overlaps
+    /// would disappear from the live overlay without this cache.
+    /// O(N²) inside `cellCrossNetOverlaps`, hence the cache.
+    let mutable cachedCellCrossNet : Drc.Check.Violation array = [||]
+    let mutable cachedCellCrossNetFlatFor : FlatPolygon array = [||]
+    let mutable cachedCellCrossNetNetsFor : Map<string, Sidecar.Types.NetEntry> = Map.empty
     /// Sample counter for the per-pointer-move timing log — sampled
     /// every 30 frames so the log doesn't churn under continuous
     /// mouse motion.
@@ -1566,6 +1576,11 @@ type GdsCanvasControl() as this =
                 let snapshotFlat  = this.FlatPolygons
                 let snapshotView  = this.DrcView
                 let snapshotDisabled = this.DisabledDrcRules
+                let snapshotNets = this.NetMap
+                let snapshotStartNet =
+                    snapshotDraft
+                    |> Option.bind (fun d ->
+                        if d.StartNet = "" then None else Some d.StartNet)
                 let snapshotUnits =
                     match this.Library with
                     | Some doc -> doc.Units
@@ -1605,19 +1620,53 @@ type GdsCanvasControl() as this =
                         cachedCellIndexFor <- snapshotFlat
                         idx
                 let swDrc = System.Diagnostics.Stopwatch()
+                let phaseTimings = Drc.Check.newPhaseTimings ()
+                // Refresh the cell↔cell cross-net cache when
+                // FlatPolygons or NetMap reference flips. Holds
+                // the violations that the draft↔cell pass would
+                // also catch if a draft existed — without this,
+                // those violations disappear the instant the user
+                // commits the route ("DRC disappeared on commit").
+                let cellCrossNetCached =
+                    if obj.ReferenceEquals(cachedCellCrossNetFlatFor, snapshotFlat)
+                       && obj.ReferenceEquals(cachedCellCrossNetNetsFor, snapshotNets) then
+                        cachedCellCrossNet
+                    else
+                        let r =
+                            try Drc.Check.cellCrossNetOverlaps snapshotFlat snapshotNets
+                            with _ -> [||]
+                        cachedCellCrossNet <- r
+                        cachedCellCrossNetFlatFor <- snapshotFlat
+                        cachedCellCrossNetNetsFor <- snapshotNets
+                        r
                 let compute () =
                     swDrc.Restart()
                     let r =
                         try
-                            match snapshotDraft with
-                            | None -> [||]
-                            | Some r ->
-                                let draftFlat =
+                            // No draft → still run DRC with an
+                            // empty draftFlat so committed geometry
+                            // (the just-finished wire, prior wires,
+                            // hand-edited rects) keeps its standing
+                            // violations visible. The earlier
+                            // `| None -> [||]` short-circuit cleared
+                            // every red box the instant the user
+                            // finished a route — looked like "DRC
+                            // disappeared on commit."
+                            let draftFlat =
+                                match snapshotDraft with
+                                | Some r ->
                                     Routing.Draft.allSegments r
                                     |> Routing.Draft.toFlatPolygons
-                                Drc.Check.runLiveWithIndex snapshotView
+                                | None -> [||]
+                            let liveResult =
+                                Drc.Check.runLiveWithIndexTimed snapshotView
                                     snapshotUnits snapshotFlat cellIndex
-                                    draftFlat Map.empty snapshotDisabled
+                                    draftFlat snapshotNets snapshotStartNet
+                                    snapshotDisabled phaseTimings
+                            // Append the cell↔cell cross-net overlaps
+                            // so committed wires keep their short-
+                            // detection markers after commit.
+                            Array.append liveResult cellCrossNetCached
                         with _ -> [||]
                     swDrc.Stop()
                     r
@@ -1633,7 +1682,14 @@ type GdsCanvasControl() as this =
                                ms = swDrc.ElapsedMilliseconds
                                indexBuilt = indexBuilt
                                async = true
-                               violations = result.Length |}
+                               violations = result.Length
+                               regionMs = phaseTimings.RegionFilterMs
+                               tagMs    = phaseTimings.TagAllMs
+                               stdMs    = phaseTimings.StandardMs
+                               netMs    = phaseTimings.NetIndexMs
+                               overlapMs = phaseTimings.OverlapMs
+                               regionPolys = phaseTimings.RegionFilterCount
+                               combinedPolys = phaseTimings.CombinedCount |}
                 Routing.LiveDrc.schedule liveDrcState compute postBack onAccept
                 |> ignore
             // ADR-0006 — walk-around dispatch. Same background-task
@@ -1714,12 +1770,26 @@ type GdsCanvasControl() as this =
                             { XMin = startPt.X; YMin = startPt.Y
                               XMax = cursorPt.X; YMax = cursorPt.Y }
                     let cb = this.RouteAutoComputedHandler
+                    // Convert the user's locked DraftPosture into
+                    // a walk-around posture preference so the BG
+                    // corner placement matches what the user is
+                    // mouse-drawing. NoPreference falls back to
+                    // the geometric dy>dx rule.
+                    let preferred =
+                        match draft.Posture with
+                        | _ when not draft.PostureLocked ->
+                            Routing.VisibilityGraph.NoPreference
+                        | Routing.Draft.HorizontalFirst ->
+                            Routing.VisibilityGraph.PreferHFirst
+                        | Routing.Draft.VerticalFirst ->
+                            Routing.VisibilityGraph.PreferVFirst
                     let compute () : (int64 * int64) list =
                         let swBuild = System.Diagnostics.Stopwatch.StartNew()
                         let emptyGraph () = Routing.VisibilityGraph.build 0L [||]
                         let adaptive =
                             try
                                 Routing.WalkAround.routeAdaptive
+                                    preferred
                                     key startPt cursorPt
                                     initialMargin macroBounds 3
                             with _ ->
@@ -1802,9 +1872,63 @@ type GdsCanvasControl() as this =
                                 result
                                 |> List.map (fun (x, y) -> sprintf "(%d,%d)" x y)
                                 |> String.concat " "
+                            // Snapshot of which flat polys on the
+                            // routing layer near the cursor are
+                            // claimed by startNet vs left foreign,
+                            // PLUS the foreign polys' bboxes — so
+                            // the log shows exactly which "obstacles"
+                            // the walkaround sees in the wire's
+                            // path. Direct evidence for the
+                            // "over-classification" hypothesis.
+                            let nearbyClassification =
+                                let cellFlat = key.FlatPolyRef
+                                let netIdx = Routing.Obstacles.buildNetIndex key.NetMapRef
+                                let region : Routing.Obstacles.Region =
+                                    { XMin = min startPt.X cursorPt.X - 1000L
+                                      YMin = min startPt.Y cursorPt.Y - 1000L
+                                      XMax = max startPt.X cursorPt.X + 1000L
+                                      YMax = max startPt.Y cursorPt.Y + 1000L }
+                                let mutable ours = 0
+                                let mutable foreign = 0
+                                let foreignBoxes = System.Collections.Generic.List<string>()
+                                let oursBoxes = System.Collections.Generic.List<string>()
+                                for fp in cellFlat do
+                                    if fp.Layer = key.Layer.Number
+                                       && fp.DataType = key.Layer.DataType then
+                                        let (xMin, yMin, xMax, yMax) =
+                                            let mutable a = System.Int64.MaxValue
+                                            let mutable b = System.Int64.MaxValue
+                                            let mutable c = System.Int64.MinValue
+                                            let mutable d = System.Int64.MinValue
+                                            for pt in fp.Points do
+                                                if pt.X < a then a <- pt.X
+                                                if pt.X > c then c <- pt.X
+                                                if pt.Y < b then b <- pt.Y
+                                                if pt.Y > d then d <- pt.Y
+                                            a, b, c, d
+                                        if not (xMax < region.XMin
+                                                || xMin > region.XMax
+                                                || yMax < region.YMin
+                                                || yMin > region.YMax) then
+                                            let bbox = sprintf "(%d,%d,%d,%d)" xMin yMin xMax yMax
+                                            if Routing.Obstacles.isOurs netIdx key.StartNet fp then  // seed-aware classifier
+                                                ours <- ours + 1
+                                                if oursBoxes.Count < 12 then oursBoxes.Add bbox
+                                            else
+                                                foreign <- foreign + 1
+                                                if foreignBoxes.Count < 12 then foreignBoxes.Add bbox
+                                ours, foreign,
+                                String.concat " " oursBoxes,
+                                String.concat " " foreignBoxes
+                            let (nOurs, nForeign, oursBoxes, foreignBoxes) = nearbyClassification
                             Rekolektion.Viz.App.Services.Logger.log "walkaround"
                                 {| buildMs = swBuild.ElapsedMilliseconds
                                    searchMs = swSearch.ElapsedMilliseconds
+                                   layer = sprintf "%d/%d" key.Layer.Number key.Layer.DataType
+                                   nearbyOurs = nOurs
+                                   nearbyForeign = nForeign
+                                   nearbyOursBboxes = oursBoxes
+                                   nearbyForeignBboxes = foreignBoxes
                                    obstacles = graph.Obstacles.Length
                                    nodes = graph.Nodes.Length
                                    corners = result.Length
@@ -1851,7 +1975,19 @@ type GdsCanvasControl() as this =
         // connect to anything).
         let snapTargetOpt =
             if this.RoutingMode || draft.IsSome then
-                let targets = this.SnapTargets ()
+                // During an active draft, restrict snap targets to
+                // pins on the SAME net the route started on. A click
+                // on a foreign-net pin would commit a cross-net
+                // short via `Pointer.Finish`; filtering at this
+                // layer makes the foreign pin invisible to the snap
+                // pass, so `decideAction` gets `onSnapTarget = false`
+                // and falls through to FixSegment (free-space corner)
+                // instead.
+                let targets =
+                    let raw = this.SnapTargets ()
+                    match draft with
+                    | Some d -> Routing.Snap.forStartNet d.StartNet raw
+                    | None -> raw
                 if targets.Length = 0 then None
                 else
                     let radiusDbu =
@@ -1909,113 +2045,21 @@ type GdsCanvasControl() as this =
             if not (isNull cb) then cb.Invoke()
             e.Handled <- true
         | Routing.Pointer.Finish ->
-            // BG walkaround may not have completed for the click's
-            // cursor position, leaving draft.Auto stale or empty —
-            // the commit would then write a straight L. Run ONE
-            // bounded synchronous attempt (maxExpansions=0, initial
-            // region only) and dispatch the corners before Finish.
-            // Bounded so it never blocks the UI for more than the
-            // initial-region cost (~20-50ms on real macros). If the
-            // initial region returns noPath, accept current Auto.
-            let cbAuto = this.RouteAutoComputedHandler
+            // Single pipeline: trust the BG walkaround's most-recent
+            // `DraftRoute.Auto`. No more click-time synchronous
+            // routeAdaptive — that was a second pipeline running
+            // parallel to the BG one and producing a different
+            // answer than what the user was looking at when they
+            // clicked. The BG walkaround runs on every cursor frame
+            // and posts its corners through `RouteAutoComputed`
+            // before this Finish ever fires.
+            //
+            // Same-net pin click (enforced by the snap-target
+            // filter above) expresses commit intent; path
+            // cleanliness is a separate, later pass (segment
+            // drag / vertex edit per `route_editing_plan.md`).
+            // See `feedback_endpoint_over_path.md`.
             let cbFinish = this.RouteFinishHandler
-            (match this.DraftRoute with
-             | None -> ()
-             | Some d ->
-                let lastPt =
-                    match List.tryLast d.Points with
-                    | Some pt -> pt
-                    | None -> (snapX, snapY)
-                let layerKey : Routing.Obstacles.LayerKey =
-                    { Number = fst d.Layer; DataType = snd d.Layer }
-                let units =
-                    match this.Library with
-                    | Some lib -> lib.Units
-                    | None -> { DbuNm = 1; UuUm = 1 }
-                let spacing =
-                    Routing.Pads.spacingFor this.DrcView units d.Layer
-                    |> Option.defaultValue 0L
-                let clearance = max 0L (d.Width / 2L + spacing)
-                let key : Routing.WalkAround.BuildKey =
-                    { Layer = layerKey
-                      StartNet = d.StartNet
-                      Clearance = clearance
-                      FlatPolyRef = this.FlatPolygons
-                      NetMapRef = this.NetMap }
-                let startPtV : Routing.VisibilityGraph.Pt =
-                    { X = fst lastPt; Y = snd lastPt }
-                let cursorPtV : Routing.VisibilityGraph.Pt =
-                    { X = snapX; Y = snapY }
-                let dxAbs = abs (cursorPtV.X - startPtV.X)
-                let dyAbs = abs (cursorPtV.Y - startPtV.Y)
-                let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
-                let macroBounds : Routing.WalkAround.MacroBounds =
-                    let flat = this.FlatPolygons
-                    if flat.Length = 0 then
-                        { XMin = startPtV.X; YMin = startPtV.Y
-                          XMax = cursorPtV.X; YMax = cursorPtV.Y }
-                    else
-                        let mutable xMin = System.Int64.MaxValue
-                        let mutable yMin = System.Int64.MaxValue
-                        let mutable xMax = System.Int64.MinValue
-                        let mutable yMax = System.Int64.MinValue
-                        for fp in flat do
-                            for pt in fp.Points do
-                                if pt.X < xMin then xMin <- pt.X
-                                if pt.X > xMax then xMax <- pt.X
-                                if pt.Y < yMin then yMin <- pt.Y
-                                if pt.Y > yMax then yMax <- pt.Y
-                        { XMin = xMin; YMin = yMin
-                          XMax = xMax; YMax = yMax }
-                let sw = System.Diagnostics.Stopwatch.StartNew()
-                let adaptive =
-                    try
-                        Routing.WalkAround.routeAdaptive
-                            key startPtV cursorPtV
-                            initialMargin macroBounds 0  // no retries
-                    with _ ->
-                        { Path = None
-                          FinalRegion =
-                              { XMin = 0L; YMin = 0L
-                                XMax = 0L; YMax = 0L }
-                          Graph = Routing.VisibilityGraph.build 0L [||]
-                          Expansions = 0 }
-                sw.Stop()
-                match adaptive.Path with
-                | Some nodes ->
-                    let corners =
-                        match nodes with
-                        | _ :: rest ->
-                            rest
-                            |> List.rev
-                            |> (fun xs -> match xs with _ :: t -> t | [] -> [])
-                            |> List.rev
-                            |> List.map (fun pt -> pt.X, pt.Y)
-                        | [] -> []
-                    Rekolektion.Viz.App.Services.Logger.log "walkaround.finish"
-                        {| ms = sw.ElapsedMilliseconds
-                           corners = corners.Length
-                           cornerCoords =
-                               corners
-                               |> List.map (fun (x, y) -> sprintf "(%d,%d)" x y)
-                               |> String.concat " "
-                           startX = startPtV.X
-                           startY = startPtV.Y
-                           cursorX = cursorPtV.X
-                           cursorY = cursorPtV.Y
-                           outcome = "ok" |}
-                    if not (isNull cbAuto) then cbAuto.Invoke(corners)
-                | None ->
-                    // noPath at initial region — keep current Auto.
-                    Rekolektion.Viz.App.Services.Logger.log "walkaround.finish"
-                        {| ms = sw.ElapsedMilliseconds
-                           corners = 0
-                           cornerCoords = ""
-                           startX = startPtV.X
-                           startY = startPtV.Y
-                           cursorX = cursorPtV.X
-                           cursorY = cursorPtV.Y
-                           outcome = "noPath" |})
             if not (isNull cbFinish) then cbFinish.Invoke()
             e.Handled <- true
         | Routing.Pointer.Ignore -> ()
@@ -2901,7 +2945,14 @@ type GdsCanvasControl() as this =
             let (wx, wy) = this.ScreenToWorld p
             swScreen.Stop()
             let swTargets = System.Diagnostics.Stopwatch.StartNew()
-            let targets = this.SnapTargets ()
+            // Same filter as the press path (above): hide foreign-net
+            // pins from the hover/snap pass while a draft is active
+            // so the user sees only valid termination targets glow.
+            let targets =
+                let raw = this.SnapTargets ()
+                match this.DraftRoute with
+                | Some d -> Routing.Snap.forStartNet d.StartNet raw
+                | None -> raw
             let snapCacheHit =
                 obj.ReferenceEquals(cachedSnapTargetsFor, this.FlatPolygons)
             swTargets.Stop()

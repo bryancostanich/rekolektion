@@ -192,35 +192,42 @@ let derive (doc: Document) : Map<string, NetEntry> =
     // in parallel per label, then merged sequentially below.
     let perLabel
         (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel)
-        : (string * NetClass * PolygonRef list * PolygonRef) option =
+        : (string * NetClass * PolygonRef list * PolygonRef list) option =
         // Skip DeviceTerminal labels — those are FET port annotations
         // (D / G / S / B), not net names. Treating them as nets would
         // collapse every device's gate into one fake "G" entry.
         if lbl.Text = "" || lbl.Kind <> NetName then None else
         // Seed lookup: only walk polys on lbl.Layer, and bbox-reject
         // before the more expensive pointInPolygon test.
-        let seedIdx =
+        //
+        // Returns EVERY poly the label point lies inside — not just
+        // the first. Overlapping same-layer polys at the label
+        // position (e.g., a top-cell routing channel and an
+        // SRef-flattened pin underneath at the same Y) ALL count as
+        // directly claimed by the label. Otherwise the flood seeds
+        // only one and the rest get classified as foreign, which
+        // makes the walk-around treat the routing channel itself as
+        // a wall and rely on start exemption to punch through.
+        let seedIdxs =
             match Map.tryFind lbl.Layer byLayerNum with
-            | None -> None
+            | None -> []
             | Some arr ->
-                let mutable found = -1
-                let mutable i = 0
-                while found < 0 && i < arr.Length do
+                let found = System.Collections.Generic.List<int>()
+                for i in 0 .. arr.Length - 1 do
                     let idx = arr.[i]
                     let (xMin, yMin, xMax, yMax) = cachedBbox.[idx]
                     if lbl.Origin.X >= xMin && lbl.Origin.X <= xMax
                        && lbl.Origin.Y >= yMin && lbl.Origin.Y <= yMax
                        && pointInPolygon lbl.Origin cachedPts.[idx] then
-                        found <- idx
-                    i <- i + 1
-                if found < 0 then None else Some found
-        match seedIdx with
-        | None -> None
-        | Some i0 ->
+                        found.Add idx
+                List.ofSeq found
+        match seedIdxs with
+        | [] -> None
+        | i0 :: _ ->
             let visited = System.Collections.Generic.HashSet<int>()
             let queue = System.Collections.Generic.Queue<int>()
-            queue.Enqueue i0 |> ignore
-            visited.Add i0 |> ignore
+            for s in seedIdxs do
+                if visited.Add s then queue.Enqueue s |> ignore
             let collected = System.Collections.Generic.List<Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon>()
             while queue.Count > 0 do
                 let curIdx = queue.Dequeue()
@@ -279,19 +286,41 @@ let derive (doc: Document) : Map<string, NetEntry> =
                       TopInstanceIndex = p.TopInstanceIndex })
                 |> Seq.distinct
                 |> Seq.toList
-            // The seed polygon — the one the label sits inside —
-            // is the direct claim. Tracked separately so
-            // `Obstacles.buildNetIndex` can prioritise it over
-            // flooded claims from OTHER labels that crossed through
-            // this polygon's contact stack.
-            let seedPoly = polys.[i0]
-            let seedRef : PolygonRef =
-                { Structure = seedPoly.SourceStructure
-                  Layer = seedPoly.Layer
-                  DataType = seedPoly.DataType
-                  Index = seedPoly.SourceIndex
-                  TopInstanceIndex = seedPoly.TopInstanceIndex }
-            Some (lbl.Text, classOfName lbl.Text, polyRefs, seedRef)
+            // Seed polygons = the PIN'S PHYSICAL STACK. Originally
+            // this was just `seedIdxs` (polys whose interior contains
+            // the label point — typically a single li1 patch). That
+            // was too tight: the licon directly below the seed, and
+            // the diff/poly beneath that, are physically the same
+            // pin — the wire should be allowed to merge with them
+            // too. Without that, `Obstacles.isOurs` rejects them as
+            // SRef-internal non-seed polys and the walkaround treats
+            // the start pin's own licon as an obstacle.
+            //
+            // The expanded definition: from the direct seeds, take
+            // every flood-reached poly that lives in the SAME SRef
+            // instance. The full `collected` flood already walked
+            // the contact stack; we just project it down to the
+            // seed's instance. Polys reached in OTHER instances
+            // (via shared rails) stay out of seeds — that's what
+            // prevents the wire from teleporting through other
+            // devices' pin stacks.
+            let seedInst : int option =
+                match seedIdxs with
+                | i :: _ -> polys.[i].TopInstanceIndex
+                | [] -> None
+            let seedRefs : PolygonRef list =
+                collected
+                |> Seq.filter (fun p -> p.TopInstanceIndex = seedInst)
+                |> Seq.map (fun p ->
+                    { Structure = p.SourceStructure
+                      Layer = p.Layer
+                      DataType = p.DataType
+                      Index = p.SourceIndex
+                      TopInstanceIndex = p.TopInstanceIndex })
+                |> Seq.distinct
+                |> Seq.toList
+            ignore i0
+            Some (lbl.Text, classOfName lbl.Text, polyRefs, seedRefs)
 
     // Parallel per-label flood. Each label's BFS is independent
     // (reads shared immutable spatial indices, builds its own
@@ -305,16 +334,16 @@ let derive (doc: Document) : Map<string, NetEntry> =
     |> Array.fold (fun (acc: Map<string, NetEntry>) entry ->
         match entry with
         | None -> acc
-        | Some (name, cls, polyRefs, seedRef) ->
+        | Some (name, cls, polyRefs, seedRefs) ->
             let merged =
                 match Map.tryFind name acc with
                 | Some existing ->
                     { existing with
                         Polygons = existing.Polygons @ polyRefs |> List.distinct
-                        SeedPolygons = existing.SeedPolygons @ [seedRef] |> List.distinct }
+                        SeedPolygons = existing.SeedPolygons @ seedRefs |> List.distinct }
                 | None ->
                     { Name = name
                       Class = cls
                       Polygons = polyRefs
-                      SeedPolygons = [seedRef] }
+                      SeedPolygons = seedRefs }
             Map.add name merged acc) Map.empty

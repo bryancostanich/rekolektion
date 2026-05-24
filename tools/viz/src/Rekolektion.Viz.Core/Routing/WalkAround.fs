@@ -41,27 +41,23 @@ type BuildKey = {
     NetMapRef    : Map<string, NetEntry>
 }
 
-/// Build the obstacle set + visibility graph for a route. Returns
-/// the prebuilt graph; cached by the caller. O(O · log O) for the
-/// obstacle filter, O(O² · O) for the corner-pair visibility test
-/// inside `VisibilityGraph.build`.
-let buildGraph (key : BuildKey) : VisibilityGraph.Prebuilt =
-    let netIdx = Obstacles.buildNetIndex key.NetMapRef
-    let obstacles = Obstacles.obstaclesFor key.Layer key.StartNet netIdx key.FlatPolyRef
-    VisibilityGraph.build key.Clearance obstacles
-
-/// Region-bounded graph build. Filters the obstacle universe to the
-/// supplied bbox before constructing the visibility graph — the
-/// whole point of ADR-0006's "continuous mode" is that the relevant
-/// obstacles are the ones near (start, cursor); the visibility-graph
-/// build is too costly to run against the full cell on every frame.
+/// Region-bounded graph build. The ONE entry point — there's no
+/// "full-cell" build any more (the previous `buildGraph` variant was
+/// a bug-compat trap that called the unseeded obstacle filter).
+///
+/// Filters the obstacle universe to the supplied bbox before
+/// constructing the visibility graph — the whole point of ADR-0006's
+/// "continuous mode" is that the relevant obstacles are the ones
+/// near (start, cursor); the visibility-graph build is too costly
+/// to run against the full cell on every frame. Callers wanting
+/// the whole macro pass a region covering the macro bounds.
 ///
 /// The caller picks the region (typically (start, cursor) bbox
 /// expanded by 1-2× the manhattan distance) so detours that have to
 /// leave the direct corridor can still be found.
 ///
 /// Backed by `Obstacles.obstacleSet`: the full obstacle universe is
-/// computed once per (Layer, StartNet, FlatPolyRef, NetMapRef) and
+/// computed once per (Layer, StartNet, FlatPolyRef, NetIndex) and
 /// region clips run via the cached uniform grid. The cost on a
 /// 60-obstacle macro drops from O(all polygons) per call to
 /// O(obstacles in region) — typically a handful.
@@ -69,7 +65,7 @@ let buildGraphInRegion (key : BuildKey) (region : Obstacles.Region) : Visibility
     let netIdx = Obstacles.buildNetIndex key.NetMapRef
     let set =
         Obstacles.obstacleSet
-            key.Layer key.StartNet key.NetMapRef netIdx key.FlatPolyRef
+            key.Layer key.StartNet netIdx key.FlatPolyRef
     let obstacles = Obstacles.obstaclesInRegionCached set region
     VisibilityGraph.build key.Clearance obstacles
 
@@ -83,10 +79,11 @@ let buildGraphInRegion (key : BuildKey) (region : Obstacles.Region) : Visibility
 /// the last clear node it has and lets the live-DRC overlay flag
 /// the gap.
 let route
+    (preferred : VisibilityGraph.PreferredPosture)
     (graph  : VisibilityGraph.Prebuilt)
     (start  : VisibilityGraph.Pt)
     (cursor : VisibilityGraph.Pt) : VisibilityGraph.Pt list option =
-    VisibilityGraph.shortestPath graph start cursor
+    VisibilityGraph.shortestPath preferred graph start cursor
 
 /// Outer bounding box of the macro — the region search will never
 /// grow past this. Caller supplies it (typically the FlatPolygons'
@@ -102,8 +99,9 @@ type MacroBounds = {
 /// array doesn't change between cursor moves on the same macro, but
 /// the canvas was rescanning every dispatch (O(polygons · points)).
 /// Trimmed when it grows so a long session doesn't pin every macro.
-let private macroBoundsCache : System.Collections.Generic.Dictionary<obj, MacroBounds> =
-    System.Collections.Generic.Dictionary<obj, MacroBounds>(HashIdentity.Reference)
+/// Invalidation contract: see `tools/viz/docs/routing_caches.md`.
+let private macroBoundsCache : System.Collections.Concurrent.ConcurrentDictionary<obj, MacroBounds> =
+    System.Collections.Concurrent.ConcurrentDictionary<obj, MacroBounds>(HashIdentity.Reference)
 
 /// Bounding box of every point in `flat`. Returns `None` when the
 /// array is empty so the caller picks its own fallback (start/cursor
@@ -165,6 +163,7 @@ type AdaptiveResult = {
 /// large margin collapses to the full macro and the search runs
 /// against every same-layer obstacle.
 let routeAdaptive
+    (preferred      : VisibilityGraph.PreferredPosture)
     (key            : BuildKey)
     (start          : VisibilityGraph.Pt)
     (cursor         : VisibilityGraph.Pt)
@@ -185,7 +184,7 @@ let routeAdaptive
     let rec loop margin attempt =
         let region = regionFromMargin margin
         let graph = buildGraphInRegion key region
-        match route graph start cursor with
+        match route preferred graph start cursor with
         | Some path ->
             { Path = Some path; FinalRegion = region; Graph = graph; Expansions = attempt }
         | None ->

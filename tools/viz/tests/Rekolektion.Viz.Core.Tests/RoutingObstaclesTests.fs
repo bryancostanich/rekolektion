@@ -100,14 +100,14 @@ let ``net claims key on (source + TopInstanceIndex), not source alone`` () =
     let b = { flat "nfet" 67 20 0 [] with TopInstanceIndex = Some 7 }
     netOf idx b |> should equal (None : string option)
 
-// ---- obstaclesFor — same-layer foreign-net polygons ------------
+// ---- obstacleSet — same-layer foreign-net polygons --------------
 
 [<Fact>]
 let ``same-layer foreign-net polygon is an obstacle`` () =
     let bl = flat "top" 67 20 0 [ 0,0; 100,0; 100,100; 0,100; 0,0 ]
     let nets = Map.ofList [ "BL", netEntry "BL" Signal [ pref "top" 67 20 0 ] ]
     let idx = buildNetIndex nets
-    obstaclesFor li1Layer "VGND" idx [| bl |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| bl |] |> Obstacles.polygonsOf
     |> Array.length |> should equal 1
 
 [<Fact>]
@@ -115,10 +115,10 @@ let ``same-layer SAME-net polygon is NOT an obstacle`` () =
     let same = flat "top" 67 20 0 [ 0,0; 100,0; 100,100; 0,100; 0,0 ]
     let nets = Map.ofList [ "VGND", netEntry "VGND" Ground [ pref "top" 67 20 0 ] ]
     let idx = buildNetIndex nets
-    obstaclesFor li1Layer "VGND" idx [| same |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| same |] |> Obstacles.polygonsOf
     |> should be Empty
 
-// ---- obstaclesFor — bridge layers -------------------------------
+// ---- obstacleSet — bridge layers --------------------------------
 
 [<Fact>]
 let ``foreign-net licon UNDER a li1 wire is an obstacle`` () =
@@ -127,7 +127,7 @@ let ``foreign-net licon UNDER a li1 wire is an obstacle`` () =
     let foreignLicon = flat "top" 66 44 0 [ 0,0; 50,0; 50,50; 0,50; 0,0 ]
     let nets = Map.ofList [ "BL", netEntry "BL" Signal [ pref "top" 66 44 0 ] ]
     let idx = buildNetIndex nets
-    obstaclesFor li1Layer "VGND" idx [| foreignLicon |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| foreignLicon |] |> Obstacles.polygonsOf
     |> Array.length |> should equal 1
 
 [<Fact>]
@@ -135,7 +135,7 @@ let ``same-net licon under a li1 wire is NOT an obstacle`` () =
     let sameLicon = flat "top" 66 44 0 []
     let nets = Map.ofList [ "VGND", netEntry "VGND" Ground [ pref "top" 66 44 0 ] ]
     let idx = buildNetIndex nets
-    obstaclesFor li1Layer "VGND" idx [| sameLicon |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| sameLicon |] |> Obstacles.polygonsOf
     |> should be Empty
 
 [<Fact>]
@@ -144,7 +144,7 @@ let ``foreign-net mcon (li1->met1) is an obstacle for a li1 wire`` () =
     let foreignMcon = flat "top" 67 44 0 []
     let nets = Map.ofList [ "X", netEntry "X" Signal [ pref "top" 67 44 0 ] ]
     let idx = buildNetIndex nets
-    obstaclesFor li1Layer "VGND" idx [| foreignMcon |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| foreignMcon |] |> Obstacles.polygonsOf
     |> Array.length |> should equal 1
 
 [<Fact>]
@@ -157,10 +157,10 @@ let ``foreign-net mcon AND via are obstacles for a met1 wire`` () =
                 [ pref "top" 67 44 0; pref "top" 68 44 1 ]
         ]
     let idx = buildNetIndex nets
-    obstaclesFor met1Layer "Ours" idx [| mcon; via |]
+    Obstacles.obstacleSet met1Layer "Ours" idx [| mcon; via |] |> Obstacles.polygonsOf
     |> Array.length |> should equal 2
 
-// ---- obstaclesFor — unclaimed polygons (defensive) -------------
+// ---- obstacleSet — unclaimed polygons (defensive) ---------------
 
 [<Fact>]
 let ``polygon with no net claim is treated as a foreign obstacle`` () =
@@ -168,10 +168,10 @@ let ``polygon with no net claim is treated as a foreign obstacle`` () =
     // feature. We can't prove it's ours, so route around it.
     let stray = flat "top" 67 20 99 []
     let idx = buildNetIndex Map.empty
-    obstaclesFor li1Layer "VGND" idx [| stray |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| stray |] |> Obstacles.polygonsOf
     |> Array.length |> should equal 1
 
-// ---- obstaclesFor — out-of-scope layers ------------------------
+// ---- obstacleSet — out-of-scope layers --------------------------
 
 [<Fact>]
 let ``polygons on layers unrelated to the wire are NOT obstacles`` () =
@@ -188,10 +188,10 @@ let ``polygons on layers unrelated to the wire are NOT obstacles`` () =
                   pref "top" 64 20 2 ]
         ]
     let idx = buildNetIndex nets
-    obstaclesFor li1Layer "VGND" idx [| diff; poly; nwell |]
+    Obstacles.obstacleSet li1Layer "VGND" idx [| diff; poly; nwell |] |> Obstacles.polygonsOf
     |> should be Empty
 
-// ---- obstaclesInRegion — bbox filter ---------------------------
+// ---- obstaclesInRegionCached — bbox filter ----------------------
 
 [<Fact>]
 let ``obstaclesInRegion drops polygons whose bbox sits outside the region`` () =
@@ -208,12 +208,13 @@ let ``obstaclesInRegion drops polygons whose bbox sits outside the region`` () =
     let idx = buildNetIndex nets
     let region : Region =
         { XMin = -200L; YMin = -200L; XMax = 200L; YMax = 200L }
-    let obs = obstaclesInRegion li1Layer "VGND" idx region [| near; far |]
+    let set = Obstacles.obstacleSet li1Layer "VGND" idx [| near; far |]
+    let obs = Obstacles.obstaclesInRegionCached set region
     obs |> Array.length |> should equal 1
     obs.[0].SourceIndex |> should equal 0
 
 [<Fact>]
-let ``obstaclesInRegion keeps the same net classification as obstaclesFor`` () =
+let ``obstaclesInRegionCached keeps the same net classification as the full set`` () =
     let foreign = flat "top" 66 44 0
                     [ 100,0; 200,0; 200,100; 100,100; 100,0 ]    // foreign licon
     let ours    = flat "top" 66 44 1
@@ -225,18 +226,19 @@ let ``obstaclesInRegion keeps the same net classification as obstaclesFor`` () =
         ]
     let idx = buildNetIndex nets
     let region : Region = { XMin = 0L; YMin = 0L; XMax = 1000L; YMax = 1000L }
-    let obs = obstaclesInRegion li1Layer "VGND" idx region [| foreign; ours |]
-    // Foreign in, ours out — same as obstaclesFor.
+    let set = Obstacles.obstacleSet li1Layer "VGND" idx [| foreign; ours |]
+    let obs = Obstacles.obstaclesInRegionCached set region
+    // Foreign in, ours out.
     obs |> Array.length |> should equal 1
     obs.[0].SourceIndex |> should equal 0
 
 [<Fact>]
-let ``obstaclesFor on a non-routing layer returns an empty set`` () =
+let ``obstacleSet on a non-routing layer returns an empty set`` () =
     // We don't route on poly. Calling the function with a poly layer
     // is a configuration mistake; rather than crash, we return [||]
     // and let the caller's straight-L behaviour take over.
     let anything = flat "top" 67 20 0 []
     let nets = Map.ofList [ "X", netEntry "X" Signal [ pref "top" 67 20 0 ] ]
     let idx = buildNetIndex nets
-    obstaclesFor polyLayer "X" idx [| anything |]
+    Obstacles.obstacleSet polyLayer "X" idx [| anything |] |> Obstacles.polygonsOf
     |> should be Empty

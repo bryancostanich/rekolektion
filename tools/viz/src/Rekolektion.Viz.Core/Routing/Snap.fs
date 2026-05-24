@@ -80,6 +80,17 @@ let buildTargets
                 i <- i + 1
     result.ToArray()
 
+/// Restrict snap targets to those whose net matches `startNet`.
+/// Used while a route draft is active so the user can only land
+/// on (and hover-highlight) pins of the SAME net they started
+/// drawing — clicking a foreign-net pin would write a cross-net
+/// short. Empty `startNet` falls through and returns `targets`
+/// unchanged so callers without a known start net (and the
+/// no-draft state) keep their existing behaviour.
+let forStartNet (startNet : string) (targets : SnapTarget array) : SnapTarget array =
+    if System.String.IsNullOrEmpty startNet then targets
+    else targets |> Array.filter (fun t -> t.Net = startNet)
+
 /// Find the snap target nearest to `cursor` within `radiusDbu`,
 /// or None when nothing is in range. Distance is Euclidean in
 /// world DBU; the caller computes the radius from screen pixels

@@ -26,6 +26,15 @@ type DraftRoute = {
     Layer   : int * int
     Width   : int64
     Posture : DraftPosture
+    /// True once `setCursor` has observed a dominant-axis cursor
+    /// motion since the last `fix` / `start` — at that point the
+    /// posture has been chosen to match the user's first
+    /// decisive direction and is locked in for the rest of this
+    /// segment. Manual `flipPosture` resets the lock so the next
+    /// dominant motion can re-influence the posture. Lock is
+    /// cleared by `fix` / `start` so each segment gets a fresh
+    /// vote.
+    PostureLocked : bool
     Points  : (int64 * int64) list
     Cursor  : (int64 * int64) option
     /// Walk-around corner nodes between the last fixed Point and
@@ -81,6 +90,7 @@ let start
     Layer = layer
     Width = width
     Posture = HorizontalFirst
+    PostureLocked = false
     Points = [ anchor ]
     Cursor = None
     Auto = []
@@ -94,18 +104,49 @@ let start
 let setStartNet (net: string) (r: DraftRoute) : DraftRoute =
     { r with StartNet = net }
 
+/// Threshold for posture auto-lock: the dominant axis of NET
+/// motion from the last fixed point to the cursor must be at
+/// least `postureFlipRatio`× the other axis before posture
+/// locks in. Higher = needs more decisive motion before locking;
+/// lower = locks sooner. 2.0 was picked by feel.
+[<Literal>]
+let private postureFlipRatio = 2L
+
 /// Update the live cursor position. Tentative L re-derives off this.
-/// Updates the cursor for the live tentative segment. Auto is
-/// PRESERVED across cursor moves so the wire keeps rendering the
-/// latest walk-around corners while the BG search recomputes for
-/// the new position. Previously this cleared Auto on every move,
-/// which kept the tentative segment as a straight L 95% of the time
-/// — the BG result would land and immediately get wiped by the next
-/// mouse-move. Holding the old corners produces brief visual lag
-/// during fast drags but actually shows the auto-jog. Auto is fully
-/// reset on `fix` / `start` / commit.
+///
+/// Auto is PRESERVED across cursor moves so the wire keeps rendering
+/// the latest walk-around corners while the BG search recomputes for
+/// the new position. Auto is fully reset on `fix` / `start` /
+/// commit.
+///
+/// **Posture auto-lock** (the "softly driven by mouse direction"
+/// behaviour the user asked for): when the cursor moves far enough
+/// in one axis from the last fixed point that the axis dominates
+/// the other by `postureFlipRatio`×, posture locks in to match —
+/// HorizontalFirst when X dominates (long leg runs along the
+/// direction the user moved first), VerticalFirst when Y dominates.
+/// Once locked, subsequent cursor moves do NOT flip posture: the
+/// classic "drew right then down" case keeps the corner where the
+/// user expects it instead of snapping each frame as dx/dy ratio
+/// crosses. Manual `flipPosture` clears the lock so the user can
+/// hand off control or re-influence with a fresh dominant motion.
 let setCursor (cursor: int64 * int64) (r: DraftRoute) : DraftRoute =
-    { r with Cursor = Some cursor }
+    let lastFixed = r.Points |> List.tryLast
+    let posture', locked' =
+        if r.PostureLocked then r.Posture, true
+        else
+            match lastFixed with
+            | None -> r.Posture, false
+            | Some (lx, ly) ->
+                let dx = abs (fst cursor - lx)
+                let dy = abs (snd cursor - ly)
+                if dx > dy * postureFlipRatio then HorizontalFirst, true
+                elif dy > dx * postureFlipRatio then VerticalFirst, true
+                else r.Posture, false
+    { r with
+        Cursor = Some cursor
+        Posture = posture'
+        PostureLocked = locked' }
 
 /// Set the walk-around corner sequence between the last fixed Point
 /// and the Cursor (ADR-0006). Empty list resets to straight-L.
@@ -123,7 +164,10 @@ let fix (r: DraftRoute) : DraftRoute =
         { r with
             Points = r.Points @ r.Auto @ [c]
             Cursor = None
-            Auto   = [] }
+            Auto   = []
+            // New segment starts: posture lock releases so the
+            // user's next dominant motion can re-pick.
+            PostureLocked = false }
 
 /// Remove the last fixed corner. The anchor is preserved — popping
 /// past the first point is a no-op so the route stays alive.
@@ -141,7 +185,10 @@ let flipPosture (r: DraftRoute) : DraftRoute =
         match r.Posture with
         | HorizontalFirst -> VerticalFirst
         | VerticalFirst   -> HorizontalFirst
-    { r with Posture = next }
+    // Manual flip clears the auto-lock — the user explicitly
+    // took control. Subsequent dominant motion may re-lock the
+    // opposite direction if they keep dragging that way.
+    { r with Posture = next; PostureLocked = false }
 
 /// Rectangles produced by the fixed `Points` list, in commit order.
 /// Excludes the tentative segment.

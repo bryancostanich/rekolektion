@@ -120,3 +120,30 @@ let ``nearest is inclusive at the radius boundary`` () =
     // Cursor at (0,0), target at (1000,0) → distance exactly 1000.
     Snap.nearest targets (0L, 0L) 1000L
     |> Option.isSome |> should equal true
+
+// --- forStartNet -------------------------------------------------------
+
+[<Fact>]
+let ``forStartNet keeps only same-net targets`` () =
+    let targets = [|
+        mkTarget 0 0 "drn_R"
+        mkTarget 100 100 "drn_L"
+        mkTarget 200 200 "drn_R"
+        mkTarget 300 300 "VSS"
+    |]
+    let kept = Snap.forStartNet "drn_R" targets
+    kept.Length |> should equal 2
+    kept |> Array.forall (fun t -> t.Net = "drn_R") |> should equal true
+
+[<Fact>]
+let ``forStartNet with empty startNet returns input unchanged`` () =
+    // No-draft / unknown-net path: behave as a pass-through so the
+    // hover and snap-on-click paths keep their legacy behaviour
+    // outside of an active route.
+    let targets = [| mkTarget 0 0 "A"; mkTarget 100 100 "B" |]
+    Snap.forStartNet "" targets |> should equal targets
+
+[<Fact>]
+let ``forStartNet with no matching net returns empty`` () =
+    let targets = [| mkTarget 0 0 "drn_L"; mkTarget 100 100 "VSS" |]
+    Snap.forStartNet "drn_R" targets |> should be Empty

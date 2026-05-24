@@ -59,6 +59,22 @@ type DragState = {
     /// drag path (delta = 0 commit → wire selection); ignored by
     /// the actual segment drag.
     ShiftAtPickup : bool
+    /// Other wires that should move alongside the picked one,
+    /// populated when the picked rect was part of the current
+    /// selection. Each entry is a separate wire (one or more
+    /// collinear-abutting rects) that gets translated by the
+    /// same vector as the picked group.
+    Extras : DragExtra list
+}
+
+/// One "extra" wire that follows the picked drag. Mirrors the
+/// picked-wire fields but without pickup coords (extras share the
+/// picked's Delta and don't track the cursor themselves).
+and DragExtra = {
+    CellName     : string
+    GroupIndices : int list
+    Original     : Rectangle
+    Axis         : Wire.SegmentAxis
 }
 
 /// Begin a drag at the picked-up rect. Auto-groups collinear-
@@ -73,6 +89,7 @@ let start
         (pickupX : int64)
         (pickupY : int64)
         (shiftAtPickup : bool)
+        (selection : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>)
         (doc : Document) : DragState =
     let group = Wire.collinearGroupOf cellName idx doc
     let groupIndices, groupRects =
@@ -81,11 +98,49 @@ let start
     let (uXLo, uYLo, uXHi, uYHi) = Wire.unionBbox groupRects
     let virtualRect : Rectangle =
         { r with X1 = uXLo; Y1 = uYLo; X2 = uXHi; Y2 = uYHi }
+    // Build extras from selection. Rule: extras fire ONLY when
+    // the picked rect is itself part of the current selection —
+    // clicking a non-selected rect drags it alone, no surprise
+    // multi-wire moves. The picked group's indices are excluded
+    // so we don't list them twice.
+    let pickedKey : Rekolektion.Viz.Core.Layout.Flatten.PolyKey =
+        { Cell = cellName; Index = idx; TopInstance = None }
+    let pickedSet = Set.ofList groupIndices
+    let extras =
+        if not (Set.contains pickedKey selection) then []
+        else
+            let mutable visited = pickedSet
+            let acc = System.Collections.Generic.List<DragExtra>()
+            for key in selection do
+                if key.TopInstance = None
+                   && key.Cell = cellName
+                   && not (visited.Contains key.Index) then
+                    let extraGroup =
+                        Wire.collinearGroupOf cellName key.Index doc
+                    if not (List.isEmpty extraGroup) then
+                        let gIdxs, gRects = extraGroup |> List.unzip
+                        // Mark every member of this group visited
+                        // so a second Selection entry in the same
+                        // group doesn't add a duplicate extra.
+                        for gi in gIdxs do
+                            visited <- visited.Add gi
+                        let (xLo, yLo, xHi, yHi) = Wire.unionBbox gRects
+                        let seedRect = gRects |> List.head
+                        let exRect =
+                            { seedRect with X1 = xLo; Y1 = yLo
+                                            X2 = xHi; Y2 = yHi }
+                        acc.Add
+                            { CellName = cellName
+                              GroupIndices = gIdxs
+                              Original = exRect
+                              Axis = Wire.segmentAxis exRect }
+            acc |> List.ofSeq
     { WireId = wireId; CellName = cellName; SegmentIdx = idx
       GroupIndices = groupIndices
       Original = virtualRect; Axis = Wire.segmentAxis virtualRect
       PickupX = pickupX; PickupY = pickupY; Delta = 0L
-      ShiftAtPickup = shiftAtPickup }
+      ShiftAtPickup = shiftAtPickup
+      Extras = extras }
 
 /// Update the drag with the live cursor position. Off-axis cursor
 /// motion is ignored — Manhattan-only is the explicit v1
@@ -106,6 +161,44 @@ let draggedSegment (s : DragState) : Rectangle =
         { r with Y1 = r.Y1 + s.Delta; Y2 = r.Y2 + s.Delta }
     | Wire.Vertical ->
         { r with X1 = r.X1 + s.Delta; X2 = r.X2 + s.Delta }
+
+/// Translation vector applied to each extra by the picked drag.
+/// The picked wire moves perpendicular to its own axis by Delta;
+/// extras translate by the same VECTOR — so a same-axis extra
+/// moves correctly along its own perpendicular, and a cross-axis
+/// extra slides along its own parallel (no per-extra stretching,
+/// just a rigid translate). Good enough for v1; if cross-axis
+/// stretching is needed later, store cursor x/y separately and
+/// give each extra its own Delta on its own perpendicular.
+let private dragVector (s : DragState) : int64 * int64 =
+    match s.Axis with
+    | Wire.Horizontal -> 0L, s.Delta
+    | Wire.Vertical   -> s.Delta, 0L
+
+/// Project an extra wire under the picked drag's translation
+/// vector. Returns the rects to commit for this extra (one per
+/// group member, all translated by `(dx, dy)`).
+let private projectExtra (s : DragState) (ex : DragExtra) (doc : Document) : Rectangle list =
+    let dx, dy = dragVector s
+    if dx = 0L && dy = 0L then []
+    else
+        let cellOpt = doc.Cells |> List.tryFind (fun c -> c.Name = ex.CellName)
+        match cellOpt with
+        | None -> []
+        | Some c ->
+            let indexSet = Set.ofList ex.GroupIndices
+            c.Elements
+            |> List.indexed
+            |> List.choose (fun (i, el) ->
+                if Set.contains i indexSet then
+                    match el with
+                    | RectEl r ->
+                        Some
+                            { r with
+                                X1 = r.X1 + dx; X2 = r.X2 + dx
+                                Y1 = r.Y1 + dy; Y2 = r.Y2 + dy }
+                    | _ -> None
+                else None)
 
 /// Bridge rect for an anchored endpoint of a horizontal segment.
 /// Builds a vertical rect at `xEndpoint` spanning from the
@@ -316,4 +409,6 @@ let projectGeometry (s : DragState) (doc : Document) : Rectangle list =
                         | None -> r)
             | None ->
                 [ dragged ]
-        body @ bridges
+        let extraRects =
+            s.Extras |> List.collect (fun ex -> projectExtra s ex doc)
+        body @ bridges @ extraRects

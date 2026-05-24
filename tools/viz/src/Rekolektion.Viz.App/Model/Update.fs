@@ -785,7 +785,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         | Some doc ->
             let drag =
                 Routing.SegmentDrag.start
-                    wireId cellName segIdx rect px py shift doc
+                    wireId cellName segIdx rect px py shift
+                    model.Selection doc
             { model with SegmentDrag = Some drag }, Cmd.none
     | Msg.SegmentDragMove (x, y) ->
         match model.SegmentDrag with
@@ -945,17 +946,24 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         // Removal predicate: when WireId is known,
                         // drop every rect carrying it (the wire's
                         // full set). When unknown, drop every rect
-                        // in the seed's collinear-abutting group
-                        // (typically three abutting rects along
-                        // one Y line — merged into the projected
-                        // single rect by the commit append).
+                        // in the seed's collinear-abutting group.
+                        // Either way, ALSO drop every extra wire's
+                        // source rects (their projected translates
+                        // get appended below).
                         let groupSet = Set.ofList s.GroupIndices
+                        let extraIndexSet =
+                            s.Extras
+                            |> List.collect (fun ex -> ex.GroupIndices)
+                            |> Set.ofList
                         let shouldRemoveAt (idx : int) (el : Rekolektion.Viz.Core.Rkt.Types.Element) =
                             match el with
                             | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
-                                match s.WireId with
-                                | Some id -> Routing.Wire.getWireId r = Some id
-                                | None -> Set.contains idx groupSet
+                                let inExtras = Set.contains idx extraIndexSet
+                                let inPicked =
+                                    match s.WireId with
+                                    | Some id -> Routing.Wire.getWireId r = Some id
+                                    | None -> Set.contains idx groupSet
+                                inPicked || inExtras
                             | _ -> false
                         let cells' =
                             mc.Document.Cells

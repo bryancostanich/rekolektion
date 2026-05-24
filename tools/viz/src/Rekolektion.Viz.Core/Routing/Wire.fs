@@ -78,3 +78,85 @@ let segmentsOf (id : int) (doc : Document) : (Cell * int * Rectangle) list =
               match el with
               | RectEl r when getWireId r = Some id -> yield (c, idx, r)
               | _ -> () ]
+
+/// Axis a segment runs along. Decided by the larger bbox extent:
+/// horizontal = span on X is greater than span on Y. Square (the
+/// rare 1-DBU stub) is treated as horizontal — there's no
+/// perpendicular-drag meaning for a true square, and the caller
+/// shouldn't be hitting one in routing scenarios.
+type SegmentAxis = Horizontal | Vertical
+
+let segmentAxis (r : Rectangle) : SegmentAxis =
+    let dx = abs (r.X2 - r.X1)
+    let dy = abs (r.Y2 - r.Y1)
+    if dx >= dy then Horizontal else Vertical
+
+/// True when the world point `(x, y)` falls inside the rect's
+/// bbox (inclusive). The wire hit-test the canvas uses on
+/// mouse-down for segment pickup — bbox-inclusive matches the
+/// visible filled rect the user sees.
+let containsPoint (x : int64) (y : int64) (r : Rectangle) : bool =
+    let xLo = min r.X1 r.X2
+    let xHi = max r.X1 r.X2
+    let yLo = min r.Y1 r.Y2
+    let yHi = max r.Y1 r.Y2
+    x >= xLo && x <= xHi && y >= yLo && y <= yHi
+
+/// Find the topmost wire segment in `doc` whose bbox contains
+/// `(x, y)`. Returns `(wireId, cellName, rectIndexInCell,
+/// rectangle)` of the hit segment, or `None`. Walks document
+/// order; ties go to the LATER-authored segment (more recent
+/// edits sit on top in the renderer, so the hit-test matches
+/// what the user clicks on).
+let findSegmentAt (x : int64) (y : int64) (doc : Document)
+                  : (int * string * int * Rectangle) option =
+    let mutable result : (int * string * int * Rectangle) option = None
+    for c in doc.Cells do
+        for idx, el in List.indexed c.Elements do
+            match el with
+            | RectEl r ->
+                match getWireId r with
+                | Some wid when containsPoint x y r ->
+                    result <- Some (wid, c.Name, idx, r)
+                | _ -> ()
+            | _ -> ()
+    result
+
+/// Same-wire segments in the cell touching `r` at its endpoints.
+/// "Touching" = sharing a bbox edge along the wire's long axis,
+/// i.e., the next segment in the polyline. Returns up to two
+/// entries (start-end, end-end); could be 0, 1, or 2 depending
+/// on whether `r` is a terminus or middle of the wire.
+///
+/// Uses bbox proximity rather than the wire's polyline order
+/// because the on-disk schema has no notion of polyline ordering —
+/// the wire is just a bag of RectEls that share a WireId. The
+/// renderer also doesn't care; only segment-drag needs this.
+let neighborsOf
+        (wireId : int)
+        (cellName : string)
+        (selfIdx : int)
+        (r : Rectangle)
+        (doc : Document) : (int * Rectangle) list =
+    let xLo = min r.X1 r.X2
+    let xHi = max r.X1 r.X2
+    let yLo = min r.Y1 r.Y2
+    let yHi = max r.Y1 r.Y2
+    [ for c in doc.Cells do
+          if c.Name = cellName then
+              for idx, el in List.indexed c.Elements do
+                  if idx <> selfIdx then
+                      match el with
+                      | RectEl r' when getWireId r' = Some wireId ->
+                          let xLo' = min r'.X1 r'.X2
+                          let xHi' = max r'.X1 r'.X2
+                          let yLo' = min r'.Y1 r'.Y2
+                          let yHi' = max r'.Y1 r'.Y2
+                          // Overlap-or-touch in both axes — a
+                          // neighbour shares an edge OR overlaps
+                          // (corner pieces between two legs of an
+                          // L share bbox in both axes).
+                          let xTouch = xHi' >= xLo && xLo' <= xHi
+                          let yTouch = yHi' >= yLo && yLo' <= yHi
+                          if xTouch && yTouch then yield (idx, r')
+                      | _ -> () ]

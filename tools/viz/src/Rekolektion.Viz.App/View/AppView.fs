@@ -185,6 +185,33 @@ let private gds2DRouteFinishHandlerAttr
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
         GdsCanvasControl.RouteFinishHandlerProperty, h, ValueNone)
 
+// route_editing_plan.md v1.1 — segment drag attrs.
+let private gds2DSegmentDragAttr
+        (v: Routing.SegmentDrag.DragState option) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Routing.SegmentDrag.DragState option>(
+        GdsCanvasControl.SegmentDragProperty, v, ValueNone)
+
+let private gds2DSegmentDragStartHandlerAttr
+        (h: System.Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>)
+        : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>>(
+        GdsCanvasControl.SegmentDragStartHandlerProperty, h, ValueNone)
+
+let private gds2DSegmentDragMoveHandlerAttr
+        (h: System.Action<int64, int64>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int64, int64>>(
+        GdsCanvasControl.SegmentDragMoveHandlerProperty, h, ValueNone)
+
+let private gds2DSegmentDragCommitHandlerAttr
+        (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.SegmentDragCommitHandlerProperty, h, ValueNone)
+
+let private gds2DSegmentDragCancelHandlerAttr
+        (h: System.Action) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action>(
+        GdsCanvasControl.SegmentDragCancelHandlerProperty, h, ValueNone)
+
 let private gds2DDrcViewAttr
         (v: Drc.Rules.RulesetView) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Drc.Rules.RulesetView>(
@@ -308,6 +335,19 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                   (System.Action(fun () -> dispatch Msg.RouteFixSegment))
               gds2DRouteFinishHandlerAttr
                   (System.Action(fun () -> dispatch Msg.RouteFinish))
+              // route_editing_plan.md v1.1 — segment drag wiring
+              gds2DSegmentDragAttr model.SegmentDrag
+              gds2DSegmentDragStartHandlerAttr
+                  (System.Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>(
+                      fun wid cell idx rect px py ->
+                          dispatch (Msg.SegmentDragStart (wid, cell, idx, rect, px, py))))
+              gds2DSegmentDragMoveHandlerAttr
+                  (System.Action<int64, int64>(fun x y ->
+                      dispatch (Msg.SegmentDragMove (x, y))))
+              gds2DSegmentDragCommitHandlerAttr
+                  (System.Action(fun () -> dispatch Msg.SegmentDragCommit))
+              gds2DSegmentDragCancelHandlerAttr
+                  (System.Action(fun () -> dispatch Msg.SegmentDragCancel))
               gds2DDrcViewAttr model.DrcView
               // ADR-0006 walk-around router wiring
               gds2DNetMapAttr

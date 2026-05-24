@@ -123,7 +123,12 @@ type private SkiaDraw(bounds: Rect,
                       draftRoute: Routing.Draft.DraftRoute option,
                       routeLiveViolations: Drc.Check.Violation array,
                       drcProvenance: Map<string, string>,
-                      hoveredSnapTarget: Routing.Snap.SnapTarget option) =
+                      hoveredSnapTarget: Routing.Snap.SnapTarget option,
+                      segmentDrag: Routing.SegmentDrag.DragState option,
+                      // Doc reference, so the segment-drag overlay can
+                      // project the new geometry without reaching into
+                      // the canvas. None when no library is loaded.
+                      segmentDragDoc: Document option) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -831,6 +836,49 @@ type private SkiaDraw(bounds: Rect,
                     canvas.DrawCircle(sx, sy, 7.0f, snapFill)
                     canvas.DrawCircle(sx, sy, 7.0f, snapStroke)
 
+                // route_editing_plan.md v1.1 — segment-drag preview.
+                // Paint the projected wire (under the new
+                // perpendicular delta) as a saturated outline on top
+                // of the existing geometry. The original rects
+                // underneath stay visible as a ghost — on commit the
+                // document swap removes them and the projected geom
+                // takes their place as ordinary RectEls.
+                match segmentDrag, segmentDragDoc with
+                | Some s, Some doc when s.Delta <> 0L ->
+                    let projected = Routing.SegmentDrag.projectGeometry s doc
+                    let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
+                    let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
+                    let pxPerDbuX = float vb.PixelW / dxWorld
+                    let pxPerDbuY = float vb.PixelH / dyWorld
+                    let toScrSD (xDbu: int64) (yDbu: int64) : float32 * float32 =
+                        let sx = (float (xDbu - vb.MinX)) * pxPerDbuX |> float32
+                        let sy =
+                            float vb.PixelH
+                            - (float (yDbu - vb.MinY)) * pxPerDbuY
+                            |> float32
+                        sx, sy
+                    use sdFill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = false,
+                            Color = SKColor(0xFFuy, 0xE0uy, 0x40uy, 0x60uy))
+                    use sdOutline =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            IsAntialias = true,
+                            StrokeWidth = 1.5f,
+                            Color = SKColor(0xFFuy, 0xE0uy, 0x40uy, 0xFFuy))
+                    for r in projected do
+                        let (sx1, sy1) = toScrSD r.X1 r.Y1
+                        let (sx2, sy2) = toScrSD r.X2 r.Y2
+                        let l = min sx1 sx2
+                        let r' = max sx1 sx2
+                        let t = min sy1 sy2
+                        let b = max sy1 sy2
+                        canvas.DrawRect(SKRect(l, t, r', b), sdFill)
+                        canvas.DrawRect(SKRect(l, t, r', b), sdOutline)
+                | _ -> ()
+
                 canvas.RestoreToCount saved
 
 type private DragKind =
@@ -1170,6 +1218,15 @@ type GdsCanvasControl() as this =
         AvaloniaProperty.Register<GdsCanvasControl, Routing.Draft.DraftRoute option>(
             "DraftRoute", None)
         with get
+    /// In-flight perpendicular segment drag (route_editing_plan.md
+    /// v1.1). Set when the canvas detects mouse-down over a wire
+    /// rect in idle state; cleared on commit / cancel. Renderer
+    /// projects the new geometry from this state.
+    static member val SegmentDragProperty
+            : StyledProperty<Routing.SegmentDrag.DragState option> =
+        AvaloniaProperty.Register<GdsCanvasControl, Routing.SegmentDrag.DragState option>(
+            "SegmentDrag", None)
+        with get
     /// Active edit layer for the routing tool (and other future
     /// edit ops). None = no layer focused; routing-mode clicks then
     /// do nothing rather than guessing.
@@ -1224,6 +1281,32 @@ type GdsCanvasControl() as this =
             : StyledProperty<Action> =
         AvaloniaProperty.Register<GdsCanvasControl, Action>(
             "RouteFinishHandler", null)
+        with get
+    /// Dispatched on mouse-down over a wire segment (idle state).
+    /// Args: wireId, cellName, segIdx, rect, pickupX, pickupY.
+    static member val SegmentDragStartHandlerProperty
+            : StyledProperty<Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>>(
+            "SegmentDragStartHandler", null)
+        with get
+    /// Dispatched on every mouse-move while a segment drag is active.
+    /// Args: x, y in DBU.
+    static member val SegmentDragMoveHandlerProperty
+            : StyledProperty<Action<int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int64, int64>>(
+            "SegmentDragMoveHandler", null)
+        with get
+    /// Dispatched on mouse-up — commit the drag as one undo step.
+    static member val SegmentDragCommitHandlerProperty
+            : StyledProperty<Action> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action>(
+            "SegmentDragCommitHandler", null)
+        with get
+    /// Dispatched on Esc / pointer-cancel — drop without commit.
+    static member val SegmentDragCancelHandlerProperty
+            : StyledProperty<Action> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action>(
+            "SegmentDragCancelHandler", null)
         with get
     /// ADR-0004 — effective DRC ruleset (rules + per-rule provenance).
     /// Flows from Model.DrcView via AppView. The canvas reads this
@@ -1382,6 +1465,36 @@ type GdsCanvasControl() as this =
             this.GetValue(GdsCanvasControl.DraftRouteProperty)
         and set(v: Routing.Draft.DraftRoute option) =
             this.SetValue(GdsCanvasControl.DraftRouteProperty, v) |> ignore
+
+    member this.SegmentDrag
+        with get() : Routing.SegmentDrag.DragState option =
+            this.GetValue(GdsCanvasControl.SegmentDragProperty)
+        and set(v: Routing.SegmentDrag.DragState option) =
+            this.SetValue(GdsCanvasControl.SegmentDragProperty, v) |> ignore
+
+    member this.SegmentDragStartHandler
+        with get() : Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64> =
+            this.GetValue(GdsCanvasControl.SegmentDragStartHandlerProperty)
+        and set(v: Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>) =
+            this.SetValue(GdsCanvasControl.SegmentDragStartHandlerProperty, v) |> ignore
+
+    member this.SegmentDragMoveHandler
+        with get() : Action<int64, int64> =
+            this.GetValue(GdsCanvasControl.SegmentDragMoveHandlerProperty)
+        and set(v: Action<int64, int64>) =
+            this.SetValue(GdsCanvasControl.SegmentDragMoveHandlerProperty, v) |> ignore
+
+    member this.SegmentDragCommitHandler
+        with get() : Action =
+            this.GetValue(GdsCanvasControl.SegmentDragCommitHandlerProperty)
+        and set(v: Action) =
+            this.SetValue(GdsCanvasControl.SegmentDragCommitHandlerProperty, v) |> ignore
+
+    member this.SegmentDragCancelHandler
+        with get() : Action =
+            this.GetValue(GdsCanvasControl.SegmentDragCancelHandlerProperty)
+        and set(v: Action) =
+            this.SetValue(GdsCanvasControl.SegmentDragCancelHandlerProperty, v) |> ignore
 
     member this.ActiveLayer
         with get() : Visibility.LayerKey option =
@@ -1552,6 +1665,7 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.SelectedRatlinesProperty
              || e.Property = GdsCanvasControl.SnapEnabledProperty
              || e.Property = GdsCanvasControl.DraftRouteProperty
+             || e.Property = GdsCanvasControl.SegmentDragProperty
              || e.Property = GdsCanvasControl.RoutingModeProperty
              || e.Property = GdsCanvasControl.ActiveLayerProperty
              || e.Property = GdsCanvasControl.DrcViewProperty then
@@ -1962,6 +2076,32 @@ type GdsCanvasControl() as this =
         lastPos <- p
         e.Pointer.Capture this
         this.Focus () |> ignore
+
+        // route_editing_plan.md v1.1 — segment drag. Left-click in
+        // IDLE state (not routing-armed, no draft in flight, no
+        // other drag) that lands on a wire-tagged rect picks up
+        // the segment for perpendicular drag. Hit-test runs BEFORE
+        // the routing dispatch so a wire pickup wins over an empty
+        // routing click.
+        let inIdleClick =
+            props.IsLeftButtonPressed
+            && not this.RoutingMode
+            && (this.DraftRoute).IsNone
+            && (this.SegmentDrag).IsNone
+        if inIdleClick then
+            let (wxIdle, wyIdle) = this.ScreenToWorld p
+            match this.Library with
+            | Some doc ->
+                match Routing.Wire.findSegmentAt (int64 wxIdle) (int64 wyIdle) doc with
+                | Some (wireId, cellName, idx, rect) ->
+                    let cb = this.SegmentDragStartHandler
+                    if not (isNull cb) then
+                        cb.Invoke(wireId, cellName, idx, rect,
+                                  int64 wxIdle, int64 wyIdle)
+                    e.Handled <- true
+                | None -> ()
+            | None -> ()
+        if e.Handled then () else
 
         // ADR-0002 interactive routing tool. Click semantics live in
         // Routing.Pointer.decideAction so the dispatch matrix can be
@@ -2929,6 +3069,16 @@ type GdsCanvasControl() as this =
         base.OnPointerMoved e
         let props = e.GetCurrentPoint(this).Properties
         let p = e.GetPosition this
+        // route_editing_plan.md v1.1 — segment drag move. While a
+        // drag is in flight, every mouse-move feeds
+        // SegmentDragMove. The perpendicular constraint is applied
+        // inside `SegmentDrag.setCursor` (off-axis motion is
+        // ignored), so the canvas just forwards raw cursor coords.
+        if (this.SegmentDrag).IsSome then
+            let (wxDrag, wyDrag) = this.ScreenToWorld p
+            let cb = this.SegmentDragMoveHandler
+            if not (isNull cb) then cb.Invoke(int64 wxDrag, int64 wyDrag)
+            this.InvalidateVisual()
         // ADR-0002 — when a draft is in flight, every move feeds
         // RouteMouseMove so the tentative L tracks the cursor.
         // Snap the cursor to a nearby labeled pin centroid so the
@@ -3059,6 +3209,16 @@ type GdsCanvasControl() as this =
 
     override this.OnPointerReleased e =
         base.OnPointerReleased e
+        // route_editing_plan.md v1.1 — segment drag commit. Left
+        // release while a segment drag is in flight commits the
+        // projected geometry as one undo step. Wins over the
+        // selection / pan release paths below.
+        if (this.SegmentDrag).IsSome then
+            let cb = this.SegmentDragCommitHandler
+            if not (isNull cb) then cb.Invoke()
+            this.InvalidateVisual()
+            e.Handled <- true
+        if e.Handled then () else
         // Middle / right released while left is still held → the
         // user finished the pan-overlay; leave the drag armed.
         // Reset `lastPos` so the next move-tick doesn't compute a
@@ -3620,7 +3780,7 @@ type GdsCanvasControl() as this =
             // the live-DRC pass.
             let routeLiveViolations' =
                 if this.ShowDrc then cachedRouteLiveViolations else [||]
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

@@ -188,6 +188,26 @@ type Msg =
     /// ADR-0002 — discard the draft without committing (no key bound
     /// currently; kept for programmatic / test use).
     | RouteAbort
+    /// Begin a perpendicular drag of an existing wire segment
+    /// (route_editing_plan.md v1.1). Fires on canvas mouse-down
+    /// over a wire-tagged rect in idle state (no routing mode,
+    /// no other drag in flight). Carries everything the pure
+    /// `Routing.SegmentDrag.start` needs to seed the state.
+    | SegmentDragStart of
+        wireId: int * cellName: string * segIdx: int
+        * rect: Rekolektion.Viz.Core.Rkt.Types.Rectangle
+        * pickupX: int64 * pickupY: int64
+    /// Mouse-move while a segment drag is in flight. Updates
+    /// the live cursor; the projected geometry re-derives on
+    /// each move. No commit until SegmentDragCommit.
+    | SegmentDragMove of x: int64 * y: int64
+    /// Mouse-up — commit the projected geometry into the active
+    /// macro's top cell as one undo step. Clears SegmentDrag.
+    /// Per `feedback_endpoint_over_path`: a zero-delta drag is a
+    /// no-op (click-without-move shouldn't churn undo).
+    | SegmentDragCommit
+    /// Esc / pointer-cancel — drop the drag without committing.
+    | SegmentDragCancel
     /// Commit a finished route-slide drag (track OR post). Each
     /// entry in `adjusts` is
     /// (sourceIndex, mx1X, mx1Y, my1X, my1Y, mx2X, mx2Y, my2X, my2Y) —

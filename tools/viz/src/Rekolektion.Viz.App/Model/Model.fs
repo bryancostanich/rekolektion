@@ -173,6 +173,13 @@ type Model = {
     /// The renderer composites these as an overlay on top of the
     /// cell's existing geometry.
     DraftRoute : Routing.Draft.DraftRoute option
+    /// In-flight perpendicular drag of a committed wire segment
+    /// (route_editing_plan.md v1.1). `None` when no drag is
+    /// active. Set on canvas mouse-down over a wire segment in
+    /// idle state, updated on every mouse-move, consumed on
+    /// mouse-up to produce one undo step. Renderer reads this to
+    /// project the wire's new geometry over its original rects.
+    SegmentDrag : Routing.SegmentDrag.DragState option
     /// Path of the tab currently in inline-rename mode (file-tab
     /// title swapped for a TextBox). None when no tab is being
     /// renamed. Cleared on Esc, on commit, or when the user
@@ -216,6 +223,7 @@ let empty : Model = {
     RoutingMode = false
     RatlinesArmed = false
     DraftRoute = None
+    SegmentDrag = None
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }

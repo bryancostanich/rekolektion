@@ -235,6 +235,15 @@ type MainWindow() as this =
                 e.Handled <- true
             // ADR-0002 — in-flight route keys take precedence over the
             // generic delete / esc bindings when a draft is active.
+            // Esc cancels an in-flight segment drag first (the drag
+            // shouldn't accidentally route-stop). Then falls through
+            // to the route-stop path for an active draft.
+            | Key.Escape, KeyModifiers.None
+              when (Services.AppDispatch.currentModel
+                    |> Option.map (fun m -> m.SegmentDrag.IsSome)
+                    |> Option.defaultValue false) ->
+                AppDispatch.send Msg.SegmentDragCancel
+                e.Handled <- true
             // Esc commits the FIXED corners only (stops where the
             // user last clicked, not where the cursor sat at Esc);
             // Enter (and right-click) commits the tentative L too.

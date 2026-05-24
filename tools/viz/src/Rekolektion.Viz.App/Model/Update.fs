@@ -769,6 +769,73 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             { model with DraftRoute = Some (Routing.Draft.flipPosture d) }, Cmd.none
     | Msg.RouteAbort ->
         { model with DraftRoute = None }, Cmd.none
+    | Msg.SegmentDragStart (wireId, cellName, segIdx, rect, px, py) ->
+        let drag =
+            Routing.SegmentDrag.start wireId cellName segIdx rect px py
+        { model with SegmentDrag = Some drag }, Cmd.none
+    | Msg.SegmentDragMove (x, y) ->
+        match model.SegmentDrag with
+        | None -> model, Cmd.none
+        | Some s ->
+            let s' = Routing.SegmentDrag.setCursor x y s
+            { model with SegmentDrag = Some s' }, Cmd.none
+    | Msg.SegmentDragCancel ->
+        { model with SegmentDrag = None }, Cmd.none
+    | Msg.SegmentDragCommit ->
+        match model.SegmentDrag, model.ActiveMacroPath with
+        | None, _ | _, None ->
+            { model with SegmentDrag = None }, Cmd.none
+        | Some s, Some path when s.Delta = 0L ->
+            // Click-without-move: no geometry change, no undo entry.
+            { model with SegmentDrag = None }, Cmd.none
+        | Some s, Some path ->
+            let mutable activePath' = path
+            let openMacros' =
+                model.OpenMacros
+                |> List.map (fun mc ->
+                    if mc.Path <> path then mc
+                    else
+                        // Project new geometry, then replace every
+                        // RectEl in `s.CellName` carrying this WireId
+                        // with the projected list (each new rect
+                        // re-stamped with the same WireId). One undo
+                        // snapshot covers the whole substitution.
+                        let newRects =
+                            Routing.SegmentDrag.projectGeometry s mc.Document
+                            |> List.map (Routing.Wire.setWireId s.WireId)
+                        let cells' =
+                            mc.Document.Cells
+                            |> List.map (fun c ->
+                                if c.Name <> s.CellName then c
+                                else
+                                    let kept =
+                                        c.Elements
+                                        |> List.filter (fun el ->
+                                            match el with
+                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                                Routing.Wire.getWireId r <> Some s.WireId
+                                            | _ -> true)
+                                    let appended =
+                                        newRects
+                                        |> List.map Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                    { c with Elements = kept @ appended })
+                        let doc' = { mc.Document with Cells = cells' }
+                        let flat' = Layout.Flatten.flatten doc'
+                        let inst' = Layout.Instances.enumerate doc'
+                        let mc' =
+                            EditSession.pushUndoSnapshot mc
+                            |> fun mc'' ->
+                                { mc'' with
+                                    Document = doc'
+                                    FlatPolygons = flat'
+                                    TopInstances = inst' }
+                            |> EditSession.markDirty
+                        activePath' <- mc'.Path
+                        mc')
+            { model with
+                OpenMacros = openMacros'
+                ActiveMacroPath = Some activePath'
+                SegmentDrag = None }, Cmd.none
     | Msg.RouteFinish ->
         commitRouteWith model Routing.Draft.finishSegments
     | Msg.RouteStop ->

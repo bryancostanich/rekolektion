@@ -795,14 +795,29 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 |> List.map (fun mc ->
                     if mc.Path <> path then mc
                     else
-                        // Project new geometry, then replace every
-                        // RectEl in `s.CellName` carrying this WireId
-                        // with the projected list (each new rect
-                        // re-stamped with the same WireId). One undo
-                        // snapshot covers the whole substitution.
+                        // Pick the WireId for the new rects: reuse
+                        // the existing one when present, otherwise
+                        // allocate a fresh one so the dragged-and-
+                        // bridged rects become a first-class wire
+                        // for the next drag.
+                        let outId =
+                            match s.WireId with
+                            | Some id -> id
+                            | None -> Routing.Wire.nextWireId mc.Document
                         let newRects =
                             Routing.SegmentDrag.projectGeometry s mc.Document
-                            |> List.map (Routing.Wire.setWireId s.WireId)
+                            |> List.map (Routing.Wire.setWireId outId)
+                        // Removal predicate: when WireId is known,
+                        // drop every rect carrying it (the wire's
+                        // full set). When unknown, drop only the
+                        // picked-up rect by its (cell, idx).
+                        let shouldRemoveAt (idx : int) (el : Rekolektion.Viz.Core.Rkt.Types.Element) =
+                            match el with
+                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                match s.WireId with
+                                | Some id -> Routing.Wire.getWireId r = Some id
+                                | None -> idx = s.SegmentIdx
+                            | _ -> false
                         let cells' =
                             mc.Document.Cells
                             |> List.map (fun c ->
@@ -810,11 +825,10 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 else
                                     let kept =
                                         c.Elements
-                                        |> List.filter (fun el ->
-                                            match el with
-                                            | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
-                                                Routing.Wire.getWireId r <> Some s.WireId
-                                            | _ -> true)
+                                        |> List.indexed
+                                        |> List.choose (fun (i, el) ->
+                                            if shouldRemoveAt i el then None
+                                            else Some el)
                                     let appended =
                                         newRects
                                         |> List.map Rekolektion.Viz.Core.Rkt.Types.RectEl

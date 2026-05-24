@@ -19,12 +19,17 @@ open Rekolektion.Viz.Core.Rkt.Types
 /// each mouse-move (only `Delta` changes); consumed on mouse-up
 /// to mutate the document.
 type DragState = {
-    WireId     : int
+    /// WireId of the rect under the cursor, when present. `None`
+    /// means the rect was authored without a wire tag (pre-WireId
+    /// or hand-drawn geometry) — projectGeometry treats this as
+    /// a single-rect wire (no neighbour lookup, just the dragged
+    /// segment + L-corner bridges on each anchored end), and the
+    /// commit path stamps a fresh WireId on the new rects.
+    WireId     : int option
     CellName   : string
     /// Index of the dragged rect in the cell at pickup time.
-    /// The commit path looks neighbours up by WireId, not by
-    /// index, so it's safe even if other tools reorder elements
-    /// mid-drag (none do today, but the invariant matters).
+    /// The commit path looks neighbours up by WireId when
+    /// present; falls back to SegmentIdx for the no-WireId case.
     SegmentIdx : int
     /// Original rect at pickup. Drag is computed against this
     /// snapshot — moving the mouse doesn't accumulate, it
@@ -43,7 +48,7 @@ type DragState = {
 
 /// Begin a drag at the picked-up segment.
 let start
-        (wireId : int)
+        (wireId : int option)
         (cellName : string)
         (idx : int)
         (r : Rectangle)
@@ -210,8 +215,13 @@ let projectGeometry (s : DragState) (doc : Document) : Rectangle list =
             match s.Axis with
             | Wire.Horizontal -> Wire.Vertical
             | Wire.Vertical -> Wire.Horizontal
+        // No WireId → no peer lookup possible; treat as a single-
+        // rect wire with both ends anchored. Commit replaces the
+        // one picked rect with [dragged + two bridges].
         let neighbours =
-            Wire.neighborsOf s.WireId s.CellName s.SegmentIdx orig doc
+            match s.WireId with
+            | Some id -> Wire.neighborsOf id s.CellName s.SegmentIdx orig doc
+            | None -> []
         // Classify each neighbour: perpendicular (stretch
         // candidate) vs parallel (leave alone). For each
         // perpendicular neighbour, note which end of dragged it
@@ -255,18 +265,26 @@ let projectGeometry (s : DragState) (doc : Document) : Rectangle list =
                   if not highHandled then verticalBridge yHighCenter orig s.Delta ]
         // Final composition: every wire rect, with the dragged one
         // moved and the perpendicular neighbours stretched, plus
-        // any anchor bridges.
-        let allWireRects = Wire.segmentsOf s.WireId doc
+        // any anchor bridges. No-WireId case has just the dragged
+        // rect (no peers exist by definition).
+        let allWireRects =
+            match s.WireId with
+            | Some id -> Wire.segmentsOf id doc
+            | None -> []
         let updatedMap =
             updatedNeighbours
             |> List.map (fun (idx, r) -> idx, r)
             |> Map.ofList
         let body =
-            allWireRects
-            |> List.map (fun (_, idx, r) ->
-                if idx = s.SegmentIdx then dragged
-                else
-                    match Map.tryFind idx updatedMap with
-                    | Some r' -> r'
-                    | None -> r)
+            match s.WireId with
+            | Some _ ->
+                allWireRects
+                |> List.map (fun (_, idx, r) ->
+                    if idx = s.SegmentIdx then dragged
+                    else
+                        match Map.tryFind idx updatedMap with
+                        | Some r' -> r'
+                        | None -> r)
+            | None ->
+                [ dragged ]
         body @ bridges

@@ -194,7 +194,7 @@ type Msg =
     /// no other drag in flight). Carries everything the pure
     /// `Routing.SegmentDrag.start` needs to seed the state.
     | SegmentDragStart of
-        wireId: int * cellName: string * segIdx: int
+        wireId: int option * cellName: string * segIdx: int
         * rect: Rekolektion.Viz.Core.Rkt.Types.Rectangle
         * pickupX: int64 * pickupY: int64
     /// Mouse-move while a segment drag is in flight. Updates

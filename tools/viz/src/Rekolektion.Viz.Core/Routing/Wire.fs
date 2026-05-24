@@ -102,23 +102,22 @@ let containsPoint (x : int64) (y : int64) (r : Rectangle) : bool =
     let yHi = max r.Y1 r.Y2
     x >= xLo && x <= xHi && y >= yLo && y <= yHi
 
-/// Find the topmost wire segment in `doc` whose bbox contains
-/// `(x, y)`. Returns `(wireId, cellName, rectIndexInCell,
-/// rectangle)` of the hit segment, or `None`. Walks document
-/// order; ties go to the LATER-authored segment (more recent
-/// edits sit on top in the renderer, so the hit-test matches
-/// what the user clicks on).
+/// Find the topmost rect in `doc` whose bbox contains `(x, y)`.
+/// Returns `(wireId?, cellName, rectIndexInCell, rectangle)` of
+/// the hit rect, or `None`. WireId is `None` when the rect was
+/// authored without a wire tag (hand-edited geometry, pre-WireId
+/// files); segment-drag treats those as single-rect "wires" with
+/// no neighbour lookup. Walks document order; ties go to the
+/// later-authored rect (renderer paints later rects on top, so
+/// the hit-test matches the visible top).
 let findSegmentAt (x : int64) (y : int64) (doc : Document)
-                  : (int * string * int * Rectangle) option =
-    let mutable result : (int * string * int * Rectangle) option = None
+                  : (int option * string * int * Rectangle) option =
+    let mutable result : (int option * string * int * Rectangle) option = None
     for c in doc.Cells do
         for idx, el in List.indexed c.Elements do
             match el with
-            | RectEl r ->
-                match getWireId r with
-                | Some wid when containsPoint x y r ->
-                    result <- Some (wid, c.Name, idx, r)
-                | _ -> ()
+            | RectEl r when containsPoint x y r ->
+                result <- Some (getWireId r, c.Name, idx, r)
             | _ -> ()
     result
 

@@ -143,26 +143,32 @@ let ``findSegmentAt picks the wire-tagged rect containing the cursor`` () =
     let hit = Wire.findSegmentAt 500L 160L doc
     match hit with
     | Some (wid, cell, idx, _) ->
-        wid |> should equal 1
+        wid |> should equal (Some 1)
         cell |> should equal "top"
         idx |> should equal 0
     | None -> Assert.Fail("expected a hit")
 
 [<Fact>]
-let ``findSegmentAt returns None when cursor misses every wire`` () =
+let ``findSegmentAt returns None when cursor misses every rect`` () =
     let r1 = mkRect (0L, 0L, 1000L, 320L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ r1 ] ]
     Wire.findSegmentAt 5000L 5000L doc
-    |> should equal (None : (int * string * int * Rectangle) option)
+    |> should equal (None : (int option * string * int * Rectangle) option)
 
 [<Fact>]
-let ``findSegmentAt ignores rects without a WireId`` () =
-    // A hand-drawn rect with no wire tag should not be pickable as
-    // a wire segment — only routed wires get the drag affordance.
+let ``findSegmentAt also picks rects with NO WireId (single-rect drag)`` () =
+    // Pre-WireId or hand-drawn geometry is still pickable for
+    // segment-drag — the segment-drag commit allocates a fresh
+    // WireId for the new rects, so the rect graduates to a
+    // first-class wire after its first drag.
     let plain = mkRect (0L, 0L, 1000L, 320L)
     let doc = mkDoc [ mkCell "top" [ plain ] ]
-    Wire.findSegmentAt 500L 160L doc
-    |> should equal (None : (int * string * int * Rectangle) option)
+    let hit = Wire.findSegmentAt 500L 160L doc
+    match hit with
+    | Some (wid, _, idx, _) ->
+        wid |> should equal (None : int option)
+        idx |> should equal 0
+    | None -> Assert.Fail("expected a hit on the untagged rect")
 
 [<Fact>]
 let ``findSegmentAt picks the later rect when two same-wire rects overlap`` () =

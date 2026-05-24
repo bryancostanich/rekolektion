@@ -35,7 +35,7 @@ let ``setCursor: horizontal segment ignores X movement, captures Y`` () =
     // doesn't change the geometry; only the perpendicular axis
     // (Y for a horizontal seg) feeds the delta.
     let r = mkRect (0L, 0L, 1000L, 320L) |> Wire.setWireId 1
-    let s0 = SegmentDrag.start 1 "top" 0 r 500L 160L
+    let s0 = SegmentDrag.start (Some 1) "top" 0 r 500L 160L
     let s1 = SegmentDrag.setCursor 900L 500L s0
     // dx = 400 but ignored; dy = 340
     s1.Delta |> should equal 340L
@@ -43,7 +43,7 @@ let ``setCursor: horizontal segment ignores X movement, captures Y`` () =
 [<Fact>]
 let ``setCursor: vertical segment ignores Y movement, captures X`` () =
     let r = mkRect (0L, 0L, 320L, 1000L) |> Wire.setWireId 1
-    let s0 = SegmentDrag.start 1 "top" 0 r 160L 500L
+    let s0 = SegmentDrag.start (Some 1) "top" 0 r 160L 500L
     let s1 = SegmentDrag.setCursor 600L 800L s0
     // dx = 440 captured; dy = 300 ignored
     s1.Delta |> should equal 440L
@@ -53,7 +53,7 @@ let ``setCursor: vertical segment ignores Y movement, captures X`` () =
 [<Fact>]
 let ``draggedSegment: horizontal slides on Y by Delta`` () =
     let r = mkRect (0L, 0L, 1000L, 320L) |> Wire.setWireId 1
-    let s = SegmentDrag.start 1 "top" 0 r 500L 160L
+    let s = SegmentDrag.start (Some 1) "top" 0 r 500L 160L
             |> SegmentDrag.setCursor 500L 660L  // dy = 500
     let d = SegmentDrag.draggedSegment s
     d.X1 |> should equal 0L
@@ -64,7 +64,7 @@ let ``draggedSegment: horizontal slides on Y by Delta`` () =
 [<Fact>]
 let ``draggedSegment: vertical slides on X by Delta`` () =
     let r = mkRect (0L, 0L, 320L, 1000L) |> Wire.setWireId 1
-    let s = SegmentDrag.start 1 "top" 0 r 160L 500L
+    let s = SegmentDrag.start (Some 1) "top" 0 r 160L 500L
             |> SegmentDrag.setCursor 660L 500L  // dx = 500
     let d = SegmentDrag.draggedSegment s
     d.X1 |> should equal 500L
@@ -78,12 +78,26 @@ let ``draggedSegment: vertical slides on X by Delta`` () =
 let ``projectGeometry: zero delta returns the original rect unchanged`` () =
     let r = mkRect (0L, 0L, 1000L, 320L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ r ] ]
-    let s = SegmentDrag.start 1 "top" 0 r 500L 160L
+    let s = SegmentDrag.start (Some 1) "top" 0 r 500L 160L
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 1
     let only = geom.[0]
     (only.X1, only.Y1, only.X2, only.Y2)
     |> should equal (0L, 0L, 1000L, 320L)
+
+[<Fact>]
+let ``projectGeometry: no-WireId rect drags as a single-segment wire`` () =
+    // Pre-WireId / hand-drawn geometry: no wire tag, just a rect.
+    // Pickup with WireId = None should produce the same 3-rect
+    // L-shape commit as a tagged single-segment wire would.
+    let r = mkRect (0L, 0L, 1000L, 320L)   // no setWireId call
+    let doc = mkDoc [ mkCell "top" [ r ] ]
+    let s = SegmentDrag.start None "top" 0 r 500L 160L
+            |> SegmentDrag.setCursor 500L 660L  // dy = 500
+    let geom = SegmentDrag.projectGeometry s doc
+    geom |> List.length |> should equal 3
+    let dragged = geom |> List.find (fun rr -> rr.X1 = 0L && rr.X2 = 1000L)
+    (dragged.Y1, dragged.Y2) |> should equal (500L, 820L)
 
 [<Fact>]
 let ``projectGeometry: horizontal single-segment wire produces 3 rects`` () =
@@ -93,7 +107,7 @@ let ``projectGeometry: horizontal single-segment wire produces 3 rects`` () =
     // content so the projection's emit order isn't load-bearing.
     let r = mkRect (0L, 0L, 1000L, 320L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ r ] ]
-    let s = SegmentDrag.start 1 "top" 0 r 500L 160L
+    let s = SegmentDrag.start (Some 1) "top" 0 r 500L 160L
             |> SegmentDrag.setCursor 500L 660L
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 3
@@ -113,7 +127,7 @@ let ``projectGeometry: horizontal single-segment wire produces 3 rects`` () =
 let ``projectGeometry: vertical single-segment wire produces 3 rects`` () =
     let r = mkRect (0L, 0L, 320L, 1000L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ r ] ]
-    let s = SegmentDrag.start 1 "top" 0 r 160L 500L
+    let s = SegmentDrag.start (Some 1) "top" 0 r 160L 500L
             |> SegmentDrag.setCursor 660L 500L  // dx = 500
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 3
@@ -137,7 +151,7 @@ let ``projectGeometry: Z-shape wire stretches both flanking segments`` () =
     let v  = mkRect (400L,  0L,   500L,  500L) |> Wire.setWireId 1
     let h2 = mkRect (400L,  400L, 1000L, 500L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ h1; v; h2 ] ]
-    let s = SegmentDrag.start 1 "top" 1 v 450L 250L
+    let s = SegmentDrag.start (Some 1) "top" 1 v 450L 250L
             |> SegmentDrag.setCursor 750L 250L  // dx = 300
     let geom = SegmentDrag.projectGeometry s doc
     geom |> List.length |> should equal 3
@@ -162,7 +176,7 @@ let ``projectGeometry: L-shape wire stretches the one perpendicular neighbour an
     let h = mkRect (0L,   0L,   500L, 100L) |> Wire.setWireId 1
     let v = mkRect (400L, 0L,   500L, 800L) |> Wire.setWireId 1
     let doc = mkDoc [ mkCell "top" [ h; v ] ]
-    let s = SegmentDrag.start 1 "top" 1 v 450L 400L
+    let s = SegmentDrag.start (Some 1) "top" 1 v 450L 400L
             |> SegmentDrag.setCursor 750L 400L  // dx = 300
     let geom = SegmentDrag.projectGeometry s doc
     // Dragged + stretched h + 1 bridge for the top terminus = 3 rects.

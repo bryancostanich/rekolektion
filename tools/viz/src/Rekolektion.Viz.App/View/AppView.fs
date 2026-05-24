@@ -192,9 +192,9 @@ let private gds2DSegmentDragAttr
         GdsCanvasControl.SegmentDragProperty, v, ValueNone)
 
 let private gds2DSegmentDragStartHandlerAttr
-        (h: System.Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>)
+        (h: System.Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>)
         : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>>(
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>>(
         GdsCanvasControl.SegmentDragStartHandlerProperty, h, ValueNone)
 
 let private gds2DSegmentDragMoveHandlerAttr
@@ -338,7 +338,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               // route_editing_plan.md v1.1 — segment drag wiring
               gds2DSegmentDragAttr model.SegmentDrag
               gds2DSegmentDragStartHandlerAttr
-                  (System.Action<int, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>(
+                  (System.Action<int option, string, int, Rekolektion.Viz.Core.Rkt.Types.Rectangle, int64, int64>(
                       fun wid cell idx rect px py ->
                           dispatch (Msg.SegmentDragStart (wid, cell, idx, rect, px, py))))
               gds2DSegmentDragMoveHandlerAttr

@@ -551,6 +551,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
     | Msg.ToggleDrc ->
         { model with ShowDrc = not model.ShowDrc }, Cmd.none
+    | Msg.ToggleDebugOverlay ->
+        { model with DebugOverlay = not model.DebugOverlay }, Cmd.none
     | Msg.ToggleGrid ->
         { model with ShowGrid = not model.ShowGrid }, Cmd.none
     | Msg.ToggleRuler ->

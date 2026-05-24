@@ -157,6 +157,11 @@ type MainWindow() as this =
             | Key.R, KeyModifiers.None ->
                 AppDispatch.send Msg.ToggleDrc
                 e.Handled <- true
+            | Key.O, KeyModifiers.None ->
+                // O = walkaround debug overlay. Shows obstacle
+                // bboxes during active drafts.
+                AppDispatch.send Msg.ToggleDebugOverlay
+                e.Handled <- true
             | Key.W, KeyModifiers.None ->
                 // W = wire (interactive routing tool, ADR-0002).
                 AppDispatch.send Msg.ToggleRoutingMode

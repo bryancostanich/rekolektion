@@ -128,7 +128,10 @@ type private SkiaDraw(bounds: Rect,
                       // Doc reference, so the segment-drag overlay can
                       // project the new geometry without reaching into
                       // the canvas. None when no library is loaded.
-                      segmentDragDoc: Document option) =
+                      segmentDragDoc: Document option,
+                      debugOverlay: bool,
+                      netMap: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>,
+                      flatPolygonsForDebug: FlatPolygon array) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -879,6 +882,62 @@ type private SkiaDraw(bounds: Rect,
                         canvas.DrawRect(SKRect(l, t, r', b), sdOutline)
                 | _ -> ()
 
+                // Walkaround debug overlay (O key). When on AND a
+                // draft is active, paint every obstacle bbox the
+                // walkaround considers blocked for the draft's
+                // (layer, startNet). Lets the user verify a "clear
+                // path" really is clear in the obstacle set.
+                match debugOverlay, draftRoute with
+                | true, Some d ->
+                    let layerKey : Routing.Obstacles.LayerKey =
+                        { Number = fst d.Layer; DataType = snd d.Layer }
+                    let netIdx = Routing.Obstacles.buildNetIndex netMap
+                    let oSet =
+                        Routing.Obstacles.obstacleSet
+                            layerKey d.StartNet netIdx flatPolygonsForDebug
+                    let obstaclePolys = Routing.Obstacles.polygonsOf oSet
+                    let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
+                    let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
+                    let pxPerDbuX = float vb.PixelW / dxWorld
+                    let pxPerDbuY = float vb.PixelH / dyWorld
+                    let toScrDbg (xDbu : int64) (yDbu : int64) : float32 * float32 =
+                        let sx = (float (xDbu - vb.MinX)) * pxPerDbuX |> float32
+                        let sy =
+                            float vb.PixelH
+                            - (float (yDbu - vb.MinY)) * pxPerDbuY
+                            |> float32
+                        sx, sy
+                    use obFill =
+                        new SKPaint(
+                            Style = SKPaintStyle.Fill,
+                            IsAntialias = false,
+                            Color = SKColor(0xFFuy, 0x00uy, 0xFFuy, 0x40uy))
+                    use obStroke =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            IsAntialias = true,
+                            StrokeWidth = 1.0f,
+                            Color = SKColor(0xFFuy, 0x00uy, 0xFFuy, 0xFFuy))
+                    for fp in obstaclePolys do
+                        let mutable xMin = System.Int64.MaxValue
+                        let mutable yMin = System.Int64.MaxValue
+                        let mutable xMax = System.Int64.MinValue
+                        let mutable yMax = System.Int64.MinValue
+                        for pt in fp.Points do
+                            if pt.X < xMin then xMin <- pt.X
+                            if pt.X > xMax then xMax <- pt.X
+                            if pt.Y < yMin then yMin <- pt.Y
+                            if pt.Y > yMax then yMax <- pt.Y
+                        let (sx1, sy1) = toScrDbg xMin yMin
+                        let (sx2, sy2) = toScrDbg xMax yMax
+                        let l = min sx1 sx2
+                        let r = max sx1 sx2
+                        let t = min sy1 sy2
+                        let b = max sy1 sy2
+                        canvas.DrawRect(SKRect(l, t, r, b), obFill)
+                        canvas.DrawRect(SKRect(l, t, r, b), obStroke)
+                | _ -> ()
+
                 canvas.RestoreToCount saved
 
 type private DragKind =
@@ -1117,6 +1176,12 @@ type GdsCanvasControl() as this =
         with get
     static member val SnapEnabledProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("SnapEnabled", false)
+        with get
+    /// Walkaround debug overlay (O key). When true AND a draft is
+    /// active, the canvas paints obstacle bboxes the walkaround
+    /// currently sees.
+    static member val DebugOverlayProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("DebugOverlay", false)
         with get
     static member val ShowDrcProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
@@ -1378,6 +1443,10 @@ type GdsCanvasControl() as this =
     member this.ShowDrc
         with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
+
+    member this.DebugOverlay
+        with get() : bool = this.GetValue(GdsCanvasControl.DebugOverlayProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.DebugOverlayProperty, v) |> ignore
 
     member this.DisabledDrcRules
         with get() : Set<string> = this.GetValue(GdsCanvasControl.DisabledDrcRulesProperty)
@@ -1661,6 +1730,7 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
              || e.Property = GdsCanvasControl.ShowDimensionsProperty
              || e.Property = GdsCanvasControl.ShowDrcProperty
+             || e.Property = GdsCanvasControl.DebugOverlayProperty
              || e.Property = GdsCanvasControl.DisabledDrcRulesProperty
              || e.Property = GdsCanvasControl.VisibleRatlinesProperty
              || e.Property = GdsCanvasControl.TightenModeProperty
@@ -3790,7 +3860,7 @@ type GdsCanvasControl() as this =
                 if this.ShowDrc || (this.DraftRoute).IsSome
                 then cachedRouteLiveViolations
                 else [||]
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

@@ -216,6 +216,10 @@ type Msg =
     /// existing selection (add if not present, remove if all
     /// already present). Without shift: replace.
     | WireSelectAt of x: int64 * y: int64 * shift: bool
+    /// Toggle the walkaround debug overlay (O key). Paints
+    /// obstacle bboxes during active drafts so the user can see
+    /// what the router considers blocked.
+    | ToggleDebugOverlay
     /// Commit a finished route-slide drag (track OR post). Each
     /// entry in `adjusts` is
     /// (sourceIndex, mx1X, mx1Y, my1X, my1Y, mx2X, mx2Y, my2X, my2Y) —

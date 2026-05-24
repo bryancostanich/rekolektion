@@ -110,6 +110,11 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Debug overlay for the walkaround router (O key). When on
+    /// AND a draft is in flight, the canvas paints every obstacle
+    /// bbox the walkaround currently sees so the user can verify
+    /// that a "clear path" really is clear in the obstacle set.
+    DebugOverlay : bool
     /// Magic-compatible names of DRC rules the user has silenced
     /// (e.g. "met1.6" to hide min-area complaints during a sketch
     /// pass; "nwell.2a" to stop showing spacing errors that come
@@ -224,6 +229,7 @@ let empty : Model = {
     RatlinesArmed = false
     DraftRoute = None
     SegmentDrag = None
+    DebugOverlay = false
     RenamingPath = None
     ActiveTab = View2D
     View2D = { ZoomFactor = 1.0; OffsetX = 0.0; OffsetY = 0.0 }

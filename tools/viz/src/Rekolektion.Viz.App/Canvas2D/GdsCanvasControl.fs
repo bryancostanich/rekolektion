@@ -3780,14 +3780,16 @@ type GdsCanvasControl() as this =
                   ShowGrid = this.ShowGrid
                   ShowRuler = this.ShowRuler
                   ShowLabels = this.ShowLabels }
-            // Gate the route-live overlay on the same `ShowDrc`
-            // toggle the static DRC overlay uses. Otherwise the
-            // route-live red boxes render even with the top-bar
-            // DRC button off — looks like ghost violations the
-            // user can't clear without finding a way to retrigger
-            // the live-DRC pass.
+            // Route-live overlay shows when EITHER the DRC button
+            // is on OR a draft is in flight. While drawing, the
+            // user needs to see what their wire is creating
+            // regardless of the DRC toggle. After the draft ends,
+            // the toggle reasserts — turn DRC off and the
+            // post-commit red boxes disappear cleanly.
             let routeLiveViolations' =
-                if this.ShowDrc then cachedRouteLiveViolations else [||]
+                if this.ShowDrc || (this.DraftRoute).IsSome
+                then cachedRouteLiveViolations
+                else [||]
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library))
         | None ->
             // Closing the active tab leaves None for Library; without

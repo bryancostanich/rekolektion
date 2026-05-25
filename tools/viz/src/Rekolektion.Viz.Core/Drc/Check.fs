@@ -931,20 +931,33 @@ let cellCrossNetOverlaps
             }
         else None
     let acc = System.Collections.Generic.List<Violation>()
+    // Flag an overlap whenever the two polys could be on different
+    // electrical nets. Conditions:
+    //   • named A + named B, names differ → real short
+    //   • named + unclaimed → unclaimed isn't proven same-net; flag
+    //     conservatively. Without this, a wire on a labeled net that
+    //     overlaps a top-cell li1 rect with no label sits in DRC's
+    //     blind spot (Spacing rule treats overlap as merged; this
+    //     post-pass used to require both nets known). User-reported
+    //     gap: wire on drn_R overlapped an unlabeled foreign li1
+    //     strip, DRC said nothing.
+    //   • unclaimed + unclaimed → can't tell; skip (avoid spam on
+    //     legitimately-merged unlabeled geometry like power rails).
     for i in 0 .. cellFlat.Length - 1 do
         let a = cellFlat.[i]
-        match netOf a with
-        | None -> ()
-        | Some na ->
-            for j in i + 1 .. cellFlat.Length - 1 do
-                let b = cellFlat.[j]
-                if a.Layer = b.Layer && a.DataType = b.DataType then
-                    match netOf b with
-                    | Some nb when nb <> na ->
-                        match mkOverlap a b with
-                        | Some v -> acc.Add v
-                        | None -> ()
-                    | _ -> ()
+        for j in i + 1 .. cellFlat.Length - 1 do
+            let b = cellFlat.[j]
+            if a.Layer = b.Layer && a.DataType = b.DataType then
+                let flag =
+                    match netOf a, netOf b with
+                    | Some na, Some nb -> na <> nb
+                    | Some _, None
+                    | None, Some _    -> true
+                    | None, None      -> false
+                if flag then
+                    match mkOverlap a b with
+                    | Some v -> acc.Add v
+                    | None -> ()
     acc.ToArray()
 
 /// ADR-0003 live DRC entry point. Runs only `Rules.liveRules`

@@ -361,3 +361,150 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
                     fp.Layer fp.DataType x0 y0 x1 y1 fp.SourceStructure fp.SourceIndex)
 
         containers.Length |> should equal 0
+
+    [<Fact>]
+    member _.``REPRO: drn_R(4033,7358) → drn_R(12845,7374) on li1 path must be clear of foreign li1`` () =
+        // User-reported failure: the walkaround returns a path that
+        // visually crosses li1 obstacles. Same drn_R label pair as
+        // the live session. Pass condition: PathCheck.crossings on
+        // the returned path against the search's own obstacle field
+        // returns []. Failure means the search emits an invalid path
+        // that, in the app, the live DRC would flag and the user
+        // would (correctly) call "drawn over a bunch of li1".
+        if not (hasMacro ()) then () else
+
+        let doc = loadDoc ()
+        let flat = Layout.Flatten.flatten doc
+        let nets = Net.LabelFlood.derive doc
+
+        let layer : Obstacles.LayerKey = { Number = 67; DataType = 20 }
+        let startPt  : Pt = { X = 4033L;  Y = 7358L }
+        let cursorPt : Pt = { X = 12845L; Y = 7374L }
+        // li1.width = 170 nm, li1.spacing = 170 nm → clearance =
+        // 85 + 170 = 255 DBU. Matches the canvas dispatch.
+        let clearance = 85L + 170L
+
+        let dxAbs = abs (cursorPt.X - startPt.X)
+        let dyAbs = abs (cursorPt.Y - startPt.Y)
+        let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+        let macroBounds : WalkAround.MacroBounds =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+        let key : WalkAround.BuildKey =
+            { Layer = layer; StartNet = "drn_R"; Clearance = clearance
+              FlatPolyRef = flat; NetMapRef = nets }
+        let result =
+            WalkAround.routeAdaptive VisibilityGraph.NoPreference
+                key startPt cursorPt initialMargin macroBounds 3
+
+        out.WriteLine(
+            sprintf "obstacles=%d nodes=%d expansions=%d"
+                result.Graph.Obstacles.Length
+                result.Graph.Nodes.Length
+                result.Expansions)
+        match result.Path with
+        | None ->
+            // noPath is its own failure mode (different from
+            // "path crosses obstacles") — surface it explicitly.
+            failwithf "expected a path, got None (graph had %d obstacles, %d nodes)"
+                result.Graph.Obstacles.Length result.Graph.Nodes.Length
+        | Some path ->
+            out.WriteLine(sprintf "path nodes (%d):" path.Length)
+            for pt in path do
+                out.WriteLine(sprintf "  (%d, %d)" pt.X pt.Y)
+            // Test against ORIGINAL silicon (expanded minus
+            // clearance). Endpoint-in-margin cases are unavoidable
+            // when the snap target lands in a clearance zone; only
+            // crossings of actual silicon are correctness failures.
+            let silicon =
+                PathCheck.shrinkByClearance clearance result.Graph.Obstacles
+            let viols =
+                PathCheck.crossings path silicon
+            out.WriteLine(sprintf "silicon crossings: %d" viols.Length)
+            for v in viols do
+                let (a, b) = v.Segment
+                out.WriteLine(
+                    sprintf "  seg (%d,%d)→(%d,%d) crosses obs[%d] orig=(%d,%d,%d,%d)"
+                        a.X a.Y b.X b.Y v.ObstacleIndex
+                        v.Obstacle.XMin v.Obstacle.YMin
+                        v.Obstacle.XMax v.Obstacle.YMax)
+            viols |> List.length |> should equal 0
+
+    [<Fact>]
+    member _.``REPRO: drn_R(5145,8965) → (7595,8981) path returned must not cross foreign li1`` () =
+        // User-reported failure (different start/cursor pair than
+        // the previous test): walkaround returned
+        //   (5145, 8965) → (5145, 8981) → (7595, 8981)
+        // in ~30 ms (cache hit on a previously-built graph) and the
+        // visible result on screen crossed multiple foreign cells.
+        // Path passing this assertion against the search's own
+        // obstacle field would point us at a deeper bug (the
+        // crossings the user sees come from polygons that aren't
+        // in the obstacle set at all — a classification gap).
+        if not (hasMacro ()) then () else
+
+        let doc = loadDoc ()
+        let flat = Layout.Flatten.flatten doc
+        let nets = Net.LabelFlood.derive doc
+
+        let layer : Obstacles.LayerKey = { Number = 67; DataType = 20 }
+        let startPt  : Pt = { X = 5145L; Y = 8965L }
+        let cursorPt : Pt = { X = 7595L; Y = 8981L }
+        let clearance = 85L + 170L
+
+        let dxAbs = abs (cursorPt.X - startPt.X)
+        let dyAbs = abs (cursorPt.Y - startPt.Y)
+        let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+        let macroBounds : WalkAround.MacroBounds =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+        let key : WalkAround.BuildKey =
+            { Layer = layer; StartNet = "drn_R"; Clearance = clearance
+              FlatPolyRef = flat; NetMapRef = nets }
+        let result =
+            WalkAround.routeAdaptive VisibilityGraph.NoPreference
+                key startPt cursorPt initialMargin macroBounds 3
+
+        out.WriteLine(
+            sprintf "obstacles=%d nodes=%d expansions=%d"
+                result.Graph.Obstacles.Length
+                result.Graph.Nodes.Length
+                result.Expansions)
+        match result.Path with
+        | None ->
+            failwithf "expected a path, got None"
+        | Some path ->
+            out.WriteLine(sprintf "path nodes (%d):" path.Length)
+            for pt in path do
+                out.WriteLine(sprintf "  (%d, %d)" pt.X pt.Y)
+            let silicon =
+                PathCheck.shrinkByClearance clearance result.Graph.Obstacles
+            let viols =
+                PathCheck.crossings path silicon
+            out.WriteLine(sprintf "silicon crossings: %d" viols.Length)
+            for v in viols do
+                let (a, b) = v.Segment
+                out.WriteLine(
+                    sprintf "  seg (%d,%d)→(%d,%d) crosses obs[%d] orig=(%d,%d,%d,%d)"
+                        a.X a.Y b.X b.Y v.ObstacleIndex
+                        v.Obstacle.XMin v.Obstacle.YMin
+                        v.Obstacle.XMax v.Obstacle.YMax)
+            viols |> List.length |> should equal 0

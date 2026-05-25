@@ -153,10 +153,21 @@ let setCursor (cursor: int64 * int64) (r: DraftRoute) : DraftRoute =
 let setAuto (auto: (int64 * int64) list) (r: DraftRoute) : DraftRoute =
     { r with Auto = auto }
 
-/// Commit the tentative segment by appending Auto + Cursor onto
-/// `Points`. When Auto is non-empty, the walk-around corners get
-/// fixed as new turn points; when empty, only the cursor is fixed
-/// (existing straight-L behaviour). No-op when cursor is None.
+/// Commit the tentative segment by appending the auto-router's
+/// corner list (`r.Auto`) plus the cursor onto `Points`. The user
+/// expects what they SEE in the live preview to be what they
+/// commit — if the auto-router has worked out a detour around a
+/// foreign feature, the click locks that detour in.
+///
+/// Visibility-graph correctness (no jogs through obstacles) is
+/// required for this to be a good user experience. Pre-fix, the
+/// search emitted Steiner corners on the wrong side of obstacles
+/// (the endpoint-exemption removed the obstacle wholesale from
+/// the start-edge test); that was the "snake-shaped wire" the
+/// user reported. The fix in `VisibilityGraph.shortestPath`
+/// (`shrinkForMargin`) keeps endpoint-augment edges off the
+/// obstacle's silicon while letting the wire escape the clearance
+/// margin, so auto-routed corners now reflect real legal jogs.
 let fix (r: DraftRoute) : DraftRoute =
     match r.Cursor with
     | None -> r
@@ -218,9 +229,10 @@ let allSegments (r: DraftRoute) : DraftSegment list =
     fixedSegments r @ tentativeSegments r
 
 /// Segments to write into the cell on FinishRoute. Includes the
-/// tentative path (walk-around corners + cursor) so finishing on a
-/// target pad commits the in-flight segment too; callers that want
-/// fixed-only should use `fixedSegments` instead.
+/// tentative path: last-fixed-point → r.Auto corners → cursor.
+/// The user expects to commit what they see in the live preview —
+/// the auto-router's detour around foreign features included.
+/// See the `fix` doc-comment for the rationale.
 let finishSegments (r: DraftRoute) : DraftSegment list =
     let lastPoints =
         match r.Cursor with

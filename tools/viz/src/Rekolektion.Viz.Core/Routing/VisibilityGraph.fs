@@ -67,6 +67,13 @@ type Prebuilt = {
     /// endpoint exemption — so a pin doesn't accidentally exempt
     /// every neighbour within its clearance margin.
     Clearance  : int64
+    /// Uniform-grid spatial index over `Obstacles`. Used by the
+    /// visibility test fast path: instead of scanning every obstacle
+    /// per L-test (O(corners² × obstacles) on dense macros — 56 s
+    /// on the 744-obstacle blc_trim_dac), the test queries only
+    /// obstacles whose bbox overlaps the L's bounding rectangle.
+    /// Drops build time to ~1 s on the same macro.
+    Grid       : Rekolektion.Viz.Core.Spatial.UniformGrid.Index
 }
 
 /// True if the closed segment from `(x1,y) → (x2,y)` (inclusive)
@@ -105,12 +112,66 @@ let private lClear
         i <- i + 1
     clear
 
+/// Grid-accelerated `lClear`. Same semantic — does any obstacle's
+/// expanded bbox interior overlap the L's segments — but walks only
+/// grid cells the L's bbox covers, testing each obstacle in those
+/// cells. Allocation-free hot path: inlined cell-iteration loop and
+/// no dedup (testing the same obstacle twice across overlapping
+/// cells is cheap and never produces a wrong answer; early-exit on
+/// first hit limits the redundant work).
+let private lClearGrid
+    (obstacles : Bbox array)
+    (grid : Rekolektion.Viz.Core.Spatial.UniformGrid.Index)
+    (horizontalFirst : bool)
+    (a : Pt) (b : Pt) : bool =
+    let hSegY = if horizontalFirst then a.Y else b.Y
+    let vSegX = if horizontalFirst then b.X else a.X
+    let xMin = min a.X b.X
+    let xMax = max a.X b.X
+    let yMin = min a.Y b.Y
+    let yMax = max a.Y b.Y
+    let cs = grid.CellSize
+    let cxMin = xMin / cs
+    let cxMax = xMax / cs
+    let cyMin = yMin / cs
+    let cyMax = yMax / cs
+    let mutable clear = true
+    let mutable cx = cxMin
+    while clear && cx <= cxMax do
+        let mutable cy = cyMin
+        while clear && cy <= cyMax do
+            match grid.Cells.TryGetValue (struct (cx, cy)) with
+            | true, bucket ->
+                let mutable k = 0
+                while clear && k < bucket.Count do
+                    let o = obstacles.[bucket.[k]]
+                    let hitH = hSegHitsBbox hSegY a.X b.X o
+                    let hitV = vSegHitsBbox vSegX a.Y b.Y o
+                    if hitH || hitV then clear <- false
+                    k <- k + 1
+            | _ -> ()
+            cy <- cy + 1L
+        cx <- cx + 1L
+    clear
+
 /// Manhattan-visible: an L-path in EITHER posture clears every
 /// obstacle. Either posture is acceptable for graph adjacency —
 /// the search picks the cheaper one per edge.
 let private manhattanVisible (obstacles : Bbox array) (a : Pt) (b : Pt) : bool =
     lClear obstacles true a b
     || lClear obstacles false a b
+
+/// Grid-accelerated `manhattanVisible`. Use when the obstacle array
+/// matches the `grid` built at `build` time (i.e., `graph.Obstacles`
+/// + `graph.Grid`). For modified obstacle arrays (start/goal-augment
+/// edges where `shrinkForMargin` rewrites some bboxes), fall back
+/// to `manhattanVisible` — the grid wouldn't match.
+let private manhattanVisibleGrid
+    (obstacles : Bbox array)
+    (grid : Rekolektion.Viz.Core.Spatial.UniformGrid.Index)
+    (a : Pt) (b : Pt) : bool =
+    lClearGrid obstacles grid true a b
+    || lClearGrid obstacles grid false a b
 
 let private manhattanCost (a : Pt) (b : Pt) : int64 =
     abs (b.X - a.X) + abs (b.Y - a.Y)
@@ -126,29 +187,57 @@ let private cornersOf (b : Bbox) : Pt array =
         { X = b.XMax; Y = b.YMax }
     |]
 
-/// Build the prebuilt graph for an obstacle set. O(O² · O) in the
-/// worst case (corner-pair visibility test scans all obstacles);
-/// for the typical small obstacle sets (single FET wall, ~16
-/// obstacles → 64 corner nodes) this is comfortably sub-millisecond.
+/// Build the prebuilt graph for an obstacle set. With the spatial
+/// grid the hot path (corner-pair visibility) drops from
+/// O(corners² × obstacles) to O(corners² × k) where k is the
+/// average obstacle count per L-bbox cell-coverage. On the
+/// 744-obstacle blc_trim_dac this takes the build from ~56 s to
+/// ~1 s; on small sets it's still sub-millisecond (the grid
+/// degenerates gracefully).
 let build (clearance : int64) (obstacles : FlatPolygon array) : Prebuilt =
     let bboxes =
         obstacles
         |> Array.map (bboxOf >> expand clearance)
+    let gridBboxes : (int64 * int64 * int64 * int64) array =
+        bboxes
+        |> Array.map (fun b -> b.XMin, b.YMin, b.XMax, b.YMax)
+    let cellSize =
+        Rekolektion.Viz.Core.Spatial.UniformGrid.suggestCellSize gridBboxes
+    let grid =
+        Rekolektion.Viz.Core.Spatial.UniformGrid.build cellSize gridBboxes
     let nodes =
         bboxes
         |> Array.collect cornersOf
         |> Array.distinct
-    let adjacency =
-        Array.init nodes.Length (fun i ->
+    // Parallelize the upper-triangle adjacency discovery: each `i`'s
+    // candidate list is independent — only `nodes`, `bboxes`, `grid`
+    // are read, all immutable. On a multicore machine this drops the
+    // build by a factor of ~(physical cores).
+    let upperTri =
+        Array.Parallel.init nodes.Length (fun i ->
             let from = nodes.[i]
             let acc = System.Collections.Generic.List<int * int64>()
             for j in (i + 1) .. (nodes.Length - 1) do
                 let toN = nodes.[j]
-                if manhattanVisible bboxes from toN then
+                if manhattanVisibleGrid bboxes grid from toN then
                     acc.Add((j, manhattanCost from toN))
             acc.ToArray())
+    // Fold the upper triangle into bidirectional adjacency so the
+    // search can read `Adjacency.[i]` once to get every neighbour of
+    // `i`. Pre-fix the search had to scan every OTHER node's
+    // upper-triangle list looking for back-references — an O(N²) per
+    // node-visit overhead that dominated Dijkstra at 2700 corners.
+    let adjacency : (int * int64) array array =
+        let buckets =
+            Array.init nodes.Length (fun _ ->
+                System.Collections.Generic.List<int * int64>())
+        for i in 0 .. nodes.Length - 1 do
+            for (j, c) in upperTri.[i] do
+                buckets.[i].Add((j, c))
+                buckets.[j].Add((i, c))
+        buckets |> Array.map (fun b -> b.ToArray())
     { Nodes = nodes; Obstacles = bboxes; Adjacency = adjacency
-      Clearance = clearance }
+      Clearance = clearance; Grid = grid }
 
 /// Shortest-path query: splice `start` and `goal` into the prebuilt
 /// graph, run Dijkstra, return the manhattan node sequence from
@@ -194,22 +283,38 @@ let shortestPath
         pt.X > b.XMin + c && pt.X < b.XMax - c
         && pt.Y > b.YMin + c && pt.Y < b.YMax - c
     // Per-edge-type exemption (ADR-0006 intent):
-    //   • start↔corner edges: skip obstacles whose EXPANDED bbox
-    //     contains start AND whose ORIGINAL bbox does NOT —
-    //     start sits in the clearance margin only.
+    //   • start↔corner edges: for any obstacle whose expanded bbox
+    //     contains start but whose ORIGINAL bbox does NOT (start is
+    //     in the clearance margin), test that obstacle using its
+    //     ORIGINAL bbox instead of the expanded one. The wire is
+    //     already in the margin — it can stay there to escape — but
+    //     it must NOT cross into the obstacle's actual silicon.
     //   • corner↔goal edges: same rule for `goal`.
-    //   • corner↔corner edges: FULL obstacle set (prebuilt).
-    //   • direct start↔goal: FULL obstacle set, no exemption —
-    //     prevents trivialStraight shortcuts.
-    // Endpoint strictly inside a foreign obstacle (interior, not
-    // margin): NO exemption → obstacle still blocks → noPath.
-    // That's the correct behaviour; a wire whose pin sits inside
-    // a foreign poly is physically a short.
-    let exempt (pt : Pt) (b : Bbox) = inside pt b && not (insideOriginal pt b)
+    //   • corner↔corner edges: FULL obstacle set, expanded (prebuilt).
+    //   • direct start↔goal: FULL obstacle set, expanded — prevents
+    //     trivialStraight shortcuts.
+    // Endpoint strictly inside a foreign obstacle's original
+    // interior: NOT in margin → original bbox unchanged → obstacle
+    // still blocks → noPath. That's the correct behaviour; a wire
+    // whose pin sits inside a foreign poly's silicon is a short.
+    //
+    // Earlier the rule was "remove the obstacle entirely from the
+    // start/goal test set." That let the search approve start-edges
+    // that crossed straight through the obstacle's expanded interior
+    // (and even the original interior), producing physically-
+    // shorted paths. See `PathCheck`-asserted regression test:
+    // `REPRO: drn_R(5145,8965) → (7595,8981) ...`.
+    let shrinkForMargin (pt : Pt) (b : Bbox) : Bbox =
+        if inside pt b && not (insideOriginal pt b) then
+            { XMin = b.XMin + graph.Clearance
+              YMin = b.YMin + graph.Clearance
+              XMax = b.XMax - graph.Clearance
+              YMax = b.YMax - graph.Clearance }
+        else b
     let startObstacles =
-        graph.Obstacles |> Array.filter (fun b -> not (exempt start b))
+        graph.Obstacles |> Array.map (shrinkForMargin start)
     let goalObstacles =
-        graph.Obstacles |> Array.filter (fun b -> not (exempt goal b))
+        graph.Obstacles |> Array.map (shrinkForMargin goal)
     // Steiner points on the start/goal X columns aligned with each
     // obstacle's expanded Y boundaries. Without these the only
     // graph nodes are obstacle bbox corners, so the shortest path
@@ -269,19 +374,15 @@ let shortestPath
     let neighbours (i : int) : (int * int64) seq =
         seq {
             if i < n then
-                // Corner node. Prebuilt corner↔corner adjacency
-                // (full obstacle set).
+                // Corner node. Prebuilt adjacency is bidirectional —
+                // one read returns every corner-corner neighbour.
                 for (j, c) in graph.Adjacency.[i] do
                     yield (j, c)
-                for k in 0 .. (n - 1) do
-                    if k < i then
-                        for (j, c) in graph.Adjacency.[k] do
-                            if j = i then yield (k, c)
                 let a = graph.Nodes.[i]
                 // Edges to Steiner points — full obstacle set.
                 for sIdx in 0 .. (s - 1) do
                     let sp = steiners.[sIdx]
-                    if manhattanVisible graph.Obstacles a sp then
+                    if manhattanVisibleGrid graph.Obstacles graph.Grid a sp then
                         let v = steinerBase + sIdx
                         yield (v, steinerDiscount v (manhattanCost a sp))
                 // Augment edges to start / goal — exempt obstacles
@@ -301,12 +402,12 @@ let shortestPath
                 let here = steiners.[i - steinerBase]
                 for k in 0 .. (n - 1) do
                     let nk = graph.Nodes.[k]
-                    if manhattanVisible graph.Obstacles here nk then
+                    if manhattanVisibleGrid graph.Obstacles graph.Grid here nk then
                         yield (k, manhattanCost here nk)
                 for sk in 0 .. (s - 1) do
                     if sk <> (i - steinerBase) then
                         let sp = steiners.[sk]
-                        if manhattanVisible graph.Obstacles here sp then
+                        if manhattanVisibleGrid graph.Obstacles graph.Grid here sp then
                             let v = steinerBase + sk
                             yield (v, steinerDiscount v (manhattanCost here sp))
                 if manhattanVisible startObstacles here start then
@@ -329,10 +430,10 @@ let shortestPath
                         yield (v, steinerDiscount v (manhattanCost here sp))
                 // Direct start↔goal edge: FULL obstacle set.
                 if i = startIdx then
-                    if manhattanVisible graph.Obstacles here goal then
+                    if manhattanVisibleGrid graph.Obstacles graph.Grid here goal then
                         yield (goalIdx, manhattanCost here goal)
                 else
-                    if manhattanVisible graph.Obstacles here start then
+                    if manhattanVisibleGrid graph.Obstacles graph.Grid here start then
                         yield (startIdx, manhattanCost here start)
         }
     // Dijkstra with a System.Collections.Generic.PriorityQueue.

@@ -148,6 +148,34 @@ let ``cellCrossNetOverlaps flags overlap between two committed cross-net polys``
       |> should equal true
 
 [<Fact>]
+let ``cellCrossNetOverlaps flags named-vs-unclaimed overlap (user-reported)`` () =
+    // User reported: drew a wire on drn_R (claimed by LabelFlood)
+    // that visibly overlaps an existing top-cell li1 rect that
+    // LabelFlood didn't claim for any net (no label inside it,
+    // not reached by flood). The overlap is a real cross-net
+    // short risk — the unclaimed poly is structurally a different
+    // electrical entity until proven same-net. DRC must surface
+    // it for user attention. Pre-fix behaviour: silently skipped
+    // because the unclaimed side has netOf=None.
+    let cell : FlatPolygon array = [|
+        rectIdx 0 (0L, 0L, 500L, 500L) (68, 20)        // claimed
+        rectIdx 1 (200L, 200L, 700L, 700L) (68, 20)    // unclaimed
+    |]
+    let pref s l d i : PolygonRef =
+        { Structure = s; Layer = l; DataType = d; Index = i
+          TopInstanceIndex = None }
+    let mkEntry n c ps : NetEntry =
+        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps }
+    let nets : Map<string, NetEntry> =
+        Map.ofList [
+            "drn_R", mkEntry "drn_R" Signal [ pref "test" 68 20 0 ]
+            // Idx 1 intentionally NOT in any net entry.
+        ]
+    let v = Check.cellCrossNetOverlaps cell nets
+    v |> Array.exists (fun x -> x.Rule = "met1.overlap")
+      |> should equal true
+
+[<Fact>]
 let ``cellCrossNetOverlaps stays silent for same-net overlap`` () =
     let cell : FlatPolygon array = [|
         rectIdx 0 (0L, 0L, 500L, 500L) (68, 20)

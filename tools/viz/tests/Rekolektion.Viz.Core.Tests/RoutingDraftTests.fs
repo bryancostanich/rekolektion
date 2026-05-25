@@ -298,24 +298,28 @@ let ``tentativeSegments falls back to straight L when Auto is empty`` () =
     segs.Length |> should equal 2
 
 [<Fact>]
-let ``fix promotes Auto corners to Points and clears Auto`` () =
+let ``fix glues Auto corners into Points and clears Auto`` () =
+    // The auto-router's `Auto` corner list is the visible preview
+    // between the last fixed point and the cursor. The user expects
+    // clicking to commit what they see — so the fix locks in every
+    // Auto corner plus the cursor.
     let r =
         Draft.start met1 width (0L, 0L)
         |> Draft.setCursor (1000L, 1000L)
         |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
         |> Draft.fix
-    // Points = anchor + Auto + cursor.
     r.Points |> should equal [ (0L, 0L); (500L, 0L); (500L, 1000L); (1000L, 1000L) ]
     r.Cursor |> should equal (None : (int64 * int64) option)
     r.Auto |> should be Empty
 
 [<Fact>]
-let ``finishSegments includes Auto corners in the committed geometry`` () =
-    // FinishRoute writes the tentative path into the cell.
+let ``finishSegments commits the auto-routed polyline (Auto corners included)`` () =
+    // RouteFinish writes what the user sees — the live preview's
+    // polyline includes Auto corners between last-fixed and cursor.
     let r =
         Draft.start met1 width (0L, 0L)
         |> Draft.setCursor (1000L, 1000L)
         |> Draft.setAuto [ (500L, 0L); (500L, 1000L) ]
     let segs = Draft.finishSegments r
-    // (0,0)→(500,0), (500,0)→(500,1000), (500,1000)→(1000,1000)
+    // (0,0)→(500,0), (500,0)→(500,1000), (500,1000)→(1000,1000) — 3 pairs.
     segs.Length |> should equal 3

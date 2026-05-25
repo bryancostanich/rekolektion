@@ -45,6 +45,7 @@
     <Compile Include="RoutingLiveDrcTests.fs" />
     <Compile Include="RoutingObstaclesTests.fs" />
     <Compile Include="RoutingVisibilityGraphTests.fs" />
+    <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="RoutingSegmentDragTests.fs" />
     <Compile Include="WalkAroundRealMacroTests.fs" />

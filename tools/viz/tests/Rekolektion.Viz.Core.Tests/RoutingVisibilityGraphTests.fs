@@ -134,3 +134,29 @@ let ``goal strictly inside an obstacle interior returns no path`` () =
     let g = build 0L [| obs |]
     let path = shortestPath NoPreference g (p 0 0) (p 100 100)
     path |> should equal (None : Pt list option)
+
+[<Fact>]
+let ``both endpoints in same obstacle's expanded margin (not interior) finds a path`` () =
+    // Foreign obstacle (100..200, 100..200) with clearance=20.
+    // Expanded bbox (80..220, 80..220), original (100..200, 100..200).
+    // Place start in left margin, goal in right margin — both inside
+    // the expanded bbox but outside the original interior. Endpoint
+    // exemption should let the search exit the margin and find a
+    // path. Reproduces the user's noPath complaint when both start
+    // and cursor snap into the clearance margin of the same foreign
+    // obstacle.
+    let g = build 20L [| rect 100 100 200 200 |]
+    let path = shortestPath NoPreference g (p 90 150) (p 210 150)
+    path.IsSome |> should equal true
+
+[<Fact>]
+let ``both endpoints in same thin-strip obstacle margin finds a path`` () =
+    // Thin horizontal strip (0..400, 100..120), clearance=50.
+    // Expanded bbox (-50..450, 50..170), original (0..400, 100..120).
+    // Start (50, 80) and goal (350, 80) sit above the strip but inside
+    // the expanded bbox. Both inside expanded, NEITHER inside original
+    // interior. Mirrors the real-macro shape where horizontal li1 rails
+    // expand vertically into the route's Y band.
+    let g = build 50L [| rect 0 100 400 120 |]
+    let path = shortestPath NoPreference g (p 50 80) (p 350 80)
+    path.IsSome |> should equal true

@@ -2083,6 +2083,60 @@ type GdsCanvasControl() as this =
                             | Some entry -> entry.Polygons.Length
                             | None -> -1
                         let netNameCount = key.NetMapRef.Count
+                        // Path validation. Every walkaround result the
+                        // search returns gets checked against the same
+                        // obstacle set the search used. Two passes:
+                        //   • expanded — DRC clearance violations
+                        //     (includes pre-existing endpoint-in-margin
+                        //     situations the wire can't avoid).
+                        //   • silicon (expanded shrunk back by clearance)
+                        //     — actual electrical shorts. Any non-zero
+                        //     here is a search bug.
+                        // Logged separately so a regression shows up
+                        // immediately in the live log.
+                        let validationPath =
+                            match adaptive.Path with
+                            | Some nodes -> nodes
+                            | None -> []
+                        // Skip the trivial cases: a single-point path
+                        // (start == cursor) has no segments to test,
+                        // and a noPath result has nothing returned at
+                        // all. Otherwise emit a log line every time —
+                        // counts are zero when the path is clean, so
+                        // the entry confirms the check ran and the
+                        // path was validated.
+                        if validationPath.Length >= 2 then
+                            let expandedViols =
+                                Routing.PathCheck.crossings
+                                    validationPath graph.Obstacles
+                            let silicon =
+                                Routing.PathCheck.shrinkByClearance
+                                    key.Clearance graph.Obstacles
+                            let siliconViols =
+                                Routing.PathCheck.crossings
+                                    validationPath silicon
+                            let fmtViol (v : Routing.PathCheck.Crossing) =
+                                let (a, b) = v.Segment
+                                sprintf
+                                    "(%d,%d)→(%d,%d)|obs%d|(%d,%d,%d,%d)"
+                                    a.X a.Y b.X b.Y v.ObstacleIndex
+                                    v.Obstacle.XMin v.Obstacle.YMin
+                                    v.Obstacle.XMax v.Obstacle.YMax
+                            let expSummary =
+                                expandedViols |> List.map fmtViol
+                                |> String.concat " ; "
+                            let silSummary =
+                                siliconViols |> List.map fmtViol
+                                |> String.concat " ; "
+                            Rekolektion.Viz.App.Services.Logger.log
+                                "walkaround.path_check"
+                                {| expanded = expandedViols.Length
+                                   silicon = siliconViols.Length
+                                   expandedDetails = expSummary
+                                   siliconDetails = silSummary
+                                   pathLen = validationPath.Length
+                                   startX = startPt.X; startY = startPt.Y
+                                   cursorX = cursorPt.X; cursorY = cursorPt.Y |}
                         // Log EVERY walkaround compute so post-mortem
                         // can see exactly what the algorithm returned
                         // for each cursor position. Previously gated

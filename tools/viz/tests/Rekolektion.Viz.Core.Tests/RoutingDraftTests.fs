@@ -298,6 +298,31 @@ let ``tentativeSegments falls back to straight L when Auto is empty`` () =
     segs.Length |> should equal 2
 
 [<Fact>]
+let ``simplifyCollinear drops middle points sharing X with neighbours`` () =
+    let pts = [ (0L, 0L); (0L, 100L); (0L, 200L); (50L, 200L) ]
+    Draft.simplifyCollinear pts
+    |> should equal [ (0L, 0L); (0L, 200L); (50L, 200L) ]
+
+[<Fact>]
+let ``simplifyCollinear drops middle points sharing Y with neighbours`` () =
+    let pts = [ (0L, 50L); (100L, 50L); (200L, 50L); (200L, 0L) ]
+    Draft.simplifyCollinear pts
+    |> should equal [ (0L, 50L); (200L, 50L); (200L, 0L) ]
+
+[<Fact>]
+let ``simplifyCollinear collapses long stair-step on same axis to one segment`` () =
+    // 4 collinear V points get merged to just the endpoints.
+    let pts = [ (0L, 0L); (0L, 100L); (0L, 250L); (0L, 500L); (100L, 500L) ]
+    Draft.simplifyCollinear pts
+    |> should equal [ (0L, 0L); (0L, 500L); (100L, 500L) ]
+
+[<Fact>]
+let ``simplifyCollinear preserves real corners`` () =
+    let pts = [ (0L, 0L); (0L, 100L); (50L, 100L); (50L, 200L) ]
+    Draft.simplifyCollinear pts
+    |> should equal pts
+
+[<Fact>]
 let ``fix glues Auto corners into Points and clears Auto`` () =
     // The auto-router's `Auto` corner list is the visible preview
     // between the last fixed point and the cursor. The user expects

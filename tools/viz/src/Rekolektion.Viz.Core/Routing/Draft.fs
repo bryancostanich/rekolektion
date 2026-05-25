@@ -153,6 +153,31 @@ let setCursor (cursor: int64 * int64) (r: DraftRoute) : DraftRoute =
 let setAuto (auto: (int64 * int64) list) (r: DraftRoute) : DraftRoute =
     { r with Auto = auto }
 
+/// Drop intermediate points that are collinear with their neighbours
+/// on the same axis. The walk-around's Steiner-point construction
+/// emits one corner per obstacle boundary, so multiple consecutive
+/// jogs along the same X (or Y) column show up as separate path
+/// nodes even when they should be one straight segment. Without
+/// this, `finishSegments` turns each into its own rect: a route
+/// that should commit as 7 rects shows up as 14 because of stacked
+/// V-segments along the start column.
+///
+/// A point `b` is removed when (`a`, `b`, `c`) all share the same X
+/// or all share the same Y. The endpoints (`Points.Head`, cursor)
+/// are always preserved.
+let simplifyCollinear (pts: (int64 * int64) list) : (int64 * int64) list =
+    let rec loop acc remaining =
+        match remaining with
+        | a :: b :: c :: rest ->
+            let sameX = fst a = fst b && fst b = fst c
+            let sameY = snd a = snd b && snd b = snd c
+            if sameX || sameY then
+                loop acc (a :: c :: rest)
+            else
+                loop (a :: acc) (b :: c :: rest)
+        | xs -> (List.rev acc) @ xs
+    loop [] pts
+
 /// Commit the tentative segment by appending the auto-router's
 /// corner list (`r.Auto`) plus the cursor onto `Points`. The user
 /// expects what they SEE in the live preview to be what they
@@ -173,7 +198,7 @@ let fix (r: DraftRoute) : DraftRoute =
     | None -> r
     | Some c ->
         { r with
-            Points = r.Points @ r.Auto @ [c]
+            Points = simplifyCollinear (r.Points @ r.Auto @ [c])
             Cursor = None
             Auto   = []
             // New segment starts: posture lock releases so the
@@ -239,6 +264,7 @@ let finishSegments (r: DraftRoute) : DraftSegment list =
         | Some c -> r.Points @ r.Auto @ [c]
         | None   -> r.Points
     lastPoints
+    |> simplifyCollinear
     |> List.pairwise
     |> List.collect (fun (a, b) -> lShape r.Layer r.Width r.Posture a b)
 

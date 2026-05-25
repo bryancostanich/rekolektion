@@ -1945,6 +1945,13 @@ type GdsCanvasControl() as this =
                         match List.tryLast draft.Points with
                         | Some pt -> pt
                         | None    -> (cx, cy)
+                    // Skip the trivial walkaround when cursor equals
+                    // the last fixed point (typically fires once at
+                    // StartRoute when the snap target IS the start
+                    // and the cursor lands there). The first user
+                    // cursor movement bumps the dispatch, no cold-
+                    // build cycle wasted on a zero-length search.
+                    if lastPt = (cx, cy) then () else
                     let layerKey : Routing.Obstacles.LayerKey =
                         { Number = fst draft.Layer; DataType = snd draft.Layer }
                     // Clearance = wire_half_width + min_spacing. The

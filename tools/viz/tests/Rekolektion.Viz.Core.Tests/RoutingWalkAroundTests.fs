@@ -67,7 +67,7 @@ let private buildGraphAll (key : WalkAround.BuildKey) : VisibilityGraph.Prebuilt
 let ``empty cell: straight path from start to cursor`` () =
     let key = buildKey li1Layer "VGND" 0L [||] Map.empty
     let g = buildGraphAll key
-    let path = WalkAround.route VisibilityGraph.NoPreference g (p 0 0) (p 100 100)
+    let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference g (p 0 0) (p 100 100)
     path.IsSome |> should equal true
     path.Value |> List.head |> should equal (p 0 0)
     path.Value |> List.last |> should equal (p 100 100)
@@ -86,7 +86,7 @@ let ``li1 wire dodges a foreign-net licon directly in its path`` () =
         ]
     let key = buildKey li1Layer "VGND" 0L [| foreignLicon |] nets
     let g = buildGraphAll key
-    let path = WalkAround.route VisibilityGraph.NoPreference g (p 0 50) (p 300 50)
+    let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference g (p 0 50) (p 300 50)
     path.IsSome |> should equal true
     path.Value |> List.head |> should equal (p 0 50)
     path.Value |> List.last |> should equal (p 300 50)
@@ -108,7 +108,7 @@ let ``li1 wire passes through same-net licons unaffected`` () =
         ]
     let key = buildKey li1Layer "VGND" 0L [| ourLicon |] nets
     let g = buildGraphAll key
-    let path = WalkAround.route VisibilityGraph.NoPreference g (p 0 50) (p 300 50)
+    let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference g (p 0 50) (p 300 50)
     path.IsSome |> should equal true
     path.Value.Length |> should equal 2
 
@@ -128,7 +128,7 @@ let ``FET-wall escape: route threads the gap between adjacent foreign licons`` (
         ]
     let key = buildKey li1Layer "VGND" 0L [| l0; l1; l2 |] nets
     let g = buildGraphAll key
-    let path = WalkAround.route VisibilityGraph.NoPreference g (p 75 50) (p 75 300)
+    let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference g (p 75 50) (p 75 300)
     path.IsSome |> should equal true
     // Path is straight up the gap — no horizontal jog needed.
     for pt in path.Value do
@@ -148,7 +148,7 @@ let ``met1 wire dodges a foreign-net via1 in its path`` () =
         ]
     let key = buildKey met1Layer "Ours" 0L [| foreignVia |] nets
     let g = buildGraphAll key
-    let path = WalkAround.route VisibilityGraph.NoPreference g (p 0 50) (p 300 50)
+    let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference g (p 0 50) (p 300 50)
     path.IsSome |> should equal true
     for pt in path.Value do
         let insideX = pt.X > 100L && pt.X < 200L
@@ -166,5 +166,5 @@ let ``goal sitting inside a foreign-net polygon returns no path`` () =
         ]
     let key = buildKey li1Layer "Ours" 0L [| foreign |] nets
     let g = buildGraphAll key
-    let path = WalkAround.route VisibilityGraph.NoPreference g (p 0 0) (p 100 100)
+    let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference g (p 0 0) (p 100 100)
     path |> should equal (None : Pt list option)

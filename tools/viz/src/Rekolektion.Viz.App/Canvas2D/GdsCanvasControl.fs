@@ -1866,7 +1866,7 @@ type GdsCanvasControl() as this =
                         cachedCellCrossNetFlatFor <- snapshotFlat
                         cachedCellCrossNetNetsFor <- snapshotNets
                         r
-                let compute () =
+                let compute (_ct : System.Threading.CancellationToken) =
                     swDrc.Restart()
                     let r =
                         try
@@ -2017,16 +2017,23 @@ type GdsCanvasControl() as this =
                             Routing.VisibilityGraph.PreferHFirst
                         | Routing.Draft.VerticalFirst ->
                             Routing.VisibilityGraph.PreferVFirst
-                    let compute () : (int64 * int64) list =
+                    let compute (ct : System.Threading.CancellationToken) : (int64 * int64) list =
                         let swBuild = System.Diagnostics.Stopwatch.StartNew()
                         let emptyGraph () = Routing.VisibilityGraph.build 0L [||]
                         let adaptive =
                             try
                                 Routing.WalkAround.routeAdaptive
+                                    ct
                                     preferred
                                     key startPt cursorPt
                                     initialMargin macroBounds 3
-                            with _ ->
+                            with
+                            | :? System.OperationCanceledException ->
+                                // Let LiveDrc's task body catch this;
+                                // re-raise so the cancelled token gets
+                                // observed at the dispatch layer.
+                                reraise ()
+                            | _ ->
                                 { Path = None
                                   FinalRegion =
                                       { XMin = 0L; YMin = 0L

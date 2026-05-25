@@ -50,9 +50,6 @@ let ``tryAccept drops the result and does NOT fire onAccept when version is stal
 // thread). This isolates the scheduling + writeback contract from
 // the Avalonia Dispatcher used in production.
 
-/// Block until the background task has called `postBack` (or time
-/// out — keeps a stuck test from hanging CI). The barrier is set
-/// from inside `compute` so we know the Task.Run path actually ran.
 let private waitFor (signal : ManualResetEventSlim) =
     signal.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
 
@@ -63,7 +60,7 @@ let ``schedule bumps the version and returns it synchronously`` () =
     let captured =
         LiveDrc.schedule
             s
-            (fun () -> 123)
+            (fun (_ : CancellationToken) -> 123)
             (fun action -> action (); done_.Set())
             ignore
     captured |> should equal 1
@@ -77,16 +74,13 @@ let ``schedule returns BEFORE the compute finishes`` () =
     let computeStarted = new ManualResetEventSlim(false)
     let releaseCompute = new ManualResetEventSlim(false)
     let writebackDone  = new ManualResetEventSlim(false)
-    let compute () =
+    let compute (_ : CancellationToken) =
         computeStarted.Set()
-        // Hold the compute open until the test thread releases us.
         releaseCompute.Wait(TimeSpan.FromSeconds 5.0) |> ignore
         77
     let postBack action =
         action (); writebackDone.Set()
     let captured = LiveDrc.schedule s compute postBack ignore
-    // Confirm the compute is still in-flight when `schedule`
-    // returned — i.e. the call did not block on it.
     computeStarted.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
     captured |> should equal 1
     s.Latest |> should equal 0    // not yet written back
@@ -95,56 +89,48 @@ let ``schedule returns BEFORE the compute finishes`` () =
     s.Latest |> should equal 77
 
 [<Fact>]
-let ``single-flight + coalesce: pending schedule waits for the in-flight one, then runs once the slow compute returns`` () =
-    // Contract under single-flight: at most one compute runs at a
-    // time. A schedule arriving while another is in flight stashes
-    // its closure as Pending instead of starting a parallel Task.
-    // When the in-flight task finishes:
-    //   - its writeback runs but DROPS via tryAccept (version moved
-    //     on), so its onAccept never fires;
-    //   - the pending closure is dequeued and run via its OWN
-    //     postBack + onAccept (the latest one wins).
+let ``schedule cancels the in-flight compute and the cancelled result is NOT applied`` () =
+    // Cooperative cancellation contract: when a new `schedule` call
+    // arrives while a compute is in flight, the in-flight task's
+    // CancellationToken is signalled. The compute is expected to
+    // poll the token and throw OperationCanceledException; whichever
+    // way it exits, its postBack must NOT apply the result.
     let s = LiveDrc.create 0
     let firstStarted   = new ManualResetEventSlim(false)
     let firstReleased  = new ManualResetEventSlim(false)
     let firstWriteback = new ManualResetEventSlim(false)
     let firstAccept    = ref false
-    let slowCompute () =
+    let firstCompute (ct : CancellationToken) =
         firstStarted.Set()
         firstReleased.Wait(TimeSpan.FromSeconds 5.0) |> ignore
+        // Honour the token: cancellation came in while we were
+        // gated, raise so LiveDrc's task body classifies us as
+        // cancelled and skips the writeback.
+        ct.ThrowIfCancellationRequested()
         100
     let firstPostBack action = action (); firstWriteback.Set()
-    let v1 = LiveDrc.schedule s slowCompute firstPostBack (fun _ -> firstAccept := true)
+    let v1 = LiveDrc.schedule s firstCompute firstPostBack (fun _ -> firstAccept := true)
     firstStarted.Wait(TimeSpan.FromSeconds 5.0) |> should equal true
-    // Second schedule arrives while the first compute is gated. It
-    // does NOT start a parallel Task — its closure is stashed in
-    // Pending. secondWriteback only fires after the slow compute
-    // finishes AND the chained pending run completes.
+    // Second schedule cancels the first's token.
     let secondWriteback = new ManualResetEventSlim(false)
     let secondAccept    = ref false
     let secondValue     = ref 0
     let v2 =
         LiveDrc.schedule
             s
-            (fun () -> 200)
+            (fun (_ : CancellationToken) -> 200)
             (fun action -> action (); secondWriteback.Set())
             (fun v -> secondAccept := true; secondValue := v)
     v1 |> should equal 1
     v2 |> should equal 2
-    // The pending hasn't run yet — Latest is still the initial 0
-    // because the in-flight slow compute is gated.
-    s.Latest |> should equal 0
-    !secondAccept |> should equal false
-    // Release the slow compute. Its writeback drops (version moved
-    // from 1 to 2), then the chained pending fires through the
-    // SECOND postBack / onAccept.
+    // Release the gated first compute so it can observe the token.
     firstReleased.Set()
-    waitFor firstWriteback        // slow compute's writeback ran
-    waitFor secondWriteback       // pending writeback ran (latest wins)
-    s.Latest |> should equal 200
-    !firstAccept |> should equal false    // older onAccept dropped
+    waitFor firstWriteback
+    waitFor secondWriteback
+    !firstAccept  |> should equal false       // cancelled, dropped
     !secondAccept |> should equal true
-    !secondValue |> should equal 200
+    !secondValue  |> should equal 200
+    s.Latest      |> should equal 200
 
 [<Fact>]
 let ``onAccept fires exactly once per accepted writeback`` () =
@@ -153,7 +139,7 @@ let ``onAccept fires exactly once per accepted writeback`` () =
     let done_ = new ManualResetEventSlim(false)
     LiveDrc.schedule
         s
-        (fun () -> 1)
+        (fun (_ : CancellationToken) -> 1)
         (fun action -> action (); done_.Set())
         (fun _ -> incr accepts)
     |> ignore

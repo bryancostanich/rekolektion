@@ -263,10 +263,11 @@ type PreferredPosture =
     | PreferVFirst
 
 let shortestPath
+    (ct        : System.Threading.CancellationToken)
     (preferred : PreferredPosture)
-    (graph : Prebuilt)
-    (start : Pt)
-    (goal  : Pt) : Pt list option =
+    (graph     : Prebuilt)
+    (start     : Pt)
+    (goal      : Pt) : Pt list option =
     let inside (pt : Pt) (b : Bbox) =
         pt.X > b.XMin && pt.X < b.XMax
         && pt.Y > b.YMin && pt.Y < b.YMax
@@ -459,7 +460,13 @@ let shortestPath
     let pq = System.Collections.Generic.PriorityQueue<int, int64>()
     pq.Enqueue(startIdx, heuristic startIdx)
     let mutable found = false
+    let mutable iter = 0
     while not found && pq.Count > 0 do
+        // Cooperative cancellation. Polling every iteration is
+        // cheap (Interlocked read) and lets a stale search bail
+        // within microseconds when a new schedule arrives.
+        if iter &&& 63 = 0 then ct.ThrowIfCancellationRequested()
+        iter <- iter + 1
         let u = pq.Dequeue()
         if u = goalIdx then found <- true
         elif not closed.[u] && dist.[u] <> System.Int64.MaxValue then

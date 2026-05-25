@@ -58,7 +58,7 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
         let key : WalkAround.BuildKey =
             { Layer = layer; StartNet = "drn_R"; Clearance = clearance
               FlatPolyRef = flat; NetMapRef = nets }
-        let result = WalkAround.routeAdaptive VisibilityGraph.NoPreference key startPt cursorPt initialMargin macroBounds 0
+        let result = WalkAround.routeAdaptive System.Threading.CancellationToken.None VisibilityGraph.NoPreference key startPt cursorPt initialMargin macroBounds 0
         let path =
             match result.Path with
             | Some p -> p
@@ -248,7 +248,7 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
                             fp.Layer fp.DataType xMin yMin xMax yMax claimants
                             fp.SourceStructure fp.SourceIndex)
 
-        let path = WalkAround.route VisibilityGraph.NoPreference graph startPt cursorPt
+        let path = WalkAround.route System.Threading.CancellationToken.None VisibilityGraph.NoPreference graph startPt cursorPt
         match path with
         | None -> out.WriteLine "PATH=None"
         | Some pts ->
@@ -403,7 +403,7 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
             { Layer = layer; StartNet = "drn_R"; Clearance = clearance
               FlatPolyRef = flat; NetMapRef = nets }
         let result =
-            WalkAround.routeAdaptive VisibilityGraph.NoPreference
+            WalkAround.routeAdaptive System.Threading.CancellationToken.None VisibilityGraph.NoPreference
                 key startPt cursorPt initialMargin macroBounds 3
 
         out.WriteLine(
@@ -480,7 +480,7 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
             { Layer = layer; StartNet = "drn_R"; Clearance = clearance
               FlatPolyRef = flat; NetMapRef = nets }
         let result =
-            WalkAround.routeAdaptive VisibilityGraph.NoPreference
+            WalkAround.routeAdaptive System.Threading.CancellationToken.None VisibilityGraph.NoPreference
                 key startPt cursorPt initialMargin macroBounds 3
 
         out.WriteLine(

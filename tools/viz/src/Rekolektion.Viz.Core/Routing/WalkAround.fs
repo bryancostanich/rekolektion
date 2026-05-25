@@ -91,11 +91,12 @@ let buildGraphInRegion (key : BuildKey) (_region : Obstacles.Region) : Visibilit
 /// the last clear node it has and lets the live-DRC overlay flag
 /// the gap.
 let route
+    (ct        : System.Threading.CancellationToken)
     (preferred : VisibilityGraph.PreferredPosture)
     (graph  : VisibilityGraph.Prebuilt)
     (start  : VisibilityGraph.Pt)
     (cursor : VisibilityGraph.Pt) : VisibilityGraph.Pt list option =
-    VisibilityGraph.shortestPath preferred graph start cursor
+    VisibilityGraph.shortestPath ct preferred graph start cursor
 
 /// Outer bounding box of the macro — the region search will never
 /// grow past this. Caller supplies it (typically the FlatPolygons'
@@ -175,6 +176,7 @@ type AdaptiveResult = {
 /// large margin collapses to the full macro and the search runs
 /// against every same-layer obstacle.
 let routeAdaptive
+    (ct             : System.Threading.CancellationToken)
     (preferred      : VisibilityGraph.PreferredPosture)
     (key            : BuildKey)
     (start          : VisibilityGraph.Pt)
@@ -194,9 +196,14 @@ let routeAdaptive
         && r.XMax >= macroBounds.XMax
         && r.YMax >= macroBounds.YMax
     let rec loop margin attempt =
+        // Check cancellation between expansions. Graph build is
+        // memoised so this is cheap on the warm cache, but a stale
+        // search that's about to retry with a bigger region should
+        // bail before paying that cost.
+        ct.ThrowIfCancellationRequested()
         let region = regionFromMargin margin
         let graph = buildGraphInRegion key region
-        match route preferred graph start cursor with
+        match route ct preferred graph start cursor with
         | Some path ->
             { Path = Some path; FinalRegion = region; Graph = graph; Expansions = attempt }
         | None ->

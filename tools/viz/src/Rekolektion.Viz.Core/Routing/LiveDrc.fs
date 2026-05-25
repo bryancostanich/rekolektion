@@ -2,24 +2,25 @@
 /// router.
 ///
 /// The wire-drawing path must never block the UI thread on the DRC
-/// or walk-around recompute (1.4–1.5 s on real cells, 100 ms on
-/// every cursor frame for the walk-around). This module owns:
+/// or walk-around recompute. This module owns:
 ///
 ///   1. A monotonic version counter so stale results are dropped.
-///   2. A **single-flight + coalesce** dispatch policy: at most ONE
-///      compute is in flight at any time; while it runs, additional
-///      `schedule` calls overwrite a single `Pending` slot. When the
-///      in-flight task finishes, the writeback drops if a newer
-///      schedule arrived (version mismatch) and then re-fires the
-///      most-recent pending compute.
+///   2. **Cooperative cancellation** of in-flight computes. Each
+///      `schedule` call cancels the previous task's CancellationToken
+///      and starts a fresh task with a new token. The cancelled
+///      task is expected to poll its token (e.g. via
+///      `ct.ThrowIfCancellationRequested()`) at hot loops and
+///      bail out fast — much faster than waiting for it to finish
+///      a useless computation against stale input.
 ///
-/// The earlier pattern (one `Task.Run` per call, version-counter
-/// drop at writeback only) leaked CPU: a 200 ms drag fired 76
-/// Tasks, all ran their full visibility-graph build, results all
-/// dropped except the last — but the user still waited ~4.5 s for
-/// the thread pool to drain. Coalescing at dispatch keeps the
-/// in-flight count at 1 and serves the latest cursor as soon as the
-/// current compute returns.
+/// The earlier pattern (single-flight + coalesce, no cancellation)
+/// serialized computes: a 700 ms search against the latest cursor
+/// only started after the prior search against an obsolete cursor
+/// ran to completion. On dense macros, three serial computes for
+/// the same final cursor took ~2.5 s when a single one was needed.
+/// With cancellation the chain collapses: each new schedule kills
+/// the in-flight work immediately and runs only the most recent
+/// inputs.
 ///
 /// `postBack` is injected so production can route writebacks
 /// through `Dispatcher.UIThread.Post` while tests run synchronously.
@@ -28,26 +29,11 @@ module Rekolektion.Viz.Core.Routing.LiveDrc
 type State<'T> =
     { mutable Version : int
       mutable Latest  : 'T
-      /// True while a compute is on the thread pool. New `schedule`
-      /// calls during this window stash their closure in `Pending`
-      /// instead of starting a fresh Task.
-      mutable Running : bool
-      /// Most-recent compute closure that arrived while `Running`.
-      /// Overwritten by every subsequent schedule — only the latest
-      /// closure survives, matching the "drop stale" intent at the
-      /// dispatch layer instead of the writeback layer.
-      mutable Pending : (unit -> 'T) option
-      /// Latest writeback callback to pair with `Pending`. Stored
-      /// alongside so the re-fire path uses the caller's most-recent
-      /// onAccept rather than the one captured when the in-flight
-      /// task started.
-      mutable PendingOnAccept : ('T -> unit) option
-      /// Latest `postBack` for the pending compute. Stored so the
-      /// re-fire path posts to the caller's most-recent dispatch
-      /// (in production these are all `Dispatcher.UIThread.Post`;
-      /// in tests each schedule passes its own, and the chained
-      /// run must use the pending one's).
-      mutable PendingPostBack : ((unit -> unit) -> unit) option
+      /// CancellationTokenSource for the in-flight compute (if any).
+      /// `schedule` cancels this and replaces it with a fresh one,
+      /// so the running task observes cancellation via its CT and
+      /// bails out at the next poll point.
+      mutable CurrentCts : System.Threading.CancellationTokenSource option
       /// Lock guarding all mutable fields above. The body of
       /// `compute` runs OUTSIDE the lock.
       Lock : obj }
@@ -55,10 +41,7 @@ type State<'T> =
 let create<'T> (initial : 'T) : State<'T> =
     { Version = 0
       Latest = initial
-      Running = false
-      Pending = None
-      PendingOnAccept = None
-      PendingPostBack = None
+      CurrentCts = None
       Lock = obj() }
 
 /// Increment the counter and return the new version.
@@ -81,80 +64,45 @@ let tryAccept
     else
         false
 
-/// Single-flight + coalesce dispatch. Returns the version captured
-/// for THIS call (matches the old API).
+/// Schedule a compute. If a compute is already in flight, its
+/// CancellationToken is signalled — the running task is expected
+/// to poll the token (e.g. `ct.ThrowIfCancellationRequested()`)
+/// at hot loops and throw `OperationCanceledException` quickly.
+/// A fresh task starts immediately with a new token; the cancelled
+/// task's eventual postBack is a no-op because its token reports
+/// cancellation.
 ///
-/// Behaviour:
-///   - No compute running → bump version, mark Running, start the
-///     Task. Captured version travels with the Task for the
-///     writeback drop.
-///   - Compute already running → bump version, store this
-///     (compute, onAccept) pair as Pending (overwriting any prior
-///     pending). The in-flight Task is left alone; its writeback
-///     will drop (version mismatch) and then re-fire the latest
-///     Pending.
-let rec schedule
+/// `compute` receives the token so the caller can thread it down
+/// into the inner work (graph build, Dijkstra, etc).
+let schedule
     (state    : State<'T>)
-    (compute  : unit -> 'T)
+    (compute  : System.Threading.CancellationToken -> 'T)
     (postBack : (unit -> unit) -> unit)
     (onAccept : 'T -> unit) : int =
-    let startNow, captured =
+    let cts, captured =
         lock state.Lock (fun () ->
+            // Cancel any in-flight compute (no-op if none).
+            match state.CurrentCts with
+            | Some old -> old.Cancel()
+            | None -> ()
             let v = bumpVersion state
-            if state.Running then
-                state.Pending <- Some compute
-                state.PendingOnAccept <- Some onAccept
-                state.PendingPostBack <- Some postBack
-                false, v
-            else
-                state.Running <- true
-                true, v)
-    if startNow then
-        runTask state captured compute postBack onAccept
-    captured
-
-and private runTask
-    (state    : State<'T>)
-    (captured : int)
-    (compute  : unit -> 'T)
-    (postBack : (unit -> unit) -> unit)
-    (onAccept : 'T -> unit) : unit =
+            let newCts = new System.Threading.CancellationTokenSource()
+            state.CurrentCts <- Some newCts
+            newCts, v)
     System.Threading.Tasks.Task.Run(fun () ->
         let result =
-            try compute ()
-            with _ -> state.Latest
+            try Some (compute cts.Token)
+            with
+            | :? System.OperationCanceledException -> None
+            | _ -> None
+        // Always invoke postBack so the UI thread runs the
+        // writeback (cheap when no result). Skip applying when
+        // our token was cancelled by a subsequent schedule.
         postBack (fun () ->
-            tryAccept state captured result onAccept |> ignore
-            // Coalesce step. After the writeback settles on the UI
-            // thread, see if a newer schedule arrived while we ran.
-            // If so, pop it and chain another Task.Run with the
-            // current Version as its captured value — the chained
-            // task is the "latest one wins" pass.
-            let nextWork =
-                lock state.Lock (fun () ->
-                    match state.Pending with
-                    | Some c ->
-                        let oa = state.PendingOnAccept
-                        let pb = state.PendingPostBack
-                        state.Pending <- None
-                        state.PendingOnAccept <- None
-                        state.PendingPostBack <- None
-                        // Running stays true — we're handing off
-                        // straight to the next Task. Capture the
-                        // current Version: it's the version that
-                        // was bumped when the Pending was stashed,
-                        // unless further schedules bumped it again
-                        // (in which case those also overwrote
-                        // Pending, so this still routes to the
-                        // freshest closure).
-                        Some (c, oa, pb, state.Version)
-                    | None ->
-                        state.Running <- false
-                        None)
-            match nextWork with
-            | Some (c, oa, pb, v) ->
-                let oa' = defaultArg oa onAccept
-                let pb' = defaultArg pb postBack
-                runTask state v c pb' oa'
-            | None -> ()))
+            if not cts.Token.IsCancellationRequested then
+                match result with
+                | Some r ->
+                    tryAccept state captured r onAccept |> ignore
+                | None -> ()))
     |> ignore
+    captured

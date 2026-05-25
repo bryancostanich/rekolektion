@@ -32,13 +32,19 @@ let private parseNetEntry (name: string) (el: JsonElement) : NetEntry =
         | true, arr when arr.ValueKind = JsonValueKind.Array ->
             arr.EnumerateArray() |> Seq.map parsePolyRef |> Seq.toList
         | _ -> []  // legacy sidecar, no seeds tracked
+    let directLabels =
+        match el.TryGetProperty "direct_label_polys" with
+        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+            arr.EnumerateArray() |> Seq.map parsePolyRef |> Seq.toList
+        | _ -> []  // legacy sidecar, no direct labels tracked
     { Name = name
       Class = classOfString (el.GetProperty("class").GetString())
       Polygons =
           el.GetProperty("polygons").EnumerateArray()
           |> Seq.map parsePolyRef
           |> Seq.toList
-      SeedPolygons = seeds }
+      SeedPolygons = seeds
+      DirectLabelPolys = directLabels }
 
 /// Load a `<gds>.nets.json` sidecar.
 ///

@@ -32,7 +32,8 @@ let private netEntry (name : string) (cls : NetClass)
     // Treat every poly as direct-seeded in tests so the obstacle
     // classifier sees the test's intended ownership rather than
     // being subject to the flood-vs-seed priority pass.
-    { Name = name; Class = cls; Polygons = refs; SeedPolygons = refs }
+    { Name = name; Class = cls; Polygons = refs; SeedPolygons = refs
+      DirectLabelPolys = refs }
 
 let private li1Layer  : LayerKey = { Number = 67; DataType = 20 }
 let private met1Layer : LayerKey = { Number = 68; DataType = 20 }
@@ -101,6 +102,45 @@ let ``net claims key on (source + TopInstanceIndex), not source alone`` () =
     netOf idx b |> should equal (None : string option)
 
 // ---- obstacleSet — same-layer foreign-net polygons --------------
+
+[<Fact>]
+let ``direct-label authority: poly labeled X is foreign to Y even if Y's flood claimed it`` () =
+    // User-reported: drn_R's contact flood reached mag_drain_3's
+    // li1 pin (different label, same FET via shared diff/contacts).
+    // Pre-fix `isOurs(drn_R, mag_drain_3_pin) = true` because drn_R's
+    // claim set included it; routing happily ran the user's wire
+    // through the foreign pin. Direct-label authority: label intent
+    // wins — the poly is directly labeled `mag_drain_3`, so it is
+    // foreign to drn_R regardless of flood claims.
+    let pinRef : PolygonRef = pref "nfet" 67 20 14
+    // Construct an over-claim scenario: BOTH drn_R and mag_drain_3
+    // have the pin in their Polygons list (mimics over-flood). Only
+    // mag_drain_3 has it in DirectLabelPolys (the actual label sits
+    // inside this poly).
+    let drnRPin : PolygonRef = pref "nfet" 67 20 100   // drn_R's own pin
+    let nets =
+        Map.ofList [
+            "drn_R",
+            { Name = "drn_R"; Class = Signal
+              Polygons = [ pinRef; drnRPin ]      // over-claim by flood
+              SeedPolygons = [ pinRef; drnRPin ]
+              DirectLabelPolys = [ drnRPin ] }    // only drn_R's own pin is directly labeled
+            "mag_drain_3",
+            { Name = "mag_drain_3"; Class = Signal
+              Polygons = [ pinRef ]
+              SeedPolygons = [ pinRef ]
+              DirectLabelPolys = [ pinRef ] }     // mag_drain_3's label is inside `pinRef`
+        ]
+    let idx = buildNetIndex nets
+    let pinFlat = flat "nfet" 67 20 14 [ 0,0; 100,0; 100,100; 0,100; 0,0 ]
+    // drn_R's own pin: directly labeled drn_R → ours for drn_R.
+    let drnRPinFlat = flat "nfet" 67 20 100 [ 0,0; 100,0; 100,100; 0,100; 0,0 ]
+    Obstacles.isOurs idx "drn_R" drnRPinFlat |> should equal true
+    // mag_drain_3's pin: directly labeled mag_drain_3 → foreign to
+    // drn_R (this is the bug fix — was returning true via flood claim).
+    Obstacles.isOurs idx "drn_R" pinFlat |> should equal false
+    // And mag_drain_3 still owns its own pin.
+    Obstacles.isOurs idx "mag_drain_3" pinFlat |> should equal true
 
 [<Fact>]
 let ``same-layer foreign-net polygon is an obstacle`` () =

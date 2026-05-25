@@ -227,12 +227,14 @@ let private commitRouteWith
                                         | Some e ->
                                             { e with
                                                 Polygons = e.Polygons @ newRefs
-                                                SeedPolygons = e.SeedPolygons @ newRefs }
+                                                SeedPolygons = e.SeedPolygons @ newRefs
+                                                DirectLabelPolys = e.DirectLabelPolys @ newRefs }
                                         | None ->
                                             { Name = d.StartNet
                                               Class = Signal
                                               Polygons = newRefs
-                                              SeedPolygons = newRefs }
+                                              SeedPolygons = newRefs
+                                              DirectLabelPolys = newRefs }
                                     Map.add d.StartNet entry mc.Nets
                             let mc' =
                                 EditSession.pushUndoSnapshot mc

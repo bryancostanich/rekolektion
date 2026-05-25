@@ -19,15 +19,21 @@ type NetEntry = {
     Name    : string
     Class   : NetClass
     Polygons: PolygonRef list
-    /// The polygons that directly contain a label for this net —
-    /// the SEED polygons of LabelFlood, before any contact-flood
-    /// extended the claim. Used by `Obstacles.buildNetIndex` to
-    /// give DIRECT-label claims priority over flooded claims, so
-    /// a polygon labeled drn_R doesn't get reclassified as
-    /// mag_drain_4 just because mag_drain_4's flood reached it
-    /// via contacts. Empty list when sidecar source predates the
-    /// field (legacy compat).
+    /// Polygons flood-reachable from this net's labels that share
+    /// the same SRef instance as a label-seeded poly. Used by
+    /// `Obstacles.isOurs` to extend "ours" to the pin's full
+    /// cross-layer stack (li1 pin + licon + diff under the label)
+    /// while excluding polys reached via shared rails into other
+    /// SRefs. Empty list when sidecar source predates the field.
     SeedPolygons: PolygonRef list
+    /// Polygons whose interior strictly contains a label for this
+    /// net — the RAW seeds before any flood expansion. Used by
+    /// `Obstacles.isOurs` to give direct-label authority priority
+    /// over flood claims: a poly directly labeled `mag_drain_3` is
+    /// foreign to `drn_R` even if drn_R's contact-flood reached
+    /// it (the labels say they're different nets, label intent
+    /// wins). Empty when sidecar source predates the field.
+    DirectLabelPolys: PolygonRef list
 }
 
 type Sidecar = {

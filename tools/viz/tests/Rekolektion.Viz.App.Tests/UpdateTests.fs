@@ -280,8 +280,8 @@ let ``NetsLoaded paints ratlines when RatlinesArmed and active path matches`` ()
             RatlinesArmed = true }
     let derivedNets : Map<string, Sidecar.Types.NetEntry> =
         Map.ofList [
-            "BL_3", { Name = "BL_3"; Class = Sidecar.Types.Signal; Polygons = []; SeedPolygons = [] }
-            "WL_5", { Name = "WL_5"; Class = Sidecar.Types.Signal; Polygons = []; SeedPolygons = [] }
+            "BL_3", { Name = "BL_3"; Class = Sidecar.Types.Signal; Polygons = []; SeedPolygons = []; DirectLabelPolys = [] }
+            "WL_5", { Name = "WL_5"; Class = Sidecar.Types.Signal; Polygons = []; SeedPolygons = []; DirectLabelPolys = [] }
         ]
     let next, _ =
         Update.update stubBackend
@@ -314,7 +314,7 @@ let ``NetsLoaded does NOT paint ratlines when RatlinesArmed is false`` () =
             RatlinesArmed = false }
     let derivedNets : Map<string, Sidecar.Types.NetEntry> =
         Map.ofList [
-            "BL_3", { Name = "BL_3"; Class = Sidecar.Types.Signal; Polygons = []; SeedPolygons = [] }
+            "BL_3", { Name = "BL_3"; Class = Sidecar.Types.Signal; Polygons = []; SeedPolygons = []; DirectLabelPolys = [] }
         ]
     let next, _ =
         Update.update stubBackend

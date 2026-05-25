@@ -90,19 +90,29 @@ type private PolyId = {
     TopInstanceIndex: int option
 }
 
-/// Per-polygon claim set + per-net seed set, kept together so the
-/// "is this poly ours?" answer is one lookup against one structure.
+/// Per-polygon claim set + per-net seed set + per-polygon direct-
+/// label set, kept together so the "is this poly ours?" answer is
+/// one lookup against one structure.
 ///
 /// `Claims : Map<PolyId, Set<string>>` — every net whose flood
 ///   touched this polygon. A wire's startNet counts the polygon
-///   as "ours" if startNet is in the set.
+///   as "ours" if startNet is in the set (modulo the direct-label
+///   override below).
 ///
 /// `Seeds  : Map<string, HashSet<PolyId>>` — for each net, the
-///   polys whose interior contains a label point of that net (the
-///   LabelFlood `SeedPolygons` set). Used by `isOurs` to apply
-///   the SRef-internal exemption: a sub-cell poly claimed via the
+///   polys flood-reached AND in the same SRef instance as a label
+///   seed (the per-instance pin stack: li1 pin + licon + diff
+///   directly beneath). Used by `isOurs` to apply the
+///   SRef-internal exemption: a sub-cell poly claimed via the
 ///   contact flood is NOT ours unless it was directly seeded.
-type NetIndex = private NetIndex of Map<PolyId, Set<string>> * Map<string, System.Collections.Generic.HashSet<PolyId>>
+///
+/// `DirectLabels : Map<PolyId, Set<string>>` — for each polygon,
+///   the nets whose label's origin strictly sits inside the
+///   polygon's interior. Authoritative when non-empty: if a poly
+///   is directly labeled `mag_drain_3`, it is foreign to `drn_R`
+///   even if drn_R's flood reached it via shared contacts (label
+///   intent wins over flood claims).
+type NetIndex = private NetIndex of Map<PolyId, Set<string>> * Map<string, System.Collections.Generic.HashSet<PolyId>> * Map<PolyId, Set<string>>
 
 let private polyIdOf (p : PolygonRef) : PolyId =
     { Structure        = p.Structure
@@ -133,6 +143,7 @@ let private indexCache : System.Collections.Concurrent.ConcurrentDictionary<obj,
 
 let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
     let mutable claims : Map<PolyId, Set<string>> = Map.empty
+    let mutable directLabels : Map<PolyId, Set<string>> = Map.empty
     let seeds = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<PolyId>>()
     let addClaim (pRef : PolygonRef) (name : string) =
         let pid = polyIdOf pRef
@@ -141,6 +152,13 @@ let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
             | Some s -> s
             | None -> Set.empty
         claims <- Map.add pid (Set.add name existing) claims
+    let addDirectLabel (pRef : PolygonRef) (name : string) =
+        let pid = polyIdOf pRef
+        let existing =
+            match Map.tryFind pid directLabels with
+            | Some s -> s
+            | None -> Set.empty
+        directLabels <- Map.add pid (Set.add name existing) directLabels
     let addSeed (pRef : PolygonRef) (name : string) =
         let pid = polyIdOf pRef
         let set =
@@ -161,11 +179,16 @@ let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
         for pRef in entry.SeedPolygons do
             addClaim pRef netName
             addSeed  pRef netName
+        // DirectLabelPolys: polys whose interior contains a label
+        // point of this net. Recorded separately so `isOurs` can
+        // give label intent priority over flood claims.
+        for pRef in entry.DirectLabelPolys do
+            addDirectLabel pRef netName
     let seedsMap =
         seeds
         |> Seq.map (fun kv -> kv.Key, kv.Value)
         |> Map.ofSeq
-    NetIndex (claims, seedsMap)
+    NetIndex (claims, seedsMap, directLabels)
 
 /// Memoised view of `buildNetIndexFresh`. Reference-identity cache
 /// on the `nets` Map — same Map instance returns the same NetIndex
@@ -204,30 +227,42 @@ let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
 /// The seed set is carried inside `NetIndex` so callers don't
 /// need to thread it separately. Single source of truth — no
 /// "is this caller using seeds or not?" trap.
-let isOurs (NetIndex (claims, seeds)) (startNet : string) (fp : FlatPolygon) : bool =
+let isOurs (NetIndex (claims, seeds, directLabels))
+           (startNet : string) (fp : FlatPolygon) : bool =
     let pid = flatPolyId fp
-    let claimedByStart =
-        match Map.tryFind pid claims with
-        | Some claimants -> Set.contains startNet claimants
-        | None -> false
-    if not claimedByStart then false
-    else
-        match fp.TopInstanceIndex with
-        | None -> true
-        | Some _ ->
-            match Map.tryFind startNet seeds with
-            | Some seedSet -> seedSet.Contains pid
+    // Direct-label authority: if the polygon's interior contains a
+    // label, label intent wins over flood claims. A poly directly
+    // labeled `mag_drain_3` is foreign to `drn_R` even when drn_R's
+    // contact-flood reached it; the labels say they're different
+    // nets and the user expects routing to honor that.
+    match Map.tryFind pid directLabels with
+    | Some labelSet when not (Set.isEmpty labelSet) ->
+        Set.contains startNet labelSet
+    | _ ->
+        // No direct label. Fall back to flood claims + per-instance
+        // seed check (the pin's cross-layer stack stays ours).
+        let claimedByStart =
+            match Map.tryFind pid claims with
+            | Some claimants -> Set.contains startNet claimants
             | None -> false
+        if not claimedByStart then false
+        else
+            match fp.TopInstanceIndex with
+            | None -> true
+            | Some _ ->
+                match Map.tryFind startNet seeds with
+                | Some seedSet -> seedSet.Contains pid
+                | None -> false
 
 /// All nets that claim this polygon. Diagnostic helper.
-let claimantsOf (NetIndex (claims, _)) (fp : FlatPolygon) : Set<string> =
+let claimantsOf (NetIndex (claims, _, _)) (fp : FlatPolygon) : Set<string> =
     match Map.tryFind (flatPolyId fp) claims with
     | Some s -> s
     | None -> Set.empty
 
 /// Single-net lookup (returns one of the claimants if any). Used by
 /// diagnostic dumps where the caller doesn't care about ambiguity.
-let netOf (NetIndex (claims, _)) (fp : FlatPolygon) : string option =
+let netOf (NetIndex (claims, _, _)) (fp : FlatPolygon) : string option =
     match Map.tryFind (flatPolyId fp) claims with
     | Some s when not (Set.isEmpty s) -> Some (Set.minElement s)
     | _ -> None

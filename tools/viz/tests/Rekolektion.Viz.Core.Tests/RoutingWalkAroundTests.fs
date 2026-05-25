@@ -42,7 +42,8 @@ let private mkEntry (name : string) (cls : NetClass)
                     (polys : PolygonRef list) : NetEntry =
     // Tests use synthetic obstacle sets without contact-flood
     // ambiguity, so the polygon list IS the seed list.
-    { Name = name; Class = cls; Polygons = polys; SeedPolygons = polys }
+    { Name = name; Class = cls; Polygons = polys; SeedPolygons = polys
+      DirectLabelPolys = polys }
 
 let private buildKey layer startNet clearance flat nets : WalkAround.BuildKey =
     { Layer = layer

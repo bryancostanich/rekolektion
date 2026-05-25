@@ -137,7 +137,8 @@ let ``cellCrossNetOverlaps flags overlap between two committed cross-net polys``
         { Structure = s; Layer = l; DataType = d; Index = i
           TopInstanceIndex = None }
     let mkEntry n c ps : NetEntry =
-        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps }
+        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps
+          DirectLabelPolys = ps }
     let nets : Map<string, NetEntry> =
         Map.ofList [
             "BL", mkEntry "BL" Signal [ pref "test" 68 20 0 ]
@@ -165,7 +166,8 @@ let ``cellCrossNetOverlaps flags named-vs-unclaimed overlap (user-reported)`` ()
         { Structure = s; Layer = l; DataType = d; Index = i
           TopInstanceIndex = None }
     let mkEntry n c ps : NetEntry =
-        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps }
+        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps
+          DirectLabelPolys = ps }
     let nets : Map<string, NetEntry> =
         Map.ofList [
             "drn_R", mkEntry "drn_R" Signal [ pref "test" 68 20 0 ]
@@ -185,7 +187,8 @@ let ``cellCrossNetOverlaps stays silent for same-net overlap`` () =
         { Structure = s; Layer = l; DataType = d; Index = i
           TopInstanceIndex = None }
     let mkEntry n c ps : NetEntry =
-        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps }
+        { Name = n; Class = c; Polygons = ps; SeedPolygons = ps
+          DirectLabelPolys = ps }
     let nets : Map<string, NetEntry> =
         Map.ofList [
             "BL", mkEntry "BL" Signal [ pref "test" 68 20 0; pref "test" 68 20 1 ]

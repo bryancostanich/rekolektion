@@ -192,7 +192,7 @@ let derive (doc: Document) : Map<string, NetEntry> =
     // in parallel per label, then merged sequentially below.
     let perLabel
         (lbl: Rekolektion.Viz.Core.Layout.Flatten.FlatLabel)
-        : (string * NetClass * PolygonRef list * PolygonRef list) option =
+        : (string * NetClass * PolygonRef list * PolygonRef list * PolygonRef list) option =
         // Skip DeviceTerminal labels — those are FET port annotations
         // (D / G / S / B), not net names. Treating them as nets would
         // collapse every device's gate into one fake "G" entry.
@@ -319,8 +319,24 @@ let derive (doc: Document) : Map<string, NetEntry> =
                       TopInstanceIndex = p.TopInstanceIndex })
                 |> Seq.distinct
                 |> Seq.toList
+            // Direct-label seeds: only the polys whose strict interior
+            // contains this label's origin point. Authoritative for
+            // "what net is this polygon, according to its label?" —
+            // used by `Obstacles.isOurs` to override flood claims when
+            // multiple nets' floods reach the same polygon.
+            let directLabelRefs : PolygonRef list =
+                seedIdxs
+                |> List.map (fun i ->
+                    let p = polys.[i]
+                    { Structure = p.SourceStructure
+                      Layer = p.Layer
+                      DataType = p.DataType
+                      Index = p.SourceIndex
+                      TopInstanceIndex = p.TopInstanceIndex })
+                |> List.distinct
             ignore i0
-            Some (lbl.Text, classOfName lbl.Text, polyRefs, seedRefs)
+            Some (lbl.Text, classOfName lbl.Text,
+                  polyRefs, seedRefs, directLabelRefs)
 
     // Parallel per-label flood. Each label's BFS is independent
     // (reads shared immutable spatial indices, builds its own
@@ -334,16 +350,20 @@ let derive (doc: Document) : Map<string, NetEntry> =
     |> Array.fold (fun (acc: Map<string, NetEntry>) entry ->
         match entry with
         | None -> acc
-        | Some (name, cls, polyRefs, seedRefs) ->
+        | Some (name, cls, polyRefs, seedRefs, directLabelRefs) ->
             let merged =
                 match Map.tryFind name acc with
                 | Some existing ->
                     { existing with
                         Polygons = existing.Polygons @ polyRefs |> List.distinct
-                        SeedPolygons = existing.SeedPolygons @ seedRefs |> List.distinct }
+                        SeedPolygons = existing.SeedPolygons @ seedRefs |> List.distinct
+                        DirectLabelPolys =
+                            existing.DirectLabelPolys @ directLabelRefs
+                            |> List.distinct }
                 | None ->
                     { Name = name
                       Class = cls
                       Polygons = polyRefs
-                      SeedPolygons = seedRefs }
+                      SeedPolygons = seedRefs
+                      DirectLabelPolys = directLabelRefs }
             Map.add name merged acc) Map.empty

@@ -67,7 +67,7 @@ let private newCapture () : CapturedActions = {
 
 let private wireCapture (canvas: GdsCanvasControl) (cap: CapturedActions) =
     canvas.StartRouteHandler <-
-        Action<Visibility.LayerKey, int64, string, int64, int64>(fun l w net x y ->
+        Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>(fun l w net x y _startSnapLayer ->
             cap.Starts <- cap.Starts @ [(l, w, net, x, y)])
     canvas.RouteFixSegmentHandler <-
         Action(fun () -> cap.Fixes <- cap.Fixes + 1)

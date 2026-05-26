@@ -48,6 +48,18 @@ type DraftRoute = {
     /// walk-around dispatch to classify other licons / vias as
     /// "ours" vs "theirs". Empty when no net was attached.
     StartNet : string
+    /// Layer of the snap target the route STARTED on. Often the
+    /// same as `Layer` (when drawing met1 onto a met1 pin), but
+    /// can differ for cross-layer connections (drawing a met2 wire
+    /// onto a li1 drn_R pin). RouteFinish reads this to emit the
+    /// start-side via stack between `StartLayer` and `Layer`.
+    StartLayer : int * int
+    /// Layer of the snap target under the cursor when the route
+    /// ENDS. `None` when finishing in free air (no snap). Set by
+    /// the canvas dispatch on cursor moves over snap targets so
+    /// RouteFinish reads it at commit. Same role as `StartLayer`
+    /// but for the cursor-side of the wire.
+    EndLayer : (int * int) option
 }
 
 /// Decompose p1 → p2 into 0, 1, or 2 axis-aligned rectangles. Zero
@@ -82,6 +94,10 @@ let private lShape
               mkRect x1 y2 x2 y2 ]
 
 /// Begin a new route on `layer` with `width`, anchored at `anchor`.
+/// Initialises `StartLayer = layer` — same-layer start is the
+/// common case. Cross-layer starts (e.g. a met2 wire onto a li1
+/// pin) call `setStartLayer` after `start` with the snap target's
+/// actual layer so RouteFinish emits the start-side via stack.
 let start
         (layer: int * int)
         (width: int64)
@@ -95,7 +111,22 @@ let start
     Cursor = None
     Auto = []
     StartNet = ""
+    StartLayer = layer
+    EndLayer = None
 }
+
+/// Override the snap-target layer at the start side. Canvas calls
+/// this after `start` when the snap target the user clicked is on
+/// a different layer than the active routing layer.
+let setStartLayer (startLayer: int * int) (r: DraftRoute) : DraftRoute =
+    { r with StartLayer = startLayer }
+
+/// Update the snap-target layer at the cursor side. Canvas calls
+/// this when the cursor moves on/off a same-net snap target during
+/// a draft, so RouteFinish knows the end-side layer for via-stack
+/// emission.
+let setEndLayer (endLayer: (int * int) option) (r: DraftRoute) : DraftRoute =
+    { r with EndLayer = endLayer }
 
 /// Stamp the route's StartNet (ADR-0006). The dispatch layer calls
 /// this immediately after `start` with the net pulled from the snap

@@ -160,8 +160,15 @@ type Msg =
     | ToggleEditRoutingMode
     /// ADR-0002 — begin drawing a new route on `layer` with `width`,
     /// anchored at the world-coord `anchor`. Initialises
-    /// `Model.DraftRoute`. No-op when no active macro.
-    | StartRoute       of layer: LayerKey * width: int64 * startNet: string * anchor: int64 * int64
+    /// `Model.DraftRoute`. `startSnapLayer` carries the snap
+    /// target's actual layer (often equal to `layer`, but differs
+    /// when the user starts a met2 wire on a li1 pin and a via
+    /// stack is required at commit). No-op when no active macro.
+    | StartRoute       of layer: LayerKey * width: int64 * startNet: string * anchor: int64 * int64 * startSnapLayer: LayerKey
+    /// Update the snap-target layer under the cursor (or clear it
+    /// when cursor leaves any snap). Drives the end-side via-stack
+    /// emission at RouteFinish.
+    | RouteSetEndLayer of LayerKey option
     /// ADR-0006 — walk-around corner sequence from the background
     /// dispatch. Replaces the active draft's Auto field. An empty
     /// list resets to the straight-L fallback.

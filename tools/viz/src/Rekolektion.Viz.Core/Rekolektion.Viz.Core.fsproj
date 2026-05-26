@@ -60,6 +60,7 @@
     <Compile Include="Drc/Waiver.fs" />
     <Compile Include="Drc/Check.fs" />
     <Compile Include="Routing/Pads.fs" />
+    <Compile Include="Routing/ViaStack.fs" />
     <Compile Include="Visibility.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>

@@ -1338,12 +1338,25 @@ type GdsCanvasControl() as this =
             "ActiveLayer", None)
         with get
     /// Dispatched on left-click when RoutingMode is on and no draft
-    /// is in flight. Args: layer, width, x, y (all in DBU).
+    /// is in flight. Args: layer, width, startNet, x, y, startSnapLayer.
+    /// `startSnapLayer` is the snap target's actual layer (usually
+    /// == layer; differs when starting a met2 wire on a li1 pin so
+    /// RouteFinish can emit the start-side via stack).
     static member val StartRouteHandlerProperty
-            : StyledProperty<Action<Visibility.LayerKey, int64, string, int64, int64>> =
+            : StyledProperty<Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>> =
         AvaloniaProperty.Register<GdsCanvasControl,
-                                  Action<Visibility.LayerKey, int64, string, int64, int64>>(
+                                  Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>>(
             "StartRouteHandler", null)
+        with get
+    /// Fired by the canvas on cursor moves during a draft. Carries
+    /// the snap target's layer when the cursor is over a same-net
+    /// snap target, or `None` when not. Drives end-side via-stack
+    /// emission at RouteFinish.
+    static member val RouteSetEndLayerHandlerProperty
+            : StyledProperty<Action<Visibility.LayerKey option>> =
+        AvaloniaProperty.Register<GdsCanvasControl,
+                                  Action<Visibility.LayerKey option>>(
+            "RouteSetEndLayerHandler", null)
         with get
     /// ADR-0006 — invoked from the walk-around background dispatch
     /// with the latest corner sequence. Update arm calls
@@ -1615,10 +1628,16 @@ type GdsCanvasControl() as this =
             this.SetValue(GdsCanvasControl.ActiveLayerProperty, v) |> ignore
 
     member this.StartRouteHandler
-        with get() : Action<Visibility.LayerKey, int64, string, int64, int64> =
+        with get() : Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey> =
             this.GetValue(GdsCanvasControl.StartRouteHandlerProperty)
-        and set(v: Action<Visibility.LayerKey, int64, string, int64, int64>) =
+        and set(v: Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>) =
             this.SetValue(GdsCanvasControl.StartRouteHandlerProperty, v) |> ignore
+
+    member this.RouteSetEndLayerHandler
+        with get() : Action<Visibility.LayerKey option> =
+            this.GetValue(GdsCanvasControl.RouteSetEndLayerHandlerProperty)
+        and set(v: Action<Visibility.LayerKey option>) =
+            this.SetValue(GdsCanvasControl.RouteSetEndLayerHandlerProperty, v) |> ignore
 
     member this.RouteAutoComputedHandler
         with get() : Action<(int64 * int64) list> =
@@ -2353,15 +2372,16 @@ type GdsCanvasControl() as this =
         match action with
         | Routing.Pointer.StartRoute (layer, width, x, y) ->
             let cb = this.StartRouteHandler
-            // Net comes from the snap target the user clicked. The
-            // snap-required-to-start gate above guarantees this is
-            // Some when StartRoute fires; defensive default to ""
-            // (walk-around treats it as unknown → route around all).
-            let startNet =
+            // Net + start snap layer come from the snap target the
+            // user clicked. The snap-required-to-start gate above
+            // guarantees this is Some when StartRoute fires;
+            // defensive defaults if not.
+            let startNet, startSnapLayer =
                 match snapTargetOpt with
-                | Some t -> t.Net
-                | None -> ""
-            if not (isNull cb) then cb.Invoke(layer, width, startNet, x, y)
+                | Some t -> t.Net, (t.Layer, t.DataType)
+                | None   -> "", layer
+            if not (isNull cb) then
+                cb.Invoke(layer, width, startNet, x, y, startSnapLayer)
             e.Handled <- true
         | Routing.Pointer.FixSegment ->
             let cb = this.RouteFixSegmentHandler
@@ -3319,6 +3339,16 @@ type GdsCanvasControl() as this =
                         | Some t -> t.X, t.Y
                         | None -> int64 wx, int64 wy
                     cb.Invoke(sx, sy)
+                // Update end-side snap layer in DraftRoute so
+                // RouteFinish knows whether the wire lands on a
+                // cross-layer pin (needs a via stack at this end).
+                // Fire only on changes to keep dispatch quiet.
+                if changed then
+                    let endLayerCb = this.RouteSetEndLayerHandler
+                    if not (isNull endLayerCb) then
+                        let endLayer =
+                            target |> Option.map (fun t -> t.Layer, t.DataType)
+                        endLayerCb.Invoke(endLayer)
             swDispatch.Stop()
             swTotal.Stop()
             // Sample log: only emit when total >= 2 ms OR every 30

@@ -171,7 +171,44 @@ let private commitRouteWith
                                         d.Layer with
                                 | Some side -> Routing.Draft.endpointPads side d
                                 | None -> []
-                            let allSegs = pads @ segs
+                            // Cross-layer via stacks. When the
+                            // start (or end) snap target is on a
+                            // different routing layer than the
+                            // wire, emit the via cuts + enclosure
+                            // pads needed to physically connect.
+                            // Coincident anchor/cursor produce
+                            // overlapping rects — DRC merges them
+                            // (same net via this commit's net
+                            // membership update below).
+                            let viaSegToDraft (v : Routing.ViaStack.ViaSegment) : Routing.Draft.DraftSegment =
+                                let h = v.SideDbu / 2L
+                                { Layer = v.Layer
+                                  X1 = v.CenterX - h
+                                  Y1 = v.CenterY - h
+                                  X2 = v.CenterX + h
+                                  Y2 = v.CenterY + h }
+                            let startVias =
+                                match d.Points with
+                                | (sx, sy) :: _ when d.StartLayer <> d.Layer ->
+                                    Routing.ViaStack.emitAt
+                                        model.DrcView mc.Document.Units
+                                        d.StartLayer d.Layer sx sy
+                                    |> List.map viaSegToDraft
+                                | _ -> []
+                            let endVias =
+                                let finalPt =
+                                    match d.Cursor, List.tryLast d.Points with
+                                    | Some c, _ -> Some c
+                                    | None, last -> last
+                                match finalPt, d.EndLayer with
+                                | Some (ex, ey), Some endLayer
+                                    when endLayer <> d.Layer ->
+                                    Routing.ViaStack.emitAt
+                                        model.DrcView mc.Document.Units
+                                        endLayer d.Layer ex ey
+                                    |> List.map viaSegToDraft
+                                | _ -> []
+                            let allSegs = pads @ segs @ startVias @ endVias
                             // Stamp every rect in this commit with
                             // the same WireId — the wire and its
                             // endpoint pads are one editable unit.
@@ -213,13 +250,18 @@ let private commitRouteWith
                                         |> Option.defaultValue 0
                                 if d.StartNet = "" || topName.IsNone then mc.Nets
                                 else
-                                    let (layerNum, layerDt) = d.Layer
+                                    // Each rect carries its own (num,
+                                    // dt) — via cuts on contact layers
+                                    // and pads on intermediate metals
+                                    // need PolygonRefs on those layers,
+                                    // not on the wire layer.
                                     let newRefs : PolygonRef list =
-                                        rects
-                                        |> List.mapi (fun i _ ->
+                                        allSegs
+                                        |> List.mapi (fun i seg ->
+                                            let (num, dt) = seg.Layer
                                             { Structure = topName.Value
-                                              Layer = layerNum
-                                              DataType = layerDt
+                                              Layer = num
+                                              DataType = dt
                                               Index = topElemCount + i
                                               TopInstanceIndex = None })
                                     let entry =
@@ -732,14 +774,22 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with
             RoutingMode = next
             DraftRoute = if next then model.DraftRoute else None }, Cmd.none
-    | Msg.StartRoute (layer, width, startNet, x, y) ->
+    | Msg.StartRoute (layer, width, startNet, x, y, startSnapLayer) ->
         match model.ActiveMacroPath with
         | None -> model, Cmd.none
         | Some _ ->
             let draft =
                 Routing.Draft.start layer width (x, y)
                 |> Routing.Draft.setStartNet startNet
+                |> Routing.Draft.setStartLayer startSnapLayer
             { model with DraftRoute = Some draft }, Cmd.none
+    | Msg.RouteSetEndLayer endLayer ->
+        match model.DraftRoute with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with
+                DraftRoute = Some (Routing.Draft.setEndLayer endLayer d) },
+            Cmd.none
     | Msg.RouteAutoComputed corners ->
         match model.DraftRoute with
         | None -> model, Cmd.none

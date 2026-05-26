@@ -42,6 +42,7 @@
     <Compile Include="RoutingPointerTests.fs" />
     <Compile Include="RoutingSnapTests.fs" />
     <Compile Include="RoutingPadsTests.fs" />
+    <Compile Include="RoutingViaStackTests.fs" />
     <Compile Include="RoutingLiveDrcTests.fs" />
     <Compile Include="RoutingObstaclesTests.fs" />
     <Compile Include="RoutingVisibilityGraphTests.fs" />

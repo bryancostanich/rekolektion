@@ -153,10 +153,16 @@ let private gds2DActiveLayerAttr
         GdsCanvasControl.ActiveLayerProperty, v, ValueNone)
 
 let private gds2DStartRouteHandlerAttr
-        (h: System.Action<Visibility.LayerKey, int64, string, int64, int64>)
+        (h: System.Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>)
         : IAttr<GdsCanvasControl> =
-    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Visibility.LayerKey, int64, string, int64, int64>>(
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>>(
         GdsCanvasControl.StartRouteHandlerProperty, h, ValueNone)
+
+let private gds2DRouteSetEndLayerHandlerAttr
+        (h: System.Action<Visibility.LayerKey option>)
+        : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Visibility.LayerKey option>>(
+        GdsCanvasControl.RouteSetEndLayerHandlerProperty, h, ValueNone)
 
 let private gds2DRouteAutoComputedHandlerAttr
         (h: System.Action<(int64 * int64) list>) : IAttr<GdsCanvasControl> =
@@ -331,8 +337,11 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DDraftRouteAttr  model.DraftRoute
               gds2DActiveLayerAttr model.Toggle.ActiveLayer
               gds2DStartRouteHandlerAttr
-                  (System.Action<Visibility.LayerKey, int64, string, int64, int64>(fun layer w net x y ->
-                      dispatch (Msg.StartRoute (layer, w, net, x, y))))
+                  (System.Action<Visibility.LayerKey, int64, string, int64, int64, Visibility.LayerKey>(fun layer w net x y startSnapLayer ->
+                      dispatch (Msg.StartRoute (layer, w, net, x, y, startSnapLayer))))
+              gds2DRouteSetEndLayerHandlerAttr
+                  (System.Action<Visibility.LayerKey option>(fun l ->
+                      dispatch (Msg.RouteSetEndLayer l)))
               gds2DRouteMouseMoveHandlerAttr
                   (System.Action<int64, int64>(fun x y ->
                       dispatch (Msg.RouteMouseMove (x, y))))

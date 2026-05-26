@@ -227,6 +227,13 @@ type Msg =
     /// obstacle bboxes during active drafts so the user can see
     /// what the router considers blocked.
     | ToggleDebugOverlay
+    /// One-shot cleanup of legacy WireId corruption: for each
+    /// WireId in the active macro's top cell, if its rectangles
+    /// are not all spatially connected via bbox-touching, strip
+    /// the WireId from every rect carrying it. Geometry untouched.
+    /// Fixes the pre-fix drag bug where `touchingNeighbors`
+    /// re-stamped unrelated rects with the dragged wire's id.
+    | ScrubDispersedWires
     /// Commit a finished route-slide drag (track OR post). Each
     /// entry in `adjusts` is
     /// (sourceIndex, mx1X, mx1Y, my1X, my1Y, mx2X, mx2Y, my2X, my2Y) —

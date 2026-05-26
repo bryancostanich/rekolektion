@@ -267,3 +267,143 @@ let ``connectedComponent: keep=false on a rect excludes it from the set`` () =
     let always _ _ = true
     Wire.connectedComponent "top" 0 keep always doc
     |> should equal [0]
+
+// --- touchingNeighbors --------------------------------------------------
+//
+// Audit regression: pre-fix, this returned every rect whose bbox
+// overlapped the picked wire — including foreign layers and chip-
+// boundary rails. The downstream drag commit then re-stamped 40+
+// unrelated cell rects with the picked wire's WireId.
+
+let private mkRectLayer (layer : Layer) (x1, y1, x2, y2) : Rectangle = {
+    Layer = layer
+    X1 = x1; Y1 = y1; X2 = x2; Y2 = y2
+    Net = None
+    Props = []
+    Comments = []
+}
+
+let private li1 : Layer = Named ("sky130", "li1")
+
+[<Fact>]
+let ``touchingNeighbors: vertical cross-wire endpoint inside horizontal picked wire is included`` () =
+    // Horizontal picked wire at y=0..100, x=0..2000 on met1.
+    // Vertical cross-wire on met1 at x=950..1050, y=100..500 — its
+    // bottom endpoint sits ON the picked wire's top edge.
+    let picked = mkRect (0L, 0L, 2000L, 100L)
+    let crossWire = mkRect (950L, 100L, 1050L, 500L)
+    let doc = mkDoc [ mkCell "top" [ picked; crossWire ] ]
+    let neighbours = Wire.touchingNeighbors "top" Set.empty picked doc
+    neighbours |> List.map fst |> should equal [ 1 ]
+
+[<Fact>]
+let ``touchingNeighbors: cross-wire on a different layer is rejected`` () =
+    // Audit-regression: pre-fix, a chip-boundary rail on a foreign
+    // layer (l65/44 nsdm) whose bbox overlapped the picked wire
+    // was returned. Now layer must match.
+    let picked = mkRect (0L, 0L, 2000L, 100L)              // met1
+    let foreignLayer = mkRectLayer li1 (950L, 100L, 1050L, 500L) // li1
+    let doc = mkDoc [ mkCell "top" [ picked; foreignLayer ] ]
+    Wire.touchingNeighbors "top" Set.empty picked doc
+    |> should be Empty
+
+[<Fact>]
+let ``touchingNeighbors: chip-rail spanning entire macro on different layer is rejected`` () =
+    // Direct audit reproduction. Picked is a normal met1 wire.
+    // Chip-boundary rail is on l65/44 (nsdm) spanning the macro
+    // width. Pre-fix this got pulled in; now layer mismatch stops it.
+    let picked = mkRect (1000L, 1000L, 5000L, 1100L)
+    let nsdm : Layer = Named ("sky130", "nsdm")
+    let chipRail = mkRectLayer nsdm (-1000L, -800L, 20000L, -300L)
+    let doc = mkDoc [ mkCell "top" [ picked; chipRail ] ]
+    Wire.touchingNeighbors "top" Set.empty picked doc
+    |> should be Empty
+
+[<Fact>]
+let ``touchingNeighbors: same-axis parallel rect on same layer is rejected`` () =
+    // Two horizontal segments side by side — collinear-or-parallel,
+    // not endpoint-touching. `collinearGroupOf` handles same-axis.
+    let picked = mkRect (0L, 0L, 1000L, 100L)
+    let parallel_ = mkRect (1000L, 0L, 2000L, 100L)  // abuts at x=1000
+    let doc = mkDoc [ mkCell "top" [ picked; parallel_ ] ]
+    Wire.touchingNeighbors "top" Set.empty picked doc
+    |> should be Empty
+
+[<Fact>]
+let ``touchingNeighbors: cross-wire whose endpoint is OUTSIDE picked's X range is rejected`` () =
+    // Vertical cross-wire's Y endpoint touches y=100 (picked's top
+    // edge) but its X is OUTSIDE picked's X range — it's not
+    // physically connected to the picked wire.
+    let picked = mkRect (0L, 0L, 1000L, 100L)
+    let detached = mkRect (5000L, 100L, 5100L, 500L)
+    let doc = mkDoc [ mkCell "top" [ picked; detached ] ]
+    Wire.touchingNeighbors "top" Set.empty picked doc
+    |> should be Empty
+
+[<Fact>]
+let ``touchingNeighbors: excludeIndices is honoured`` () =
+    let picked = mkRect (0L, 0L, 2000L, 100L)
+    let crossWire = mkRect (950L, 100L, 1050L, 500L)
+    let doc = mkDoc [ mkCell "top" [ picked; crossWire ] ]
+    Wire.touchingNeighbors "top" (Set.ofList [1]) picked doc
+    |> should be Empty
+
+// --- scrubDispersedWireIds ----------------------------------------------
+
+[<Fact>]
+let ``scrubDispersedWireIds: connected wire (all rects touch) is preserved`` () =
+    // 3 rects sharing WireId 1, all touching: a horizontal at y=0,
+    // a vertical at x=1000 starting at y=0, and a horizontal at
+    // y=2000 starting at x=1000. One contiguous L-Z shape.
+    let r0 = mkRect (0L,    0L, 1000L,  100L) |> Wire.setWireId 1
+    let r1 = mkRect (1000L, 0L, 1100L, 2000L) |> Wire.setWireId 1
+    let r2 = mkRect (1000L, 1900L, 3000L, 2000L) |> Wire.setWireId 1
+    let doc = mkDoc [ mkCell "top" [ r0; r1; r2 ] ]
+    let doc', stripped = Wire.scrubDispersedWireIds doc
+    stripped |> should equal 0
+    // All three retain their WireId.
+    let cell = doc'.Cells |> List.head
+    cell.Elements
+    |> List.iter (fun el ->
+        match el with
+        | RectEl r -> Wire.getWireId r |> should equal (Some 1)
+        | _ -> ())
+
+[<Fact>]
+let ``scrubDispersedWireIds: disjoint rects sharing a WireId get scrubbed`` () =
+    // Two rects sharing WireId 1 but spatially disjoint —
+    // corruption from a past drag that re-stamped unrelated rects.
+    let r0 = mkRect (0L,     0L,  100L,  100L) |> Wire.setWireId 1
+    let r1 = mkRect (10000L, 10000L, 10100L, 10100L) |> Wire.setWireId 1
+    let doc = mkDoc [ mkCell "top" [ r0; r1 ] ]
+    let doc', stripped = Wire.scrubDispersedWireIds doc
+    stripped |> should equal 1
+    // Both rects lose the WireId; geometry untouched.
+    let cell = doc'.Cells |> List.head
+    cell.Elements
+    |> List.iter (fun el ->
+        match el with
+        | RectEl r ->
+            Wire.getWireId r |> should equal (None : int option)
+        | _ -> ())
+
+[<Fact>]
+let ``scrubDispersedWireIds: independent connected wires keep their ids`` () =
+    // Two distinct WireIds, each one a connected pair. Neither
+    // should be scrubbed — they're not sharing an id.
+    let a0 = mkRect (0L, 0L, 500L, 100L) |> Wire.setWireId 1
+    let a1 = mkRect (500L, 0L, 1000L, 100L) |> Wire.setWireId 1
+    let b0 = mkRect (5000L, 5000L, 5500L, 5100L) |> Wire.setWireId 2
+    let b1 = mkRect (5500L, 5000L, 6000L, 5100L) |> Wire.setWireId 2
+    let doc = mkDoc [ mkCell "top" [ a0; a1; b0; b1 ] ]
+    let doc', stripped = Wire.scrubDispersedWireIds doc
+    stripped |> should equal 0
+
+[<Fact>]
+let ``scrubDispersedWireIds: untagged rects are ignored`` () =
+    let r0 = mkRect (0L, 0L, 100L, 100L)
+    let r1 = mkRect (10000L, 10000L, 10100L, 10100L)
+    let doc = mkDoc [ mkCell "top" [ r0; r1 ] ]
+    let doc', stripped = Wire.scrubDispersedWireIds doc
+    stripped |> should equal 0
+    doc' |> should equal doc

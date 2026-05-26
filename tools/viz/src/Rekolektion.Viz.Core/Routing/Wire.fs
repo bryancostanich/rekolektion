@@ -283,11 +283,55 @@ let connectedComponent
                         | _ -> ()
             result |> List.ofSeq
 
-/// All top-cell RectEls in `cellName` whose bbox touches `r`,
-/// excluding indices in `excludeIndices` (typically the picked
-/// wire's own group + extras). Used by segment-drag to find
-/// attached cross-wire neighbours that should stretch when the
-/// picked wire moves.
+/// True when `n`'s long-axis endpoint touches `picked`'s body,
+/// i.e., `n` is a perpendicular cross-wire whose tip lands inside
+/// `picked`'s extent. The connection point for "stretch attached
+/// cross-wire when picked wire moves." Naive `bboxesTouch` was
+/// too permissive — it grabbed every rect overlapping the picked
+/// wire's bbox, including foreign-net cell rects and chip-boundary
+/// rails. This restricts to actual cross-wire endpoint touches.
+let private endpointTouches (picked : Rectangle) (n : Rectangle) : bool =
+    let pickedAxis = segmentAxis picked
+    let nAxis = segmentAxis n
+    if pickedAxis = nAxis then false
+    else
+        let pxLo = min picked.X1 picked.X2
+        let pxHi = max picked.X1 picked.X2
+        let pyLo = min picked.Y1 picked.Y2
+        let pyHi = max picked.Y1 picked.Y2
+        let nxLo = min n.X1 n.X2
+        let nxHi = max n.X1 n.X2
+        let nyLo = min n.Y1 n.Y2
+        let nyHi = max n.Y1 n.Y2
+        match pickedAxis with
+        | Horizontal ->
+            // Vertical N: a Y-endpoint inside picked's Y range AND
+            // X-range overlaps picked's X range (n's tip lands ON
+            // the picked wire's body).
+            let yTipIn =
+                (nyLo >= pyLo && nyLo <= pyHi)
+                || (nyHi >= pyLo && nyHi <= pyHi)
+            let xOverlap = nxHi >= pxLo && pxHi >= nxLo
+            yTipIn && xOverlap
+        | Vertical ->
+            let xTipIn =
+                (nxLo >= pxLo && nxLo <= pxHi)
+                || (nxHi >= pxLo && nxHi <= pxHi)
+            let yOverlap = nyHi >= pyLo && pyHi >= nyLo
+            xTipIn && yOverlap
+
+/// Top-cell RectEls in `cellName` that are cross-wire neighbours
+/// of `r`: same layer, perpendicular axis, and at least one of
+/// the candidate's long-axis endpoints lands inside `r`'s body
+/// (endpoint touch). Excludes indices in `excludeIndices`
+/// (typically the picked wire's own group + extras).
+///
+/// Pre-fix this was a bare `bboxesTouch` test that pulled in
+/// every rect overlapping `r`'s bbox — chip-boundary rails,
+/// foreign-net cell rects, unrelated wires. The downstream drag
+/// commit re-stamped those rects with the picked wire's WireId,
+/// silently corrupting tens of cell elements per drag. Restrict
+/// here to actual cross-wire endpoint touches on the same layer.
 let touchingNeighbors
         (cellName : string)
         (excludeIndices : Set<int>)
@@ -300,7 +344,10 @@ let touchingNeighbors
         [ for idx, el in List.indexed c.Elements do
               if not (Set.contains idx excludeIndices) then
                   match el with
-                  | RectEl r' when bboxesTouch r r' -> yield (idx, r')
+                  | RectEl r' when
+                          r'.Layer = r.Layer
+                          && endpointTouches r r' ->
+                      yield (idx, r')
                   | _ -> () ]
 
 /// Axis-aligned bbox of the union of `rects`. Used to materialise
@@ -324,6 +371,91 @@ let unionBbox (rects : Rectangle list) : int64 * int64 * int64 * int64 =
             if rxHi > xHi then xHi <- rxHi
             if ryHi > yHi then yHi <- ryHi
         (xLo, yLo, xHi, yHi)
+
+/// Strip WireId from rectangles that share a WireId but aren't
+/// spatially connected as one logical wire. A legitimate wire's
+/// rectangles all touch each other (via corner overlaps, pad
+/// stacks, or contiguous segments); disjoint spatial clusters
+/// under one WireId are corruption from earlier drag commits that
+/// re-stamped unrelated rects.
+///
+/// For each (cell, WireId) group: compute connected components
+/// using bbox-touching. If more than ONE component, the WireId
+/// is suspect — strip it from all rects in that group. The
+/// geometry is preserved; only the wire-grouping metadata is
+/// removed. Subsequent selections fall back to
+/// `collinearGroupOf`, which behaves correctly.
+///
+/// Returns `(scrubbed-doc, strip-count)` where strip-count is
+/// the number of distinct WireIds that were removed.
+let scrubDispersedWireIds (doc : Document) : Document * int =
+    let mutable stripped = 0
+    let cells' =
+        doc.Cells
+        |> List.map (fun c ->
+            // Per-WireId, gather indices into the cell.
+            let byWireId =
+                c.Elements
+                |> List.indexed
+                |> List.choose (fun (i, el) ->
+                    match el with
+                    | RectEl r ->
+                        match getWireId r with
+                        | Some wid -> Some (wid, (i, r))
+                        | None -> None
+                    | _ -> None)
+                |> List.groupBy fst
+                |> List.map (fun (wid, xs) ->
+                    wid, xs |> List.map snd)
+            // For each group, compute connected components via
+            // bbox-touching. If >1 component, mark indices for
+            // WireId strip.
+            let toStrip = System.Collections.Generic.HashSet<int>()
+            for (wid, members) in byWireId do
+                if List.length members < 2 then () else
+                // Union-find over members by bbox-touching.
+                let n = List.length members
+                let memArr = members |> List.toArray
+                let parent = Array.init n id
+                let rec find x =
+                    if parent.[x] = x then x
+                    else
+                        let r = find parent.[x]
+                        parent.[x] <- r
+                        r
+                let union x y =
+                    let rx = find x
+                    let ry = find y
+                    if rx <> ry then parent.[rx] <- ry
+                for i in 0 .. n - 1 do
+                    for j in i + 1 .. n - 1 do
+                        let (_, ri) = memArr.[i]
+                        let (_, rj) = memArr.[j]
+                        if bboxesTouch ri rj then union i j
+                let roots =
+                    [| for i in 0 .. n - 1 -> find i |]
+                    |> Array.distinct
+                if roots.Length > 1 then
+                    stripped <- stripped + 1
+                    for (idx, _) in members do
+                        toStrip.Add idx |> ignore
+                    ignore wid
+            if toStrip.Count = 0 then c
+            else
+                let elems' =
+                    c.Elements
+                    |> List.mapi (fun i el ->
+                        if toStrip.Contains i then
+                            match el with
+                            | RectEl r ->
+                                let props' =
+                                    r.Props
+                                    |> List.filter (fun p -> p.Key <> wireIdKey)
+                                RectEl { r with Props = props' }
+                            | other -> other
+                        else el)
+                { c with Elements = elems' })
+    { doc with Cells = cells' }, stripped
 
 /// Same-wire segments in the cell touching `r` at its endpoints.
 /// "Touching" = sharing a bbox edge along the wire's long axis,

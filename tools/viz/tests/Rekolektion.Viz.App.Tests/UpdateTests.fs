@@ -151,6 +151,123 @@ let ``PolygonPicked replaces Selection with single`` () =
     let next, _ = Update.update stubBackend (Msg.PolygonPicked (pk "X" 9)) model
     next.Selection |> should equal (Set.singleton (pk "X" 9))
 
+// --- WireSelectAt: bug fix for dispersed-WireId selection -------------
+//
+// Real-world corruption: commits stamped one logical WireId onto many
+// independent routes plus their via-stack siblings on other layers.
+// Before this fix, clicking one such rect grabbed every rect carrying
+// that WireId (including bbox-disjoint clusters and cross-layer via
+// siblings). The fix walks the connected component (same-layer +
+// same-WireId + bbox-touching), so a click yields the visible ribbon.
+
+let private mkRect (lyr: Layer) (x1: int64) (y1: int64)
+                   (x2: int64) (y2: int64) (props: Property list) : Element =
+    RectEl {
+        Layer = lyr
+        X1 = x1; Y1 = y1; X2 = x2; Y2 = y2
+        Net = None
+        Props = props
+        Comments = []
+    }
+
+let private widProp (wid: int) : Property =
+    { Key = Routing.Wire.wireIdKey
+      Value = PvInt (int64 wid) }
+
+let private wireFixtureModel (elements: Element list) : Model.Model =
+    let met2 = Named ("sky130", "met2")
+    ignore met2 // suppress unused-binding if elements use it inline
+    let doc =
+        { emptyDocument with
+            Cells = [
+                { Name = "TOP"
+                  Meta = None
+                  Comments = []
+                  Elements = elements }
+            ]
+            TopCell = Some "TOP" }
+    let macro : Model.LoadedMacro = {
+        Path = "/tmp/wire.gds"
+        Document = doc
+        FlatPolygons = Flatten.flatten doc
+        TopInstances = Instances.enumerate doc
+        Nets = Map.empty
+        Blocks = []
+        NetsFromSidecar = false
+        SidecarError = None
+        OriginalPath = "/tmp/wire.gds"
+        Dirty = false
+        UndoStack = []
+        RedoStack = []
+    }
+    { Model.empty with
+        OpenMacros = [macro]
+        ActiveMacroPath = Some macro.Path }
+
+[<Fact>]
+let ``WireSelectAt picks bbox-touching same-WireId same-layer rects`` () =
+    let met2 = Named ("sky130", "met2")
+    // Two abutting rects sharing WireId 1, plus an untagged stray.
+    let model = wireFixtureModel [
+        mkRect met2  0L  0L 100L 10L [widProp 1]   // i=0  ← click target
+        mkRect met2 90L  0L 200L 10L [widProp 1]   // i=1  bbox-touches i=0
+        mkRect met2 500L 500L 600L 510L []         // i=2  untagged, far
+    ]
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, false)) model
+    next.Selection
+    |> should equal (Set.ofList [pk "TOP" 0; pk "TOP" 1])
+
+[<Fact>]
+let ``WireSelectAt ignores bbox-disjoint rects sharing WireId (dispersed-id bug)`` () =
+    let met2 = Named ("sky130", "met2")
+    // i=0,i=1 form one connected cluster.  i=2 carries the SAME
+    // WireId but sits far away — pre-fix this got pulled in.
+    let model = wireFixtureModel [
+        mkRect met2  0L  0L 100L 10L [widProp 1]   // i=0  ← click target
+        mkRect met2 90L  0L 200L 10L [widProp 1]   // i=1
+        mkRect met2 9000L 9000L 9100L 9010L [widProp 1]  // i=2 disjoint
+    ]
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, false)) model
+    next.Selection
+    |> should equal (Set.ofList [pk "TOP" 0; pk "TOP" 1])
+    next.Selection |> Set.contains (pk "TOP" 2) |> should equal false
+
+[<Fact>]
+let ``WireSelectAt skips cross-layer via-stack siblings`` () =
+    let met2 = Named ("sky130", "met2")
+    let met1 = Named ("sky130", "met1")
+    // Met1 sibling carries the same WireId (via-stack member). It
+    // bbox-overlaps the clicked met2 rect, so a same-WireId-without-
+    // same-layer rule would pull it in.  Element order matters:
+    // findSegmentAt picks the LAST matching rect (renderer paints
+    // later rects on top), so met1 goes first and met2 last so the
+    // click lands on met2 — same visual stacking the user sees.
+    let model = wireFixtureModel [
+        mkRect met1  0L  0L 100L 10L [widProp 1]   // i=0  via-stack sibling
+        mkRect met2  0L  0L 100L 10L [widProp 1]   // i=1  ← click target
+        mkRect met2 90L  0L 200L 10L [widProp 1]   // i=2  touches i=1
+    ]
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, false)) model
+    next.Selection
+    |> should equal (Set.ofList [pk "TOP" 1; pk "TOP" 2])
+    next.Selection |> Set.contains (pk "TOP" 0) |> should equal false
+
+[<Fact>]
+let ``WireSelectAt on untagged rect walks bbox-touching same-layer cluster`` () =
+    let met2 = Named ("sky130", "met2")
+    let model = wireFixtureModel [
+        mkRect met2  0L  0L 100L 10L []            // i=0  ← click target
+        mkRect met2 90L  0L 200L 10L []            // i=1  touches i=0
+        mkRect met2 500L 500L 600L 510L []         // i=2  disjoint
+    ]
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, false)) model
+    next.Selection
+    |> should equal (Set.ofList [pk "TOP" 0; pk "TOP" 1])
+
 [<Fact>]
 let ``MovePolygonsDbu translates every polygon in selection`` () =
     let model = fixtureModel ()

@@ -597,6 +597,38 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with ShowDrc = not model.ShowDrc }, Cmd.none
     | Msg.ToggleDebugOverlay ->
         { model with DebugOverlay = not model.DebugOverlay }, Cmd.none
+    | Msg.ScrubDispersedWires ->
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some path ->
+            let mutable strippedTotal = 0
+            let mutable activePath' = path
+            let openMacros' =
+                model.OpenMacros
+                |> List.map (fun mc ->
+                    if mc.Path <> path then mc
+                    else
+                        let doc', n = Routing.Wire.scrubDispersedWireIds mc.Document
+                        if n = 0 then mc
+                        else
+                            strippedTotal <- strippedTotal + n
+                            let flat' = Layout.Flatten.flatten doc'
+                            let inst' = Layout.Instances.enumerate doc'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun mc'' ->
+                                    { mc'' with
+                                        Document = doc'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+            Rekolektion.Viz.App.Services.Logger.log "wire.scrub"
+                {| stripped = strippedTotal |}
+            { model with
+                OpenMacros = openMacros'
+                ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.ToggleGrid ->
         { model with ShowGrid = not model.ShowGrid }, Cmd.none
     | Msg.ToggleRuler ->
@@ -897,32 +929,28 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         match pickedRect with
                         | None -> model, Cmd.none
                         | Some seed ->
-                            // Selection rule (route_editing_plan §wire-id):
-                            //   - WireId-tagged: select EXACTLY the rects
-                            //     carrying this WireId. The route tool
-                            //     stamps every rect in a wire with one
-                            //     id at commit time, so this is the
-                            //     authoritative wire grouping — no BFS,
-                            //     no cross-net pull-in.
-                            //   - Untagged (pre-WireId / hand-edited):
-                            //     fall back to the collinear-abutting
-                            //     group at the picked rect. Same one
-                            //     the segment-drag auto-group uses.
+                            // Selection rule: from the clicked rect,
+                            // walk the connected component of rects
+                            // that bbox-touch, restricted to same
+                            // layer + same WireId (if tagged). This
+                            // gives the visible ribbon under the
+                            // cursor and is robust to two real-world
+                            // corruptions:
+                            //   - WireId aggregated across many
+                            //     independent routes (same id, no
+                            //     spatial connection on this layer)
+                            //   - via-stack siblings on other layers
+                            //     that share the WireId
+                            // Untagged falls back to bbox-walk on
+                            // same layer alone — same behaviour the
+                            // pre-WireId era relied on.
+                            let wid = Routing.Wire.getWireId seed
+                            let keep _ (r : Rkt.Types.Rectangle) =
+                                r.Layer = seed.Layer
+                                && Routing.Wire.getWireId r = wid
                             let indices =
-                                match Routing.Wire.getWireId seed with
-                                | Some wid ->
-                                    topCell.Elements
-                                    |> List.indexed
-                                    |> List.choose (fun (i, el) ->
-                                        match el with
-                                        | Rkt.Types.RectEl r when
-                                                Routing.Wire.getWireId r = Some wid ->
-                                            Some i
-                                        | _ -> None)
-                                | None ->
-                                    Routing.Wire.collinearGroupOf
-                                        topCellName seedIdx doc
-                                    |> List.map fst
+                                Routing.Wire.connectedComponent
+                                    topCellName seedIdx keep keep doc
                             let polyKeys : Set<Layout.Flatten.PolyKey> =
                                 indices
                                 |> List.map (fun i ->
@@ -971,9 +999,20 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             match s.WireId with
                             | Some id -> id
                             | None -> Routing.Wire.nextWireId mc.Document
+                        // Defense in depth: only re-stamp WireId on
+                        // rects matching the picked wire's layer.
+                        // `touchingNeighbors` already filters to
+                        // same-layer endpoint-touches, but if a
+                        // future caller relaxes that, this guard
+                        // prevents foreign-layer rects from getting
+                        // bundled into the wire's WireId set.
+                        let pickedLayer = s.Original.Layer
                         let newRects =
                             Routing.SegmentDrag.projectGeometry s mc.Document
-                            |> List.map (Routing.Wire.setWireId outId)
+                            |> List.map (fun r ->
+                                if r.Layer = pickedLayer then
+                                    Routing.Wire.setWireId outId r
+                                else r)
                         // Removal predicate: when WireId is known,
                         // drop every rect carrying it (the wire's
                         // full set). When unknown, drop every rect

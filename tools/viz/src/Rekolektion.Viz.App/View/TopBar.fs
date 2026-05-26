@@ -102,6 +102,22 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     // routing-related modes group visually.
     let wireToggle =
         mkToggle "Wire (W)" model.RoutingMode "#a85a1f" Msg.ToggleRoutingMode
+    // One-shot legacy cleanup: strips WireId from any wire whose
+    // rects aren't all spatially connected — corruption left over
+    // from the pre-fix drag bug.  Not a mode (no active state),
+    // just an action button.
+    let scrubButton : IView =
+        Button.create [
+            Button.content "Scrub WireIds"
+            Button.background "#262626"
+            Button.foreground "#bbbbbb"
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.onClick (fun _ -> dispatch Msg.ScrubDispersedWires)
+        ] :> IView
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -126,6 +142,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     tightenToggle
                                     editRoutingToggle
                                     wireToggle
+                                    scrubButton
                                     ratlinesToggle
                                     drcToggle
                                     dimensionsToggle

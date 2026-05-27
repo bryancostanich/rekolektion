@@ -163,6 +163,27 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     # below 0.30 µm at column boundaries.  Cap-cell pattern, not user
     # routing.
     "met4.2",
+    # ReRAM internal-macro rules.  Added 2026-05-26 (khalkulo ReRAM_IRL
+    # T09 consumer-triggered intake of T01-deferred work).
+    #
+    # `rr1.*` rules apply to the RERAM drawn layer (GDS 201/20, sky130B
+    # only).  We never draw the RERAM layer in user routing — the layer
+    # only appears inside foundry `sky130_fd_pr_reram__reram_cell`
+    # instances.  Adding these to the global waiver set carries no risk
+    # of false-waiving user-routing bugs (the underlying layer can't be
+    # touched without an explicit foundry-IP instantiation), so the
+    # spatial-footprint check is not required to make these safe.
+    #
+    # The met1/met2 surround-over-RERAM clauses (foundry COREID-class
+    # waivers, 172 + 64 tiles observed in the 2×2 reference tile per
+    # khalkulo conductor T09 plan) need spatial waivers because the same
+    # rules can fire on user routing far from any RERAM macro.  Their
+    # exact rule IDs are not yet enumerated; add them here when the
+    # first 2×2 DRC run surfaces them, together with passing the
+    # `sky130_fd_pr_reram__reram_cell` instance bboxes via
+    # `run_drc(waiver_footprints=...)` from the consumer's sidecar.
+    "rr1.1",       # ReRAM width ≥ 0.260 µm (sky130B.tech ~line 4498).
+    "rr1.2",       # ReRAM-to-ReRAM spacing ≥ 0.055 µm; touching illegal.
 })
 
 

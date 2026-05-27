@@ -32,6 +32,7 @@ from rekolektion.layout.routing import (
     pin_to_rail,
     place_via,
     place_wire,
+    placed_pin,
     poly_bridge,
     route_net_on_track,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "place_tub_row",
     "place_via",
     "place_wire",
+    "placed_pin",
     "poly_bridge",
     "route_net_on_track",
 ]

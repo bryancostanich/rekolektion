@@ -70,6 +70,46 @@ def _um_to_dbu(value: float, dbu_nm: int = 1) -> int:
     return int(round(value * 1000 / dbu_nm))
 
 
+def placed_pin(sref: "rkt.SRef",
+               native_offset: tuple[int, int]) -> tuple[int, int]:
+    """Translate a primitive-local pin offset to parent coords,
+    applying the SRef's `rot` and `reflect` transforms.
+
+    `native_offset` is the pin's `(x, y)` in the primitive's own
+    coordinate frame (e.g. taken from the primitive's label or
+    `pin.origin`).  The returned `(x, y)` is the pin's location in
+    the parent cell, accounting for the SRef's rotation (multiples
+    of 90°) and Y-axis reflection.
+
+    Use this anywhere a caller needs to label, drop a via, or jog
+    a wire to a placed cell's pin and the SRef may be rotated.  The
+    naive `sref.origin + native_offset` is only correct when
+    `rot == 0` and `reflect == False`.
+
+    Supported rotations: 0, ±90, 180, 270.  Magnification is not
+    applied (silicon SRefs always use mag=1).
+    """
+
+    nx, ny = native_offset
+    if getattr(sref, "reflect", False):
+        ny = -ny
+    rot = int(round(getattr(sref, "rot", 0.0))) % 360
+    if rot == 0:
+        rx, ry = nx, ny
+    elif rot == 90:
+        rx, ry = -ny, nx
+    elif rot == 180:
+        rx, ry = -nx, -ny
+    elif rot == 270:
+        rx, ry = ny, -nx
+    else:
+        raise ValueError(
+            f"placed_pin: unsupported SRef rotation {sref.rot}°; "
+            "only multiples of 90° are supported."
+        )
+    return (sref.origin[0] + rx, sref.origin[1] + ry)
+
+
 # ─── PinPatch ────────────────────────────────────────────────────────
 
 
@@ -407,9 +447,10 @@ def pin_patch(
             f"'{terminal}'. Available labels: {available}."
         )
 
-    # Translate pin from primitive-local to parent coords.
-    px = sref.origin[0] + pin.origin[0]
-    py = sref.origin[1] + pin.origin[1]
+    # Translate pin from primitive-local to parent coords, applying
+    # the SRef's rotation/reflect so the result is the actual placed
+    # pin location.
+    px, py = placed_pin(sref, pin.origin)
 
     half = _um_to_dbu(patch_half_um, dbu_nm)
     met1_rect = rkt.Rect(
@@ -1039,11 +1080,16 @@ def _segment_rects(
                 stacklevel=3,
             )
         lo_x, hi_x = sorted((x1, x2))
+        # Extend endpoints by `half` along the wire axis so adjacent
+        # segments in chain form fill L-corners cleanly, and so that
+        # via-pad endpoints (sized for via2.4 alt-enclosure, typically
+        # ≥half-width past the cut) are flush with the wire silhouette
+        # rather than producing stair-step notches. See workflow Rule #16.
         rects.append(
             rkt.Rect(
                 layer=rkt.named("sky130", layer),
-                x1=lo_x, y1=y1 - half,
-                x2=hi_x, y2=y1 + half,
+                x1=lo_x - half, y1=y1 - half,
+                x2=hi_x + half, y2=y1 + half,
             )
         )
     elif x1 == x2:
@@ -1057,8 +1103,8 @@ def _segment_rects(
         rects.append(
             rkt.Rect(
                 layer=rkt.named("sky130", layer),
-                x1=x1 - half, y1=lo_y,
-                x2=x1 + half, y2=hi_y,
+                x1=x1 - half, y1=lo_y - half,
+                x2=x1 + half, y2=hi_y + half,
             )
         )
     else:

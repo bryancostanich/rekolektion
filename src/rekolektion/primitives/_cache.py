@@ -39,14 +39,36 @@ def _normalize_param_value(value: object) -> object:
     )
 
 
-def compute_digest(generator: str, params: list[rkt.Property]) -> str:
+def compute_digest(
+    generator: str,
+    params: list[rkt.Property],
+    *,
+    generator_version: int = 1,
+) -> str:
     """Stable digest of a generator call. Identical params → identical
     digest. Param order doesn't matter (we sort by key first).
+
+    `generator_version` is a manually-bumped integer per generator
+    (e.g., when the generator's emit-side semantics change — a new
+    label-tagging pass, a new strap pattern, etc.). Bumping it
+    invalidates every cached entry that predates the bump, forcing
+    a re-mint on the next call. Without this, generators whose body
+    changes (but whose param surface stays identical) silently leave
+    stale .rkt files on disk.
+
+    We picked the version-constant approach over hashing the
+    generator's source file because (a) it's an explicit, reviewable
+    signal of "this change requires a re-mint" — incidental code
+    edits (docstrings, refactors, renames) don't churn the digest;
+    and (b) source-file hashing is fragile across editor formatting,
+    encoding, and import-graph changes. The cost is one line of
+    bookkeeping per intentional emit-side change.
     """
 
     sorted_params = sorted(params, key=lambda p: p.key)
     payload = {
         "generator": generator,
+        "generator_version": int(generator_version),
         "params": [
             (p.key, _normalize_param_value(p.value)) for p in sorted_params
         ],

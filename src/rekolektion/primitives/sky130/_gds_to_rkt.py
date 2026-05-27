@@ -73,11 +73,15 @@ def _reference_to_element(
     rot = float(ref.rotation) if ref.rotation else 0.0
     mag = float(ref.magnification) if ref.magnification else 1.0
     reflect = bool(ref.x_reflection)
-    cols, rows = (
-        (ref.repetition.columns, ref.repetition.rows)
-        if ref.repetition
-        else (1, 1)
-    )
+    # `ref.repetition` may be None (no array) OR present with `columns`
+    # / `rows` set to None (gdstk uses None for "1" in some repetition
+    # flavours, e.g. degenerate single-instance arrays). Treat both as
+    # a plain single SRef.
+    if ref.repetition is None:
+        cols, rows = 1, 1
+    else:
+        cols = ref.repetition.columns or 1
+        rows = ref.repetition.rows or 1
     if cols > 1 or rows > 1:
         rep = ref.repetition
         v1 = rep.v1 if rep else (0, 0)

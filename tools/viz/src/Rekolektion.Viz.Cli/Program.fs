@@ -16,6 +16,7 @@ let private printUsage () =
     printfn "Commands:"
     printfn "  read   <file.gds>                       GDS summary"
     printfn "  to-gds <input.rkt|.mag> <out.gds>       Export to canonical GDS"
+    printfn "  to-lef <input.rkt> <out.lef>            Emit LEF 5.7 abstract"
     printfn "  render <file.gds> <out_dir/>            Per-layer PNGs"
     printfn "  mesh   <file.gds> <out_dir/>            STL + GLB 3D models"
     printfn "  app    [<file.gds>]                     Launch GUI"
@@ -118,6 +119,135 @@ let cmdToGds (args: string list) : int =
     | _ ->
         printfn "usage: to-gds <input.rkt|.mag|.gds> <output.gds>"
         1
+
+/// `to-lef <input.rkt> <output.lef>
+///        [--cell <name>] [--uppercase-pins]
+///        [--obs none|fullsize|derived] [--obs-layers met1,met2,…]` —
+/// emit a LEF 5.7 abstract from a `.rkt` cell. `--cell` defaults to
+/// the document's `(top …)`, or the first cell if `(top …)` is
+/// absent. `--cell *` emits every cell in the document as one LEF
+/// library.
+let cmdToLef (args: string list) : int =
+    let printToLefUsage () =
+        printfn "usage: to-lef <input.rkt> <output.lef>"
+        printfn "              [--cell <name>|*]"
+        printfn "              [--uppercase-pins]"
+        printfn "              [--obs none|fullsize|derived|band-excluding]"
+        printfn "              [--obs-layers met1,met2,...]"
+        printfn "              [--obs-band <layer>:<y0_um>:<y1_um>]   (repeatable)"
+        printfn "              [--decimal-precision N]"
+        printfn "              [--emit-abutment-shape]"
+        printfn "              [--symmetry <text>]"
+        printfn "              [--omit-foreign-offset]"
+        printfn "              [--legacy-zero-short-form]"
+    // Split positional and flag arguments. Flags are key/value
+    // pairs; standalone flags (`--uppercase-pins`) are boolean.
+    let mutable positional : string list = []
+    let mutable cell : string option = None
+    let mutable uppercase = false
+    let mutable obsMode : string option = None
+    let mutable obsLayers : string list option = None
+    let mutable obsBands : (string * decimal * decimal) list = []
+    let mutable decimalPrecision : int option = None
+    let mutable emitAbutmentShape = false
+    let mutable symmetry : string option = None
+    let mutable omitForeignOffset = false
+    let mutable legacyZeroShortForm = false
+    let parseBand (s: string) : Result<string * decimal * decimal, string> =
+        match s.Split(':') with
+        | [| layer; y0; y1 |] ->
+            match System.Decimal.TryParse(y0, System.Globalization.NumberStyles.Float,
+                                          System.Globalization.CultureInfo.InvariantCulture),
+                  System.Decimal.TryParse(y1, System.Globalization.NumberStyles.Float,
+                                          System.Globalization.CultureInfo.InvariantCulture) with
+            | (true, y0v), (true, y1v) -> Ok (layer, y0v, y1v)
+            | _ -> Error (sprintf "--obs-band needs <layer>:<y0>:<y1>, got '%s'" s)
+        | _ -> Error (sprintf "--obs-band needs <layer>:<y0>:<y1>, got '%s'" s)
+    let rec parse = function
+        | [] -> Ok ()
+        | "--cell" :: v :: rest -> cell <- Some v; parse rest
+        | "--uppercase-pins" :: rest -> uppercase <- true; parse rest
+        | "--obs" :: v :: rest -> obsMode <- Some v; parse rest
+        | "--obs-layers" :: v :: rest ->
+            obsLayers <- Some (v.Split(',') |> Array.toList |> List.map (fun s -> s.Trim()))
+            parse rest
+        | "--obs-band" :: v :: rest ->
+            match parseBand v with
+            | Error e -> Error e
+            | Ok band -> obsBands <- obsBands @ [ band ]; parse rest
+        | "--decimal-precision" :: v :: rest ->
+            match System.Int32.TryParse v with
+            | true, n -> decimalPrecision <- Some n; parse rest
+            | _ -> Error (sprintf "--decimal-precision needs integer, got '%s'" v)
+        | "--emit-abutment-shape" :: rest ->
+            emitAbutmentShape <- true; parse rest
+        | "--symmetry" :: v :: rest ->
+            symmetry <- Some v; parse rest
+        | "--omit-foreign-offset" :: rest ->
+            omitForeignOffset <- true; parse rest
+        | "--legacy-zero-short-form" :: rest ->
+            legacyZeroShortForm <- true; parse rest
+        | s :: _ when s.StartsWith "--" ->
+            Error (sprintf "unknown or incomplete flag: %s" s)
+        | s :: rest ->
+            positional <- positional @ [ s ]; parse rest
+    match parse args with
+    | Error e -> eprintfn "to-lef: %s" e; printToLefUsage (); 1
+    | Ok () ->
+    match positional with
+    | [ input; output ] ->
+        match Rekolektion.Viz.Core.Rkt.Reader.readFile input with
+        | Error e ->
+            eprintfn "to-lef: parse error: %A" e
+            1
+        | Ok (_, doc) ->
+            let defaults = Rekolektion.Viz.Core.Rkt.ToLef.EmitOptions.defaults
+            let obsPolicy =
+                let layers = obsLayers |> Option.defaultValue [ "met1"; "met2" ]
+                match obsMode with
+                | None -> defaults.Obstructions
+                | Some "none" -> Rekolektion.Viz.Core.Rkt.ToLef.NoObs
+                | Some "fullsize" -> Rekolektion.Viz.Core.Rkt.ToLef.FullSize layers
+                | Some "derived" -> Rekolektion.Viz.Core.Rkt.ToLef.DerivedFromGeometry layers
+                | Some "band-excluding" ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.BandExcluding (layers, obsBands)
+                | Some other ->
+                    eprintfn "to-lef: unknown --obs value '%s' (expected none|fullsize|derived|band-excluding)" other
+                    defaults.Obstructions
+            let pinCase =
+                if uppercase then Rekolektion.Viz.Core.Rkt.ToLef.Uppercase
+                else Rekolektion.Viz.Core.Rkt.ToLef.Verbatim
+            let options =
+                { defaults with
+                    PinCase = pinCase
+                    Obstructions = obsPolicy
+                    DecimalPrecision = decimalPrecision
+                    EmitAbutmentShape = emitAbutmentShape
+                    Symmetry = symmetry
+                    OmitForeignOffset = omitForeignOffset
+                    LegacyZeroShortForm = legacyZeroShortForm }
+            let cellChoice =
+                cell
+                |> Option.orElse doc.TopCell
+                |> Option.orElseWith (fun () ->
+                    doc.Cells |> List.tryHead |> Option.map (fun c -> c.Name))
+            let result =
+                match cellChoice with
+                | Some "*" ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.emitDocument options doc
+                | Some name ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.emitCell options doc name
+                | None ->
+                    Error (Rekolektion.Viz.Core.Rkt.ToLef.NoSuchCell "(no cells in document)")
+            match result with
+            | Error err ->
+                eprintfn "to-lef: %s" (Rekolektion.Viz.Core.Rkt.ToLef.formatError err)
+                1
+            | Ok lef ->
+                System.IO.File.WriteAllText(output, lef)
+                printfn "wrote %s" output
+                0
+    | _ -> printToLefUsage (); 1
 
 /// `render <file.gds> <out_dir/>` — STUB. The legacy
 /// `Viz.Render.LayerRenderer` has not been ported into
@@ -352,6 +482,7 @@ let main argv =
     match argv |> Array.toList with
     | "read" :: rest        -> cmdRead rest
     | "to-gds" :: rest      -> cmdToGds rest
+    | "to-lef" :: rest      -> cmdToLef rest
     | "render" :: rest      -> cmdRender rest
     | "mesh" :: rest        -> cmdMesh rest
     | "app" :: rest         -> cmdApp rest

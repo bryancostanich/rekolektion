@@ -628,6 +628,118 @@ let private toolRunMacro (args: JsonElement) : ToolResult =
     with ex ->
         toolError (sprintf "run_macro invocation failed: %s" ex.Message)
 
+/// Tool: rekolektion_viz_emit_lef { input, output, cell?, uppercase?,
+///                                    obs? ("none"|"fullsize"|"derived"),
+///                                    obsLayers? (string[]) } —
+/// emit a LEF 5.7 abstract from a `.rkt` cell to disk. Direct in-
+/// process call into `Rkt.ToLef.emitCell` / `emitDocument`; no
+/// subprocess. Mirrors the CLI `to-lef` verb so agents can produce
+/// a LEF without dropping out to a shell.
+let private toolEmitLef (args: JsonElement) : ToolResult =
+    try
+        let input  = args.GetProperty("input").GetString()
+        let output = args.GetProperty("output").GetString()
+        let cellArg =
+            tryProp args "cell" |> Option.map (fun v -> v.GetString())
+        let uppercase =
+            match tryProp args "uppercase" with
+            | Some v when v.ValueKind = JsonValueKind.True -> true
+            | _ -> false
+        let obsLayers =
+            match tryProp args "obsLayers" with
+            | Some v when v.ValueKind = JsonValueKind.Array ->
+                v.EnumerateArray()
+                |> Seq.map (fun e -> e.GetString())
+                |> List.ofSeq
+            | _ -> [ "met1"; "met2" ]
+        let obsBands : (string * decimal * decimal) list =
+            match tryProp args "obsBands" with
+            | Some v when v.ValueKind = JsonValueKind.Array ->
+                v.EnumerateArray()
+                |> Seq.map (fun e ->
+                    let layer = e.GetProperty("layer").GetString()
+                    let y0 = e.GetProperty("y0").GetDecimal()
+                    let y1 = e.GetProperty("y1").GetDecimal()
+                    layer, y0, y1)
+                |> List.ofSeq
+            | _ -> []
+        let decimalPrecision =
+            match tryProp args "decimalPrecision" with
+            | Some v when v.ValueKind = JsonValueKind.Number -> Some (v.GetInt32())
+            | _ -> None
+        let emitAbutmentShape =
+            match tryProp args "emitAbutmentShape" with
+            | Some v when v.ValueKind = JsonValueKind.True -> true
+            | _ -> false
+        let symmetry =
+            tryProp args "symmetry" |> Option.map (fun v -> v.GetString())
+        let omitForeignOffset =
+            match tryProp args "omitForeignOffset" with
+            | Some v when v.ValueKind = JsonValueKind.True -> true
+            | _ -> false
+        let legacyZeroShortForm =
+            match tryProp args "legacyZeroShortForm" with
+            | Some v when v.ValueKind = JsonValueKind.True -> true
+            | _ -> false
+        let defaults =
+            Rekolektion.Viz.Core.Rkt.ToLef.EmitOptions.defaults
+        let obsPolicy =
+            match tryProp args "obs" with
+            | None -> defaults.Obstructions
+            | Some v ->
+                match v.GetString() with
+                | "none" -> Rekolektion.Viz.Core.Rkt.ToLef.NoObs
+                | "fullsize" ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.FullSize obsLayers
+                | "derived" ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.DerivedFromGeometry obsLayers
+                | "band-excluding" ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.BandExcluding (obsLayers, obsBands)
+                | other ->
+                    failwithf
+                        "unknown obs value '%s' (expected none|fullsize|derived|band-excluding)"
+                        other
+        let options =
+            { defaults with
+                PinCase =
+                    if uppercase then Rekolektion.Viz.Core.Rkt.ToLef.Uppercase
+                    else Rekolektion.Viz.Core.Rkt.ToLef.Verbatim
+                Obstructions = obsPolicy
+                DecimalPrecision = decimalPrecision
+                EmitAbutmentShape = emitAbutmentShape
+                Symmetry = symmetry
+                OmitForeignOffset = omitForeignOffset
+                LegacyZeroShortForm = legacyZeroShortForm }
+        match Rekolektion.Viz.Core.Rkt.Reader.readFile input with
+        | Error e ->
+            toolError (sprintf "parse error: %A" e)
+        | Ok (_, doc) ->
+            let cellChoice =
+                cellArg
+                |> Option.orElse doc.TopCell
+                |> Option.orElseWith (fun () ->
+                    doc.Cells |> List.tryHead |> Option.map (fun c -> c.Name))
+            let result =
+                match cellChoice with
+                | Some "*" ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.emitDocument options doc
+                | Some name ->
+                    Rekolektion.Viz.Core.Rkt.ToLef.emitCell options doc name
+                | None ->
+                    Error (
+                        Rekolektion.Viz.Core.Rkt.ToLef.NoSuchCell
+                            "(no cells in document)")
+            match result with
+            | Error e ->
+                toolError (Rekolektion.Viz.Core.Rkt.ToLef.formatError e)
+            | Ok lef ->
+                System.IO.File.WriteAllText(output, lef)
+                TextResult (
+                    sprintf "{\"ok\":true,\"output\":\"%s\",\"bytes\":%d}"
+                        (jsonEscape output) lef.Length)
+    with ex ->
+        toolError (sprintf "emit_lef invocation failed: %s" ex.Message)
+
 // ---------------------------------------------------------------
 // Dispatch table + tool schemas
 // ---------------------------------------------------------------
@@ -650,6 +762,7 @@ let private toolHandlers
         "rekolektion_viz_tail_log",          toolTailLog
         "rekolektion_viz_render",            toolVizRender
         "rekolektion_viz_run_macro",         toolRunMacro
+        "rekolektion_viz_emit_lef",          toolEmitLef
     ]
 
 /// Static tool schema list for MCP's `tools/list` response. Each
@@ -906,6 +1019,44 @@ let private toolList : obj =
                                  lef     = box {| ``type`` = "boolean" |}
                                  liberty = box {| ``type`` = "boolean" |} |}
                           required = [| "cell"; "words"; "bits"; "mux"; "output" |] |} |}
+        box {| name = "rekolektion_viz_emit_lef"
+               description =
+                   "Emit a LEF 5.7 abstract from a .rkt cell. SIZE / \
+                    ORIGIN come from the cell's (props (bbox …)) \
+                    declaration; PIN entries come from (port …) \
+                    elements. Use `cell:\"*\"` to emit every cell as one \
+                    LEF library. obs=band-excluding requires obsBands."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| input     = box {| ``type`` = "string" |}
+                                 output    = box {| ``type`` = "string" |}
+                                 cell      = box {| ``type`` = "string" |}
+                                 uppercase = box {| ``type`` = "boolean" |}
+                                 obs       =
+                                     box {| ``type`` = "string"
+                                            ``enum`` = [| "none"
+                                                          "fullsize"
+                                                          "derived"
+                                                          "band-excluding" |] |}
+                                 obsLayers =
+                                     box {| ``type`` = "array"
+                                            items = box {| ``type`` = "string" |} |}
+                                 obsBands =
+                                     box {| ``type`` = "array"
+                                            items =
+                                                box {| ``type`` = "object"
+                                                       properties =
+                                                           {| layer = box {| ``type`` = "string" |}
+                                                              y0    = box {| ``type`` = "number" |}
+                                                              y1    = box {| ``type`` = "number" |} |}
+                                                       required = [| "layer"; "y0"; "y1" |] |} |}
+                                 decimalPrecision = box {| ``type`` = "integer" |}
+                                 emitAbutmentShape = box {| ``type`` = "boolean" |}
+                                 symmetry = box {| ``type`` = "string" |}
+                                 omitForeignOffset = box {| ``type`` = "boolean" |}
+                                 legacyZeroShortForm = box {| ``type`` = "boolean" |} |}
+                          required = [| "input"; "output" |] |} |}
     |] |}
 
 // ---------------------------------------------------------------

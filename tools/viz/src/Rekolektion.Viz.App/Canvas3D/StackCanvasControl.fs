@@ -992,7 +992,8 @@ type StackCanvasControl() =
                     X2 = r.X2 + dx; Y2 = r.Y2 + dy
                     Net = None
                     Props = tagProps
-                    Comments = [] }
+                    Comments = []
+                    SubFormComments = Map.empty }
                  : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
             // Bridge wire on the OTHER-pad's layer from old center
             // to new center, axis-aligned to whichever delta is
@@ -1010,7 +1011,8 @@ type StackCanvasControl() =
                        Y2 = rd.CenterY + halfW
                        Net = None
                        Props = tagProps
-                       Comments = [] }
+                       Comments = []
+                       SubFormComments = Map.empty }
                      : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
                 else
                     // Vertical bridge.
@@ -1021,7 +1023,8 @@ type StackCanvasControl() =
                        Y2 = max rd.CenterY newCy
                        Net = None
                        Props = tagProps
-                       Comments = [] }
+                       Comments = []
+                       SubFormComments = Map.empty }
                      : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
             // No new beam-layer pad — the beam itself already covers
             // the new position. Only the via, other-metal pad, and
@@ -1049,7 +1052,8 @@ type StackCanvasControl() =
                   X2 = a.AnchorX + halfW; Y2 = a.AnchorY + halfW
                   Net = None
                   Props = tagProps
-                  Comments = [] }
+                  Comments = []
+                  SubFormComments = Map.empty }
             // Bridge runs along the beam's perp axis (the slide
             // axis). The bridge crosses the full delta on that
             // axis; the off-axis extent is the beam width centered
@@ -1065,7 +1069,8 @@ type StackCanvasControl() =
                       X2 = xHi; Y2 = a.AnchorY + halfW
                       Net = None
                       Props = tagProps
-                      Comments = [] }
+                      Comments = []
+                      SubFormComments = Map.empty }
                 | Rekolektion.Viz.Core.Routing.Detect.Axis.X ->
                     // Horizontal beam slides in Y. Bridge vertical.
                     let yLo = min a.AnchorY (a.AnchorY + dy)
@@ -1075,7 +1080,8 @@ type StackCanvasControl() =
                       X2 = a.AnchorX + halfW; Y2 = yHi
                       Net = None
                       Props = tagProps
-                      Comments = [] }
+                      Comments = []
+                      SubFormComments = Map.empty }
             [ stub; bridge ]
 
     /// per-handle adjust constructors below.
@@ -1829,7 +1835,8 @@ type StackCanvasControl() =
                                Props =
                                    StackCanvasControl.BridgePropsAt
                                        post.Position.X post.Position.Y
-                               Comments = [] }
+                               Comments = []
+                               SubFormComments = Map.empty }
                              : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
                     // Horizontal leg: only when the corner moved in X.
                     // X extends past BOTH endpoints by V seg's half-
@@ -1848,7 +1855,8 @@ type StackCanvasControl() =
                                Props =
                                    StackCanvasControl.BridgePropsAt
                                        post.Position.X post.Position.Y
-                               Comments = [] }
+                               Comments = []
+                               SubFormComments = Map.empty }
                              : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
             jogs |> List.ofSeq
 
@@ -1997,7 +2005,8 @@ type StackCanvasControl() =
                            X2 = xMaxExt; Y2 = aYMax
                            Net = None
                            Props = bridgeProps
-                           Comments = [] }
+                           Comments = []
+                           SubFormComments = Map.empty }
                          : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
                 elif endpointDy <> 0L && endpointDx = 0L then
                     let yMin = min anchor.OrigEndpoint.Y newY
@@ -2011,7 +2020,8 @@ type StackCanvasControl() =
                            X2 = aXMax; Y2 = yMaxExt
                            Net = None
                            Props = bridgeProps
-                           Comments = [] }
+                           Comments = []
+                           SubFormComments = Map.empty }
                          : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
                 else
                     // Endpoint moved diagonally — anchor extension
@@ -2034,7 +2044,8 @@ type StackCanvasControl() =
                            X2 = xMaxExt; Y2 = yMaxExt
                            Net = None
                            Props = bridgeProps
-                           Comments = [] }
+                           Comments = []
+                           SubFormComments = Map.empty }
                          : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
 
     /// Hit-test screen point against the rendered post handles for

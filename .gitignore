@@ -21,6 +21,19 @@ output/
 # Allow committed foundry-cell port-patched subckts (D3 LVS cache)
 !src/rekolektion/peripherals/cells/extracted_subckt/*.subckt.sp
 
+# Allow committed foundry SRAM bitcell from skywater-pdk-libs-sky130_fd_bd_sram
+# (Apache-2.0 — see src/rekolektion/bitcell/cells/ATTRIBUTION.md).
+# The legacy lef_generator.py + every foundry-cell macro test reads these.
+!src/rekolektion/bitcell/cells/*.gds
+!src/rekolektion/bitcell/cells/*.magic.lef
+
+# Allow committed foundry peripheral cells from the same library
+# (NAND2/3/4 decoders, sense amp, write driver, DFF — see
+# src/rekolektion/peripherals/cells/ATTRIBUTION.md).
+!src/rekolektion/peripherals/cells/*.gds
+!src/rekolektion/peripherals/cells/*.lef
+!src/rekolektion/peripherals/cells/*.magic.lef
+
 # Magic
 *.ext
 *.sim

@@ -385,6 +385,19 @@ rules:
     name: via
   min-um: 0.055
   cond: always
+- name: via.4b
+  kind: asym-enclosure
+  outer:
+    number: 68
+    datatype: 20
+    name: met1
+  inner:
+    number: 68
+    datatype: 44
+    name: via
+  one-dir-um: 0.085
+  other-dir-um: 0.055
+  cond: always
 - name: via.5a
   kind: enclosure
   outer:
@@ -396,6 +409,19 @@ rules:
     datatype: 44
     name: via
   min-um: 0.055
+  cond: always
+- name: via.5b
+  kind: asym-enclosure
+  outer:
+    number: 69
+    datatype: 20
+    name: met2
+  inner:
+    number: 68
+    datatype: 44
+    name: via
+  one-dir-um: 0.085
+  other-dir-um: 0.055
   cond: always
 - name: met2.1
   kind: width

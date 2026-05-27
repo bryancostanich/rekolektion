@@ -386,12 +386,20 @@ let allRules : Rule list = [
     // --- VIA (met1 to met2) ---
     Width    ("via.1",      via,   0.15)
     Spacing  ("via.2",      via,   0.17)
-    // via.4a/4b — met1 encloses via1. SKY130 is symmetric here:
-    // 0.055 both directions (different from licon/mcon).
+    // via.4a — met1 encloses via1 by 0.055 µm minimum on at least
+    // one axis. Always applies.
     Enclosure("via.4a",     met1,  via, 0.055, Always)
-    // via.5a — met2 encloses via1. Symmetric: 0.055 both
-    // directions.
+    // via.4b — when met1 is minimum-width (0.14 µm), the OTHER
+    // axis must have 0.085 µm enclosure. Encoded asymmetrically so
+    // the pad emitter sizes square pads to satisfy the strict axis
+    // (it takes max of the two thresholds). Pre-2026-05 this rule
+    // was missing; the emitter returned 0.26 µm pads, then
+    // met1.6 min-area floored them at 0.288 µm — both below the
+    // 0.320 µm needed to satisfy via.4b on a min-width wire.
+    AsymEnclosure("via.4b", met1, via, 0.085, 0.055, Always)
+    // via.5a / via.5b — same shape for met2 around via1.
     Enclosure("via.5a",     met2,  via, 0.055, Always)
+    AsymEnclosure("via.5b", met2, via, 0.085, 0.055, Always)
 
     // --- Metal 2 ---
     Width    ("met2.1",     met2,  0.14)

@@ -16,12 +16,12 @@ let private met3Key : int * int = (70, 20)
 // --- DRC-driven pad sizes against the real Rules.allRules --------------
 
 [<Fact>]
-let ``met1 endpoint pad is 290 nm (mcon enclosure dominates min-area)`` () =
-    // met1.5 AsymEnclosure(met1, mcon, 0.06, 0.03) + mcon width 0.17
-    // → 170 + 2*60 = 290 nm. met1.6 min-area 0.083 µm² → 288 nm.
-    // Max = 290 nm.
+let ``met1 endpoint pad is 320 nm (via.4b enclosure dominates)`` () =
+    // via.4b AsymEnclosure(met1, via, 0.085, 0.055) + via width 0.15
+    // → 150 + 2*85 = 320 nm. met1.5 mcon enclosure → 290 nm.
+    // met1.6 min-area 0.083 µm² → 288 nm. Max = 320 nm.
     Pads.endpointPadSide Rules.defaultView units1nm met1Key
-    |> should equal (Some 290L)
+    |> should equal (Some 320L)
 
 [<Fact>]
 let ``met2 endpoint pad is 370 nm (via2.4 long axis dominates)`` () =

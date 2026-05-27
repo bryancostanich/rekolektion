@@ -42,6 +42,7 @@ let fromBoundary (b: Gds.Types.Boundary) : Element =
         Net = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
 
 let fromPath (p: Gds.Types.Path) : Element =
@@ -53,6 +54,7 @@ let fromPath (p: Gds.Types.Path) : Element =
         Cap = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
 
 let fromSRef (s: Gds.Types.SRef) : Element =
@@ -64,6 +66,7 @@ let fromSRef (s: Gds.Types.SRef) : Element =
         Reflect = s.Reflected
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
 
 let fromARef (a: Gds.Types.ARef) : Element =
@@ -79,6 +82,7 @@ let fromARef (a: Gds.Types.ARef) : Element =
         Reflect = a.Reflected
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
 
 let fromText (t: Gds.Types.TextLabel) : Element =
@@ -89,6 +93,7 @@ let fromText (t: Gds.Types.TextLabel) : Element =
         Class = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
         IsInternal = false
         Kind = NetName
     }
@@ -105,7 +110,8 @@ let fromStructure (s: Gds.Types.Structure) : Cell =
     { Name = s.Name
       Meta = None
       Elements = s.Elements |> List.map fromElement
-      Comments = [] }
+      Comments = []
+      SubFormComments = Map.empty }
 
 let fromLibrary (lib: Gds.Types.Library) : Document =
     let units : Units =
@@ -124,4 +130,5 @@ let fromLibrary (lib: Gds.Types.Library) : Document =
       Imports = []
       Cells = lib.Structures |> List.map fromStructure
       TopCell = topCell
-      HeaderComments = [] }
+      HeaderComments = []
+      SubFormComments = Map.empty }

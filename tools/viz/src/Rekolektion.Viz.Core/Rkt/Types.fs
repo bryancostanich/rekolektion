@@ -32,25 +32,41 @@ type PortShape =
     | PolyShape of Point list
 
 /// Property bag value.
+///
+/// `PvTuple` carries a fixed-arity sequence of scalar values for
+/// properties that are inherently tuples (cell-level `(bbox x0 y0 x1
+/// y1)`, future window/region descriptors). Reader accepts a
+/// property form with ≥2 trailing atoms as `(key v1 v2 …)`; writer
+/// re-emits the values whitespace-separated after the key. Single-
+/// value properties keep the scalar variants verbatim — `PvTuple` is
+/// additive, not a replacement.
 type PropValue =
     | PvAtom of string
     | PvString of string
     | PvInt of int64
     | PvFloat of float
+    | PvTuple of PropValue list
 
 type Property = { Key: string; Value: PropValue }
 
 /// `Comments` on every node holds the `;`-prefixed lines that
 /// preceded the form in source order. Storage strips the `;` and the
 /// trailing newline — one list entry per `;` line. The writer puts
-/// them back on synthesis. New nodes default to `Comments = []`;
-/// untouched nodes retain whatever the reader populated.
+/// them back on synthesis. New nodes default to `Comments = []` and
+/// `SubFormComments = Map.empty`; untouched nodes retain whatever
+/// the reader populated.
+/// `SubFormComments` carries `;`-runs that appear BETWEEN the
+/// element's sub-forms (e.g., between `(layer …)` and `(points …)`
+/// inside a `(poly …)`). Keys are the sub-form symbol name (`"layer"`,
+/// `"points"`, `"net"`, etc.); the sentinel `"<tail>"` slot holds
+/// comments after the last sub-form and before the closing paren.
 type Poly = {
     Layer: Layer
     Points: Point list
     Net: string option
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 type Path = {
@@ -61,6 +77,7 @@ type Path = {
     Cap: string option
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 /// Renamed from `Rect` to dodge a conflict with `Avalonia.Rect` in
@@ -76,6 +93,7 @@ type Rectangle = {
     Net: string option
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 type Port = {
@@ -87,6 +105,7 @@ type Port = {
     Net: string option
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 /// Role of a `(label …)` in the netlist.
@@ -128,6 +147,7 @@ type Label = {
     Class: string option
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
     /// `IsInternal = true` marks the label as a viz/debug annotation
     /// that ToGds.fs deliberately skips when exporting GDS.  Magic's
     /// `port makeall` only sees GDS text records, so internal labels
@@ -149,6 +169,7 @@ type SRef = {
     Reflect: bool
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 type ARef = {
@@ -163,6 +184,7 @@ type ARef = {
     Reflect: bool
     Props: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 /// Cell-level `(props ...)` wrapper. `Comments` belong to the form's
@@ -170,6 +192,7 @@ type ARef = {
 type Props = {
     Items: Property list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 type Element =
@@ -226,6 +249,7 @@ type Meta = {
     Generated: string option
     Digest: string option
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 type Cell = {
@@ -233,6 +257,7 @@ type Cell = {
     Meta: Meta option
     Elements: Element list
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 type Units = {
@@ -245,6 +270,7 @@ type Units = {
 type Import = {
     Path: string
     Comments: string list
+    SubFormComments: Map<string, string list>
 }
 
 /// A single `.rkt` file's parsed semantic content.
@@ -262,6 +288,7 @@ type Document = {
     Cells: Cell list
     TopCell: string option
     HeaderComments: string list
+    SubFormComments: Map<string, string list>
 }
 
 /// Defaults applied when a header field is omitted.
@@ -278,4 +305,5 @@ let emptyDocument : Document = {
     Cells = []
     TopCell = None
     HeaderComments = []
+    SubFormComments = Map.empty
 }

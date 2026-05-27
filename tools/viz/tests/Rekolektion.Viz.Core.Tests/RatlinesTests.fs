@@ -89,6 +89,7 @@ let private mkLabel (text: string) (origin: Point) (kind: LabelKind) : Element =
         Class = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
         IsInternal = false
         Kind = kind
     }
@@ -96,7 +97,8 @@ let private mkLabel (text: string) (origin: Point) (kind: LabelKind) : Element =
 let private docWithLabels (labels: Element list) : Document =
     { emptyDocument with
         Cells = [
-            { Name = "top"; Meta = None; Comments = []; Elements = labels }
+            { Name = "top"; Meta = None; Comments = []; Elements = labels
+              SubFormComments = Map.empty }
         ]
         TopCell = Some "top" }
 

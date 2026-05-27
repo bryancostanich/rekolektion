@@ -28,6 +28,7 @@ let ``Poly becomes Boundary with point list preserved`` () =
         Net = Some "BL"
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
     let b = ToGds.polyToBoundary p
     b.Layer |> should equal 68
@@ -44,6 +45,7 @@ let ``Path width and points preserved`` () =
         Cap = Some "round"
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
     let g = ToGds.pathToGds p
     g.Width |> should equal 170
@@ -59,6 +61,7 @@ let ``SRef preserves origin and orientation`` () =
         Reflect = true
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
     let g = ToGds.srefToGds s
     g.StructureName |> should equal "bitcell"
@@ -80,6 +83,7 @@ let ``ARef preserves rows cols pitches`` () =
         Reflect = false
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
     let g = ToGds.arefToGds a
     g.Cols |> should equal 64
@@ -97,6 +101,7 @@ let ``Port emits one geometry element and one text label`` () =
         Net = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
     let elements = ToGds.portToGds p
     elements |> List.length |> should equal 2
@@ -107,7 +112,9 @@ let ``Port emits one geometry element and one text label`` () =
 
 [<Fact>]
 let ``PropsEl drops from output`` () =
-    let p : Props = { Items = [ { Key = "k"; Value = PvAtom "v" } ]; Comments = [] }
+    let p : Props =
+        { Items = [ { Key = "k"; Value = PvAtom "v" } ]
+          Comments = []; SubFormComments = Map.empty }
     ToGds.elementToGds (PropsEl p) |> should be Empty
 
 // ─── Round-trip via OfGds ───────────────────────────────────────────────
@@ -120,6 +127,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                 { Name = "top"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       SRefEl {
                           Cell = "leaf"
@@ -127,11 +135,13 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                           Rot = 0.0; Mag = 1.0; Reflect = false
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                       }
                   ] }
                 { Name = "leaf"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       PolyEl {
                           Layer = Named ("sky130", "met1")
@@ -145,6 +155,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                           Net = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                       }
                       PathEl {
                           Layer = Named ("sky130", "poly")
@@ -154,6 +165,7 @@ let ``Rkt -> Gds -> Rkt preserves geometry and hierarchy`` () =
                           Cap = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                       }
                   ] }
             ]
@@ -180,6 +192,7 @@ let ``Rkt port survives as geometry + label on round trip`` () =
                 { Name = "c"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       PortEl {
                           Name = "BL"
@@ -190,6 +203,7 @@ let ``Rkt port survives as geometry + label on round trip`` () =
                           Net = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                       }
                   ] }
             ]
@@ -211,6 +225,7 @@ let ``unknown layer passes through to GDS and back intact`` () =
                 { Name = "c"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       PolyEl {
                           Layer = Unknown (1234, 56)
@@ -223,6 +238,7 @@ let ``unknown layer passes through to GDS and back intact`` () =
                           Net = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                       }
                   ] }
             ]

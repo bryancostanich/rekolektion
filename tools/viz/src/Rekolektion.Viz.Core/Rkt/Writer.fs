@@ -66,11 +66,25 @@ let private propValueAtom (leading: string) (v: PropValue) : Sexp =
     | PvString t -> stringAtom leading t
     | PvInt v -> intAtom leading v
     | PvFloat v -> floatAtom leading v
+    | PvTuple _ ->
+        // Tuples expand inline at the property-form level via
+        // `propertyChildren`; reaching this branch means someone
+        // called `propValueAtom` directly on a tuple, which is a
+        // programmer error.
+        failwith "propValueAtom: PvTuple expands at the form level (see propertyChildren)"
+
+/// Build the child sequence inside a `(key …)` property form.
+/// Single-value variants emit `[key; value]`; `PvTuple` flattens
+/// to `[key; v1; v2; …]`.
+let private propertyChildren (p: Property) : Sexp list =
+    match p.Value with
+    | PvTuple values ->
+        sym "" p.Key :: (values |> List.map (propValueAtom " "))
+    | _ ->
+        [ sym "" p.Key; propValueAtom " " p.Value ]
 
 let private propForm (leading: string) (p: Property) : Sexp =
-    mkList leading
-        [ sym "" p.Key; propValueAtom " " p.Value ]
-        ""
+    mkList leading (propertyChildren p) ""
 
 let private propsForm (leading: string) (props: Property list) : Sexp option =
     if List.isEmpty props then None
@@ -130,19 +144,38 @@ let private commentBlock (i: int) (comments: string list) : string =
 let private leading (i: int) (comments: string list) : string =
     commentBlock i comments + indent i
 
+/// Compute the leading-trivia string for a sub-form inside an
+/// element. When `SubFormComments[key]` is non-empty, the sub-form is
+/// forced onto its own line (`\n` + indent at depth `i+1`) with the
+/// comment block prepended; otherwise the caller's `defaultLead`
+/// stands. v1 doesn't try to keep comments on same-line sub-forms —
+/// emitting a sub-form comment promotes the sub-form to its own line.
+let private subFormLead
+    (i: int)
+    (key: string)
+    (sfc: Map<string, string list>)
+    (defaultLead: string)
+    : string =
+    match Map.tryFind key sfc with
+    | Some comments when not (List.isEmpty comments) ->
+        commentBlock (i + 1) comments + indent (i + 1)
+    | _ -> defaultLead
+
 // ─── Element synthesizers ─────────────────────────────────────────────
 
 let private synthesizePoly (i: int) (poly: Poly) : Sexp =
     let lead = leading i poly.Comments
     let inner = indent (i + 1)
+    let sfc = poly.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "poly")
-    kids.Add (mkList " " [ sym "" "layer"; layerAtom " " poly.Layer ] "")
-    kids.Add (pointsForm inner poly.Points)
+    kids.Add (mkList (subFormLead i "layer" sfc " ")
+                     [ sym "" "layer"; layerAtom " " poly.Layer ] "")
+    kids.Add (pointsForm (subFormLead i "points" sfc inner) poly.Points)
     match poly.Net with
-    | Some n -> kids.Add (netForm inner n)
+    | Some n -> kids.Add (netForm (subFormLead i "net" sfc inner) n)
     | None -> ()
-    match propsForm inner poly.Props with
+    match propsForm (subFormLead i "props" sfc inner) poly.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
@@ -150,36 +183,43 @@ let private synthesizePoly (i: int) (poly: Poly) : Sexp =
 let private synthesizePath (i: int) (p: Path) : Sexp =
     let lead = leading i p.Comments
     let inner = indent (i + 1)
+    let sfc = p.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "path")
-    kids.Add (mkList " " [ sym "" "layer"; layerAtom " " p.Layer ] "")
-    kids.Add (mkList " " [ sym "" "width"; intAtom " " p.Width ] "")
-    kids.Add (pointsForm inner p.Points)
+    kids.Add (mkList (subFormLead i "layer" sfc " ")
+                     [ sym "" "layer"; layerAtom " " p.Layer ] "")
+    kids.Add (mkList (subFormLead i "width" sfc " ")
+                     [ sym "" "width"; intAtom " " p.Width ] "")
+    kids.Add (pointsForm (subFormLead i "points" sfc inner) p.Points)
     match p.Cap with
-    | Some c -> kids.Add (mkList inner [ sym "" "cap"; sym " " c ] "")
+    | Some c ->
+        kids.Add (mkList (subFormLead i "cap" sfc inner)
+                         [ sym "" "cap"; sym " " c ] "")
     | None -> ()
     match p.Net with
-    | Some n -> kids.Add (netForm inner n)
+    | Some n -> kids.Add (netForm (subFormLead i "net" sfc inner) n)
     | None -> ()
-    match propsForm inner p.Props with
+    match propsForm (subFormLead i "props" sfc inner) p.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
 
 let private synthesizeRect (i: int) (r: Rectangle) : Sexp =
     let lead = leading i r.Comments
+    let inner = indent (i + 1)
+    let sfc = r.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "rect")
-    kids.Add (mkList " " [ sym "" "layer"; layerAtom " " r.Layer ] "")
+    kids.Add (mkList (subFormLead i "layer" sfc " ")
+                     [ sym "" "layer"; layerAtom " " r.Layer ] "")
     kids.Add (intAtom " " r.X1)
     kids.Add (intAtom " " r.Y1)
     kids.Add (intAtom " " r.X2)
     kids.Add (intAtom " " r.Y2)
-    let inner = indent (i + 1)
     match r.Net with
-    | Some n -> kids.Add (netForm inner n)
+    | Some n -> kids.Add (netForm (subFormLead i "net" sfc inner) n)
     | None -> ()
-    match propsForm inner r.Props with
+    match propsForm (subFormLead i "props" sfc inner) r.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
@@ -205,21 +245,25 @@ let private synthesizePortShape (lead: string) (shape: PortShape) : Sexp =
 let private synthesizePort (i: int) (p: Port) : Sexp =
     let lead = leading i p.Comments
     let inner = indent (i + 1)
+    let sfc = p.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "port")
-    kids.Add (mkList " " [ sym "" "name"; sym " " p.Name ] "")
-    kids.Add (mkList " " [ sym "" "dir"; sym " " (dirSymbol p.Direction) ] "")
-    kids.Add (mkList inner [ sym "" "layer"; layerAtom " " p.Layer ] "")
+    kids.Add (mkList (subFormLead i "name" sfc " ")
+                     [ sym "" "name"; sym " " p.Name ] "")
+    kids.Add (mkList (subFormLead i "dir" sfc " ")
+                     [ sym "" "dir"; sym " " (dirSymbol p.Direction) ] "")
+    kids.Add (mkList (subFormLead i "layer" sfc inner)
+                     [ sym "" "layer"; layerAtom " " p.Layer ] "")
     if not (List.isEmpty p.Flags) then
         let flagKids =
             sym "" "flags"
             :: (p.Flags |> List.map (fun f -> sym " " (flagSymbol f)))
-        kids.Add (mkList inner flagKids "")
-    kids.Add (synthesizePortShape inner p.Shape)
+        kids.Add (mkList (subFormLead i "flags" sfc inner) flagKids "")
+    kids.Add (synthesizePortShape (subFormLead i "shape" sfc inner) p.Shape)
     match p.Net with
-    | Some n -> kids.Add (netForm inner n)
+    | Some n -> kids.Add (netForm (subFormLead i "net" sfc inner) n)
     | None -> ()
-    match propsForm inner p.Props with
+    match propsForm (subFormLead i "props" sfc inner) p.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
@@ -227,26 +271,34 @@ let private synthesizePort (i: int) (p: Port) : Sexp =
 let private synthesizeLabel (i: int) (l: Label) : Sexp =
     let lead = leading i l.Comments
     let inner = indent (i + 1)
+    let sfc = l.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "label")
-    kids.Add (mkList " " [ sym "" "layer"; layerAtom " " l.Layer ] "")
-    kids.Add (mkList " " [ sym "" "text"; stringAtom " " l.Text ] "")
-    kids.Add (mkList " "
+    kids.Add (mkList (subFormLead i "layer" sfc " ")
+                     [ sym "" "layer"; layerAtom " " l.Layer ] "")
+    kids.Add (mkList (subFormLead i "text" sfc " ")
+                     [ sym "" "text"; stringAtom " " l.Text ] "")
+    kids.Add (mkList (subFormLead i "origin" sfc " ")
         [ sym "" "origin"; intAtom " " l.Origin.X; intAtom " " l.Origin.Y ] "")
     match l.Class with
-    | Some c -> kids.Add (mkList inner [ sym "" "class"; sym " " c ] "")
+    | Some c ->
+        kids.Add (mkList (subFormLead i "class" sfc inner)
+                         [ sym "" "class"; sym " " c ] "")
     | None -> ()
     if l.IsInternal then
-        kids.Add (mkList inner [ sym "" "internal"; sym " " "#t" ] "")
+        kids.Add (mkList (subFormLead i "internal" sfc inner)
+                         [ sym "" "internal"; sym " " "#t" ] "")
     // Emit the `(kind …)` annotation only when the role isn't the
     // default. `NetName` is implicit; absent annotation == net name.
     match l.Kind with
     | NetName -> ()
     | DeviceTerminal ->
-        kids.Add (mkList inner [ sym "" "kind"; sym " " "device-terminal" ] "")
+        kids.Add (mkList (subFormLead i "kind" sfc inner)
+                         [ sym "" "kind"; sym " " "device-terminal" ] "")
     | PortName ->
-        kids.Add (mkList inner [ sym "" "kind"; sym " " "port-name" ] "")
-    match propsForm inner l.Props with
+        kids.Add (mkList (subFormLead i "kind" sfc inner)
+                         [ sym "" "kind"; sym " " "port-name" ] "")
+    match propsForm (subFormLead i "props" sfc inner) l.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
@@ -254,18 +306,23 @@ let private synthesizeLabel (i: int) (l: Label) : Sexp =
 let private synthesizeSRef (i: int) (r: SRef) : Sexp =
     let lead = leading i r.Comments
     let inner = indent (i + 1)
+    let sfc = r.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "sref")
-    kids.Add (mkList " " [ sym "" "cell"; sym " " r.Cell ] "")
-    kids.Add (mkList " "
+    kids.Add (mkList (subFormLead i "cell" sfc " ")
+                     [ sym "" "cell"; sym " " r.Cell ] "")
+    kids.Add (mkList (subFormLead i "origin" sfc " ")
         [ sym "" "origin"; intAtom " " r.Origin.X; intAtom " " r.Origin.Y ] "")
     if r.Rot <> 0.0 then
-        kids.Add (mkList " " [ sym "" "rot"; floatAtom " " r.Rot ] "")
+        kids.Add (mkList (subFormLead i "rot" sfc " ")
+                         [ sym "" "rot"; floatAtom " " r.Rot ] "")
     if r.Mag <> 1.0 then
-        kids.Add (mkList " " [ sym "" "mag"; floatAtom " " r.Mag ] "")
+        kids.Add (mkList (subFormLead i "mag" sfc " ")
+                         [ sym "" "mag"; floatAtom " " r.Mag ] "")
     if r.Reflect then
-        kids.Add (mkList " " [ sym "" "reflect"; sym " " "true" ] "")
-    match propsForm inner r.Props with
+        kids.Add (mkList (subFormLead i "reflect" sfc " ")
+                         [ sym "" "reflect"; sym " " "true" ] "")
+    match propsForm (subFormLead i "props" sfc inner) r.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
@@ -273,28 +330,35 @@ let private synthesizeSRef (i: int) (r: SRef) : Sexp =
 let private synthesizeARef (i: int) (r: ARef) : Sexp =
     let lead = leading i r.Comments
     let inner = indent (i + 1)
+    let sfc = r.SubFormComments
     let kids = ResizeArray<Sexp>()
     kids.Add (sym "" "aref")
-    kids.Add (mkList " " [ sym "" "cell"; sym " " r.Cell ] "")
-    kids.Add (mkList " "
+    kids.Add (mkList (subFormLead i "cell" sfc " ")
+                     [ sym "" "cell"; sym " " r.Cell ] "")
+    kids.Add (mkList (subFormLead i "origin" sfc " ")
         [ sym "" "origin"; intAtom " " r.Origin.X; intAtom " " r.Origin.Y ] "")
-    kids.Add (mkList inner [ sym "" "cols"; intAtom " " (int64 r.Cols) ] "")
-    kids.Add (mkList " " [ sym "" "rows"; intAtom " " (int64 r.Rows) ] "")
-    kids.Add (mkList inner
+    kids.Add (mkList (subFormLead i "cols" sfc inner)
+                     [ sym "" "cols"; intAtom " " (int64 r.Cols) ] "")
+    kids.Add (mkList (subFormLead i "rows" sfc " ")
+                     [ sym "" "rows"; intAtom " " (int64 r.Rows) ] "")
+    kids.Add (mkList (subFormLead i "col_pitch" sfc inner)
         [ sym "" "col_pitch"
           intAtom " " r.ColPitch.X
           intAtom " " r.ColPitch.Y ] "")
-    kids.Add (mkList " "
+    kids.Add (mkList (subFormLead i "row_pitch" sfc " ")
         [ sym "" "row_pitch"
           intAtom " " r.RowPitch.X
           intAtom " " r.RowPitch.Y ] "")
     if r.Rot <> 0.0 then
-        kids.Add (mkList inner [ sym "" "rot"; floatAtom " " r.Rot ] "")
+        kids.Add (mkList (subFormLead i "rot" sfc inner)
+                         [ sym "" "rot"; floatAtom " " r.Rot ] "")
     if r.Mag <> 1.0 then
-        kids.Add (mkList " " [ sym "" "mag"; floatAtom " " r.Mag ] "")
+        kids.Add (mkList (subFormLead i "mag" sfc " ")
+                         [ sym "" "mag"; floatAtom " " r.Mag ] "")
     if r.Reflect then
-        kids.Add (mkList " " [ sym "" "reflect"; sym " " "true" ] "")
-    match propsForm inner r.Props with
+        kids.Add (mkList (subFormLead i "reflect" sfc " ")
+                         [ sym "" "reflect"; sym " " "true" ] "")
+    match propsForm (subFormLead i "props" sfc inner) r.Props with
     | Some f -> kids.Add f
     | None -> ()
     mkList lead (List.ofSeq kids) ""
@@ -310,7 +374,18 @@ let private synthesizeElement (i: int) (e: Element) : Sexp =
     | ARefEl r -> synthesizeARef i r
     | PropsEl props ->
         let lead = leading i props.Comments
-        let kids = sym "" "props" :: (props.Items |> List.map (propForm " "))
+        // Sub-form comments inside a (props …) attach to property
+        // keys (e.g. `; bbox-anchored at center` before `(bbox …)`).
+        // The synth uses `subFormLead i <key> sfc " "` for each prop
+        // entry so the comment renders on its own line above its
+        // (key …) form.
+        let sfc = props.SubFormComments
+        let kids =
+            sym "" "props"
+            :: (props.Items
+                |> List.map (fun p ->
+                    let propLead = subFormLead i p.Key sfc " "
+                    mkList propLead (propertyChildren p) ""))
         mkList lead kids ""
 
 /// Synthesize a `(meta ...)` block. Emitted as the first form
@@ -326,10 +401,7 @@ let private synthesizeMeta (i: int) (m: Meta) : Sexp =
     // distinguish "no params" from "malformed schema" by its presence.
     let paramKids =
         sym "" "params"
-        :: (m.Params |> List.map (fun p ->
-            mkList " "
-                [ sym "" p.Key; propValueAtom " " p.Value ]
-                ""))
+        :: (m.Params |> List.map (fun p -> mkList " " (propertyChildren p) ""))
     kids.Add (mkList innerLead paramKids "")
     match m.Source with
     | Some s ->

@@ -14,6 +14,7 @@ let ``Labels paint visible text`` () =
                 { Name = "top"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       LabelEl {
                           Layer = Named ("sky130", "met1")
@@ -22,6 +23,7 @@ let ``Labels paint visible text`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = NetName
                       }

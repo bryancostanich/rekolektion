@@ -6,7 +6,8 @@ open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Layout
 
 let private mkCell name : Cell =
-    { Name = name; Meta = None; Elements = []; Comments = [] }
+    { Name = name; Meta = None; Elements = []; Comments = []
+      SubFormComments = Map.empty }
 
 let private mkDoc (cells: Cell list) : Document =
     { emptyDocument with Cells = cells }
@@ -48,6 +49,7 @@ let ``Hierarchy.closure walks SRef and ARef edges`` () =
         Name = "mid"
         Meta = None
         Comments = []
+        SubFormComments = Map.empty
         Elements = [
             ARefEl {
                 Cell = "leaf"
@@ -56,6 +58,7 @@ let ``Hierarchy.closure walks SRef and ARef edges`` () =
                 ColPitch = { X = 0L; Y = 0L }; RowPitch = { X = 0L; Y = 0L }
                 Rot = 0.0; Mag = 1.0; Reflect = false
                 Props = []; Comments = []
+                SubFormComments = Map.empty
             }
         ]
     }
@@ -63,18 +66,21 @@ let ``Hierarchy.closure walks SRef and ARef edges`` () =
         Name = "top"
         Meta = None
         Comments = []
+        SubFormComments = Map.empty
         Elements = [
             SRefEl {
                 Cell = "mid"
                 Origin = { X = 0L; Y = 0L }
                 Rot = 0.0; Mag = 1.0; Reflect = false
                 Props = []; Comments = []
+                SubFormComments = Map.empty
             }
             SRefEl {
                 Cell = "standalone"
                 Origin = { X = 0L; Y = 0L }
                 Rot = 0.0; Mag = 1.0; Reflect = false
                 Props = []; Comments = []
+                SubFormComments = Map.empty
             }
         ]
     }

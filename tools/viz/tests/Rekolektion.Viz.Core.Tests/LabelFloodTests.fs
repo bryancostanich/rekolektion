@@ -19,6 +19,7 @@ let private poly (pts: Point list) : Element =
         Net = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
     }
 
 let private label (origin: Point) (text: string) : Element =
@@ -29,6 +30,7 @@ let private label (origin: Point) (text: string) : Element =
         Class = None
         Props = []
         Comments = []
+        SubFormComments = Map.empty
         IsInternal = false
         Kind = NetName
     }
@@ -36,7 +38,8 @@ let private label (origin: Point) (text: string) : Element =
 let private docWith (elements: Element list) : Document =
     { emptyDocument with
         Cells = [
-            { Name = "top"; Meta = None; Elements = elements; Comments = [] }
+            { Name = "top"; Meta = None; Elements = elements
+              Comments = []; SubFormComments = Map.empty }
         ] }
 
 [<Fact>]
@@ -76,6 +79,7 @@ let ``top-level li1 RectEl containing a drn_R pin label is claimed by drn_R`` ()
             Layer = li1
             X1 = 3948L; Y1 = 7273L; X2 = 12930L; Y2 = 7443L
             Net = None; Props = []; Comments = []
+            SubFormComments = Map.empty
         }
     let drnRLabelLeft =
         LabelEl {
@@ -83,6 +87,7 @@ let ``top-level li1 RectEl containing a drn_R pin label is claimed by drn_R`` ()
             Text = "drn_R"
             Origin = { X = 4033L; Y = 7358L }
             Class = None; Props = []; Comments = []
+            SubFormComments = Map.empty
             IsInternal = false; Kind = NetName
         }
     let drnRLabelRight =
@@ -91,6 +96,7 @@ let ``top-level li1 RectEl containing a drn_R pin label is claimed by drn_R`` ()
             Text = "drn_R"
             Origin = { X = 12845L; Y = 7374L }
             Class = None; Props = []; Comments = []
+            SubFormComments = Map.empty
             IsInternal = false; Kind = NetName
         }
     let doc = docWith [ drnRRect; drnRLabelLeft; drnRLabelRight ]

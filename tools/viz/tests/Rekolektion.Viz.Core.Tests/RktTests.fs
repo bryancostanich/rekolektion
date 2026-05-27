@@ -169,8 +169,10 @@ let ``round-trips a (meta ...) block bit-equivalent`` () =
                       Generated = Some "2026-05-13"
                       Digest = None
                       Comments = []
+                      SubFormComments = Map.empty
                   }
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [] }
             ] }
     let rendered = Writer.write doc
@@ -307,6 +309,7 @@ let ``synthesize then parse yields the same AST`` () =
             { Name = "c"
               Meta = None
               Comments = []
+              SubFormComments = Map.empty
               Elements = [
                   PolyEl {
                       Layer = Named ("sky130", "met1")
@@ -319,6 +322,7 @@ let ``synthesize then parse yields the same AST`` () =
                       Net = Some "BL"
                       Props = []
                       Comments = []
+                      SubFormComments = Map.empty
                   }
                   PortEl {
                       Name = "BL"
@@ -329,6 +333,7 @@ let ``synthesize then parse yields the same AST`` () =
                       Net = None
                       Props = []
                       Comments = []
+                      SubFormComments = Map.empty
                   }
                   LabelEl {
                       Layer = Named ("sky130", "met1_label")
@@ -337,6 +342,7 @@ let ``synthesize then parse yields the same AST`` () =
                       Class = None
                       Props = []
                       Comments = []
+                      SubFormComments = Map.empty
                       IsInternal = false
                       Kind = NetName
                   }
@@ -347,6 +353,7 @@ let ``synthesize then parse yields the same AST`` () =
                       Class = None
                       Props = []
                       Comments = []
+                      SubFormComments = Map.empty
                       IsInternal = false
                       Kind = NetName
                   }
@@ -354,6 +361,7 @@ let ``synthesize then parse yields the same AST`` () =
         ]
         TopCell = Some "c"
         HeaderComments = []
+        SubFormComments = Map.empty
     }
     let text = Writer.write original
     let ast = analyzeOk text
@@ -375,6 +383,7 @@ let ``synthesize emits floats with at least one decimal`` () =
                 { Name = "c"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       SRefEl {
                           Cell = "x"
@@ -384,6 +393,7 @@ let ``synthesize emits floats with at least one decimal`` () =
                           Reflect = false
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                       }
                   ] }
             ]
@@ -402,6 +412,7 @@ let ``synthesize escapes special chars in strings`` () =
                 { Name = "c"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       LabelEl {
                           Layer = Named ("sky130", "met1")
@@ -410,6 +421,7 @@ let ``synthesize escapes special chars in strings`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = NetName
                       }
@@ -472,6 +484,7 @@ let ``writer emits (kind port-name) and round-trips`` () =
                 { Name = "nand2"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       LabelEl {
                           Layer = Named ("sky130", "met1_label")
@@ -480,6 +493,7 @@ let ``writer emits (kind port-name) and round-trips`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = PortName
                       }
@@ -502,6 +516,7 @@ let ``writer emits (kind device-terminal) and round-trips`` () =
                 { Name = "c"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       LabelEl {
                           Layer = Named ("sky130", "li1_label")
@@ -510,6 +525,7 @@ let ``writer emits (kind device-terminal) and round-trips`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = DeviceTerminal
                       }
@@ -520,6 +536,7 @@ let ``writer emits (kind device-terminal) and round-trips`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = NetName
                       }
@@ -550,6 +567,7 @@ let ``writer emits no (nets …) block — labels are the net set`` () =
                 { Name = "c"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = [
                       LabelEl {
                           Layer = Named ("sky130", "li1_label")
@@ -558,6 +576,7 @@ let ``writer emits no (nets …) block — labels are the net set`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = DeviceTerminal
                       }
@@ -568,6 +587,7 @@ let ``writer emits no (nets …) block — labels are the net set`` () =
                           Class = None
                           Props = []
                           Comments = []
+                          SubFormComments = Map.empty
                           IsInternal = false
                           Kind = NetName
                       }
@@ -677,3 +697,253 @@ let ``load is idempotent when two roots share an import`` () =
             // Three files total: a, b, common. The shared one should appear once.
             lib.Documents |> Map.count |> should equal 3
             lib.CellIndex |> Map.count |> should equal 3)
+
+// ─── PvTuple — multi-value properties (cell-level bbox is the canonical case) ─
+
+// ─── Sub-form comments (in-element comments) ──────────────────────────
+
+[<Fact>]
+let ``comments between (poly)'s sub-forms attach to SubFormComments`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (poly\n"
+        + "      ; before (layer)\n"
+        + "      (layer sky130:met1)\n"
+        + "      ; before (points)\n"
+        + "      (points (0 0) (1 0) (1 1)))))\n"
+    let ast = analyzeOk src
+    let poly =
+        match (List.head ast.Cells).Elements with
+        | [ PolyEl p ] -> p
+        | _ -> failwith "poly"
+    poly.SubFormComments |> Map.tryFind "layer" |> should equal (Some [ "before (layer)" ])
+    poly.SubFormComments |> Map.tryFind "points" |> should equal (Some [ "before (points)" ])
+
+[<Fact>]
+let ``Rect sub-form comments survive round-trip`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (rect\n"
+        + "      ; before (layer)\n"
+        + "      (layer sky130:met1) 0 0 100 50\n"
+        + "      ; before (net)\n"
+        + "      (net BL))))\n"
+    let ast = analyzeOk src
+    let r = match (List.head ast.Cells).Elements with [ RectEl r ] -> r | _ -> failwith "rect"
+    r.SubFormComments |> Map.tryFind "layer" |> should equal (Some [ "before (layer)" ])
+    r.SubFormComments |> Map.tryFind "net" |> should equal (Some [ "before (net)" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before (layer)"
+    rendered |> should haveSubstring "; before (net)"
+
+[<Fact>]
+let ``Port sub-form comments survive round-trip`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (port\n"
+        + "      ; before (name)\n"
+        + "      (name BL)\n"
+        + "      (dir input)\n"
+        + "      ; before (layer)\n"
+        + "      (layer sky130:met1)\n"
+        + "      (flags signal)\n"
+        + "      ; before (shape)\n"
+        + "      (shape (rect 0 0 10 50)))))\n"
+    let ast = analyzeOk src
+    let p = match (List.head ast.Cells).Elements with [ PortEl p ] -> p | _ -> failwith "port"
+    p.SubFormComments |> Map.tryFind "name" |> should equal (Some [ "before (name)" ])
+    p.SubFormComments |> Map.tryFind "layer" |> should equal (Some [ "before (layer)" ])
+    p.SubFormComments |> Map.tryFind "shape" |> should equal (Some [ "before (shape)" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before (name)"
+    rendered |> should haveSubstring "; before (layer)"
+    rendered |> should haveSubstring "; before (shape)"
+
+[<Fact>]
+let ``SRef sub-form comments survive round-trip`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (sref\n"
+        + "      ; before (cell)\n"
+        + "      (cell bit)\n"
+        + "      ; before (origin)\n"
+        + "      (origin 100 200))))\n"
+    let ast = analyzeOk src
+    let s = match (List.head ast.Cells).Elements with [ SRefEl s ] -> s | _ -> failwith "sref"
+    s.SubFormComments |> Map.tryFind "cell" |> should equal (Some [ "before (cell)" ])
+    s.SubFormComments |> Map.tryFind "origin" |> should equal (Some [ "before (origin)" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before (cell)"
+    rendered |> should haveSubstring "; before (origin)"
+
+[<Fact>]
+let ``Label sub-form comments survive round-trip`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (label\n"
+        + "      ; before (layer)\n"
+        + "      (layer sky130:met1_label)\n"
+        + "      (text \"BL\")\n"
+        + "      ; before (origin)\n"
+        + "      (origin 10 25))))\n"
+    let ast = analyzeOk src
+    let l = match (List.head ast.Cells).Elements with [ LabelEl l ] -> l | _ -> failwith "label"
+    l.SubFormComments |> Map.tryFind "layer" |> should equal (Some [ "before (layer)" ])
+    l.SubFormComments |> Map.tryFind "origin" |> should equal (Some [ "before (origin)" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before (layer)"
+    rendered |> should haveSubstring "; before (origin)"
+
+[<Fact>]
+let ``Path sub-form comments survive round-trip`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (path\n"
+        + "      (layer sky130:li1)\n"
+        + "      ; before (width)\n"
+        + "      (width 170)\n"
+        + "      ; before (points)\n"
+        + "      (points (0 0) (500 0)))))\n"
+    let ast = analyzeOk src
+    let p = match (List.head ast.Cells).Elements with [ PathEl p ] -> p | _ -> failwith "path"
+    p.SubFormComments |> Map.tryFind "width" |> should equal (Some [ "before (width)" ])
+    p.SubFormComments |> Map.tryFind "points" |> should equal (Some [ "before (points)" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before (width)"
+    rendered |> should haveSubstring "; before (points)"
+
+[<Fact>]
+let ``ARef sub-form comments survive round-trip`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (aref\n"
+        + "      (cell bit)\n"
+        + "      (origin 0 0)\n"
+        + "      ; before (cols)\n"
+        + "      (cols 64)\n"
+        + "      (rows 1)\n"
+        + "      (col_pitch 10 0)\n"
+        + "      (row_pitch 0 5))))\n"
+    let ast = analyzeOk src
+    let a = match (List.head ast.Cells).Elements with [ ARefEl a ] -> a | _ -> failwith "aref"
+    a.SubFormComments |> Map.tryFind "cols" |> should equal (Some [ "before (cols)" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before (cols)"
+
+[<Fact>]
+let ``Props sub-form comments survive round-trip (per-property keys)`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (props\n"
+        + "      ; before bbox\n"
+        + "      (bbox 0 0 100 50)\n"
+        + "      ; before description\n"
+        + "      (description \"hi\"))))\n"
+    let ast = analyzeOk src
+    let props =
+        match (List.head ast.Cells).Elements with
+        | [ PropsEl p ] -> p
+        | _ -> failwith "props"
+    props.SubFormComments |> Map.tryFind "bbox" |> should equal (Some [ "before bbox" ])
+    props.SubFormComments |> Map.tryFind "description" |> should equal (Some [ "before description" ])
+    let rendered = Writer.write ast
+    rendered |> should haveSubstring "; before bbox"
+    rendered |> should haveSubstring "; before description"
+
+[<Fact>]
+let ``Poly sub-form comments survive round-trip through Writer`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (poly\n"
+        + "      ; before (layer)\n"
+        + "      (layer sky130:met1)\n"
+        + "      ; before (points)\n"
+        + "      (points (0 0) (1 0) (1 1)))))\n"
+    let ast = analyzeOk src
+    let rendered = Writer.write ast
+    // The two interior comments must still be present on re-emit.
+    rendered |> should haveSubstring "; before (layer)"
+    rendered |> should haveSubstring "; before (points)"
+    // And re-reading the rendered text recovers them via the same
+    // SubFormComments slots.
+    let ast2 = analyzeOk rendered
+    let poly2 =
+        match (List.head ast2.Cells).Elements with
+        | [ PolyEl p ] -> p
+        | _ -> failwith "poly"
+    poly2.SubFormComments |> Map.tryFind "layer" |> should equal (Some [ "before (layer)" ])
+    poly2.SubFormComments |> Map.tryFind "points" |> should equal (Some [ "before (points)" ])
+
+[<Fact>]
+let ``analyzes (bbox x0 y0 x1 y1) as PvTuple of four PvInt`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (props (bbox -1140 -720 6432 720))))\n"
+    let ast = analyzeOk src
+    let propsEl =
+        (List.head ast.Cells).Elements
+        |> List.pick (function PropsEl p -> Some p | _ -> None)
+    let bbox = propsEl.Items |> List.find (fun p -> p.Key = "bbox")
+    match bbox.Value with
+    | PvTuple [ PvInt a; PvInt b; PvInt c; PvInt d ] ->
+        a |> should equal -1140L
+        b |> should equal -720L
+        c |> should equal 6432L
+        d |> should equal 720L
+    | other -> failwithf "expected 4-int PvTuple, got %A" other
+
+[<Fact>]
+let ``PvTuple round-trips byte-for-byte through Writer`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (props (bbox -1140 -720 6432 720) (description \"hi\"))))\n"
+    let ast = analyzeOk src
+    let rendered = Writer.write ast
+    let ast2 = analyzeOk rendered
+    let propsEl2 =
+        (List.head ast2.Cells).Elements
+        |> List.pick (function PropsEl p -> Some p | _ -> None)
+    let bbox2 = propsEl2.Items |> List.find (fun p -> p.Key = "bbox")
+    bbox2.Value |> should equal
+        (PvTuple [ PvInt -1140L; PvInt -720L; PvInt 6432L; PvInt 720L ])
+
+[<Fact>]
+let ``mixed-type PvTuple parses and round-trips`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (props (region 0 0 100 50 signal))))\n"
+    let ast = analyzeOk src
+    let rendered = Writer.write ast
+    let ast2 = analyzeOk rendered
+    let propsEl =
+        (List.head ast2.Cells).Elements
+        |> List.pick (function PropsEl p -> Some p | _ -> None)
+    let region = propsEl.Items |> List.find (fun p -> p.Key = "region")
+    match region.Value with
+    | PvTuple [ PvInt 0L; PvInt 0L; PvInt 100L; PvInt 50L; PvAtom "signal" ] -> ()
+    | other -> failwithf "expected mixed PvTuple, got %A" other
+
+[<Fact>]
+let ``single-value props stay as scalar PvInt (no spurious PvTuple)`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (cell c\n"
+        + "    (props (width 100))))\n"
+    let ast = analyzeOk src
+    let propsEl =
+        (List.head ast.Cells).Elements
+        |> List.pick (function PropsEl p -> Some p | _ -> None)
+    let width = propsEl.Items |> List.find (fun p -> p.Key = "width")
+    width.Value |> should equal (PvInt 100L)

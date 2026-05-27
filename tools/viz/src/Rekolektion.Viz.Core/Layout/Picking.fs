@@ -68,6 +68,7 @@ let pickBoundary (point: Point) (elements: Element list) : (int * Poly) option =
                 Net = r.Net
                 Props = r.Props
                 Comments = r.Comments
+                SubFormComments = Map.empty
             }
             Some (i, poly)
         | _ -> None)

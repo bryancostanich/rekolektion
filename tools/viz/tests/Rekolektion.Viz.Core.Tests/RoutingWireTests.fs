@@ -13,6 +13,7 @@ let private mkRect (x1, y1, x2, y2) : Rectangle = {
     Net = None
     Props = []
     Comments = []
+    SubFormComments = Map.empty
 }
 
 let private mkCell (name : string) (rects : Rectangle list) : Cell = {
@@ -20,6 +21,7 @@ let private mkCell (name : string) (rects : Rectangle list) : Cell = {
     Meta = None
     Elements = rects |> List.map RectEl
     Comments = []
+    SubFormComments = Map.empty
 }
 
 let private mkDoc (cells : Cell list) : Document =
@@ -281,6 +283,7 @@ let private mkRectLayer (layer : Layer) (x1, y1, x2, y2) : Rectangle = {
     Net = None
     Props = []
     Comments = []
+    SubFormComments = Map.empty
 }
 
 let private li1 : Layer = Named ("sky130", "li1")

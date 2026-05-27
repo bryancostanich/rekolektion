@@ -468,8 +468,44 @@ let private analyzeProperty
         Ok { Key = key; Value = propValueOf value }
     | SList { Children = SAtom { Kind = Symbol; Text = key } :: [] } ->
         Ok { Key = key; Value = PvAtom "" }
+    | SList { Children = SAtom { Kind = Symbol; Text = key } :: rest }
+            when rest.Length >= 2 ->
+        // `(key v1 v2 …)` — multi-value tuple property. Every
+        // trailing child must be a scalar atom; nested forms aren't
+        // permitted inside a tuple (would collide with sub-form
+        // syntax). Cell-level `(bbox x0 y0 x1 y1)` is the primary
+        // consumer.
+        let allScalar = rest |> List.forall (fun c ->
+            match c with SAtom _ -> true | _ -> false)
+        if allScalar then
+            let values = rest |> List.map propValueOf
+            Ok { Key = key; Value = PvTuple values }
+        else
+            Error (err path (Some (Cst.posOf s))
+                "tuple-property values must all be scalar atoms")
     | _ ->
         Error (err path (Some (Cst.posOf s)) "property must be (key value)")
+
+/// Build the `SubFormComments` map for an element. `children` is the
+/// list of CST children inside the outer form (after the head symbol).
+/// For each child that's a list, the comments preceding it attach to
+/// `Map[<head-symbol-of-child>]`. Anonymous-positional children (atoms
+/// like `(rect x1 y1 x2 y2)`'s coords) are ignored — the writer
+/// re-emits them tightly, so attaching comments there isn't supported
+/// in v1.
+let private subFormCommentsOf (children: Sexp list) : Map<string, string list> =
+    children
+    |> List.choose (fun c ->
+        match c with
+        | SList _ ->
+            match c with
+            | SList { Children = SAtom { Kind = Symbol; Text = key } :: _ } ->
+                let comments = commentsOf c
+                if List.isEmpty comments then None
+                else Some (key, comments)
+            | _ -> None
+        | _ -> None)
+    |> Map.ofList
 
 let private analyzeProps
     (path: string option)
@@ -573,6 +609,7 @@ let private analyzePoly
                                     Net = findNet children
                                     Props = props
                                     Comments = commentsOf s
+                                    SubFormComments = subFormCommentsOf children
                                 })
             | _ -> Error (err path (Some (Cst.posOf layerForm)) "(layer X) takes one argument")
 
@@ -608,6 +645,7 @@ let private analyzePath
                                 Cap = cap
                                 Props = props
                                 Comments = commentsOf s
+                                SubFormComments = subFormCommentsOf children
                             })
                 | Error e, _ -> Error e
                 | _, None -> Error (err path (Some (Cst.posOf widthForm)) "(width ...) needs an integer")
@@ -653,6 +691,7 @@ let private analyzeRect
                                     Net = findNet children
                                     Props = props
                                     Comments = commentsOf s
+                                    SubFormComments = subFormCommentsOf children
                                 })
                         | _ -> Error (err path (Some (Cst.posOf s)) "rect coords must be integers")
                     | _ ->
@@ -703,6 +742,7 @@ let private analyzePort
                                     Net = findNet children
                                     Props = props
                                     Comments = commentsOf s
+                                    SubFormComments = subFormCommentsOf children
                                 })
                 | None, _ -> Error (err path (Some (Cst.posOf nf)) "(name ...) requires a symbol or string")
                 | _, None -> Error (err path (Some (Cst.posOf df)) "(dir ...) must be input|output|inout|unspecified")
@@ -773,6 +813,7 @@ let private analyzeLabel
                                 Class = cls
                                 Props = props
                                 Comments = commentsOf s
+                                SubFormComments = subFormCommentsOf children
                                 IsInternal = isInternal
                                 Kind = kind
                             })
@@ -825,6 +866,7 @@ let private analyzeSRef
                             Reflect = reflect
                             Props = props
                             Comments = commentsOf s
+                            SubFormComments = subFormCommentsOf children
                         })
                 | _ ->
                     Error (err path (Some (Cst.posOf s)) "(sref ...) cell name and origin must parse")
@@ -891,6 +933,7 @@ let private analyzeARef
                             Reflect = reflect
                             Props = props
                             Comments = commentsOf s
+                            SubFormComments = subFormCommentsOf children
                         })
                 | _ ->
                     Error (err path (Some (Cst.posOf s)) "(aref ...) integer fields didn't parse")
@@ -915,7 +958,18 @@ let private analyzeElement
     | Some "props" ->
         match analyzeProps path s with
         | Error e -> Error e
-        | Ok p -> Ok (Some (PropsEl { Items = p; Comments = commentsOf s }))
+        | Ok p ->
+            // For (props …), each property `(key value)` IS a
+            // sub-form; subFormCommentsOf maps a `;`-run preceding
+            // `(bbox …)` to the "bbox" key, etc. The writer renders
+            // that as a leading comment before the bbox prop.
+            let propsChildren =
+                childrenAfterHead s |> Option.defaultValue []
+            Ok (Some (PropsEl {
+                Items = p
+                Comments = commentsOf s
+                SubFormComments = subFormCommentsOf propsChildren
+            }))
     | _ ->
         // Unknown forms inside a cell are not errors — the format is
         // additive. Caller can decide whether to warn.
@@ -973,6 +1027,7 @@ let private analyzeMeta
                 Generated = single "generated"
                 Digest = single "digest"
                 Comments = commentsOf s
+                SubFormComments = subFormCommentsOf children
             }
 
 let private analyzeCell
@@ -1022,7 +1077,8 @@ let private analyzeCell
                         Ok { Name = name
                              Meta = meta
                              Elements = els
-                             Comments = commentsOf s }
+                             Comments = commentsOf s
+                             SubFormComments = Map.empty }
         | [] ->
             Error (err path (Some (Cst.posOf s)) "(cell ...) needs a name")
 
@@ -1088,7 +1144,9 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
                 | Some [ a ] ->
                     stringText a
                     |> Option.map (fun p ->
-                        { Path = p; Comments = commentsOf f } : Import)
+                        { Path = p
+                          Comments = commentsOf f
+                          SubFormComments = Map.empty } : Import)
                 | _ -> None)
 
         // The `(nets …)` block is no longer part of the schema —
@@ -1112,7 +1170,8 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
                  Imports = imports
                  Cells = cells
                  TopCell = topCell
-                 HeaderComments = commentsOf layout }
+                 HeaderComments = commentsOf layout
+                 SubFormComments = Map.empty }
 
 // ─── Public file API + library / import resolver ─────────────────────────
 

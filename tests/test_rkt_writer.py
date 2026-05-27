@@ -333,3 +333,42 @@ def test_top_cell_emits_top_form():
     )
     text = rkt.write(doc)
     assert "(top c)" in text
+
+
+def test_prop_tuple_emits_inline_values():
+    doc = rkt.Document(
+        cells=[
+            rkt.Cell(
+                name="c",
+                elements=[
+                    rkt.Props(items=[
+                        rkt.Property(
+                            key="bbox",
+                            value=rkt.prop_tuple(-1140, -720, 6432, 720),
+                        ),
+                    ]),
+                ],
+            ),
+        ],
+    )
+    text = rkt.write(doc)
+    assert "(bbox -1140 -720 6432 720)" in text
+
+
+def test_prop_tuple_mixed_with_scalar_in_same_props_block():
+    doc = rkt.Document(
+        cells=[
+            rkt.Cell(
+                name="c",
+                elements=[
+                    rkt.Props(items=[
+                        rkt.Property(key="bbox", value=rkt.prop_tuple(0, 0, 100, 50)),
+                        rkt.Property(key="description", value="hi"),
+                    ]),
+                ],
+            ),
+        ],
+    )
+    text = rkt.write(doc)
+    assert "(bbox 0 0 100 50)" in text
+    assert '(description "hi")' in text

@@ -142,7 +142,7 @@ class PolyShape:
 
 Point = tuple[int, int]
 Shape = Union[RectShape, PolyShape]
-PropValue = Union[str, int, float, "Symbol"]
+PropValue = Union[str, int, float, "Symbol", "PropTuple"]
 
 
 @dataclass(frozen=True)
@@ -155,9 +155,28 @@ class Symbol:
 
 
 @dataclass(frozen=True)
+class PropTuple:
+    """Multi-value property — emits the inner values whitespace-separated
+    after the key, e.g. `(bbox -1140 -720 6432 720)`. Use when a single
+    property naturally carries a fixed-arity tuple of scalars (cell
+    extents, region descriptors). Each inner value follows the same
+    typing rules as a scalar `PropValue` (`str`, `int`, `float`,
+    `Symbol`)."""
+
+    values: tuple[PropValue, ...]
+
+
+def prop_tuple(*values: PropValue) -> PropTuple:
+    """Convenience: `prop_tuple(0, 0, 100, 50)` instead of
+    `PropTuple(values=(0, 0, 100, 50))`."""
+    return PropTuple(values=tuple(values))
+
+
+@dataclass(frozen=True)
 class Property:
     """One key/value entry inside a `(props ...)` block. Value may be a
-    `Symbol`, `str` (quoted), `int`, or `float`."""
+    `Symbol`, `str` (quoted), `int`, `float`, or `PropTuple` (multi-
+    value)."""
 
     key: str
     value: PropValue
@@ -173,6 +192,7 @@ class Poly:
     net: str | None = None
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -184,6 +204,7 @@ class Path:
     cap: str | None = None
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -196,6 +217,7 @@ class Rect:
     net: str | None = None
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -208,6 +230,7 @@ class Port:
     net: str | None = None
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -218,6 +241,7 @@ class Label:
     cls: str | None = None
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
     # `internal=True` marks the label as a viz/debug annotation that
     # should NOT be promoted to a GDS text record.  Magic's `port
     # makeall` only sees GDS text labels, so internal labels never
@@ -286,6 +310,7 @@ class SRef:
     reflect: bool = False
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -301,6 +326,7 @@ class ARef:
     reflect: bool = False
     props: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -309,6 +335,7 @@ class Props:
 
     items: list[Property] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 Element = Union[Poly, Path, Rect, Port, Label, SRef, ARef, Props]
@@ -334,6 +361,7 @@ class Meta:
     generated: str | None = None
     digest: str | None = None
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -341,6 +369,7 @@ class Cell:
     name: str
     elements: list[Element] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
     meta: Meta | None = None
 
 
@@ -354,6 +383,7 @@ class Units:
 class Import:
     path: str
     comments: list[str] = field(default_factory=list)
+    sub_form_comments: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -420,6 +450,14 @@ def _string(text: str) -> str:
 def _prop_value(v: PropValue) -> str:
     if isinstance(v, Symbol):
         return v.text
+    if isinstance(v, PropTuple):
+        # PropTuple expands inline at the `_prop` level; reaching this
+        # branch means someone passed a tuple where a single scalar is
+        # expected — programmer error.
+        raise TypeError(
+            "PropTuple cannot be rendered as a single value; "
+            "use _prop which inlines tuple values after the key"
+        )
     if isinstance(v, bool):
         # bool is a subclass of int in Python — separate this case so
         # True/False render as symbols, not 1/0.
@@ -432,39 +470,79 @@ def _prop_value(v: PropValue) -> str:
 
 
 def _prop(p: Property) -> str:
+    if isinstance(p.value, PropTuple):
+        inner = " ".join(_prop_value(v) for v in p.value.values)
+        return f"({p.key} {inner})"
     return f"({p.key} {_prop_value(p.value)})"
 
 
-def _props_form(level: int, props: list[Property]) -> str | None:
+def _props_form(
+    lead: str,
+    props: list[Property],
+    sfc: dict[str, list[str]] | None = None,
+    level: int = 0,
+) -> str | None:
     if not props:
         return None
-    lead = _indent(level)
+    if sfc:
+        # Per-property sub-form comments: prefix each `(key …)` form
+        # with its comment block when present. Mirrors the F#
+        # PropsEl path in `Writer.synthesizeElement`.
+        rendered = []
+        for p in props:
+            prop_lead = _sub_form_prefix(level, sfc, p.key, " ")
+            rendered.append(f"{prop_lead}{_prop(p)}")
+        return f"{lead}(props{''.join(rendered)})"
     parts = " ".join(_prop(p) for p in props)
     return f"{lead}(props {parts})"
 
 
-def _points_form(level: int, points: list[Point]) -> str:
-    lead = _indent(level)
+def _points_form(lead: str, points: list[Point]) -> str:
     inner = " ".join(f"({x} {y})" for x, y in points)
     return f"{lead}(points {inner})"
 
 
-def _net_form(level: int, net_name: str) -> str:
-    return f"{_indent(level)}(net {net_name})"
+def _net_form(lead: str, net_name: str) -> str:
+    return f"{lead}(net {net_name})"
+
+
+def _sub_form_prefix(
+    level: int,
+    sfc: dict[str, list[str]],
+    key: str,
+    default_sep: str,
+) -> str:
+    """Return the leading-trivia string for a sub-form. With no
+    `sub_form_comments[key]`, returns `default_sep` (typically `" "`
+    or a leading-newline indent). With comments, forces the sub-form
+    onto its own line at depth `level+1` and prefixes the comment
+    block. Mirrors the F# `Writer.subFormLead`."""
+    comments = sfc.get(key)
+    if not comments:
+        return default_sep
+    # Same-line policy: when there's a comment, FORCE a newline +
+    # indent so the comment renders cleanly above the sub-form.
+    indent = _indent(level + 1)
+    block = "".join(f"{indent}; {c}" for c in comments)
+    return block + indent
 
 
 # Per-element synthesizers ------------------------------------------------
 
 
 def _emit_poly(level: int, poly: Poly) -> str:
+    sfc = poly.sub_form_comments
+    inner = _indent(level + 1)
     parts = [
         _leading(level, poly.comments),
-        "(poly (layer ", _layer(poly.layer), ")",
-        _points_form(level + 1, poly.points),
+        "(poly",
+        _sub_form_prefix(level, sfc, "layer", " "),
+        "(layer ", _layer(poly.layer), ")",
+        _points_form(_sub_form_prefix(level, sfc, "points", inner), poly.points),
     ]
     if poly.net:
-        parts.append(_net_form(level + 1, poly.net))
-    pf = _props_form(level + 1, poly.props)
+        parts.append(_net_form(_sub_form_prefix(level, sfc, "net", inner), poly.net))
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), poly.props)
     if pf:
         parts.append(pf)
     parts.append(")")
@@ -472,16 +550,23 @@ def _emit_poly(level: int, poly: Poly) -> str:
 
 
 def _emit_path(level: int, path: Path) -> str:
+    sfc = path.sub_form_comments
+    inner = _indent(level + 1)
     parts = [
         _leading(level, path.comments),
-        "(path (layer ", _layer(path.layer), ") (width ", str(path.width), ")",
-        _points_form(level + 1, path.points),
+        "(path",
+        _sub_form_prefix(level, sfc, "layer", " "),
+        "(layer ", _layer(path.layer), ")",
+        _sub_form_prefix(level, sfc, "width", " "),
+        "(width ", str(path.width), ")",
+        _points_form(_sub_form_prefix(level, sfc, "points", inner), path.points),
     ]
     if path.cap:
-        parts.append(f"{_indent(level + 1)}(cap {path.cap})")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'cap', inner)}(cap {path.cap})")
     if path.net:
-        parts.append(_net_form(level + 1, path.net))
-    pf = _props_form(level + 1, path.props)
+        parts.append(_net_form(_sub_form_prefix(level, sfc, "net", inner), path.net))
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), path.props)
     if pf:
         parts.append(pf)
     parts.append(")")
@@ -489,41 +574,52 @@ def _emit_path(level: int, path: Path) -> str:
 
 
 def _emit_rect(level: int, rect: Rect) -> str:
+    sfc = rect.sub_form_comments
+    inner = _indent(level + 1)
     parts = [
         _leading(level, rect.comments),
-        "(rect (layer ", _layer(rect.layer), ") ",
+        "(rect",
+        _sub_form_prefix(level, sfc, "layer", " "),
+        "(layer ", _layer(rect.layer), ") ",
         f"{rect.x1} {rect.y1} {rect.x2} {rect.y2}",
     ]
     if rect.net:
-        parts.append(_net_form(level + 1, rect.net))
-    pf = _props_form(level + 1, rect.props)
+        parts.append(_net_form(_sub_form_prefix(level, sfc, "net", inner), rect.net))
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), rect.props)
     if pf:
         parts.append(pf)
     parts.append(")")
     return "".join(parts)
 
 
-def _emit_port_shape(shape: Shape) -> str:
+def _emit_port_shape(lead: str, shape: Shape) -> str:
     if isinstance(shape, RectShape):
-        return f" (shape (rect {shape.x1} {shape.y1} {shape.x2} {shape.y2}))"
-    return " (shape (poly " + " ".join(f"({x} {y})" for x, y in shape.points) + "))"
+        return f"{lead}(shape (rect {shape.x1} {shape.y1} {shape.x2} {shape.y2}))"
+    inner = " ".join(f"({x} {y})" for x, y in shape.points)
+    return f"{lead}(shape (poly {inner}))"
 
 
 def _emit_port(level: int, port: Port) -> str:
+    sfc = port.sub_form_comments
+    inner = _indent(level + 1)
     parts = [
         _leading(level, port.comments),
-        "(port (name ", port.name, ") (dir ", port.direction.value, ")",
-        f"{_indent(level + 1)}(layer {_layer(port.layer)})",
+        "(port",
+        _sub_form_prefix(level, sfc, "name", " "),
+        "(name ", port.name, ")",
+        _sub_form_prefix(level, sfc, "dir", " "),
+        "(dir ", port.direction.value, ")",
+        _sub_form_prefix(level, sfc, "layer", inner),
+        f"(layer {_layer(port.layer)})",
     ]
     if port.flags:
         flag_text = " ".join(f.value for f in port.flags)
-        parts.append(f"{_indent(level + 1)}(flags {flag_text})")
-    parts.append(_indent(level + 1).rstrip("\n") + _emit_port_shape(port.shape).lstrip())
-    # The shape line uses inner indentation; the leading-space dance
-    # above keeps the form well-aligned even when no flags exist.
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'flags', inner)}(flags {flag_text})")
+    parts.append(_emit_port_shape(_sub_form_prefix(level, sfc, "shape", inner), port.shape))
     if port.net:
-        parts.append(_net_form(level + 1, port.net))
-    pf = _props_form(level + 1, port.props)
+        parts.append(_net_form(_sub_form_prefix(level, sfc, "net", inner), port.net))
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), port.props)
     if pf:
         parts.append(pf)
     parts.append(")")
@@ -531,20 +627,30 @@ def _emit_port(level: int, port: Port) -> str:
 
 
 def _emit_label(level: int, label: Label) -> str:
+    sfc = label.sub_form_comments
+    inner = _indent(level + 1)
     x, y = label.origin
     parts = [
         _leading(level, label.comments),
-        "(label (layer ", _layer(label.layer), ") (text ", _string(label.text), ") ",
+        "(label",
+        _sub_form_prefix(level, sfc, "layer", " "),
+        "(layer ", _layer(label.layer), ")",
+        _sub_form_prefix(level, sfc, "text", " "),
+        "(text ", _string(label.text), ")",
+        _sub_form_prefix(level, sfc, "origin", " "),
         f"(origin {x} {y})",
     ]
     if label.cls:
-        parts.append(f"{_indent(level + 1)}(class {label.cls})")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'class', inner)}(class {label.cls})")
     if label.internal:
-        parts.append(f"{_indent(level + 1)}(internal #t)")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'internal', inner)}(internal #t)")
     # `(kind …)` only emitted when not the implicit default.
     if label.kind != LabelKind.NET_NAME:
-        parts.append(f"{_indent(level + 1)}(kind {label.kind.value})")
-    pf = _props_form(level + 1, label.props)
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'kind', inner)}(kind {label.kind.value})")
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), label.props)
     if pf:
         parts.append(pf)
     parts.append(")")
@@ -552,18 +658,27 @@ def _emit_label(level: int, label: Label) -> str:
 
 
 def _emit_sref(level: int, sref: SRef) -> str:
+    sfc = sref.sub_form_comments
+    inner = _indent(level + 1)
     x, y = sref.origin
     parts = [
         _leading(level, sref.comments),
-        f"(sref (cell {sref.cell}) (origin {x} {y})",
+        "(sref",
+        _sub_form_prefix(level, sfc, "cell", " "),
+        f"(cell {sref.cell})",
+        _sub_form_prefix(level, sfc, "origin", " "),
+        f"(origin {x} {y})",
     ]
     if sref.rot != 0.0:
-        parts.append(f" (rot {_float(sref.rot)})")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'rot', ' ')}(rot {_float(sref.rot)})")
     if sref.mag != 1.0:
-        parts.append(f" (mag {_float(sref.mag)})")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'mag', ' ')}(mag {_float(sref.mag)})")
     if sref.reflect:
-        parts.append(" (reflect true)")
-    pf = _props_form(level + 1, sref.props)
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'reflect', ' ')}(reflect true)")
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), sref.props)
     if pf:
         parts.append(pf)
     parts.append(")")
@@ -571,22 +686,37 @@ def _emit_sref(level: int, sref: SRef) -> str:
 
 
 def _emit_aref(level: int, aref: ARef) -> str:
+    sfc = aref.sub_form_comments
+    inner = _indent(level + 1)
     x, y = aref.origin
     cx, cy = aref.col_pitch
     rx, ry = aref.row_pitch
     parts = [
         _leading(level, aref.comments),
-        f"(aref (cell {aref.cell}) (origin {x} {y})",
-        f"{_indent(level + 1)}(cols {aref.cols}) (rows {aref.rows})",
-        f"{_indent(level + 1)}(col_pitch {cx} {cy}) (row_pitch {rx} {ry})",
+        "(aref",
+        _sub_form_prefix(level, sfc, "cell", " "),
+        f"(cell {aref.cell})",
+        _sub_form_prefix(level, sfc, "origin", " "),
+        f"(origin {x} {y})",
+        _sub_form_prefix(level, sfc, "cols", inner),
+        f"(cols {aref.cols})",
+        _sub_form_prefix(level, sfc, "rows", " "),
+        f"(rows {aref.rows})",
+        _sub_form_prefix(level, sfc, "col_pitch", inner),
+        f"(col_pitch {cx} {cy})",
+        _sub_form_prefix(level, sfc, "row_pitch", " "),
+        f"(row_pitch {rx} {ry})",
     ]
     if aref.rot != 0.0:
-        parts.append(f"{_indent(level + 1)}(rot {_float(aref.rot)})")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'rot', inner)}(rot {_float(aref.rot)})")
     if aref.mag != 1.0:
-        parts.append(f" (mag {_float(aref.mag)})")
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'mag', ' ')}(mag {_float(aref.mag)})")
     if aref.reflect:
-        parts.append(" (reflect true)")
-    pf = _props_form(level + 1, aref.props)
+        parts.append(
+            f"{_sub_form_prefix(level, sfc, 'reflect', ' ')}(reflect true)")
+    pf = _props_form(_sub_form_prefix(level, sfc, "props", inner), aref.props)
     if pf:
         parts.append(pf)
     parts.append(")")
@@ -594,10 +724,17 @@ def _emit_aref(level: int, aref: ARef) -> str:
 
 
 def _emit_props_el(level: int, props: Props) -> str:
+    sfc = props.sub_form_comments
     parts = [_leading(level, props.comments), "(props"]
-    for p in props.items:
-        parts.append(" ")
-        parts.append(_prop(p))
+    if sfc:
+        # Per-property sub-form comments (e.g. `; before bbox`).
+        for p in props.items:
+            parts.append(_sub_form_prefix(level, sfc, p.key, " "))
+            parts.append(_prop(p))
+    else:
+        for p in props.items:
+            parts.append(" ")
+            parts.append(_prop(p))
     parts.append(")")
     return "".join(parts)
 
@@ -692,3 +829,55 @@ def write(doc: Document) -> str:
         parts.append(_emit_cell(1, cell))
     parts.append(")\n")
     return "".join(parts)
+
+
+# ─── Reader (re-exports from _rkt_reader) ──────────────────────────────
+
+from rekolektion.io._rkt_reader import (  # noqa: E402
+    ImportCycleError,
+    Library,
+    ParseError,
+    SchemaError,
+    load,
+    read,
+    read_file,
+)
+
+__all__ = [
+    # Reader surface
+    "read",
+    "read_file",
+    "load",
+    "Library",
+    "ParseError",
+    "SchemaError",
+    "ImportCycleError",
+    # Writer surface (existing)
+    "write",
+    "Document",
+    "Cell",
+    "Meta",
+    "Units",
+    "Import",
+    "Layer",
+    "named",
+    "unknown",
+    "Property",
+    "PropTuple",
+    "prop_tuple",
+    "Symbol",
+    "PortDirection",
+    "PortFlag",
+    "LabelKind",
+    "RectShape",
+    "PolyShape",
+    "Poly",
+    "Path",
+    "Rect",
+    "Port",
+    "Label",
+    "SRef",
+    "ARef",
+    "Props",
+    "port_label",
+]

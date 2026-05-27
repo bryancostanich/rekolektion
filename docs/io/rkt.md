@@ -267,6 +267,53 @@ Property values are bare symbols, quoted strings, integers, or
 floats. The format doesn't validate property keys — they're a
 generator/tool agreement.
 
+#### Reserved cell-level conventions
+
+A cell-level `(props ...)` element (a `(props ...)` direct child of
+`(cell ...)`, not attached to a geometry element) holds metadata
+about the cell as a whole. Certain keys are reserved by convention —
+emitters and consumers should treat them consistently:
+
+| Key | Value form | Meaning |
+|---|---|---|
+| `bbox` | `(x0 y0 x1 y1)` integers in DBU | **Declared cell extent** — the author/generator's definitive bounding box, equivalent to Magic's `FIXED_BBOX` or a foundry's `AREAID` marker. Set by the generator (or hand-author) at emit time; **never derived from a polygon bbox query**. LEF emitters use this directly for `SIZE`; viz tools draw a cell outline at this rectangle even when interior geometry is sparser. |
+| `description` | quoted string | One-line human description of the cell (shown in the viz inspector). |
+| `owner` | quoted string | Track / author tag for non-PDK cells. |
+| `notes` | quoted string | Free-form longer notes (one prop entry per note). |
+
+Example:
+
+```scheme
+(cell cim_reram_array_256x64
+  (props (bbox -1140 -720 6432 720)
+         (description "256×64 ReRAM CIM array — Track 09")
+         (owner "track-09"))
+  (sref (cell cim_reram_2t2r_b1) (origin 0 0))
+  …
+  (port (name BL[0]) (dir inout) (layer sky130:met1) (flags signal)
+        (shape (rect -150 -500 150 -300)))
+  …)
+```
+
+**Why `bbox` is a property, not a schema field:** the format stays
+additive. Older readers ignore the unknown key and still load the
+cell. New readers that need the declared extent (LEF emitters,
+floorplan tools) read it from `(props …)`. The convention is
+generator/tool agreement, not schema enforcement.
+
+**Anti-patterns:**
+
+- **Don't derive `bbox` from a polygon bbox query.** That's the
+  foundry-LEF anti-pattern this convention exists to prevent —
+  accidental geometry outside the intended cell extent (misplaced
+  caps, dummy fill, guard rings) inflates the reported size.
+- **Don't omit `bbox` for cells consumed by LEF emitters.** The
+  emitter has no other authoritative source. Polygon bbox is a
+  bug source.
+- **`bbox` integers are DBU, not nanometres or microns.** Multiply
+  by `Units.DbuNm` for nm; divide by `Units.UuUm` for µm. The
+  format's storage layer is integer DBU everywhere.
+
 ## Python API
 
 ```python
@@ -337,6 +384,20 @@ match Reader.loadSingle "macro.rkt" with
 
 Types live in `tools/viz/src/Rekolektion.Viz.Core/Rkt/Types.fs`.
 
+### Conversion modules
+
+The `Rkt/` namespace ships two downstream-format emitters plus a
+reverse reader:
+
+| Module | Purpose | Inputs the `.rkt` semantics it consumes |
+|---|---|---|
+| `Rkt.ToGds` | Tape-out GDS emit (`toLibrary doc → GdsLibrary`). | Geometry, hierarchy, layer table. Net annotations dropped per GDS limits. |
+| `Rkt.ToLef` | LEF 5.7 abstract emit. CLI: `to-lef <input.rkt> <out.lef>`. | Cell-level `(props (bbox …))` → LEF `SIZE`. `(port …)` elements → LEF `PIN` entries (direction + flags → `USE`, shape → `RECT`). `ObsPolicy` (default `FullSize met1, met2`) controls obstruction emit. Errors on missing `bbox`, unknown layer, off-grid coord. |
+| `Rkt.OfGds` | Reverse — GDS read into a `.rkt` document. Lossy for net metadata; geometry round-trips. | — |
+
+`Rkt.ToLef` plan / mapping reference:
+[`docs/plans/rkt_to_lef_emitter.md`](../plans/rkt_to_lef_emitter.md).
+
 ## Conventions
 
 These are how rekolektion's own generators use the format. Follow
@@ -377,13 +438,20 @@ interoperable.
 
 ## Open gaps (v1)
 
-- Comments inside an element (between sub-forms like `(layer ...)`
-  and `(points ...)`) are dropped on parse. Comments before the
-  outer form survive.
+Each gap below has a feature-request plan filed under
+`docs/plans/`. The plans carry the API surface, mapping tables,
+acceptance criteria, and phased implementation.
+
 - The Python writer has no reader yet. Python-side consumers that
   want to read `.rkt` go through the F# reader (or wait for the
   Python reader).
+  → [`docs/plans/rkt_python_reader.md`](../plans/rkt_python_reader.md).
 - Save-routing per imported file isn't tracked in the App yet —
   edits to a cell defined in an imported file currently write into
   the root file on save. The cell-origin metadata exists at the
   reader layer; the App's editor just doesn't consult it yet.
+  → [`docs/plans/rkt_per_file_save_routing.md`](../plans/rkt_per_file_save_routing.md).
+- Comments inside an element (between sub-forms like `(layer ...)`
+  and `(points ...)`) are dropped on parse. Comments before the
+  outer form survive.
+  → [`docs/plans/rkt_in_element_comments.md`](../plans/rkt_in_element_comments.md).

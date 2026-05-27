@@ -24,6 +24,7 @@
     <Compile Include="Rkt/OfGds.fs" />
     <Compile Include="Rkt/ToGds.fs" />
     <Compile Include="Rkt/ToLef.fs" />
+    <Compile Include="Rkt/SaveRouter.fs" />
     <Compile Include="Gds/Reader.fs" />
     <Compile Include="Gds/Writer.fs" />
     <Compile Include="Layout/Hierarchy.fs" />

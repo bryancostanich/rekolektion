@@ -35,6 +35,24 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
         // so per-frame rendering doesn't pay it.
         let flat = Layout.Flatten.flatten doc
         let instances = Layout.Instances.enumerate doc
+        // For `.rkt` files: snapshot the full Library so save routing
+        // can write back per-file. Other formats have no Library
+        // representation; `LibrarySnapshot = None` and saves fall
+        // through to the single-file path.
+        let librarySnapshot, libraryMtimes =
+            let ext = (Path.GetExtension path).ToLowerInvariant()
+            if ext = ".rkt" then
+                match Rkt.Reader.loadSingle path with
+                | Ok lib ->
+                    let mtimes =
+                        lib.Documents
+                        |> Map.toSeq
+                        |> Seq.map (fun (p, _) -> p, File.GetLastWriteTimeUtc p)
+                        |> Map.ofSeq
+                    Some lib, mtimes
+                | Error _ -> None, Map.empty
+            else
+                None, Map.empty
         return Ok {
             Path = path
             Document = doc
@@ -48,6 +66,8 @@ let load (path: string) : Async<Result<LoadedMacro, string>> = async {
             Dirty = false
             UndoStack = []
             RedoStack = []
+            LibrarySnapshot = librarySnapshot
+            LibraryMtimes = libraryMtimes
         }
     with ex -> return Error ex.Message
 }

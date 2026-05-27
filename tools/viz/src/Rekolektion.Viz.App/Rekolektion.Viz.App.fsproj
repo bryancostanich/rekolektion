@@ -24,6 +24,7 @@
   <ItemGroup>
     <Compile Include="Model/Model.fs" />
     <Compile Include="Services/EditSession.fs" />
+    <Compile Include="Services/RoutedSave.fs" />
     <Compile Include="Services/Logger.fs" />
     <Compile Include="Services/SessionState.fs" />
     <Compile Include="Model/Msg.fs" />
@@ -40,6 +41,7 @@
     <Compile Include="Canvas3D/Matrix4x4Helpers.fs" />
     <Compile Include="Canvas3D/StackCanvasControl.fs" />
     <Compile Include="View/RunDialog.fs" />
+    <Compile Include="View/SaveDialogs.fs" />
     <Compile Include="View/FilePickers.fs" />
     <Compile Include="View/TopBar.fs" />
     <Compile Include="View/LeftPanel.fs" />

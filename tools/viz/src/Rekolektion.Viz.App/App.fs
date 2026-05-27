@@ -92,14 +92,38 @@ type MainWindow() as this =
                 return (if exit = 0 then Ok p.OutputPath else Error exit) }
             SaveMacro = fun mc -> async {
                 do! Async.SwitchToThreadPool ()
-                try
-                    let target =
-                        if mc.Path = mc.OriginalPath then
-                            EditSession.suggestEditedPath mc.OriginalPath
-                        else
-                            mc.Path
-                    return Ok (EditSession.saveTo mc target)
-                with ex -> return Error ex.Message }
+                // For `.rkt` macros with a Library snapshot, route
+                // saves through `Services.RoutedSave` so cells edited
+                // from imported files write back to those files
+                // instead of collapsing into the root document. For
+                // `.gds` / `.mag`, RoutedSave falls through to the
+                // single-file `EditSession.saveTo` path below via
+                // the `LibrarySnapshot = None` branch.
+                //
+                // The first-save copy-on-write semantics
+                // (`Path = OriginalPath` → emit to a `_edited` sibling)
+                // only apply to non-`.rkt` macros: `.rkt` saves write
+                // back per-file to the actual source paths, which is
+                // the entire point of the routed path. Pre-flip the
+                // path for the non-`.rkt` branch so the legacy
+                // suggestEditedPath behaviour stays intact.
+                let mc' =
+                    match mc.LibrarySnapshot with
+                    | None when mc.Path = mc.OriginalPath ->
+                        { mc with Path = EditSession.suggestEditedPath mc.OriginalPath }
+                    | _ -> mc
+                match RoutedSave.saveOrSurfaceBlockers mc' with
+                | Ok result ->
+                    // SaveCompleted expects a single root path. For
+                    // routed multi-file writes the root is mc'.Path;
+                    // for single-file writes WrittenPaths has one
+                    // entry which IS that root.
+                    let root =
+                        match result.WrittenPaths with
+                        | [ single ] -> single
+                        | _ -> mc'.Path
+                    return Ok root
+                | Error msg -> return Error msg }
         }
 
         // Settings load once at startup. Services.Config.current is
@@ -401,12 +425,199 @@ type App() =
             AppDispatch.send Msg.RedoActiveMacro)
         fileSub.Items.Add(redoItem)
 
+        // Routed-save orchestration: when the active macro has a
+        // Library snapshot, plan the save synchronously, then drive
+        // conflict / orphan / multi-file dialogs as needed before
+        // executing the write. Non-routable saves (no snapshot)
+        // fall through to the existing single-file dispatch.
+        let runRoutedSave () : Async<unit> = async {
+            match AppDispatch.currentModel with
+            | None ->
+                AppDispatch.send Msg.SaveActiveMacro
+            | Some model ->
+                match Model.activeMacro model with
+                | None -> AppDispatch.send Msg.SaveActiveMacro
+                | Some mc ->
+                    match Services.RoutedSave.plan mc Map.empty with
+                    | None ->
+                        // Non-`.rkt` — keep the existing path.
+                        AppDispatch.send Msg.SaveActiveMacro
+                    | Some plan ->
+                        // 1. Conflict gate.
+                        let! continueAfter =
+                            if List.isEmpty plan.Conflicts then async { return true }
+                            else
+                                let paths =
+                                    plan.Conflicts
+                                    |> List.choose (function
+                                        | Rekolektion.Viz.Core.Rkt.SaveRouter.MtimeConflict (p, _, _) -> Some p
+                                        | _ -> None)
+                                async {
+                                    let dlg = SaveDialogs.ConflictDialog()
+                                    let! choice = dlg.ShowAsync window paths
+                                    match choice with
+                                    | SaveDialogs.OverwriteAll -> return true
+                                    | SaveDialogs.ReloadAndReapply ->
+                                        // Three-way merge: reload the
+                                        // on-disk version and re-apply
+                                        // the user's pending edits on
+                                        // top. Conflicting cells (user
+                                        // + disk both touched) keep the
+                                        // user's version; their names
+                                        // are logged.
+                                        match Services.RoutedSave.reloadAndReapply mc with
+                                        | Error msg ->
+                                            AppDispatch.send (Msg.SaveFailed msg)
+                                        | Ok r ->
+                                            AppDispatch.send
+                                                (Msg.ReplaceActiveMacro (r.Macro, r.ConflictingCells))
+                                        return false
+                                    | SaveDialogs.CancelConflict -> return false
+                                }
+                        if not continueAfter then return () else
+                        // 2. Orphan gate. The dialog returns a
+                        // cellName → targetPath map; we re-plan with
+                        // it so projectIntoLibrary routes the orphans
+                        // to the user-chosen files instead of the
+                        // default root fallback. Cells whose chosen
+                        // target isn't a loaded file silently fall
+                        // back to the root (see SaveRouter docs).
+                        let! orphanAssignments =
+                            if List.isEmpty plan.Orphans then
+                                async { return Some Map.empty }
+                            else async {
+                                let dlg = SaveDialogs.OrphanDialog()
+                                let! result =
+                                    dlg.ShowAsync window plan.Orphans mc.Path
+                                match result with
+                                | SaveDialogs.AssignTargets m -> return Some m
+                                | SaveDialogs.CancelOrphan -> return None
+                            }
+                        match orphanAssignments with
+                        | None -> return ()
+                        | Some assignments ->
+                        // Re-plan with the assignments so diffs
+                        // reflect the user-chosen orphan targets.
+                        let plan =
+                            match Services.RoutedSave.plan mc assignments with
+                            | Some p -> p
+                            | None -> plan  // unreachable: snapshot still Some
+                        // 3. Multi-file gate (skip when ≤1 file).
+                        let! selected =
+                            if plan.Diffs.Count <= 1 then async {
+                                return
+                                    plan.Diffs
+                                    |> Map.toSeq |> Seq.map fst |> Set.ofSeq }
+                            else async {
+                                let entries =
+                                    plan.Diffs
+                                    |> Map.toSeq
+                                    |> Seq.map (fun (p, doc) ->
+                                        p, doc.Cells.Length)
+                                    |> List.ofSeq
+                                let dlg = SaveDialogs.MultiFileSaveDialog()
+                                let! result = dlg.ShowAsync window entries
+                                match result with
+                                | SaveDialogs.SaveSelected s -> return s
+                                | SaveDialogs.Cancelled -> return Set.empty
+                            }
+                        if Set.isEmpty selected && not (Map.isEmpty plan.Diffs) then
+                            // User cancelled the multi-file dialog.
+                            return ()
+                        else
+                            let narrowed =
+                                plan.Diffs
+                                |> Map.filter (fun p _ -> Set.contains p selected)
+                            do! Async.SwitchToThreadPool ()
+                            match Services.RoutedSave.execute narrowed with
+                            | Ok _ -> AppDispatch.send (Msg.SaveCompleted mc.Path)
+                            | Error msg -> AppDispatch.send (Msg.SaveFailed msg)
+        }
         let saveItem = NativeMenuItem("Save")
         saveItem.Gesture <- KeyGesture(Key.S, KeyModifiers.Meta)
         saveItem.Click.Add(fun _ ->
-            AppDispatch.send Msg.SaveActiveMacro)
+            runRoutedSave () |> Async.StartImmediate)
         fileSub.Items.Add(saveItem)
 
+        // Save-As-with-reroot: when the active macro has a Library
+        // snapshot with ≥2 files, Save As to a different directory
+        // needs to mirror the import tree into the new location.
+        // Single-file macros fall through to the legacy SaveAs path.
+        let runRoutedSaveAs (targetPath: string) : Async<unit> = async {
+            match AppDispatch.currentModel with
+            | None -> AppDispatch.send (Msg.SaveActiveMacroAs targetPath)
+            | Some model ->
+                match Model.activeMacro model with
+                | None -> AppDispatch.send (Msg.SaveActiveMacroAs targetPath)
+                | Some mc ->
+                    match mc.LibrarySnapshot with
+                    | None ->
+                        AppDispatch.send (Msg.SaveActiveMacroAs targetPath)
+                    | Some snapshot when Map.count snapshot.Documents <= 1 ->
+                        AppDispatch.send (Msg.SaveActiveMacroAs targetPath)
+                    | Some snapshot ->
+                        let srcRootDir =
+                            let raw = System.IO.Path.GetDirectoryName mc.Path
+                            if System.String.IsNullOrEmpty raw then "."
+                            else System.IO.Path.GetFullPath raw
+                        let dstRootDir =
+                            let raw = System.IO.Path.GetDirectoryName targetPath
+                            if System.String.IsNullOrEmpty raw then "."
+                            else System.IO.Path.GetFullPath raw
+                        if srcRootDir = dstRootDir then
+                            // Same directory — Save As is really a
+                            // rename within the same import graph;
+                            // no reroot needed.
+                            AppDispatch.send (Msg.SaveActiveMacroAs targetPath)
+                        else
+                            // Compute mirror: each source file's
+                            // relative path from srcRootDir maps to
+                            // the same relative path under dstRootDir.
+                            // The root file specifically targets
+                            // `targetPath` (the user-chosen name).
+                            let mapping =
+                                snapshot.Documents
+                                |> Map.toSeq
+                                |> Seq.map (fun (srcPath, _) ->
+                                    let mapped =
+                                        if srcPath = System.IO.Path.GetFullPath mc.Path then
+                                            targetPath
+                                        else
+                                            let rel =
+                                                System.IO.Path.GetRelativePath(
+                                                    srcRootDir, srcPath)
+                                            System.IO.Path.GetFullPath(
+                                                System.IO.Path.Combine(dstRootDir, rel))
+                                    srcPath, mapped)
+                                |> List.ofSeq
+                            let dlg = SaveDialogs.SaveAsRerootDialog()
+                            let! result = dlg.ShowAsync window mapping
+                            match result with
+                            | SaveDialogs.CancelReroot -> return ()
+                            | SaveDialogs.ProceedReroot mappingMap ->
+                                // Build per-file diffs from the
+                                // mapped Library, then write each
+                                // file at its mapped target.
+                                let projected =
+                                    Rekolektion.Viz.Core.Rkt.SaveRouter.projectIntoLibrary
+                                        snapshot mc.Document
+                                        (System.IO.Path.GetFullPath mc.Path)
+                                        Map.empty
+                                let remappedDiffs =
+                                    projected.Documents
+                                    |> Map.toSeq
+                                    |> Seq.choose (fun (srcPath, ld) ->
+                                        match Map.tryFind srcPath mappingMap with
+                                        | Some dst -> Some (dst, ld.Ast)
+                                        | None -> None)
+                                    |> Map.ofSeq
+                                do! Async.SwitchToThreadPool ()
+                                match Services.RoutedSave.execute remappedDiffs with
+                                | Ok _ ->
+                                    AppDispatch.send (Msg.SaveCompleted targetPath)
+                                | Error msg ->
+                                    AppDispatch.send (Msg.SaveFailed msg)
+        }
         let saveAsItem = NativeMenuItem("Save As...")
         saveAsItem.Gesture <-
             KeyGesture(Key.S, KeyModifiers.Meta ||| KeyModifiers.Shift)
@@ -415,7 +626,14 @@ type App() =
             // suggested location; falls back to "" if no macro is
             // open (the picker will start at the platform default).
             let suggested = AppDispatch.currentActivePath |> Option.defaultValue ""
-            FilePickers.dispatchSaveAs (window :> obj) suggested AppDispatch.send)
+            // Hook the picker's dispatch so Save-As targets can pass
+            // through `runRoutedSaveAs` instead of going straight to
+            // Msg.SaveActiveMacroAs.
+            FilePickers.dispatchSaveAs (window :> obj) suggested (fun msg ->
+                match msg with
+                | Msg.SaveActiveMacroAs target ->
+                    runRoutedSaveAs target |> Async.StartImmediate
+                | other -> AppDispatch.send other))
         fileSub.Items.Add(saveAsItem)
 
         let closeItem = NativeMenuItem("Close tab")

@@ -34,6 +34,7 @@
     <Compile Include="RktOfGdsTests.fs" />
     <Compile Include="RktToGdsTests.fs" />
     <Compile Include="RktToLefTests.fs" />
+    <Compile Include="SaveRouterTests.fs" />
     <Compile Include="RktLoadTests.fs" />
     <Compile Include="Sky130LayerMapTests.fs" />
     <Compile Include="LabelFloodMultiSeedProbe.fs" />

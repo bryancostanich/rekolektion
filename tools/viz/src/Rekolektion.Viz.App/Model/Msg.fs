@@ -35,6 +35,12 @@ type Msg =
     /// the loop where the user generates a macro in another
     /// process and wants the viewer to refresh.
     | ReloadActiveMacro
+    /// Replace the active macro's in-memory state with the result
+    /// of a three-way merge after the ConflictDialog's
+    /// Reload-and-Reapply path. Carries the per-cell conflict list
+    /// for logging — v1 doesn't surface a follow-up prompt, the
+    /// user-edits-win policy is applied silently.
+    | ReplaceActiveMacro of mc: Model.LoadedMacro * conflictingCells: string list
     // Async net derivation result. `path` matches the macro the
     // nets were derived for; if the user opens a different file
     // in the meantime, the stale message is dropped.

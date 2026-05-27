@@ -56,7 +56,9 @@ let load () : State =
         with _ -> empty
 
 /// Persist the session state. Best-effort — failures don't bubble
-/// (we don't want a disk hiccup to crash the app).
+/// (we don't want a disk hiccup to crash the app). Logs every
+/// write so a regression where the file gets stomped with a
+/// near-empty Map surfaces in the viz log.
 let save (state: State) : unit =
     try
         ensureDir ()
@@ -70,4 +72,15 @@ let save (state: State) : unit =
                 n, d, (if v then "true" else "false")) |> ignore)
         sb.Append "]}" |> ignore
         File.WriteAllText(sessionPath, sb.ToString())
-    with _ -> ()
+        Rekolektion.Viz.App.Services.Logger.log "session.save"
+            {| count = state.Layers.Length
+               layers =
+                   state.Layers
+                   |> List.map (fun (n, d, v) ->
+                       sprintf "%d/%d=%b" n d v)
+                   |> String.concat " " |}
+    with ex ->
+        try
+            Rekolektion.Viz.App.Services.Logger.log "session.save.fail"
+                {| error = ex.Message |}
+        with _ -> ()

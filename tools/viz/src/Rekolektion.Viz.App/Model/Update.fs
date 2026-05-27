@@ -108,6 +108,7 @@ let private rectOfDraftSegment
     Net = None
     Props = []
     Comments = []
+    SubFormComments = Map.empty
 }
 
 /// Append a batch of rectangles to the document's top cell. The top
@@ -1833,11 +1834,49 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     OpenMacros = openMacros'
                     ActiveMacroPath = activePath'
                     RenamingPath = None }, Cmd.none
+    | Msg.ReplaceActiveMacro (newMc, conflictingCells) ->
+        // Three-way merge result from RoutedSave.reloadAndReapply.
+        // Swap the active macro's in-memory state with the merged
+        // version; log per-cell conflicts (v1 = "user edits win"
+        // silently, but log them so the user knows).
+        let openMacros' =
+            model.OpenMacros
+            |> List.map (fun m ->
+                if m.Path = newMc.Path then newMc
+                else m)
+        let logged =
+            if List.isEmpty conflictingCells then model
+            else
+                appendLog
+                    (sprintf "merged on reload — %d cell(s) had both on-disk + in-App edits, kept in-App version: %s"
+                        conflictingCells.Length
+                        (String.concat ", " conflictingCells))
+                    model
+        { logged with OpenMacros = openMacros' }, Cmd.none
     | Msg.SaveCompleted writtenPath ->
         Rekolektion.Viz.App.Services.Logger.log "save"
             {| op = "ok"; path = writtenPath |}
         // Update the active macro: Path moves to the saved file
-        // (no-op when already pointing there), Dirty clears.
+        // (no-op when already pointing there), Dirty clears, and for
+        // `.rkt` macros the Library snapshot + mtimes refresh from
+        // disk so the next save's conflict check uses the post-write
+        // ground truth.
+        let refreshLibrary (mc: Model.LoadedMacro) : Model.LoadedMacro =
+            match mc.LibrarySnapshot with
+            | None -> mc
+            | Some _ ->
+                match Rekolektion.Viz.Core.Rkt.Reader.loadSingle writtenPath with
+                | Error _ -> mc
+                | Ok lib ->
+                    let mtimes =
+                        lib.Documents
+                        |> Map.toSeq
+                        |> Seq.map (fun (p, _) ->
+                            p, System.IO.File.GetLastWriteTimeUtc p)
+                        |> Map.ofSeq
+                    { mc with
+                        LibrarySnapshot = Some lib
+                        LibraryMtimes = mtimes }
         let openMacros' =
             model.OpenMacros
             |> List.map (fun mc ->
@@ -1845,6 +1884,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                    || (model.ActiveMacroPath = Some mc.Path
                        && mc.Path <> writtenPath) then
                     { mc with Path = writtenPath; Dirty = false }
+                    |> refreshLibrary
                 else mc)
         let activePath' =
             if model.ActiveMacroPath.IsSome then Some writtenPath

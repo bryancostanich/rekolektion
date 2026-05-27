@@ -54,6 +54,15 @@ type LoadedMacro = {
     /// so Cmd+Shift+Z can put it back. Any new edit clears this
     /// stack (standard undo/redo semantics).
     RedoStack : EditSnapshot list
+    /// Library snapshot from the original `.rkt` load. Carries the
+    /// per-cell source-file mapping needed by `SaveRouter` to route
+    /// edits back to their defining file. `None` for `.gds` / `.mag`
+    /// loads which have no multi-file import graph.
+    LibrarySnapshot : Rkt.Reader.Library option
+    /// On-disk mtimes captured at load time, one per file in
+    /// `LibrarySnapshot.Documents`. Used by `SaveRouter.detectMtimeConflicts`
+    /// to surface external edits before overwriting.
+    LibraryMtimes : Map<string, System.DateTime>
 }
 /// One step of edit history: paired (Document, Nets) so undo/redo
 /// restores them together and keeps PolygonRef indices consistent

@@ -82,6 +82,7 @@ let private mkRectPoly (x0: int64) (y0: int64) (x1: int64) (y1: int64) : Poly = 
     Net = None
     Props = []
     Comments = []
+    SubFormComments = Map.empty
 }
 
 let private fixtureDoc () : Document =
@@ -90,6 +91,7 @@ let private fixtureDoc () : Document =
             { Name = "TOP"
               Meta = None
               Comments = []
+              SubFormComments = Map.empty
               Elements = [
                   PolyEl (mkRectPoly 0L 0L 100L 100L)
                   PolyEl (mkRectPoly 200L 0L 300L 100L)
@@ -112,6 +114,8 @@ let private fixtureModel () : Model.Model =
         Dirty = false
         UndoStack = []
         RedoStack = []
+        LibrarySnapshot = None
+        LibraryMtimes = Map.empty
     }
     { Model.empty with
         OpenMacros = [macro]
@@ -168,6 +172,7 @@ let private mkRect (lyr: Layer) (x1: int64) (y1: int64)
         Net = None
         Props = props
         Comments = []
+        SubFormComments = Map.empty
     }
 
 let private widProp (wid: int) : Property =
@@ -183,6 +188,7 @@ let private wireFixtureModel (elements: Element list) : Model.Model =
                 { Name = "TOP"
                   Meta = None
                   Comments = []
+                  SubFormComments = Map.empty
                   Elements = elements }
             ]
             TopCell = Some "TOP" }
@@ -199,6 +205,8 @@ let private wireFixtureModel (elements: Element list) : Model.Model =
         Dirty = false
         UndoStack = []
         RedoStack = []
+        LibrarySnapshot = None
+        LibraryMtimes = Map.empty
     }
     { Model.empty with
         OpenMacros = [macro]
@@ -364,6 +372,8 @@ let ``ToggleRatlines on an underived cell ARMS but does not sync-derive`` () =
         Dirty = false
         UndoStack = []
         RedoStack = []
+        LibrarySnapshot = None
+        LibraryMtimes = Map.empty
     }
     let model =
         { Model.empty with
@@ -389,6 +399,8 @@ let ``NetsLoaded paints ratlines when RatlinesArmed and active path matches`` ()
         Dirty = false
         UndoStack = []
         RedoStack = []
+        LibrarySnapshot = None
+        LibraryMtimes = Map.empty
     }
     let armed =
         { Model.empty with
@@ -423,6 +435,8 @@ let ``NetsLoaded does NOT paint ratlines when RatlinesArmed is false`` () =
         Dirty = false
         UndoStack = []
         RedoStack = []
+        LibrarySnapshot = None
+        LibraryMtimes = Map.empty
     }
     let model =
         { Model.empty with
@@ -587,18 +601,19 @@ let ``RouteStop commits ONLY fixed corners, drops the tentative L`` () =
     // in the batch — index `before + 1` is the second pad.
     match elems.[before + 1] with
     | RectEl r ->
-        r.X1 |> should equal 355L   // 500 - half(290) = 355
-        r.X2 |> should equal 645L
-        r.Y1 |> should equal -145L  // pad centered at Y=0
-        r.Y2 |> should equal 145L
+        r.X1 |> should equal 340L   // 500 - half(320) = 340
+        r.X2 |> should equal 660L
+        r.Y1 |> should equal -160L  // pad centered at Y=0
+        r.Y2 |> should equal 160L
     | _ -> failwith "expected pad RectEl at last fixed point"
 
 [<Fact>]
 let ``RouteFinish emits DRC-driven endpoint pads on the active layer`` () =
-    // met1 pad is 290 nm per Rules.allRules (mcon enclosure
-    // dominates min-area). A straight horizontal route from
-    // (0,0) → (1000,0) emits 1 wire RectEl + 2 pad RectEls (one
-    // at each end) → 3 new elements appended to the cell.
+    // met1 pad is 320 nm per Rules.allRules (via.4b asym enclosure
+    // dominates: 0.15 via + 2 × 0.085 = 0.32 µm). A straight
+    // horizontal route from (0,0) → (1000,0) emits 1 wire RectEl
+    // + 2 pad RectEls (one at each end) → 3 new elements
+    // appended to the cell.
     let model =
         let m = fixtureModel ()
         { m with DrcView = Rekolektion.Viz.Core.Drc.Rules.defaultView }
@@ -614,13 +629,13 @@ let ``RouteFinish emits DRC-driven endpoint pads on the active layer`` () =
     elems.Length |> should equal (before + 3)   // wire + 2 pads
     // Pads are emitted FIRST in the batch (before the wire) per the
     // RouteFinish arm; check that the first new element is a square
-    // centered at (0,0) with side 290 nm.
+    // centered at (0,0) with side 320 nm.
     match elems.[before] with
     | RectEl r ->
-        r.X1 |> should equal -145L
-        r.X2 |> should equal 145L
-        r.Y1 |> should equal -145L
-        r.Y2 |> should equal 145L
+        r.X1 |> should equal -160L
+        r.X2 |> should equal 160L
+        r.Y1 |> should equal -160L
+        r.Y2 |> should equal 160L
     | _ -> failwith "expected RectEl pad at first appended slot"
 
 [<Fact>]

@@ -16,10 +16,12 @@ Implement an interactive walk-around router that operates on every routing layer
 
 For each layer L, the obstacle set is computed from two sources:
 
-1. **Same-layer foreign-net polygons** — any polygon on L whose net (looked up via `Macro.Nets`) is not the start net of the current draft route. The start net comes from the snap target the wire was anchored to.
+1. **Same-layer polygons** — every polygon on L, regardless of net. The clearance (wire half-width plus layer spacing) is expanded around each one so the draft wire keeps the geometric spacing rule against both foreign-net and same-net features.
 2. **Cross-layer features that bridge to a foreign net through L** — for li1 specifically, any licon belonging to a foreign net. Generally: any contact / via that, if overlapped by a wire on L, would electrically connect L to a foreign net.
 
-DRC-rule violations (spacing, enclosure, min-area) are **not** part of the obstacle set. Those continue to fire through the existing live-DRC overlay (ADR-0003); the walk-around handles electrical shorts, the DRC handles geometric rules. The two pipelines are independent and run concurrently.
+Same-net features are obstacles for **spacing**, not for reachability. A wire is allowed to merge with the start polygon or the goal polygon — the endpoint exemption in `VisibilityGraph.shortestPath` drops any obstacle whose interior contains start or goal from the augment-edge visibility tests, so a wire that lands on a same-net pin terminates inside the polygon rather than holding clearance from it. Same-net polygons that the wire merely passes near (not at an endpoint) are treated as full obstacles — the wire detours to maintain spacing, the same as it does for foreign-net polygons.
+
+Foreign-net min-area, enclosure, and width rules remain in the live-DRC overlay (ADR-0003); the walk-around handles electrical shorts plus same-layer spacing. The two pipelines run concurrently.
 
 ### Net info source
 

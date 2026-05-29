@@ -861,12 +861,14 @@ let private analyzeSRef
                         Ok (SRefEl {
                             Cell = cellName
                             Origin = { X = x; Y = y }
-                            // `.rkt` schema stores rotation in radians (matches
-                            // Python `gen_*` minters that round-trip via gdstk).
-                            // F# internal Rot is degrees (matches GDS ANGLE,
-                            // which the renderer + ToGds already consume).
-                            // Convert on the way in.
-                            Rot = rot * (180.0 / System.Math.PI)
+                            // `.rkt` schema stores rotation in DEGREES (matches
+                            // GDS ANGLE convention and the Python rkt.SRef.rot
+                            // field, which build scripts populate as e.g.
+                            // `rot=180.0` meaning 180 degrees). F# internal
+                            // Rot is also degrees — pass through verbatim.
+                            // (Earlier code converted from radians; that was
+                            // wrong, the schema is degrees.)
+                            Rot = rot
                             Mag = magV
                             Reflect = reflect
                             Props = props
@@ -933,8 +935,8 @@ let private analyzeARef
                             Rows = int rs
                             ColPitch = { X = cpx; Y = cpy }
                             RowPitch = { X = rpx; Y = rpy }
-                            // Radians on disk → degrees internal.  See SRef branch.
-                            Rot = rot * (180.0 / System.Math.PI)
+                            // Degrees throughout — see SRef branch.
+                            Rot = rot
                             Mag = magV
                             Reflect = reflect
                             Props = props

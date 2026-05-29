@@ -20,6 +20,7 @@ from rekolektion.primitives.sky130.fet import (
     gen_pfet_01v8,
     gen_pfet_hv,
 )
+from rekolektion.primitives.sky130.reram import gen_reram_cell
 from rekolektion.primitives.sky130.resistor import gen_res_xhigh_po
 
 __all__ = [
@@ -29,5 +30,6 @@ __all__ = [
     "gen_pfet_01v8",
     "gen_pfet_hv",
     "gen_pnp_05v5",
+    "gen_reram_cell",
     "gen_res_xhigh_po",
 ]

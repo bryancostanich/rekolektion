@@ -1,0 +1,23 @@
+(layout (version 1)
+  (pdk sky130)
+  (units (dbu_nm 1) (uu_um 1))
+  (top reram_cell)
+  (cell sky130_fd_pr_reram__reram_cell
+    (rect (layer sky130:met1) -160 -130 160 130)
+    (rect (layer sky130:via) -75 -75 75 75)
+    (rect (layer sky130:reram) -160 -160 160 160)
+    (rect (layer sky130:met2) -160 -160 160 160)
+    (rect (layer sky130:met2_pin) -130 -160 130 160)
+    (rect (layer sky130:met1_pin) -160 -130 160 130)
+    (label (layer sky130:met2_label) (text "TE") (origin 0 0)
+      (kind device-terminal))
+    (label (layer sky130:met1_label) (text "BE") (origin 0 0)
+      (kind device-terminal)))
+  (cell reram_cell
+    (meta
+      (generator "sky130/reram_cell")
+      (params)
+      (source "magic-cif sky130B")
+      (generated "2026-05-28")
+      (digest "sha256:753e1a65847364545b008af8bda3608d064281ffbe7bceba940ee45fbf6c9631"))
+    (sref (cell sky130_fd_pr_reram__reram_cell) (origin 0 0))))

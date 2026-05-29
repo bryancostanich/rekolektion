@@ -163,6 +163,99 @@ def build_device(
             pass
 
 
+def build_static_device(
+    *,
+    cell_name: str,
+    generator: str,
+    foundry_cell: str,
+    foundry_gds: Path | None = None,
+    meta_params: list[rkt.Property],
+    primitives_dir: Path | None = None,
+    generator_version: int = 1,
+    post_process: Callable[[rkt.Document], None] | None = None,
+    extra_search_dirs: list[Path] | None = None,
+) -> str:
+    """Mint (or fetch cached) a fixed-geometry PDK primitive `.rkt`.
+
+    For PDK cells shipped as static `.mag` / `.gds` with no Tcl
+    `defaults`+`draw` proc pair (reram cells, varactors, vpp caps
+    in some libraries). Produces a 2-cell `.rkt` per the workflow
+    doc's "Fixed-geometry primitives are multi-cell `.rkt` files"
+    convention: caller-named wrapper at top + PDK cell as child
+    SRef at origin (0, 0).
+
+    `foundry_gds` (optional) names a GDS file to `gds read` before
+    the wrapper is created — required for PDK cells that ship as
+    `.gds` only (no `.mag` for Magic's addpath to find). When given,
+    its absolute path is interpolated into the Tcl body. When `None`,
+    the foundry cell must be discoverable via `extra_search_dirs` as
+    a `.mag` for `getcell` to find it.
+
+    `extra_search_dirs` augments the default sky130 cell-library
+    addpath. Harmless when `foundry_gds` is also given.
+    """
+
+    digest = compute_digest(
+        generator, meta_params, generator_version=generator_version,
+    )
+    if cache_hit(cell_name, digest, primitives_dir):
+        return cell_name
+
+    search_dirs = list(_pdk_cell_libraries("sky130B"))
+    if extra_search_dirs:
+        search_dirs.extend(extra_search_dirs)
+
+    body_lines: list[str] = []
+    if foundry_gds is not None:
+        body_lines.append(f"gds read {foundry_gds}")
+    body_lines.extend(
+        [
+            f'cellname create "{cell_name}"',
+            f'load "{cell_name}"',
+            "box 0 0 0 0",
+            f"getcell {foundry_cell}",
+        ]
+    )
+    body = "\n".join(body_lines) + "\n"
+
+    run = _magic_runner.run_magic(
+        cell_name=cell_name,
+        body_tcl=body,
+        tech="sky130B",
+        extra_search_dirs=search_dirs,
+    )
+    try:
+        doc = read_gds(run.gds_path)
+        meta = rkt.Meta(
+            generator=generator,
+            params=meta_params,
+            source="magic-cif sky130B",
+            generated=datetime.date.today().isoformat(),
+            digest=digest,
+        )
+        for cell in doc.cells:
+            if cell.name == cell_name:
+                cell.meta = meta
+                break
+        else:
+            raise RuntimeError(
+                f"magic produced no '{cell_name}' cell in {run.gds_path}; "
+                f"stderr: {run.stderr.strip()}"
+            )
+        doc.top_cell = cell_name
+        if post_process is not None:
+            post_process(doc)
+        out_path = cache_path(cell_name, primitives_dir)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rkt.write(doc), encoding="utf-8")
+        return cell_name
+    finally:
+        try:
+            run.gds_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def fmt_um(value: float) -> str:
     """Format a micron value the way device names want it: `0.68` →
     `0p68`. Trailing zeros after the decimal are kept (a 1.0 µm

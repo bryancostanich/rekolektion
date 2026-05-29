@@ -124,6 +124,7 @@ type MainWindow() as this =
                         | _ -> mc'.Path
                     return Ok root
                 | Error msg -> return Error msg }
+            PersistSession = Services.SessionState.persistFromModel
         }
 
         // Settings load once at startup. Services.Config.current is

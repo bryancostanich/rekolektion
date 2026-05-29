@@ -16,6 +16,12 @@ type ServiceBackend = {
     /// Round-trip the macro through `Mag.Writer.writeUpdated`,
     /// returning the path that ended up on disk.
     SaveMacro : Model.LoadedMacro -> Async<Result<string, string>>
+    /// Project model → session.json and write it to disk.
+    /// Tests pass a no-op stub so a `dotnet test` run can't
+    /// silently overwrite the user's real ~/.rekolektion/session.json
+    /// with whatever 1-entry state the test happens to produce.
+    /// Production wires `SessionState.persistFromModel`.
+    PersistSession : Model.Model -> unit
 }
 
 let private appendLog (line: string) (model: Model.Model) : Model.Model =
@@ -397,7 +403,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     RecentFiles = recents
                     Toggle = toggle' }
         // Persist open-tabs list so the next launch reopens them.
-        Rekolektion.Viz.App.Services.SessionState.persistFromModel switched
+        backend.PersistSession switched
         switched, cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
@@ -450,7 +456,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
             if exists then
                 let next = switchActive (Some path) model
-                Rekolektion.Viz.App.Services.SessionState.persistFromModel next
+                backend.PersistSession next
                 next, Cmd.none
             else model, Cmd.none
     | Msg.CloseAllTabs ->
@@ -463,7 +469,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 SelectedRatlines = Set.empty
                 SavedSelections = Map.empty
                 RenamingPath = None }
-        Rekolektion.Viz.App.Services.SessionState.persistFromModel next
+        backend.PersistSession next
         next, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
@@ -517,13 +523,13 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.ToggleLayer (key, vis) ->
         let toggle' = Visibility.toggleLayer key vis model.Toggle
         let model' = { model with Toggle = toggle' }
-        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        backend.PersistSession model'
         model', Cmd.none
     | Msg.FlipLayer key ->
         let cur = Visibility.isLayerVisible model.Toggle key
         let toggle' = Visibility.toggleLayer key (not cur) model.Toggle
         let model' = { model with Toggle = toggle' }
-        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        backend.PersistSession model'
         model', Cmd.none
     | Msg.SetAllLayers vis ->
         let keys =
@@ -531,12 +537,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             |> List.map (fun l -> (l.Number, l.DataType))
         let toggle' = Visibility.setAllLayers keys vis model.Toggle
         let model' = { model with Toggle = toggle' }
-        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        backend.PersistSession model'
         model', Cmd.none
     | Msg.SetActiveLayer layer ->
         let toggle' = Visibility.setActiveLayer layer model.Toggle
         let model' = { model with Toggle = toggle' }
-        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        backend.PersistSession model'
         model', Cmd.none
     | Msg.SetDrcView view ->
         Rekolektion.Viz.App.Services.Logger.log "drc.view"

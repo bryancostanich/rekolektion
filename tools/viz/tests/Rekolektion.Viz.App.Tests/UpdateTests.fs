@@ -10,6 +10,10 @@ let private stubBackend : Update.ServiceBackend = {
     RunMacro = fun _ _ -> async { return Error 1 }
     DeriveNets = fun _ -> async { return Map.empty }
     SaveMacro = fun _ -> async { return Error "stub" }
+    // No-op: tests must NOT write to ~/.rekolektion/session.json —
+    // a synthetic Model.empty would persist a 1-entry layer map
+    // and stomp the dev's real layer-visibility preferences.
+    PersistSession = fun _ -> ()
 }
 
 [<Fact>]

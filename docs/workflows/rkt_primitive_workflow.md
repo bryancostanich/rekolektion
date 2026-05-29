@@ -653,6 +653,128 @@ re-approval.  Don't silently re-place.
 
 ---
 
+## SRef transforms — `reflect` and `rot`
+
+When you SRef a primitive (or sub-block) with `reflect=True` and/or
+`rot=...`, the cell-local pin/strap coordinates DON'T trivially
+become parent coordinates — they go through a 2D affine transform.
+**Getting this wrong is a silent layout bug:** DRC passes, viz
+renders the FET in the visually-right place, and netgen sometimes
+even reports "netlists match uniquely" because transistor S/D are
+symmetric — but your parent labels and parent-painted wires land on
+the wrong pins.  By the time chip-level LVS fails, the wrong-pin
+routing has propagated into the parent integration.
+
+### `reflect=True` means **Y-flip**, not X-flip
+
+Per GDS convention and rekolektion's F# reader/writer
+(`Mag/Transform.fs`), `(reflect true)` mirrors the cell across the
+X-axis — i.e., **negates Y** while keeping X.  This is the
+mirror-about-X-axis convention every other GDS-aware tool uses.
+
+If your mental model is "reflect swaps S and D in x," that's the
+opposite of what the format does — you'll silently wire labels to
+the wrong pins.
+
+### Composed transform matrix (per `Mag/Transform.fs`)
+
+| `reflect` | `rot`  | Linear part `[[a, b], [c, d]]`          | Effective op            |
+| --------- | ------ | --------------------------------------- | ----------------------- |
+| `False`   | `0°`   | `[[1, 0], [0, 1]]`                      | identity                |
+| `False`   | `180°` | `[[-1, 0], [0, -1]]`                    | full 180° rotation (X+Y flip) |
+| `True`    | `0°`   | `[[1, 0], [0, -1]]`                     | **Y-flip only**         |
+| `True`    | `180°` | `[[-1, 0], [0, 1]]`                     | **X-flip only**         |
+
+So:
+
+- For S/D pin x-swap with gate y position preserved (the cascode
+  layout's "I want NMOS_CASC.S to land on the FAR side so the
+  bridge to NMOS_BOT.D is a clean vertical"): use **`reflect=True`
+  AND `rot=180°` together**.  This is the operation that's commonly
+  meant by "mirror the cell horizontally."
+- For S/D pin x-swap with gate moving to the bottom of the cell:
+  use `rot=180.0` alone.
+- For Y-flip (cell topology inverted vertically; gate moves from
+  top to bottom but x-positions unchanged): use `reflect=True`
+  alone.
+- For identity: leave both at defaults.
+
+### Computing parent pin coordinates correctly
+
+Given a cell-local pin at `(px, py)`, parent coords are:
+
+```python
+import math
+def parent_pin(sref_origin, px, py, *, reflect=False, rot=0.0):
+    theta = math.radians(rot)
+    c, s = math.cos(theta), math.sin(theta)
+    if reflect:
+        # M = [[cos, sin], [sin, -cos]]
+        nx = round(c*px + s*py)
+        ny = round(s*px - c*py)
+    else:
+        # M = [[cos, -sin], [sin, cos]]
+        nx = round(c*px - s*py)
+        ny = round(s*px + c*py)
+    return (sref_origin[0] + nx, sref_origin[1] + ny)
+```
+
+The `inspect_primitive(...)` helper returns cell-local pin coords;
+THIS function maps them to parent for label placement and routing
+endpoints.  **Don't write a one-liner that assumes flip-X for
+reflect — use the matrix.**
+
+### How the bug manifests if you get it wrong
+
+You point parent labels and wires at coordinates computed under
+the wrong transform.  The labels end up:
+
+- On the wrong primitive pin (because Magic's hierarchical extract
+  resolves them via the SRef geometry, which IS correct), OR
+- In empty space (no underlying polygon, so the label becomes a
+  floating port in the .ext, marked as a "disconnected node" in
+  netgen LVS).
+
+In netgen's comparison you see two patterns simultaneously:
+
+1. **"Cell X disconnected node: PORT_NAME"** — the parent label
+   for that port hovers over empty space at the assumed-but-wrong
+   pin coord.
+2. **"Netlists match uniquely with port errors"** — netgen still
+   finds an isomorphism because BSIM4 transistor S/D are symmetric,
+   so it silently swaps S and D in the layout to match the schematic.
+   You read this as "topology is right" and ship the wrong silicon.
+
+The bug compounds when one of the affected pins is an internal
+node — netgen might list the duplicated internal node as a port
+twice (once for the real connection, once for the floating label).
+
+**Fix:** correct the transform interpretation, recompute every
+parent pin coord via the composed matrix, move labels and wire
+endpoints, re-verify.  Don't accept "netlists match uniquely with
+port errors" as a green light when reflect is in play — it's
+exactly the signal that S/D swap may be masking a real bug.
+
+### Sanity check after any transform change
+
+After writing or modifying any SRef with non-default `reflect` or
+`rot`:
+
+1. Compute the new parent pin coords via the matrix above.
+2. Open the block in viz and confirm each pin label sits ON the
+   primitive's actual strap (not in empty space, not on a
+   neighboring strap).
+3. Run `verify_lvs`.  If you see "disconnected node" for any port
+   on the transformed cell, OR "netlists match uniquely with port
+   errors" combined with duplicate port entries, the transform
+   handling is wrong — DON'T paper over it with `port_aliases` or
+   parent-paint patches.  Fix the transform.
+
+For a worked example of how the misinterpretation cascades through
+LVS, see "Common LVS failure modes" under *Step 3 — LVS*.
+
+---
+
 ## Routing signals — direction conventions and helpers
 
 Once primitives are placed, tap/rail geometry is in, **and the user
@@ -1643,6 +1765,7 @@ All of these pass `verify_drc` and fail `verify_lvs`.
 | "extra port — `src_node` in layout but not schematic" | internal-only net got labeled at the parent level, and `make_ports=True` promoted it | omit parent labels for internal-only nets; LVS will match them by topology |
 | "device mismatch — instance has named pins Emitter/Base/Collector vs positional 1/2/3 with proxy pins" | The PDK black-box device (PNP, NPN, varactor, …) carries **named** pin labels in its `.mag`; Magic's extraction preserves the names. Your schematic calls the device by positional pin order, so netgen can't align them and adds `proxyEmitter` / `proxyBase` / proxy-numbered pins to both sides | Add **stub `.subckt` declarations** with matching named pins to your reference SPICE. For each PDK device used: `\.subckt sky130_fd_pr__rf_pnp_05v5_W0p68L0p68 Emitter Base Collector` `.ends`. The schematic's `X` line stays positional (`XQ1 v_be1 GND GND sky130_fd_pr__rf_pnp_05v5_W0p68L0p68` — order matches the stub's pin list), but netgen now sees `Emitter`/`Base`/`Collector` as proper port names on both sides. No PNP model body needed (it's a black-box for LVS — model parameters are checked elsewhere). |
 | "device mismatch — resistor instance has positional `(1,2)`, `3` vs schematic stub's `r0`/`r1`/`b` with proxy pins on both sides" | Opposite trap to the PNP/NPN case. Magic extracts `res_xhigh_po` (and other PDK resistors) with **positional** pins `1, 2, 3` — there are no named pin labels in the `_core` resistor's `.mag`. If you add a named-pin stub (`.subckt sky130_fd_pr__res_xhigh_po_1p41 r0 r1 b`), netgen synthesises proxies on both sides (`proxy1/proxy2/proxy3` on schematic, `proxyr0/proxyr1/proxyb` on layout) and the instance pin counts diverge (5 vs 6) | **Remove the resistor stub entirely.** With no stub, netgen black-boxes the model and matches purely positionally — and `sky130B_setup.tcl` already declares `permute "-circuit2 $dev" 1 2` for the resistor device class, so R1/R2 commutativity is handled. Rule of thumb: PDK devices whose `_core` primitive uses **positional** terminal numbers (resistors, mim caps) → no stub. PDK devices whose `_core` carries **named** labels (BJTs, varactors) → named stub. Inspect `<primitive>.ext` for `port` lines if unsure. |
+| "Cell X disconnected node: PORT_NAME" for a port on a transformed SRef cell + simultaneous "Netlists match uniquely with port errors" + duplicate port entries in the layout side of `comp.out` | `reflect`/`rot` semantics mis-applied on the SRef; parent labels and wires were placed at coords computed under the wrong transform (typical mistake: treating `reflect=True` as X-flip when it's actually Y-flip).  Magic's hierarchical extract resolves the SRef geometry correctly, so the labels hover over wrong/empty polygons.  BSIM4 S/D symmetry lets netgen find an isomorphism that masks the structural mismatch — you read "matches uniquely" as a green light when it's the signal that S/D swap is hiding a real bug | Re-read **SRef transforms** above.  `reflect=True` alone is Y-flip; for X-flip use `reflect=True + rot=180°`.  Recompute every parent pin coord via the composed matrix, move labels and wire endpoints, re-verify.  Then run **flat-extract LVS** (below) to confirm silicon connectivity independent of the hierarchical extractor.  **DO NOT** paper over with `port_aliases` (it's not a vsrc-naming alias) or parent-paint patches (they create disconnected islands, not merges through SRef boundaries) |
 
 **Iterate until match.** As with DRC, every LVS failure traces back
 to one of: a missing parent-paint connection, a mis-positioned
@@ -1716,6 +1839,80 @@ or routing topology.  The user (and future-you) should be able to
 glance at the close of the conversation and see the three-gate
 clearance.  Burying it leads to "did LVS actually run?" callouts.
 Move-to-next-block / commit / push only after this headline appears.
+
+### Flat-extract LVS — verification for cells with reflected SRefs
+
+Magic's hierarchical port-promotion has a known bug with reflected
+SRefs (see `rekolektion/CLAUDE.md` trap *"Magic ext2spice
+port-promotion through hierarchy is broken"*).  Even after the
+*SRef transforms* fix (correct reflect/rot matrix interpretation),
+specific reflect+rot combinations can fail to propagate parent
+labels through to the reflected primitive's port.  Symptoms in
+netgen LVS:
+
+- `"Cell X disconnected node: PORT_NAME"` for ports on reflected
+  sub-cells, even though the parent label sits on the right
+  polygon geometrically.
+- `"Netlists match uniquely with port errors"` — netgen found an
+  isomorphism via S/D-symmetric matching but the named ports don't
+  align.
+
+The verification fallback: **flat-extract LVS**.  Force Magic to
+flatten the cell hierarchy BEFORE extracting, so there are no SRef
+boundaries left for port-promotion to fail at.  Parent-paint
+polygons and the primitive's strap, both on the same layer at the
+same geometric position, merge unambiguously in the flat extract —
+and Magic's port association works.
+
+**When to run flat-extract LVS:**
+
+- Every cell that uses `reflect=True` on its SRefs, as a secondary
+  check supplementing hierarchical LVS.
+- Whenever hierarchical LVS reports `"Netlists match uniquely with
+  port errors"` — the unique-match phrase means topology is right
+  but the port story is ambiguous.  Flat extract resolves the
+  ambiguity.
+- As primary verification for blocks where the hierarchical
+  extract is suspected of mis-grouping nets across SRef boundaries.
+
+**Core Magic TCL** (insert a flatten loop before `extract all`):
+
+```tcl
+gds read <gds_path>
+load <cell_name>
+select top cell
+foreach _c [cellname list children <cell_name>] {
+    if {$_c eq "(UNNAMED)"} { continue }
+    flatten -doinplace $_c
+}
+select top cell
+extract all
+ext2spice lvs
+ext2spice -o <output_spice>
+```
+
+Then run netgen as usual against the schematic.  A reference
+implementation lives at
+`khalkulo/scratch/t37_stage2_layout/verify_lvs_flat.py` —
+intended to be promoted into `rekolektion.verify` once stable.
+
+**Important:** flat extract is for VERIFICATION, not for normal
+LVS.  Hierarchical extract is faster and produces cleaner `.ext`
+files when it works.  Use flat extract as the gold-standard
+fallback when reflect-related ambiguity needs resolution, not as a
+default.  A flat-extract MATCH is the strongest available
+guarantee that the silicon connectivity matches the schematic — a
+hierarchical MATCH is the normal expectation but can be misleading
+in the presence of the trap.
+
+**Sign-off rule for cells with reflected SRefs:** the three-gate
+gate-3 headline must reference BOTH hierarchical AND flat-extract
+LVS results.  Example:
+
+> **LVS MATCH — gate 3 passed.** Block is DRC + LVS clean against
+> `<block>_sch.spice` (hierarchical extract).  Flat-extract LVS
+> also clean — silicon connectivity verified independent of the
+> SRef hierarchy bug.
 
 ---
 
@@ -2115,6 +2312,24 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     where the source file matters. The same rule extends to "saved a
     PNG / log / dump to" announcements — always quote the absolute
     path so the user can open it without searching.
+
+19. **Compose `reflect` and `rot` via the documented matrix;
+    NEVER treat `reflect=True` as X-flip.** The rkt format follows
+    the GDS convention: `(reflect true)` mirrors the cell across
+    the X-axis (Y-flip), while keeping x unchanged. For an X-flip
+    (S/D pin x-swap with gate position preserved at top — the
+    common cascode-layout need), use `reflect=True + rot=180.0°`
+    together. The four combinations of `reflect × rot ∈ {0, 180}`
+    each do something different; see **SRef transforms** for the
+    matrix and parent-pin-coord computation. Mis-interpreting
+    reflect as X-flip is a silent layout bug class: DRC passes,
+    viz renders the cell visually correctly, and netgen masks the
+    structural mismatch via BSIM4 S/D symmetry — "Netlists match
+    uniquely with port errors" combined with disconnected-node
+    reports for ports on transformed SRefs is the signature. Run
+    **flat-extract LVS** (see *Step 3 — LVS* §"Flat-extract LVS")
+    as the gold-standard verification for any cell with
+    reflected SRefs.
 
 ---
 

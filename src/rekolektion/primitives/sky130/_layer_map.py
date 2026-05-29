@@ -51,6 +51,7 @@ _SKY130_PAIR_TO_NAME: dict[tuple[int, int], str] = {
     (94, 20):  "psdm",
     (122, 16): "cfom_drawing",
     (125, 20): "nwell_drawing",
+    (201, 20): "reram",
     (235, 4):  "boundary",
 }
 

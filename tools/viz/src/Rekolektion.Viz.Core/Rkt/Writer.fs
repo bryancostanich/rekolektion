@@ -314,8 +314,11 @@ let private synthesizeSRef (i: int) (r: SRef) : Sexp =
     kids.Add (mkList (subFormLead i "origin" sfc " ")
         [ sym "" "origin"; intAtom " " r.Origin.X; intAtom " " r.Origin.Y ] "")
     if r.Rot <> 0.0 then
+        // F# internal Rot is degrees (matches GDS); `.rkt` schema is
+        // radians.  Convert on the way out.
+        let radians = r.Rot * (System.Math.PI / 180.0)
         kids.Add (mkList (subFormLead i "rot" sfc " ")
-                         [ sym "" "rot"; floatAtom " " r.Rot ] "")
+                         [ sym "" "rot"; floatAtom " " radians ] "")
     if r.Mag <> 1.0 then
         kids.Add (mkList (subFormLead i "mag" sfc " ")
                          [ sym "" "mag"; floatAtom " " r.Mag ] "")
@@ -350,8 +353,10 @@ let private synthesizeARef (i: int) (r: ARef) : Sexp =
           intAtom " " r.RowPitch.X
           intAtom " " r.RowPitch.Y ] "")
     if r.Rot <> 0.0 then
+        // Degrees internal → radians on disk.  See SRef writer.
+        let radians = r.Rot * (System.Math.PI / 180.0)
         kids.Add (mkList (subFormLead i "rot" sfc inner)
-                         [ sym "" "rot"; floatAtom " " r.Rot ] "")
+                         [ sym "" "rot"; floatAtom " " radians ] "")
     if r.Mag <> 1.0 then
         kids.Add (mkList (subFormLead i "mag" sfc " ")
                          [ sym "" "mag"; floatAtom " " r.Mag ] "")

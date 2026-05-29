@@ -1313,6 +1313,15 @@ type GdsCanvasControl() as this =
     static member val RoutingModeProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("RoutingMode", false)
         with get
+    /// When true, idle (non-wire-mode) left-click prefers wire
+    /// segment pickup for drag.  When false (the default), idle
+    /// click goes straight to instance / polygon selection so the
+    /// user can pick rails to inspect their net without
+    /// accidentally grabbing a met1 segment.  The toolbar's
+    /// "Edit Routing (E)" toggle drives this.
+    static member val EditRoutingModeProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("EditRoutingMode", false)
+        with get
     /// Current in-flight draft route, or None when nothing is being
     /// drawn. Drives the canvas overlay and click semantics.
     static member val DraftRouteProperty
@@ -1584,6 +1593,11 @@ type GdsCanvasControl() as this =
     member this.RoutingMode
         with get() : bool = this.GetValue(GdsCanvasControl.RoutingModeProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.RoutingModeProperty, v) |> ignore
+
+    member this.EditRoutingMode
+        with get() : bool = this.GetValue(GdsCanvasControl.EditRoutingModeProperty)
+        and set(v: bool) =
+            this.SetValue(GdsCanvasControl.EditRoutingModeProperty, v) |> ignore
 
     member this.DraftRoute
         with get() : Routing.Draft.DraftRoute option =
@@ -2278,13 +2292,16 @@ type GdsCanvasControl() as this =
         this.Focus () |> ignore
 
         // route_editing_plan.md v1.1 — segment drag. Left-click in
-        // IDLE state (not routing-armed, no draft in flight, no
-        // other drag) that lands on a wire-tagged rect picks up
-        // the segment for perpendicular drag. Hit-test runs BEFORE
-        // the routing dispatch so a wire pickup wins over an empty
-        // routing click.
+        // EDIT-ROUTING MODE that lands on a wire-tagged rect picks
+        // up the segment for perpendicular drag.  Outside of edit-
+        // routing mode the default is "click = select" so the user
+        // can pick rails to inspect their net without accidentally
+        // grabbing a met1 segment.  Wire mode (W) is for drawing
+        // new wires; edit-routing mode (E) is for moving existing
+        // ones.
         let inIdleClick =
             props.IsLeftButtonPressed
+            && this.EditRoutingMode
             && not this.RoutingMode
             && (this.DraftRoute).IsNone
             && (this.SegmentDrag).IsNone
@@ -2293,7 +2310,16 @@ type GdsCanvasControl() as this =
             match this.Library with
             | Some doc ->
                 match Routing.Wire.findSegmentAt (int64 wxIdle) (int64 wyIdle) doc with
-                | Some (wireIdOpt, cellName, idx, rect) ->
+                | Some (wireIdOpt, cellName, idx, rect)
+                    when Routing.ViaStack.isRoutingLayer
+                            (Rkt.ToGds.layerToGds rect.Layer) ->
+                    // Idle wire pickup only fires for rects on a
+                    // routing layer (li1, met1..met5).  Background
+                    // features like nwell/diff/poly/implant span huge
+                    // areas inside cells and used to short-circuit
+                    // the instance hit-test below — clicking a cell
+                    // grabbed the nwell for drag, painting a giant
+                    // ghost rectangle instead of selecting the cell.
                     let cb = this.SegmentDragStartHandler
                     let shiftHeld =
                         e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift)
@@ -2301,7 +2327,7 @@ type GdsCanvasControl() as this =
                         cb.Invoke(wireIdOpt, cellName, idx, rect,
                                   int64 wxIdle, int64 wyIdle, shiftHeld)
                     e.Handled <- true
-                | None -> ()
+                | _ -> ()
             | None -> ()
         if e.Handled then () else
 
@@ -2413,6 +2439,15 @@ type GdsCanvasControl() as this =
         // below — panning around the macro is essential during wire
         // routing.
         if this.RoutingMode && props.IsLeftButtonPressed && not e.Handled then
+            // Log so the user can see when wire mode is eating a
+            // click that produced nothing — typically a click in
+            // free space (no snap target in range) or on a pin
+            // belonging to a foreign net during an active draft.
+            Rekolektion.Viz.App.Services.Logger.log "click.swallowed.wire-mode"
+                {| reason =
+                    if snapTargetOpt.IsNone then "no-snap-target"
+                    else "decideAction-Ignore"
+                   snapTargetsCount = (this.SnapTargets ()).Length |}
             e.Handled <- true
         // Tighten mode: a left click on a numbered label commits
         // that candidate. Other clicks are swallowed so the user

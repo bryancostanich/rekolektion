@@ -142,6 +142,10 @@ let private gds2DRoutingModeAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.RoutingModeProperty, v, ValueNone)
 
+let private gds2DEditRoutingModeAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.EditRoutingModeProperty, v, ValueNone)
+
 let private gds2DDraftRouteAttr
         (v: Routing.Draft.DraftRoute option) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Routing.Draft.DraftRoute option>(
@@ -334,6 +338,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                   (System.Action(fun () -> dispatch Msg.ClearSelection))
               // ADR-0002 interactive routing wiring
               gds2DRoutingModeAttr model.RoutingMode
+              gds2DEditRoutingModeAttr model.EditRoutingMode
               gds2DDraftRouteAttr  model.DraftRoute
               gds2DActiveLayerAttr model.Toggle.ActiveLayer
               gds2DStartRouteHandlerAttr

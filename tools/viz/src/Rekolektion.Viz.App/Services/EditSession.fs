@@ -4,61 +4,6 @@ open System.IO
 open Rekolektion.Viz.Core
 open Rekolektion.Viz.App.Model.Model
 
-/// First-form `_edited` path for a given source — no collision
-/// check, just `<base>_edited<ext>`. Used by the undo path-revert
-/// to recognise an auto-suggested name vs. a user-typed one
-/// without touching the filesystem.
-let suggestEditedPathFor (originalPath: string) : string =
-    let dir = Path.GetDirectoryName originalPath
-    let stem = Path.GetFileNameWithoutExtension originalPath
-    let ext = Path.GetExtension originalPath
-    Path.Combine(dir, sprintf "%s_edited%s" stem ext)
-
-/// Does `candidate` look like an auto-suggested edited-copy path
-/// for `originalPath`? Matches `<stem>_edited<ext>` AND the
-/// collision-suffixed variants `<stem>_edited_<N><ext>` that
-/// `suggestEditedPath` produces when the bare `_edited` name is
-/// already taken on disk. Used by the undo path-revert so the
-/// tab name snaps back to the original even when the auto-name
-/// landed at `_edited_2` etc. User-typed paths (anything that
-/// doesn't fit the pattern) are NOT auto-suggested and stay.
-let isAutoSuggestedEditedPath (originalPath: string) (candidate: string) : bool =
-    let dir = Path.GetDirectoryName originalPath
-    let stem = Path.GetFileNameWithoutExtension originalPath
-    let ext = Path.GetExtension originalPath
-    let cDir = Path.GetDirectoryName candidate
-    let cName = Path.GetFileNameWithoutExtension candidate
-    let cExt = Path.GetExtension candidate
-    if cDir <> dir || cExt <> ext then false
-    elif cName = sprintf "%s_edited" stem then true
-    else
-        let prefix = sprintf "%s_edited_" stem
-        if not (cName.StartsWith prefix) then false
-        else
-            let suffix = cName.Substring prefix.Length
-            match System.Int32.TryParse suffix with
-            | true, _ -> true
-            | _ -> false
-
-/// Compute the `_edited.mag` path used on first edit. If
-/// `<base>_edited.mag` already exists, append `_2`, `_3`, … until
-/// we land on an unused name. Lives next to the original so the
-/// edit copy can resolve subcell references through the same
-/// search path as the source.
-let suggestEditedPath (originalPath: string) : string =
-    let dir = Path.GetDirectoryName originalPath
-    let stem = Path.GetFileNameWithoutExtension originalPath
-    let ext = Path.GetExtension originalPath
-    let candidate n =
-        if n = 1 then
-            Path.Combine(dir, sprintf "%s_edited%s" stem ext)
-        else
-            Path.Combine(dir, sprintf "%s_edited_%d%s" stem n ext)
-    let mutable n = 1
-    while File.Exists (candidate n) do
-        n <- n + 1
-    candidate n
-
 /// Persist `mc.Document` to disk. The save target's extension
 /// determines the writer; the model's canonical `Rkt.Document`
 /// converts back to legacy `Gds.Library` only at the boundary for
@@ -146,17 +91,15 @@ let saveTo (mc: LoadedMacro) (targetPath: string) : string =
     targetPath
 
 /// Mark a macro as dirty (called by every editing transition in
-/// Update.fs). On the first edit of a clean macro this also
-/// retargets the path from `foo.mag` to `foo_edited.mag` so
-/// subsequent saves don't write over the source — the user
-/// explicitly opts back in via Save As if they want that.
+/// Update.fs).  Sets the Dirty flag.  Save writes back to mc.Path
+/// — the same path the file was opened from.  "Save As" is the
+/// explicit opt-in for writing to a different file; the legacy
+/// auto-rename to `<base>_edited.<ext>` on first edit has been
+/// removed so viz behaves like a normal editor (Cmd+S overwrites
+/// the open file).
 let markDirty (mc: LoadedMacro) : LoadedMacro =
     if mc.Dirty then mc
-    elif mc.Path = mc.OriginalPath then
-        let edited = suggestEditedPath mc.OriginalPath
-        { mc with Path = edited; Dirty = true }
-    else
-        { mc with Dirty = true }
+    else { mc with Dirty = true }
 
 /// Maximum undo history per macro. Bounded so a long editing
 /// session doesn't grow the heap without limit. 200 is well past

@@ -27,10 +27,13 @@ type LoadedMacro = {
     Blocks   : Layout.Hierarchy.Block list
     NetsFromSidecar : bool       // false → derived from labels
     SidecarError : string option
-    /// Path the macro was originally opened from. `Path` flips to
-    /// the `_edited.mag` copy on first edit; `OriginalPath` stays
-    /// pinned at the source so Save knows where to round-trip
-    /// from. Same as `Path` for unedited macros.
+    /// Path the macro was originally opened from.  `Path` only
+    /// diverges from `OriginalPath` after Save As (explicit user
+    /// intent); editing alone leaves Path equal to OriginalPath.
+    /// `OriginalPath` is the round-trip source the Mag writer
+    /// falls back to when `Path` doesn't yet exist on disk, the
+    /// auto-fit / import-rebasing anchor, and the snapshot key
+    /// for routed save.
     OriginalPath : string
     /// True after the user has made any edit that hasn't been
     /// saved. Drives the title-bar "[edited]" indicator and the

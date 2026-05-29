@@ -335,15 +335,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             |> List.fold (fun t key -> Visibility.toggleLayer key false t) model.Toggle
         // Insert (or replace) by path so reopening a file just
         // refreshes its tab in place rather than duplicating it.
-        // Also remove any open `<base>_edited*.mag` derived from
-        // the same source — leaving those would create two tabs
-        // that both retarget to the same edited Path on first
-        // edit, masking one of them under List.map's by-path
-        // mutation. Match by OriginalPath so we catch every
-        // edited variant of the file we're (re)opening.
+        // Match by `m.Path` (handles the normal case) OR
+        // `m.OriginalPath` (catches Save As'd tabs: their Path
+        // points at the user-chosen save location, but the source
+        // they were opened from might still be what the user is
+        // re-opening — re-use the existing tab rather than creating
+        // a second one for the same source).
         // Replace IN PLACE: a tab found by Path is swapped with
         // the new macro at the SAME index so a Cmd+R reload
-        // doesn't reorder the tab strip. New paths (no match)
+        // doesn't reorder the tab strip.  New paths (no match)
         // append to the end.
         let openMacros =
             let matches (m: Model.LoadedMacro) =
@@ -771,11 +771,10 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                            dyDbu = dyDbu
                            rectsChanged = adjusts.Length
                            extensions = extensions.Length |}
-                    // Track the new active path: markDirty may
-                    // retarget Path from foo.rkt to foo_edited.rkt
-                    // on the first edit; without updating
-                    // ActiveMacroPath the active-macro lookup would
-                    // then fail and the canvas would render empty.
+                    // Tracker kept from when markDirty used to
+                    // rename Path on first edit.  Path is now
+                    // stable across edits — this stays mc.Path
+                    // throughout the List.map.
                     let mutable activePath' = mc.Path
                     let openMacros' =
                         model.OpenMacros
@@ -1633,20 +1632,6 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 let flat' = Layout.Flatten.flatten prevLib
                 let inst' = Layout.Instances.enumerate prevLib
                 let stillDirty = not (List.isEmpty rest)
-                // When the stack drains we're back at the load
-                // state — also revert the in-memory Path from
-                // `<base>_edited.<ext>` back to the original so
-                // the tab name no longer says "edited" and a
-                // following Save would write to the original file
-                // again. (If the user explicitly renamed the tab
-                // away from the auto-suggested `_edited` path,
-                // that rename stays — we only revert the
-                // automatic retarget, not user intent.)
-                let pathRestored =
-                    if stillDirty then mc.Path
-                    elif EditSession.isAutoSuggestedEditedPath mc.OriginalPath mc.Path then
-                        mc.OriginalPath
-                    else mc.Path
                 let openMacros' =
                     model.OpenMacros
                     |> List.map (fun m ->
@@ -1664,14 +1649,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 Nets = prevNets
                                 UndoStack = rest
                                 RedoStack = redoSnap :: mc.RedoStack
-                                Dirty = stillDirty
-                                Path = pathRestored })
-                let activePath' =
-                    if model.ActiveMacroPath = Some mc.Path then Some pathRestored
-                    else model.ActiveMacroPath
-                { model with
-                    OpenMacros = openMacros'
-                    ActiveMacroPath = activePath' }, Cmd.none
+                                Dirty = stillDirty })
+                { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.RedoActiveMacro ->
         match Model.activeMacro model with
         | None -> model, Cmd.none
@@ -1684,13 +1663,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 let flat' = Layout.Flatten.flatten nextLib
                 let inst' = Layout.Instances.enumerate nextLib
                 // Re-applying a redone edit makes the doc dirty
-                // again. If the user undid all the way back to the
-                // load state (Path got restored to original), redo
-                // also re-applies the auto-suggested edited path.
-                let editedPath =
-                    if mc.Path = mc.OriginalPath then
-                        EditSession.suggestEditedPath mc.OriginalPath
-                    else mc.Path
+                // again.  Path is unaffected — viz no longer
+                // auto-renames to `_edited` on edits.
                 let openMacros' =
                     model.OpenMacros
                     |> List.map (fun m ->
@@ -1708,14 +1682,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 // restores both Document and Nets.
                                 UndoStack = undoSnap :: mc.UndoStack
                                 RedoStack = rest
-                                Dirty = true
-                                Path = editedPath })
-                let activePath' =
-                    if model.ActiveMacroPath = Some mc.Path then Some editedPath
-                    else model.ActiveMacroPath
-                { model with
-                    OpenMacros = openMacros'
-                    ActiveMacroPath = activePath' }, Cmd.none
+                                Dirty = true })
+                { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.SaveActiveMacro ->
         match Model.activeMacro model with
         | None -> model, Cmd.none
@@ -1891,12 +1859,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let activePath' =
             if model.ActiveMacroPath.IsSome then Some writtenPath
             else None
-        // Push the saved path to Recents. First-time saves of an
-        // opened file write to `<base>_edited.mag`; subsequent
-        // saves stay at that path. Save As writes to a fresh
-        // user-chosen path. Either way the resulting file is a
-        // new artifact the user will want to reopen, so it joins
-        // RecentFiles alongside the originals.
+        // Push the saved path to Recents.  Cmd+S writes to mc.Path
+        // (the file the user opened, or the Save As target).  Save
+        // As is the explicit opt-in for a fresh user-chosen path.
+        // Either way the resulting file is the one the user will
+        // want to reopen next, so it joins RecentFiles alongside
+        // the originals.
         let recents' =
             writtenPath :: (model.RecentFiles |> List.filter (fun p -> p <> writtenPath))
             |> List.truncate 10

@@ -286,10 +286,10 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     let toggleDimensionsHandler =
         System.Action(fun () -> dispatch Msg.ToggleDimensions)
 
-    // OriginalPath is the auto-fit trigger — stays pinned across
-    // edits and only changes on a genuinely new file load. Using
-    // mc.Path (the in-memory edited path) would refit on every
-    // first edit because Path retargets to `_edited.mag`.
+    // OriginalPath is the auto-fit trigger — it changes only on a
+    // genuinely new file load (Save As included), so the canvas
+    // refits when the user opens a new file but not on Save (which
+    // doesn't move OriginalPath).
     let macroPath =
         active |> Option.map (fun m -> m.OriginalPath)
 

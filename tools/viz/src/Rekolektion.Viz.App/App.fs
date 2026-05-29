@@ -95,33 +95,23 @@ type MainWindow() as this =
                 // For `.rkt` macros with a Library snapshot, route
                 // saves through `Services.RoutedSave` so cells edited
                 // from imported files write back to those files
-                // instead of collapsing into the root document. For
+                // instead of collapsing into the root document.  For
                 // `.gds` / `.mag`, RoutedSave falls through to the
                 // single-file `EditSession.saveTo` path below via
-                // the `LibrarySnapshot = None` branch.
-                //
-                // The first-save copy-on-write semantics
-                // (`Path = OriginalPath` → emit to a `_edited` sibling)
-                // only apply to non-`.rkt` macros: `.rkt` saves write
-                // back per-file to the actual source paths, which is
-                // the entire point of the routed path. Pre-flip the
-                // path for the non-`.rkt` branch so the legacy
-                // suggestEditedPath behaviour stays intact.
-                let mc' =
-                    match mc.LibrarySnapshot with
-                    | None when mc.Path = mc.OriginalPath ->
-                        { mc with Path = EditSession.suggestEditedPath mc.OriginalPath }
-                    | _ -> mc
-                match RoutedSave.saveOrSurfaceBlockers mc' with
+                // the `LibrarySnapshot = None` branch.  Either way
+                // the save writes to mc.Path — the same path the
+                // file was opened from.  Save As is the explicit
+                // opt-in for writing somewhere else.
+                match RoutedSave.saveOrSurfaceBlockers mc with
                 | Ok result ->
-                    // SaveCompleted expects a single root path. For
-                    // routed multi-file writes the root is mc'.Path;
+                    // SaveCompleted expects a single root path.  For
+                    // routed multi-file writes the root is mc.Path;
                     // for single-file writes WrittenPaths has one
                     // entry which IS that root.
                     let root =
                         match result.WrittenPaths with
                         | [ single ] -> single
-                        | _ -> mc'.Path
+                        | _ -> mc.Path
                     return Ok root
                 | Error msg -> return Error msg }
             PersistSession = Services.SessionState.persistFromModel

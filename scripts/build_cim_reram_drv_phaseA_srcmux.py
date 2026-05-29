@@ -112,11 +112,16 @@ extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
 extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
     x1=INVP_CUT_X2, y1=-2885, x2=NWELL_X2, y2=5900))  # Strip A-east
 
-# Strip B — same cut topology
+# Strip B — same cut topology. Top edge at y=-6139 to abut nand_S's
+# pfet tub top (parent y=-6139 after the SRef at y=-11711 lifts the
+# tub's local y_max=5572 to parent y=-6139). Previously -6161 left a
+# 22 nm gap that Magic flagged as nwell.2a between the strip's top
+# and the ns tub's top — the fix is to align the edges so they abut
+# (gap=0 satisfies the abut-or-far rule).
 extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
-    x1=NWELL_X1, y1=-10396, x2=INVP_CUT_X1, y2=-6161))  # Strip B-west
+    x1=NWELL_X1, y1=-10396, x2=INVP_CUT_X1, y2=-6139))  # Strip B-west
 extra_paint.append(rkt.Rect(layer=rkt.named("sky130", "nwell"),
-    x1=INVP_CUT_X2, y1=-10396, x2=NWELL_X2, y2=-6161))  # Strip B-east
+    x1=INVP_CUT_X2, y1=-10396, x2=NWELL_X2, y2=-6139))  # Strip B-east
 
 # inv_p body tap — for LVS. inv_p's 1v8 PFET has no internal body tap
 # in the primitive; its nwell extracts as a floating net. Extend the

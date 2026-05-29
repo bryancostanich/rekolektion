@@ -599,7 +599,13 @@ The agent surfaces, the user decides whether to keep going:
 
 1. **Open in viz**: `mcp__rekolektion-viz__rekolektion_viz_open` (or
    `dotnet run -- app cell_designs/<group>/<block>.rkt`) so the user
-   can see the silicon-truth view.
+   can see the silicon-truth view. **Pass the `.rkt` path** — never
+   `to-gds` your own block and open the GDS (Hard Rule #17). **State
+   the absolute path of the file you just opened in the user-facing
+   message** (Hard Rule #18) — `viz_open` returns silently and the
+   user cannot tell from the chat which file is now active. Format:
+   `"Opened /abs/path/to/<block>.rkt in viz."` — single sentence,
+   path verbatim.
 2. **Describe what's there in text**, since the user may scan the
    summary before opening viz:
    - Block dimensions (W × H).
@@ -1504,13 +1510,19 @@ all three pass:
 ### Step 1 — geometric (`viz read` / `viz app`)
 
 The viz CLI exposes six verbs; the two you'll use most are `read`
-(fast summary, no GUI) and `app` (interactive GUI):
+(fast summary, no GUI) and `app` (interactive GUI). **All viz verbs
+accept `.rkt` directly. Never `to-gds` your own work-in-progress
+block to view it** — that produces a frozen snapshot disconnected
+from your subsequent `.rkt` edits. The same trap applies to static
+`viz-render` PNGs: the live `app` GUI (or the MCP
+`rekolektion_viz_open` + `rekolektion_viz_screenshot`) is the
+canonical placement-review surface for in-flight work.
 
 | Verb         | What it does                                                   |
 | ------------ | -------------------------------------------------------------- |
-| `read`       | Text summary: cell count, poly/path/sref totals, per-cell bbox |
-| `to-gds`     | Export to canonical sky130 GDS (used by `verify_drc`)          |
-| `app`        | Launch interactive 2D + 3D Avalonia viewer                     |
+| `read`       | Text summary of a `.rkt` or `.gds`: cell count, poly/path/sref totals, per-cell bbox |
+| `to-gds`     | Export `.rkt` → canonical sky130 GDS (used by `verify_drc` / `verify_lvs` / tape-out; **NOT** for viz review of your own block) |
+| `app`        | Launch interactive 2D + 3D Avalonia viewer (pass `.rkt` for in-flight work; `.gds` for tape-out / vendor IP) |
 | `render`     | Per-layer PNG export (legacy; GDS input only)                  |
 | `mesh`       | STL + GLB 3D model export                                      |
 | `viz-render` | Headless one-shot render to a single PNG (for CI / agents)     |
@@ -2072,6 +2084,37 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     edge should be flush with the pad edge.  Any visible
     overhang or notch in viz means width mismatch — fix at the
     helper call, not by widening the pad locally.
+
+17. **Never view your own .rkt work through GDS, and never review
+    placement via static `viz-render` PNGs.** `viz_open` (MCP) and
+    `viz app` (CLI) take `.rkt` directly via the LayoutLoader, which
+    walks the `(import ...)` graph and renders the composed silicon-
+    truth view. The `to-gds → open .gds` pipeline is for DRC / LVS /
+    tape-out only — using it for review hides every post-edit change
+    behind a stale snapshot (the GDS is a frozen artifact; the `.rkt`
+    is the live truth). Same trap with `viz-render`: a one-shot PNG
+    freezes one default layer set at one zoom and is useless for the
+    iterative back-and-forth that placement review needs. The live
+    viz GUI (or MCP `rekolektion_viz_open` + `rekolektion_viz_screenshot`)
+    is the canonical placement-review surface for in-flight work; GDS
+    and PNGs are downstream artifacts, not authoring surfaces. The
+    only legitimate reasons to open a `.gds` are: (a) inspecting a
+    tape-out merge result, (b) inspecting vendor IP that ships as
+    GDS. For your own `.rkt` in-flight, always pass the `.rkt` path.
+
+18. **When opening a file in any external viewer (viz, browser, GUI),
+    the user-facing message MUST name the absolute path of the file
+    being shown.** `viz_open` returns silently (just `{"ok": true}`)
+    and the user cannot tell from the chat which file is now active —
+    especially when multiple files are tabbed or when an earlier file
+    is still focused. "Opened in viz", "loaded in browser", "GUI
+    launched" without a path forces the user to guess. Format:
+    `"Opened /abs/path/to/<file>.rkt in viz."` — single sentence, path
+    verbatim. Applies to every `viz_open`, every
+    `dotnet run -- app`, every browser launch, every screenshot fetch
+    where the source file matters. The same rule extends to "saved a
+    PNG / log / dump to" announcements — always quote the absolute
+    path so the user can open it without searching.
 
 ---
 

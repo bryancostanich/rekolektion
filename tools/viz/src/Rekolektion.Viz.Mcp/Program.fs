@@ -782,13 +782,13 @@ let private toolList : obj =
                           additionalProperties = false |} |}
         box {| name = "rekolektion_viz_open"
                description =
-                   "Open a GDS file in the running rekolektion-viz desktop app."
+                   "Open a .rkt (preferred) or .gds file in the running rekolektion-viz desktop app. ALWAYS pass the .rkt path when reviewing your own in-flight work — viz loads .rkt natively via LayoutLoader (walks the (import ...) graph for primitives) and reflects every .rkt edit on next open without re-export. Going through to-gds first creates a stale-snapshot trap: subsequent .rkt edits will NOT appear in the GDS view. Reserve .gds for inspecting tape-out merge results or vendor IP. After opening, ALWAYS state the absolute path of the file you just opened in the user-facing message — viz_open returns silently and the user cannot tell from the chat which file is now active."
                inputSchema =
                    box {| ``type`` = "object"
                           properties =
                               {| path =
                                   {| ``type`` = "string"
-                                     description = "Absolute path to a .gds file to open" |} |}
+                                     description = "Absolute path to a .rkt (preferred) or .gds file to open" |} |}
                           required = [| "path" |] |} |}
         box {| name = "rekolektion_viz_toggle_layer"
                description =

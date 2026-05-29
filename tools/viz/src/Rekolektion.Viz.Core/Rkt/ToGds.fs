@@ -184,7 +184,7 @@ let elementToGds (e: Element) : Gds.Types.Element list =
     | PathEl p -> [ Gds.Types.Path (pathToGds p) ]
     | RectEl r -> [ Gds.Types.Boundary (rectToBoundary r.Layer r.X1 r.Y1 r.X2 r.Y2) ]
     | PortEl p -> portToGds p
-    | LabelEl l -> [ Gds.Types.Text (labelToGds l) ]
+    | LabelEl l -> if l.IsInternal then [] else [ Gds.Types.Text (labelToGds l) ]
     | SRefEl s -> [ Gds.Types.SRef (srefToGds s) ]
     | ARefEl a -> [ Gds.Types.ARef (arefToGds a) ]
     | PropsEl _ -> []

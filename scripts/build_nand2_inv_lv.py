@@ -111,12 +111,14 @@ vdda1_rail = place_rail((cell_x1, vdda1_y1, cell_x2, vdda1_y2),
                         label='VDDA1', stitch_li1_straps=[vdda1_strap], port=True)
 # VDD (1.8V PFET source) is a separate net from VDDA1 (3.3V nwell
 # bulk). Paint a horizontal met1 VDD strap in the empty band between
-# the PFET primitive's met1 S/D strap tops (global y=4030) and the
-# VDDA1 rail bottom (y≈4665). Strap min Y = 4030 + 140 (met1.2) =
-# 4170 to keep clear of the primitive met1 D-strap top at y=4030 (D
-# is on nand_out, not VDD — must NOT touch).
-VDD_STRAP_Y1 = 4170
-VDD_STRAP_Y2 = 4310
+# the PFET primitive's met1 S/D strap tops (actual global y=4052,
+# verified via GDS extract — earlier comment said 4030 but was wrong
+# by 22 nm) and the VDDA1 rail bottom (y≈4665). Strap min Y = 4052 +
+# 140 (met1.2) = 4192. Picked 4200 for a clean round number with
+# 8 nm safety margin; the D strap top is on nand_out (not VDD) so
+# this clearance is load-bearing — it MUST not violate met1.2.
+VDD_STRAP_Y1 = 4200
+VDD_STRAP_Y2 = 4340
 vdd_rail = [
     rkt.Rect(layer=rkt.named("sky130", "met1"),
              x1=cell_x1, y1=VDD_STRAP_Y1,
@@ -129,16 +131,17 @@ vdd_rail = [
 
 # ─── Phase 1 — Power ─────────────────────────────────────────────────
 power_routes = []
-# Per-PFET met1 extension: bridge from primitive S-strap top (y=4030)
-# up to VDD strap bottom (y=4170). Width matches primitive met1
-# (230 nm, x = source_x ± 115).
+# Per-PFET met1 extension: bridge from primitive S-strap top (y=4052)
+# up to VDD strap bottom (y=4200). Width matches primitive met1
+# (230 nm, x = source_x ± 115). 10 nm overlap on each end so the
+# three rects merge into a single met1 polygon under extraction.
 SRC_STRAP_HALF_X = 115
 for pfet_sref in pfet_row:
     s_pin = p_info.pin("S")
     px = pfet_sref.origin[0] + s_pin.origin[0]
     power_routes.append(rkt.Rect(
         layer=rkt.named("sky130", "met1"),
-        x1=px - SRC_STRAP_HALF_X, y1=4020,  # 10 nm overlap with primitive top
+        x1=px - SRC_STRAP_HALF_X, y1=4042,   # 10 nm overlap w/ primitive top (4052)
         x2=px + SRC_STRAP_HALF_X, y2=VDD_STRAP_Y1 + 10,  # 10 nm overlap w/ strap
     ))
 power_routes.extend(pin_to_rail(nfet_row[1], "S", vss_strap))

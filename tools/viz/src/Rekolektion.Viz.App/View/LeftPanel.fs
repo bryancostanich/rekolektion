@@ -334,8 +334,27 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                         // + "H" letter for column legend.
                         clickable
                             (fun () ->
-                                let next = if highlightSomeOn then Set.empty else allNetsSet
-                                dispatch (Msg.SetHighlightedNets next))
+                                // Resolve the toggle target from the LIVE
+                                // model.  Capturing `highlightSomeOn` /
+                                // `allNetsSet` at render time goes stale —
+                                // FuncUI reuses the cached header
+                                // StackPanel across renders without re-
+                                // binding the lambda, so the click would
+                                // keep dispatching the original (often
+                                // empty) set even after nets loaded.
+                                match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+                                | Some m ->
+                                    let liveNets =
+                                        match Model.activeMacro m with
+                                        | None -> Set.empty
+                                        | Some am ->
+                                            am.Nets |> Map.toSeq
+                                            |> Seq.map fst |> Set.ofSeq
+                                    let liveSomeOn =
+                                        not m.Toggle.HighlightedNets.IsEmpty
+                                    let next = if liveSomeOn then Set.empty else liveNets
+                                    dispatch (Msg.SetHighlightedNets next)
+                                | None -> ())
                             (StackPanel.create [
                                 StackPanel.orientation Orientation.Horizontal
                                 StackPanel.spacing 3.0
@@ -351,8 +370,22 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                             ] :> IView)
                         clickable
                             (fun () ->
-                                let next = if ratlineSomeOn then Set.empty else allNetsSet
-                                dispatch (Msg.SetVisibleRatlines next))
+                                // See the H header comment above — same
+                                // stale-closure trap, same fix: derive the
+                                // toggle target from the live model.
+                                match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+                                | Some m ->
+                                    let liveNets =
+                                        match Model.activeMacro m with
+                                        | None -> Set.empty
+                                        | Some am ->
+                                            am.Nets |> Map.toSeq
+                                            |> Seq.map fst |> Set.ofSeq
+                                    let liveSomeOn =
+                                        not m.Toggle.VisibleRatlines.IsEmpty
+                                    let next = if liveSomeOn then Set.empty else liveNets
+                                    dispatch (Msg.SetVisibleRatlines next)
+                                | None -> ())
                             (StackPanel.create [
                                 StackPanel.orientation Orientation.Horizontal
                                 StackPanel.spacing 3.0

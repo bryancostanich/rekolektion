@@ -253,6 +253,71 @@ let cmdToLef (args: string list) : int =
 /// `Viz.Render.LayerRenderer` has not been ported into
 /// Rekolektion.Viz.Render yet; until Task N ports it, redirect
 /// callers to the legacy Viz.fsproj.
+/// `dump-layer <input> <layerNum> <dt>` — print the bbox of every
+/// FlatPolygon on a specific (layer, datatype) so we can see what
+/// viz's DRC pass is actually iterating over.
+let cmdDumpLayer (args: string list) : int =
+    match args with
+    | [path; ln; dt] ->
+        let layer = int ln
+        let datatype = int dt
+        let doc, _ = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let mutable n = 0
+        for p in flat do
+            if p.Layer = layer && p.DataType = datatype then
+                let mutable xMin = System.Int64.MaxValue
+                let mutable yMin = System.Int64.MaxValue
+                let mutable xMax = System.Int64.MinValue
+                let mutable yMax = System.Int64.MinValue
+                for pt in p.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+                printfn "%d %d %d %d  src=%s/%d"
+                    xMin yMin xMax yMax p.SourceStructure p.SourceIndex
+                n <- n + 1
+        eprintfn "=== %d polys on %d/%d ===" n layer datatype
+        0
+    | _ ->
+        eprintfn "usage: rekolektion-viz dump-layer <input> <num> <dt>"
+        1
+
+/// `drc <input.rkt|.gds|.mag>` — load, flatten, run the full DRC
+/// check, and print every Violation as one CSV-ish line.  Lets the
+/// caller diff viz's reported violations against Magic's output.
+let cmdDrc (args: string list) : int =
+    match args with
+    | [path] ->
+        let doc, warnings =
+            Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        for w in warnings do eprintfn "[viz] %s" w
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let view = Rekolektion.Viz.Core.Drc.Rules.defaultView
+        let viols = Rekolektion.Viz.Core.Drc.Check.check view doc.Units flat
+        let layerName n d =
+            match Rekolektion.Viz.Core.Layout.Layer.bySky130Number n d with
+            | Some l -> l.Name
+            | None -> sprintf "%d/%d" n d
+        printfn "rule\tlayer\tlimit_dbu\tmeasured_dbu\tbbox_a\tbbox_b"
+        for v in viols do
+            let (ax1, ay1, ax2, ay2) = v.BboxA
+            let bStr =
+                match v.BboxB with
+                | Some (bx1, by1, bx2, by2) ->
+                    sprintf "(%d,%d,%d,%d)" bx1 by1 bx2 by2
+                | None -> ""
+            printfn "%s\t%s\t%d\t%d\t(%d,%d,%d,%d)\t%s"
+                v.Rule (layerName v.LayerNumber v.LayerType)
+                v.LimitDbu v.MeasuredDbu
+                ax1 ay1 ax2 ay2 bStr
+        eprintfn "=== %d violations ===" viols.Length
+        0
+    | _ ->
+        eprintfn "usage: rekolektion-viz drc <input.rkt|.gds|.mag>"
+        1
+
 let cmdRender (_args: string list) : int =
     printfn "render: not yet implemented in Phase 1 (port LayerRenderer pending)"
     printfn "  use the legacy CLI for now: dotnet run --project tools/viz/Viz.fsproj -- render ..."
@@ -483,6 +548,8 @@ let main argv =
     | "read" :: rest        -> cmdRead rest
     | "to-gds" :: rest      -> cmdToGds rest
     | "to-lef" :: rest      -> cmdToLef rest
+    | "drc" :: rest         -> cmdDrc rest
+    | "dump-layer" :: rest  -> cmdDumpLayer rest
     | "render" :: rest      -> cmdRender rest
     | "mesh" :: rest        -> cmdMesh rest
     | "app" :: rest         -> cmdApp rest

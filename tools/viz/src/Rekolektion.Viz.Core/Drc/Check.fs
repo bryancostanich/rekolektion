@@ -386,13 +386,24 @@ let checkWithToggles
                     for j in i + 1 .. n - 1 do
                         let (_, bbB, _) = polys.[j]
                         let (bx1, by1, bx2, by2) = bbB
-                        // Touch-or-overlap: bboxes share any
-                        // point. Using closed-interval test
-                        // (≤/≥) so abutting metals count as
-                        // connected.
+                        // 4-connectivity (Magic-compatible): edge-
+                        // sharing only.  Two bboxes are connected
+                        // iff they overlap on one axis AND share/
+                        // overlap on the perpendicular axis.  Pure
+                        // corner-touch (both axes meet only at a
+                        // point) leaves a topological gap — Magic
+                        // treats those as DISTINCT regions and
+                        // fires spacing across the corner.  The
+                        // earlier 8-connectivity unioned corner-
+                        // touching nwells, suppressing real
+                        // `nwell.2a` chevron violations the user
+                        // sees in Magic but not in viz.
+                        let xStrict = ax1 < bx2 && bx1 < ax2
+                        let yStrict = ay1 < by2 && by1 < ay2
+                        let xClosed = ax1 <= bx2 && bx1 <= ax2
+                        let yClosed = ay1 <= by2 && by1 <= ay2
                         let touches =
-                            ax1 <= bx2 && bx1 <= ax2 &&
-                            ay1 <= by2 && by1 <= ay2
+                            (xStrict && yClosed) || (yStrict && xClosed)
                         if touches then union i j
                 // Spacing per pair, skipping same-component pairs.
                 for i in 0 .. n - 1 do
@@ -602,11 +613,32 @@ let checkWithToggles
                                 // as the measured value — the
                                 // narrowest place the rule fails.
                                 let measured = min xM yM
+                                // Asymmetric rule failure: the
+                                // BINDING threshold is the smallest
+                                // value that, if the worst axis met
+                                // it, would have allowed a passing
+                                // axis assignment.  If the worst
+                                // axis can't even meet the relaxed
+                                // threshold, that's what's failing
+                                // (limit = relaxed).  If it meets
+                                // relaxed but falls short of the
+                                // strict threshold, the strict
+                                // constraint is the one being
+                                // violated (limit = strict).  This
+                                // replaces the old "limit = min
+                                // (relaxed)" report which printed
+                                // a passing threshold next to a
+                                // violating measurement.
+                                let strict  = max oneLim otherLim
+                                let relaxed = min oneLim otherLim
+                                let limit =
+                                    if measured < relaxed then relaxed
+                                    else strict
                                 result.Add {
                                     Rule = name
                                     LayerNumber = inner.Number
                                     LayerType   = inner.DataType
-                                    LimitDbu    = min oneLim otherLim
+                                    LimitDbu    = limit
                                     MeasuredDbu = max 0L measured
                                     BboxA = ibb
                                     BboxB = Some obb }

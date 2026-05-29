@@ -997,6 +997,29 @@ type GdsCanvasControl() as this =
     let mutable pixelsPerDbu : float = 1.0
     let mutable hasFitted : bool = false
 
+    /// Per-path camera state — (centerX, centerY, pixelsPerDbu).
+    /// Saved on MacroPath change so switching tabs preserves each
+    /// tab's pan/zoom; auto-fit runs only the first time a path
+    /// is shown.  Keyed on the bound MacroPath value (which is
+    /// `LoadedMacro.OriginalPath`, stable across edits).
+    let viewportByPath =
+        System.Collections.Generic.Dictionary<string, float * float * float>()
+    /// Tracks the previous MacroPath so the change handler can
+    /// save the outgoing tab's camera state under the right key.
+    /// Avoids relying on `e.OldValue` boxing semantics for an
+    /// F# `string option` property — the strongly-typed property
+    /// getter is the safe path.
+    let mutable lastMacroPath : string option = None
+
+    /// Write-through cache update: every place that modifies the
+    /// camera (AutoFit, drag-pan, wheel-zoom) calls this so the
+    /// per-tab viewport is always current.  Switching tabs becomes
+    /// a pure restore — no race with AutoFit completing in time.
+    let saveCurrentViewport (_origin: string) =
+        match lastMacroPath with
+        | Some p -> viewportByPath.[p] <- (centerX, centerY, pixelsPerDbu)
+        | None -> ()
+
     // Pointer interaction state. `dragKind` distinguishes a
     // selection-drag (left button on geometry, may translate the
     // selection) from a pan-drag (middle/right, or left on empty
@@ -1074,14 +1097,22 @@ type GdsCanvasControl() as this =
     /// fix-segment click will land). Updated on every pointer move
     /// when RoutingMode || DraftRoute is active; cleared otherwise.
     let mutable hoveredSnapTarget : Routing.Snap.SnapTarget option = None
-    /// Spatial index over the active macro's `FlatPolygons`, built
-    /// once per geometry change and reused by `runLiveWithIndex`
-    /// across mouse moves. `cachedCellIndexFor` tracks the
-    /// FlatPolygons array we built against so we can detect when
-    /// to rebuild via reference equality (the array gets a new
-    /// reference on every edit / re-flatten).
-    let mutable cachedCellIndex : Spatial.UniformGrid.Index option = None
-    let mutable cachedCellIndexFor : FlatPolygon array = [||]
+    /// Per-macro caches keyed on the FlatPolygons array reference.
+    /// `ConditionalWeakTable` retains the cached value as long as
+    /// the key (the FlatPolygons array) is reachable, so each open
+    /// macro keeps its own cached spatial index / cross-net result
+    /// and tab switches between previously-seen macros are O(1).
+    /// Closing a tab drops the LoadedMacro, the FlatPolygons array
+    /// becomes garbage, and the cache entry is reclaimed.  Replaces
+    /// the prior single-slot cache that re-triggered the O(N²)
+    /// `cellCrossNetOverlaps` recompute on every tab switch — the
+    /// "tab switch beachballs for seconds on complex macros"
+    /// symptom.
+    let cellIndexCache :
+        System.Runtime.CompilerServices.ConditionalWeakTable<
+            FlatPolygon array,
+            Spatial.UniformGrid.Index> =
+        System.Runtime.CompilerServices.ConditionalWeakTable<_, _>()
     /// Cached snap targets for the active macro. `OnPointerMoved`
     /// was rebuilding these on EVERY frame (flattenLabels + per-
     /// label linear scan over FlatPolygons), which made wire-mode
@@ -1090,15 +1121,20 @@ type GdsCanvasControl() as this =
     /// Invalidation contract: see `tools/viz/docs/routing_caches.md`.
     let mutable cachedSnapTargets : Routing.Snap.SnapTarget array = [||]
     let mutable cachedSnapTargetsFor : FlatPolygon array = [||]
-    /// Cached cell↔cell cross-net overlap violations. Recomputed
-    /// only when FlatPolygons OR the NetMap changes — the
-    /// existing draft↔cell pass inside `runLiveWithIndex` only
-    /// fires during an active draft, so post-commit cell overlaps
-    /// would disappear from the live overlay without this cache.
-    /// O(N²) inside `cellCrossNetOverlaps`, hence the cache.
-    let mutable cachedCellCrossNet : Drc.Check.Violation array = [||]
-    let mutable cachedCellCrossNetFlatFor : FlatPolygon array = [||]
-    let mutable cachedCellCrossNetNetsFor : Map<string, Sidecar.Types.NetEntry> = Map.empty
+    /// Cached cell↔cell cross-net overlap violations.  Keyed off
+    /// the FlatPolygons array via ConditionalWeakTable so each
+    /// open macro retains its own result across tab switches.
+    /// The cached entry also remembers the NetMap reference it
+    /// was computed against — if Nets change for the same
+    /// FlatPolygons (rare: NetsLoaded post-load), recompute.
+    /// `cellCrossNetOverlaps` is O(N²); without this cache, a
+    /// 50k-poly macro would re-do billions of pair comparisons on
+    /// every switch.
+    let cellCrossNetCache :
+        System.Runtime.CompilerServices.ConditionalWeakTable<
+            FlatPolygon array,
+            ref<Map<string, Sidecar.Types.NetEntry> * Drc.Check.Violation array>> =
+        System.Runtime.CompilerServices.ConditionalWeakTable<_, _>()
     /// Sample counter for the per-pointer-move timing log — sampled
     /// every 30 frames so the log doesn't churn under continuous
     /// mouse motion.
@@ -1717,6 +1753,7 @@ type GdsCanvasControl() as this =
             centerX <- float (xmin + xmax) * 0.5
             centerY <- float (ymin + ymax) * 0.5
             hasFitted <- true
+            saveCurrentViewport "AutoFit"
 
     /// Build the ViewBox the painter draws into, derived from the
     /// current center+scale and canvas pixel size.
@@ -1783,11 +1820,24 @@ type GdsCanvasControl() as this =
                 else
                     Cursor.Default
         if e.Property = GdsCanvasControl.MacroPathProperty then
-            // Path changed → genuinely new file or rename to a
-            // different file. Reset auto-fit so the camera frames
-            // the new geometry. Cancel any in-flight drag too —
-            // its Δ doesn't apply to the new macro.
-            hasFitted <- false
+            // Path changed → tab switch or new file load.  Restore
+            // the incoming tab's camera state if we've seen it
+            // before; otherwise let AutoFit run on the next Render.
+            // The cache is kept current by `saveCurrentViewport`
+            // hooks on every camera mutation (AutoFit / pan / zoom),
+            // so we don't have to save on switch — whatever the
+            // outgoing tab last showed is already in the dictionary.
+            let newPath = this.MacroPath
+            match newPath with
+            | Some p when viewportByPath.ContainsKey p ->
+                let (cx, cy, ppd) = viewportByPath.[p]
+                centerX <- cx
+                centerY <- cy
+                pixelsPerDbu <- ppd
+                hasFitted <- true
+            | _ ->
+                hasFitted <- false
+            lastMacroPath <- newPath
             dragKind <- NoDrag
             dragLiveDeltaDbu <- 0L, 0L
             dragLiveLib <- None
@@ -1849,60 +1899,73 @@ type GdsCanvasControl() as this =
                     if e.Property = GdsCanvasControl.DraftRouteProperty then "DraftRoute"
                     elif e.Property = GdsCanvasControl.FlatPolygonsProperty then "FlatPolygons"
                     else "DisabledDrcRules"
-                // Rebuild the spatial index on the calling thread
-                // when geometry changed — it's bounded by the
-                // flat-array size and must be ready before any
-                // background task uses it. Cached for subsequent
-                // mouse-move recomputes.
-                let mutable indexBuilt = false
-                let cellIndex =
-                    if obj.ReferenceEquals(cachedCellIndexFor, snapshotFlat)
-                       && cachedCellIndex.IsSome then
-                        cachedCellIndex.Value
-                    else
-                        indexBuilt <- true
-                        let bboxes =
-                            snapshotFlat
-                            |> Array.map (fun p ->
-                                let mutable xMin = System.Int64.MaxValue
-                                let mutable yMin = System.Int64.MaxValue
-                                let mutable xMax = System.Int64.MinValue
-                                let mutable yMax = System.Int64.MinValue
-                                for pt in p.Points do
-                                    if pt.X < xMin then xMin <- pt.X
-                                    if pt.X > xMax then xMax <- pt.X
-                                    if pt.Y < yMin then yMin <- pt.Y
-                                    if pt.Y > yMax then yMax <- pt.Y
-                                (xMin, yMin, xMax, yMax))
-                        let cs = Spatial.UniformGrid.suggestCellSize bboxes
-                        let idx = Spatial.UniformGrid.build cs bboxes
-                        cachedCellIndex <- Some idx
-                        cachedCellIndexFor <- snapshotFlat
-                        idx
                 let swDrc = System.Diagnostics.Stopwatch()
                 let phaseTimings = Drc.Check.newPhaseTimings ()
-                // Refresh the cell↔cell cross-net cache when
-                // FlatPolygons or NetMap reference flips. Holds
-                // the violations that the draft↔cell pass would
-                // also catch if a draft existed — without this,
-                // those violations disappear the instant the user
-                // commits the route ("DRC disappeared on commit").
-                let cellCrossNetCached =
-                    if obj.ReferenceEquals(cachedCellCrossNetFlatFor, snapshotFlat)
-                       && obj.ReferenceEquals(cachedCellCrossNetNetsFor, snapshotNets) then
-                        cachedCellCrossNet
-                    else
-                        let r =
-                            try Drc.Check.cellCrossNetOverlaps snapshotFlat snapshotNets
-                            with _ -> [||]
-                        cachedCellCrossNet <- r
-                        cachedCellCrossNetFlatFor <- snapshotFlat
-                        cachedCellCrossNetNetsFor <- snapshotNets
-                        r
+                let mutable indexBuilt = false
+                // All the heavy work — spatial index build + O(N²)
+                // cellCrossNetOverlaps — moves into the background
+                // task.  ConditionalWeakTable lookups are O(1) and
+                // safe to call from any thread (TryGetValue is the
+                // documented thread-safe accessor; we serialize
+                // adds with a lock so two parallel switches don't
+                // race-add).
                 let compute (_ct : System.Threading.CancellationToken) =
                     swDrc.Restart()
                     let r =
                         try
+                            let cellIndex =
+                                match cellIndexCache.TryGetValue snapshotFlat with
+                                | true, idx -> idx
+                                | false, _ ->
+                                    indexBuilt <- true
+                                    let bboxes =
+                                        snapshotFlat
+                                        |> Array.map (fun p ->
+                                            let mutable xMin = System.Int64.MaxValue
+                                            let mutable yMin = System.Int64.MaxValue
+                                            let mutable xMax = System.Int64.MinValue
+                                            let mutable yMax = System.Int64.MinValue
+                                            for pt in p.Points do
+                                                if pt.X < xMin then xMin <- pt.X
+                                                if pt.X > xMax then xMax <- pt.X
+                                                if pt.Y < yMin then yMin <- pt.Y
+                                                if pt.Y > yMax then yMax <- pt.Y
+                                            (xMin, yMin, xMax, yMax))
+                                    let cs = Spatial.UniformGrid.suggestCellSize bboxes
+                                    let built = Spatial.UniformGrid.build cs bboxes
+                                    lock cellIndexCache (fun () ->
+                                        // Another thread may have
+                                        // populated the entry while
+                                        // we were computing — re-
+                                        // check and prefer that one.
+                                        match cellIndexCache.TryGetValue snapshotFlat with
+                                        | true, idx -> idx
+                                        | false, _ ->
+                                            cellIndexCache.Add(snapshotFlat, built)
+                                            built)
+                            let cellCrossNetCached =
+                                let cached =
+                                    match cellCrossNetCache.TryGetValue snapshotFlat with
+                                    | true, r ->
+                                        let prevNets, prevResult = !r
+                                        if obj.ReferenceEquals(prevNets, snapshotNets) then
+                                            Some prevResult
+                                        else None
+                                    | false, _ -> None
+                                match cached with
+                                | Some v -> v
+                                | None ->
+                                    let v =
+                                        try Drc.Check.cellCrossNetOverlaps snapshotFlat snapshotNets
+                                        with _ -> [||]
+                                    lock cellCrossNetCache (fun () ->
+                                        match cellCrossNetCache.TryGetValue snapshotFlat with
+                                        | true, r -> r := (snapshotNets, v)
+                                        | false, _ ->
+                                            cellCrossNetCache.Add(
+                                                snapshotFlat,
+                                                ref (snapshotNets, v)))
+                                    v
                             // No draft → still run DRC with an
                             // empty draftFlat so committed geometry
                             // (the just-finished wire, prior wires,
@@ -3027,6 +3090,7 @@ type GdsCanvasControl() as this =
             centerX <- centerX - dxPx / scale
             centerY <- centerY + dyPx / scale
             lastPos <- p
+            saveCurrentViewport "PanDrag"
             this.InvalidateVisual()
         | SelectionDrag ->
             let p = pos
@@ -3694,6 +3758,7 @@ type GdsCanvasControl() as this =
         let newScale = max pixelsPerDbu 0.0001
         centerX <- wx - (p.X - cw / 2.0) / newScale
         centerY <- wy + (p.Y - ch / 2.0) / newScale
+        saveCurrentViewport "WheelZoom"
         this.InvalidateVisual()
 
     override this.Render(context) =

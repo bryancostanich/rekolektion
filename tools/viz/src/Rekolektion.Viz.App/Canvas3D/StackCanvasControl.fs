@@ -441,6 +441,41 @@ type StackCanvasControl() =
     // refitting on every commit yanks the viewport and resets the
     // ruler bounds.
     let mutable lastFittedTopCell : string = ""
+
+    /// Per-cell camera state cached so tab switches preserve each
+    /// tab's orbit/pan/zoom.  Keyed on top-cell name (the only
+    /// stable identifier the 3D canvas observes — it doesn't bind
+    /// a MacroPath).  Switching to a cached cell restores its full
+    /// camera state and skips the auto-fit; switching to a fresh
+    /// cell still triggers FitCameraTo.  Updated write-through on
+    /// every orbit / pan / zoom so a short visit before switching
+    /// away still leaves the cache current.
+    let cameraByCell =
+        System.Collections.Generic.Dictionary<
+            string,
+            float * float * float *
+            System.Numerics.Vector3 * float *
+            System.Numerics.Vector3 * System.Numerics.Vector3 *
+            System.Numerics.Vector3>()
+    let saveCameraFor (cell: string) =
+        if cell <> "" then
+            cameraByCell.[cell] <-
+                (yawDeg, pitchDeg, zoom,
+                 target, extent,
+                 bboxCenter, bboxHalf, worldOffset)
+    let tryRestoreCameraFor (cell: string) : bool =
+        match cameraByCell.TryGetValue cell with
+        | true, (y, p, z, t, e, bc, bh, wo) ->
+            yawDeg <- y
+            pitchDeg <- p
+            zoom <- z
+            target <- t
+            extent <- e
+            bboxCenter <- bc
+            bboxHalf <- bh
+            worldOffset <- wo
+            true
+        | _ -> false
     // Set in OnPropertyChanged when the top cell name changes;
     // consumed at the top of OnOpenGlRender, which runs the fit
     // against the post-batch (Library + FlatPolygons consistent)
@@ -733,15 +768,22 @@ type StackCanvasControl() =
                         | c :: _ -> c.Name
                         | _ -> ""
                 let flat = this.FlatPolygons
-                // New file → mark the fit dirty. The actual
-                // FitCameraTo call runs at the top of
-                // OnOpenGlRender, by which point the Library +
-                // FlatPolygons property batch is fully settled
-                // (eager fit here would race — see fitDirty comment).
-                // Same-file edits leave fitDirty alone so the
-                // user's view doesn't yank around mid-session.
+                // Top cell changed → either restore a previously
+                // saved camera for this cell or mark the fit dirty
+                // so OnOpenGlRender will FitCameraTo on the next
+                // render.  Same-file edits leave both flags alone
+                // so the user's view doesn't yank around mid-session.
                 if topName <> lastFittedTopCell then
-                    fitDirty <- true
+                    // Outgoing tab: snapshot its camera so a future
+                    // switch back picks up where the user left off.
+                    saveCameraFor lastFittedTopCell
+                    // Incoming tab: restore if cached; otherwise
+                    // schedule the auto-fit.
+                    if tryRestoreCameraFor topName then
+                        lastFittedTopCell <- topName
+                        fitDirty <- false
+                    else
+                        fitDirty <- true
                 // Ruler bbox tracks the CURRENT FlatPolygons every
                 // change, decoupled from the camera fit — otherwise
                 // a tab switch or reload that doesn't satisfy the
@@ -2933,6 +2975,7 @@ type StackCanvasControl() =
             yawDeg   <- yawDeg + dx * 0.4
             pitchDeg <- max -89.0 (min 89.0 (pitchDeg + dy * 0.4))
             lastPos <- p
+            saveCameraFor lastFittedTopCell
             this.RequestNextFrameRendering()
         | PanDrag ->
             // Translate `target` in the screen-aligned plane so the
@@ -2965,6 +3008,7 @@ type StackCanvasControl() =
             let panUp    = float32 (dyPx * scale)
             target <- target + right * panRight + camUp * panUp
             lastPos <- p
+            saveCameraFor lastFittedTopCell
             this.RequestNextFrameRendering()
 
     override this.OnPointerReleased e =
@@ -3165,6 +3209,7 @@ type StackCanvasControl() =
         // stays valid at any zoom. Lower floor of 0.05 keeps the
         // `radius = extent * 1.5 / zoom` division well-conditioned.
         zoom <- max 0.05 (zoom * factor)
+        saveCameraFor lastFittedTopCell
         this.RequestNextFrameRendering()
 
 
@@ -3602,6 +3647,11 @@ type StackCanvasControl() =
                 lastFittedTopCell <- topName
                 this.FitCameraTo lib flat
                 fitDirty <- false
+                // Seed the camera cache with the freshly-fitted
+                // values so a future switch back to this cell can
+                // restore them even before the user orbits/pans/
+                // zooms.
+                saveCameraFor topName
             // (Re-)extrude only when geometry source changed.
             if meshDirty && flat.Length > 0 then
                 cachedMesh <- Some (Extruder.extrude (float lib.Units.DbuNm * 1.0e-3) flat)

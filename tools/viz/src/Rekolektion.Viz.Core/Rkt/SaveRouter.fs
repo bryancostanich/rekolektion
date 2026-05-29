@@ -183,10 +183,22 @@ let internal rollbackTmps (tmps: string list) : unit =
 let saveAll
     (diffs: Map<string, Document>)
     : Result<unit, SaveError> =
+    // Refuse to materialise an empty (no-cells) document at a path
+    // that doesn't already exist on disk.  An upstream projection bug
+    // can route every cell elsewhere and leave a phantom path in the
+    // diffs map; without this guard we'd write a header-only file and
+    // silently destroy whatever the user thought they were saving
+    // (or, on a fresh path, plant a misleading 67-byte stub next to
+    // the real save).  Existing files we still overwrite — the user
+    // may legitimately have deleted every cell from a file.
+    let filtered =
+        diffs
+        |> Map.filter (fun path doc ->
+            not (List.isEmpty doc.Cells) || File.Exists path)
     // Phase 1: write temps.
     let mutable tmps : (string * string) list = []  // (tmp, finalPath)
     let mutable err : SaveError option = None
-    for KeyValue (finalPath, doc) in diffs do
+    for KeyValue (finalPath, doc) in filtered do
         if err.IsNone then
             let text = Writer.write doc
             match writeTmp finalPath text with

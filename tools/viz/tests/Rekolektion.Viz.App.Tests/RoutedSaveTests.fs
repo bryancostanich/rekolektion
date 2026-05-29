@@ -111,3 +111,79 @@ let ``reloadAndReapply errors out when LibrarySnapshot is None`` () =
         match RoutedSave.reloadAndReapply mc with
         | Error msg -> msg |> should haveSubstring "no library snapshot"
         | Ok _ -> failwith "expected error")
+
+// ─── plan must root the projection at OriginalPath, not mc.Path ─────────
+//
+// markDirty flips mc.Path from foo.rkt to foo_edited.rkt on first
+// edit.  The snapshot's CellIndex still maps cells to foo.rkt, so
+// using mc.Path as rootKey adds foo_edited.rkt to perPath as an
+// empty bucket — diffByFile then flags it as a new file and the
+// writer dutifully writes a 67-byte header-only stub there next to
+// the real save.  Verified on style_b_v2.rkt:
+// style_b_v2_edited.rkt and style_b_v2_edited_2.rkt both showed up
+// as empty files; this test pins the fix.
+
+[<Fact>]
+let ``plan keys diffs by OriginalPath even after markDirty renamed mc.Path`` () =
+    withTempDir (fun dir ->
+        let p = Path.Combine(dir, "src.rkt")
+        writeRkt p "(layout (version 1) (pdk sky130) (cell only))"
+        let mc = loadMacro p
+        // User edits a cell — mark dirty would normally retarget Path
+        // here; simulate that explicitly so the test owns the state.
+        let edited =
+            mc.Document.Cells
+            |> List.map (fun c ->
+                if c.Name = "only" then { c with Comments = [ "edit" ] }
+                else c)
+        let editedDoc = { mc.Document with Cells = edited }
+        let renamed =
+            { mc with
+                Document = editedDoc
+                Path = Path.Combine(dir, "src_edited.rkt")  // post-markDirty
+                Dirty = true }
+        match RoutedSave.plan renamed Map.empty with
+        | None -> failwith "expected Some plan (LibrarySnapshot is set)"
+        | Some plan ->
+            // The diff must NOT contain src_edited.rkt — the cell
+            // belongs at src.rkt per CellIndex.
+            plan.Diffs
+            |> Map.containsKey (Path.Combine(dir, "src_edited.rkt"))
+            |> should equal false
+            // It MUST contain src.rkt (where the cell really lives).
+            plan.Diffs
+            |> Map.containsKey (Path.GetFullPath p)
+            |> should equal true)
+
+// ─── saveAll refuses to materialise empty-cells documents at new paths ──
+
+[<Fact>]
+let ``saveAll skips writing an empty-cells doc to a path that doesn't exist`` () =
+    withTempDir (fun dir ->
+        let ghost = Path.Combine(dir, "ghost.rkt")
+        let emptyDoc =
+            { Types.emptyDocument with
+                Pdk = "sky130"
+                Cells = [] }
+        let diffs = Map.ofList [ ghost, emptyDoc ]
+        match SaveRouter.saveAll diffs with
+        | Ok () ->
+            File.Exists ghost |> should equal false
+        | Error e -> failwithf "saveAll failed: %A" e)
+
+[<Fact>]
+let ``saveAll DOES write an empty-cells doc when the path already exists`` () =
+    withTempDir (fun dir ->
+        let real = Path.Combine(dir, "real.rkt")
+        // Pre-existing file the user is legitimately clearing.
+        writeRkt real "(layout (version 1) (pdk sky130) (cell stale))"
+        let emptyDoc =
+            { Types.emptyDocument with
+                Pdk = "sky130"
+                Cells = [] }
+        let diffs = Map.ofList [ real, emptyDoc ]
+        match SaveRouter.saveAll diffs with
+        | Ok () ->
+            File.Exists real |> should equal true
+            (File.ReadAllText real).Contains "(cell stale)" |> should equal false
+        | Error e -> failwithf "saveAll failed: %A" e)

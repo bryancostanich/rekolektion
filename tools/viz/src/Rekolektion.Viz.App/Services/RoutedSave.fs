@@ -68,7 +68,14 @@ let plan
     match mc.LibrarySnapshot with
     | None -> None
     | Some snapshot ->
-        let rootKey = Path.GetFullPath mc.Path
+        // Use OriginalPath, NOT mc.Path, as the root key.  `markDirty`
+        // flips mc.Path to an `_edited.rkt` copy on first edit, but
+        // the snapshot's CellIndex / Documents map keys off the
+        // load-time path.  Using mc.Path here registered a NEW empty
+        // bucket in projectIntoLibrary that diffByFile then flagged
+        // as a changed file — the writer dutifully wrote an empty
+        // header-only `_edited.rkt` next to the real saved file.
+        let rootKey = Path.GetFullPath mc.OriginalPath
         let projected =
             SaveRouter.projectIntoLibrary
                 snapshot mc.Document rootKey orphanAssignments

@@ -396,3 +396,77 @@ def test_sub_form_comments_on_props_key():
     text = rkt.write(doc)
     assert "; before bbox" in text
     assert "; before description" in text
+
+
+def test_label_kind_device_terminal_round_trips():
+    src = (
+        "(layout (version 1) (pdk sky130)\n"
+        "  (cell c\n"
+        "    (label (layer sky130:li1_label) (text \"D\") (origin -395 0)\n"
+        "      (kind device-terminal))))\n"
+    )
+    doc = rkt.read(src)
+    label = doc.cells[0].elements[0]
+    assert label.kind == rkt.LabelKind.DEVICE_TERMINAL
+    # Round-trip preserves the kind.
+    doc2 = rkt.read(rkt.write(doc))
+    assert doc2.cells[0].elements[0].kind == rkt.LabelKind.DEVICE_TERMINAL
+
+
+def test_label_kind_port_name_round_trips():
+    src = (
+        "(layout (version 1) (pdk sky130)\n"
+        "  (cell c\n"
+        "    (label (layer sky130:met1_label) (text \"A\") (origin 0 0)\n"
+        "      (kind port-name))))\n"
+    )
+    doc = rkt.read(src)
+    assert doc.cells[0].elements[0].kind == rkt.LabelKind.PORT_NAME
+
+
+def test_label_kind_default_is_net_name():
+    src = (
+        "(layout (version 1) (pdk sky130)\n"
+        "  (cell c\n"
+        "    (label (layer sky130:met1_label) (text \"VDD\") (origin 0 0))))\n"
+    )
+    doc = rkt.read(src)
+    assert doc.cells[0].elements[0].kind == rkt.LabelKind.NET_NAME
+
+
+def test_label_internal_flag_round_trips():
+    src = (
+        "(layout (version 1) (pdk sky130)\n"
+        "  (cell c\n"
+        "    (label (layer sky130:met1_label) (text \"int_x\") (origin 0 0)\n"
+        "      (internal #t))))\n"
+    )
+    doc = rkt.read(src)
+    assert doc.cells[0].elements[0].internal is True
+    doc2 = rkt.read(rkt.write(doc))
+    assert doc2.cells[0].elements[0].internal is True
+
+
+def test_label_internal_false_explicit():
+    src = (
+        "(layout (version 1) (pdk sky130)\n"
+        "  (cell c\n"
+        "    (label (layer sky130:met1_label) (text \"x\") (origin 0 0)\n"
+        "      (internal #f))))\n"
+    )
+    doc = rkt.read(src)
+    assert doc.cells[0].elements[0].internal is False
+
+
+def test_label_unknown_kind_raises():
+    src = (
+        "(layout (version 1) (pdk sky130)\n"
+        "  (cell c\n"
+        "    (label (layer sky130:met1_label) (text \"x\") (origin 0 0)\n"
+        "      (kind bogus))))\n"
+    )
+    try:
+        rkt.read(src)
+    except rkt.SchemaError:
+        return
+    assert False, "expected SchemaError on unknown label kind"

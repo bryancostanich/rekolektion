@@ -76,7 +76,7 @@ class ImportCycleError(Exception):
 # ─── Tokenizer ────────────────────────────────────────────────────────
 
 
-_SYMBOL_EXTRA = set("_-+./:*?!$%&@<=>^~")
+_SYMBOL_EXTRA = set("_-+./:*?!$%&@<=>^~#")
 
 
 def _is_symbol_char(c: str) -> bool:
@@ -605,11 +605,40 @@ def _analyze_label(node: _List, default_pdk: str, rkt):
         raise _schema_error("label-origin", "(origin x y) with two ints", "non-int", origin_form)
     cls_form = _find_form("class", children)
     cls = _atom_text(cls_form.children[1]) if cls_form and len(cls_form.children) > 1 else None
+    kind_form = _find_form("kind", children)
+    kind = rkt.LabelKind.NET_NAME
+    if kind_form and len(kind_form.children) > 1:
+        kind_text = _atom_text(kind_form.children[1])
+        if kind_text is not None:
+            try:
+                kind = rkt.LabelKind(kind_text)
+            except ValueError:
+                raise _schema_error(
+                    "label-kind",
+                    f"one of {[k.value for k in rkt.LabelKind]}",
+                    kind_text,
+                    kind_form,
+                )
+    internal_form = _find_form("internal", children)
+    internal = False
+    if internal_form and len(internal_form.children) > 1:
+        internal_text = _atom_text(internal_form.children[1])
+        if internal_text in ("#t", "true"):
+            internal = True
+        elif internal_text in ("#f", "false"):
+            internal = False
+        else:
+            raise _schema_error(
+                "label-internal", "#t / #f / true / false",
+                internal_text or "non-symbol", internal_form,
+            )
     return rkt.Label(
         layer=_analyze_layer(layer_form.children[1], default_pdk, rkt),
         text=text,
         origin=(ox, oy),
         cls=cls,
+        kind=kind,
+        internal=internal,
         props=_find_child_props(children, rkt),
         comments=list(node.leading_comments),
         sub_form_comments=_sub_form_comments(children),

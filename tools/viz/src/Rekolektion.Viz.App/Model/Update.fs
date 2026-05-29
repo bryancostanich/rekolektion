@@ -396,6 +396,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     OpenMacros = openMacros
                     RecentFiles = recents
                     Toggle = toggle' }
+        // Persist open-tabs list so the next launch reopens them.
+        Rekolektion.Viz.App.Services.SessionState.persistFromModel switched
         switched, cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
@@ -446,17 +448,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             // Only switch if the path is actually open; ignore stale
             // requests (e.g. socket-driven from outside).
             let exists = model.OpenMacros |> List.exists (fun m -> m.Path = path)
-            if exists then switchActive (Some path) model, Cmd.none
+            if exists then
+                let next = switchActive (Some path) model
+                Rekolektion.Viz.App.Services.SessionState.persistFromModel next
+                next, Cmd.none
             else model, Cmd.none
     | Msg.CloseAllTabs ->
-        { model with
-            OpenMacros = []
-            ActiveMacroPath = None
-            Selection = Set.empty
-            InstanceSelection = Set.empty
-            SelectedRatlines = Set.empty
-            SavedSelections = Map.empty
-            RenamingPath = None }, Cmd.none
+        let next =
+            { model with
+                OpenMacros = []
+                ActiveMacroPath = None
+                Selection = Set.empty
+                InstanceSelection = Set.empty
+                SelectedRatlines = Set.empty
+                SavedSelections = Map.empty
+                RenamingPath = None }
+        Rekolektion.Viz.App.Services.SessionState.persistFromModel next
+        next, Cmd.none
     | Msg.CloseActiveTab ->
         match model.ActiveMacroPath with
         | Some p -> model, Cmd.ofMsg (Msg.CloseMacro p)
@@ -508,40 +516,28 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         model', Cmd.none
     | Msg.ToggleLayer (key, vis) ->
         let toggle' = Visibility.toggleLayer key vis model.Toggle
-        Rekolektion.Viz.App.Services.SessionState.save
-            { Layers =
-                toggle'.Layers
-                |> Map.toList
-                |> List.map (fun ((n, d), v) -> (n, d, v)) }
-        { model with Toggle = toggle' }, Cmd.none
+        let model' = { model with Toggle = toggle' }
+        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        model', Cmd.none
     | Msg.FlipLayer key ->
         let cur = Visibility.isLayerVisible model.Toggle key
         let toggle' = Visibility.toggleLayer key (not cur) model.Toggle
-        Rekolektion.Viz.App.Services.SessionState.save
-            { Layers =
-                toggle'.Layers
-                |> Map.toList
-                |> List.map (fun ((n, d), v) -> (n, d, v)) }
-        { model with Toggle = toggle' }, Cmd.none
+        let model' = { model with Toggle = toggle' }
+        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        model', Cmd.none
     | Msg.SetAllLayers vis ->
         let keys =
             Layout.Layer.allDrawing
             |> List.map (fun l -> (l.Number, l.DataType))
         let toggle' = Visibility.setAllLayers keys vis model.Toggle
-        Rekolektion.Viz.App.Services.SessionState.save
-            { Layers =
-                toggle'.Layers
-                |> Map.toList
-                |> List.map (fun ((n, d), v) -> (n, d, v)) }
-        { model with Toggle = toggle' }, Cmd.none
+        let model' = { model with Toggle = toggle' }
+        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        model', Cmd.none
     | Msg.SetActiveLayer layer ->
         let toggle' = Visibility.setActiveLayer layer model.Toggle
-        Rekolektion.Viz.App.Services.SessionState.save
-            { Layers =
-                toggle'.Layers
-                |> Map.toList
-                |> List.map (fun ((n, d), v) -> (n, d, v)) }
-        { model with Toggle = toggle' }, Cmd.none
+        let model' = { model with Toggle = toggle' }
+        Rekolektion.Viz.App.Services.SessionState.persistFromModel model'
+        model', Cmd.none
     | Msg.SetDrcView view ->
         Rekolektion.Viz.App.Services.Logger.log "drc.view"
             {| rules = view.Rules.Length

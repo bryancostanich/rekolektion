@@ -10,16 +10,29 @@ open System.IO
 /// storage. Separate from `Config.fs` (which is for setting-style
 /// values that get edited in a dialog).
 ///
-/// v1 scope: layer visibility only. Future: tab paths, camera
-/// state per macro, etc.
+/// v1 scope: layer visibility + open tabs.  Future: camera state
+/// per macro, etc.
 type State = {
     /// Layer visibility — only stores EXPLICITLY-toggled keys.
     /// Layers not in the list inherit their default (visible).
     /// Each entry: (layer number, datatype, visible).
     Layers : (int * int * bool) list
+    /// Paths of the tabs that were open at last save, in display
+    /// order.  On launch the App re-opens each path so the user
+    /// lands back where they left off.  Missing files are skipped
+    /// silently (no point trying to open a path that's been
+    /// moved or deleted between sessions).
+    OpenPaths : string list
+    /// The active tab at last save.  None when nothing was open.
+    /// Used to pick which tab to focus after the reopens settle.
+    ActivePath : string option
 }
 
-let empty : State = { Layers = [] }
+let empty : State = {
+    Layers = []
+    OpenPaths = []
+    ActivePath = None
+}
 
 let private homeDir =
     Environment.GetFolderPath Environment.SpecialFolder.UserProfile
@@ -52,7 +65,21 @@ let load () : State =
                         let v = entry.GetProperty("v").GetBoolean()
                         (n, d, v) ]
                 else []
-            { Layers = layers }
+            let openPaths =
+                let mutable arr = Unchecked.defaultof<System.Text.Json.JsonElement>
+                if root.TryGetProperty("openPaths", &arr)
+                   && arr.ValueKind = System.Text.Json.JsonValueKind.Array then
+                    [ for entry in arr.EnumerateArray() -> entry.GetString() ]
+                else []
+            let activePath =
+                let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+                if root.TryGetProperty("activePath", &v)
+                   && v.ValueKind = System.Text.Json.JsonValueKind.String then
+                    Some (v.GetString())
+                else None
+            { Layers = layers
+              OpenPaths = openPaths
+              ActivePath = activePath }
         with _ -> empty
 
 /// Persist the session state. Best-effort — failures don't bubble
@@ -62,6 +89,8 @@ let load () : State =
 let save (state: State) : unit =
     try
         ensureDir ()
+        let escape (s: string) =
+            System.Text.Json.JsonEncodedText.Encode(s).ToString()
         let sb = System.Text.StringBuilder()
         sb.Append "{\"layers\":[" |> ignore
         state.Layers
@@ -70,10 +99,22 @@ let save (state: State) : unit =
             sb.AppendFormat(
                 "{{\"n\":{0},\"d\":{1},\"v\":{2}}}",
                 n, d, (if v then "true" else "false")) |> ignore)
-        sb.Append "]}" |> ignore
+        sb.Append "],\"openPaths\":[" |> ignore
+        state.OpenPaths
+        |> List.iteri (fun i p ->
+            if i > 0 then sb.Append "," |> ignore
+            sb.AppendFormat("\"{0}\"", escape p) |> ignore)
+        sb.Append "]" |> ignore
+        match state.ActivePath with
+        | Some p ->
+            sb.AppendFormat(",\"activePath\":\"{0}\"", escape p) |> ignore
+        | None -> ()
+        sb.Append "}" |> ignore
         File.WriteAllText(sessionPath, sb.ToString())
         Rekolektion.Viz.App.Services.Logger.log "session.save"
             {| count = state.Layers.Length
+               openPaths = state.OpenPaths.Length
+               activePath = state.ActivePath
                layers =
                    state.Layers
                    |> List.map (fun (n, d, v) ->
@@ -84,3 +125,20 @@ let save (state: State) : unit =
             Rekolektion.Viz.App.Services.Logger.log "session.save.fail"
                 {| error = ex.Message |}
         with _ -> ()
+
+/// Project the current Model into a session-state snapshot and
+/// persist it.  Centralises the "what goes in session.json" mapping
+/// so each call site doesn't have to enumerate every field —
+/// adding a new persisted slice (camera, zoom, etc.) means
+/// updating this function, not every site.
+let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
+    save {
+        Layers =
+            model.Toggle.Layers
+            |> Map.toList
+            |> List.map (fun ((n, d), v) -> (n, d, v))
+        OpenPaths =
+            model.OpenMacros
+            |> List.map (fun m -> m.OriginalPath)
+        ActivePath = model.ActiveMacroPath
+    }

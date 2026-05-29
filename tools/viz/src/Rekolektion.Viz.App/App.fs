@@ -149,16 +149,37 @@ type MainWindow() as this =
             let drcView =
                 Rekolektion.Viz.Core.Drc.RulesYaml.loadEffectiveOrDefault
                     "sky130" None
+            // Reopen the tabs the user had at last shutdown.
+            // Missing files are skipped silently (best-effort — a
+            // file moved between sessions shouldn't crash the
+            // launch).  Each path becomes an OpenFile message; the
+            // LoadComplete handler then activates that tab.  The
+            // last-active tab follows as a SetActiveMacro so focus
+            // lands on the right tab once everything has loaded.
+            let reopenPaths =
+                sess.OpenPaths
+                |> List.filter System.IO.File.Exists
+            let reopenCmds =
+                reopenPaths
+                |> List.map (fun p -> Cmd.ofMsg (Msg.OpenFile p))
+            let activateCmd =
+                match sess.ActivePath with
+                | Some p when List.contains p reopenPaths ->
+                    [ Cmd.ofMsg (Msg.SetActiveMacro p) ]
+                | _ -> []
             Services.Logger.log "session"
                 {| op = "init"
                    layersFromSession = sess.Layers.Length
                    toggleLayerEntries = toggle.Layers.Count
+                   savedPaths = sess.OpenPaths.Length
+                   reopenedPaths = reopenPaths.Length
                    drcRules = drcView.Rules.Length
                    drcProvenanceEntries = drcView.Provenance.Count |}
             { Model.empty with
                 RecentFiles = Services.Recents.load ()
                 Toggle = toggle
-                DrcView = drcView }, Cmd.none
+                DrcView = drcView },
+            Cmd.batch (reopenCmds @ activateCmd)
         let update = Update.update backend
         let view = AppView.view
 

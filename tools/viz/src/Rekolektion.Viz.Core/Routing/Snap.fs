@@ -52,7 +52,16 @@ let buildTargets
         : SnapTarget array =
     let result = System.Collections.Generic.List<SnapTarget>()
     for lbl in labels do
-        if lbl.Kind <> NetName || System.String.IsNullOrEmpty lbl.Text then ()
+        // Routing snaps to any labeled pin — both NetName (generic
+        // signal/power labels) and PortName (sub-block external
+        // port declarations).  DeviceTerminal labels (the
+        // D/G/S/B annotations emitted by FET primitive generators)
+        // are LVS-only with non-network text and stay excluded.
+        let isPinLabel =
+            match lbl.Kind with
+            | NetName | PortName -> true
+            | DeviceTerminal -> false
+        if not isPinLabel || System.String.IsNullOrEmpty lbl.Text then ()
         else
             // Same-layer polygon containing the label origin → the
             // pin patch. Bbox center is the routing-target point.

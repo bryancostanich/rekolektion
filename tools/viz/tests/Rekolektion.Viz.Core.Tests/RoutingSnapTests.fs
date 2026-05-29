@@ -69,6 +69,21 @@ let ``buildTargets ignores DeviceTerminal labels (not user nets)`` () =
     Snap.buildTargets labels polys |> should be Empty
 
 [<Fact>]
+let ``buildTargets accepts PortName labels (sub-block external pins)`` () =
+    // Sub-blocks (FETs, NAND2 etc.) declare their external pins
+    // with `(kind port-name)`.  Routing must snap to those — they
+    // ARE the pins the user wants to wire to.  Pre-fix the snap
+    // pass took NetName-only and rejected every port-name'd label,
+    // leaving the user with two snap targets on a dense FET wall.
+    let polys = [| rect (0L, 0L, 200L, 200L) (68, 20) 0 |]
+    let labels = [|
+        label 68 5 (100L, 100L) "v_out_pre" PortName
+    |]
+    let targets = Snap.buildTargets labels polys
+    targets.Length |> should equal 1
+    targets.[0].Net |> should equal "v_out_pre"
+
+[<Fact>]
 let ``buildTargets ignores labels whose origin falls in no same-layer polygon`` () =
     let polys = [| rect (0L, 0L, 200L, 200L) (68, 20) 0 |]
     // Label is on met1 but origin (500,500) misses the only met1 poly.

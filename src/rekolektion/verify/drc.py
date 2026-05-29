@@ -37,6 +37,18 @@ _KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
     "diff/tap.3",  # diffusion spacing
     "diff/tap.8",  # nwell overlap of p-diff
     "diff/tap.9",  # n-diff to nwell
+    "diff/tap.15a", # MV diffusion spacing — trips at MV-vs-MV primitive
+                    # boundaries inside HV stdcells (e.g., lshift's MV
+                    # PFET pair sharing a tub). Foundry COREID-class.
+    "diff/tap.22", # LV-to-MV / MV-to-LV diffusion spacing < 0.36 µm —
+    "diff/tap.23", # the rule trips at any LV-vs-MV primitive boundary
+                    # (e.g., LV INV PFET adjacent to MV PD NMOS inside
+                    # lshift). Magic emits these as composite messages
+                    # like "diff/tap.23 + diff/tap.22"; both IDs must be
+                    # in the waiver set or the composite tile stays real.
+    "diff/tap.24", # N-diffusion spacing to N-well < 0.43 µm — same class
+                    # of primitive-boundary violation; trips at tap-band
+                    # / nwell interface between abutted primitives.
     # Wells
     "nwell.1",     # nwell width
     "nwell.2a",    # nwell spacing (same-potential)

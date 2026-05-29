@@ -162,3 +162,47 @@ Cells that gate-3-cleared from this one fix:
 
 Worth a one-time audit of every `Types.fs` doc reference to a sibling module behavior, and a future-proofing test: `ToGds(Label(internal=True))` should produce zero `Gds.Types.Text` records.
 
+---
+
+## Run 4 findings (2026-05-29) — verify_drc auto-waiver footprints
+
+### Bug: `verify_drc` couldn't classify primitive-internal DRC tiles as waivers without manual `waiver_footprints`
+
+`run_drc` already had spatial waiver-footprint support — known-waiver-rule tiles inside a footprint count as waivers, tiles outside count as real errors. But `verify_drc` (the `.rkt` entry point) never computed footprints automatically. Result: any parent block that SRef'd primitives showed thousands of "real errors" from primitive-internal tiles that should be foundry-waived (li.c2, licon.*, mcon.1, met1.2, etc.).
+
+`cim_reram_drv_phaseA_srcmux` was a typical case — `verify_drc` reported "2 real errors" in some states (a strict-mode quirk) and 3500+ in others (the honest count). Neither was useful for finding actual srcmux design bugs.
+
+### Fix
+
+New module `rekolektion.verify._primitive_footprints` exports `compute_primitive_footprints(rkt_path, gds_path, margin_um=0.5)`. It:
+
+1. Walks the `.rkt` import graph from the top block, identifying every imported cell whose `.rkt` carries a `(meta (generator …))` block — those are the primitives whose internal violations should be waived.
+2. Walks the GDS hierarchy recursively. For each SRef whose target is a primitive, emits a `(name, x1, y1, x2, y2)` footprint in **top-cell coords** (with full SRef transformation chain — translation, rotation, reflection, magnification — composed through every level).
+3. Expands each bbox by `margin_um` so spacing-rule tiles at the primitive boundary land inside a footprint.
+
+`verify_drc` now calls this automatically (when `waiver_footprints=None`, the default) and passes the result to `run_drc`. Callers can override with explicit footprints or change the margin via `waiver_margin_um`.
+
+### Margin tradeoff
+
+- **0.0–0.1 µm**: under-covers boundary violations between abutted primitives → user sees noise.
+- **0.5 µm (default)**: covers SKY130's widest single-rule cross-cell spacing (diff/tap.24 = 0.43 µm) with a small safety margin.
+- **≥1.0 µm**: captures more boundary violations but risks waiving real parent-paint vs primitive bugs in the µm-scale gap region. The 2-tile `nwell.2a` bug class on srcmux (primitives 425 nm apart with a missing parent-paint bridge) fires in exactly that gap — a 1 µm margin would hide it.
+
+### Impact
+
+| Cell | Pre-fix real errors | Post-fix real errors |
+|---|---|---|
+| `lshift_1v8_to_3v3` | 0 (clean) | 0 (clean) |
+| `nand2_inv_lv` | 0 (clean) | 0 (clean) |
+| `cim_reram_drv_phaseA_srcmux` | 3495 | 496 (with 0.5 µm margin) |
+
+The 496 remaining "real" errors on srcmux are predominantly Magic's "this layer can't abut or partially overlap between subcells" message (~30 tiles) plus various cross-primitive interactions that the 0.5 µm margin doesn't fully cover. Tunable per call.
+
+### Rules added to `_KNOWN_WAIVER_RULES`
+
+`diff/tap.15a`, `diff/tap.22`, `diff/tap.23`, `diff/tap.24` — composite rules that fire at LV/MV diffusion-spacing and N-diff to N-well boundaries between abutted primitives. Magic emits some as combined messages like `diff/tap.23 + diff/tap.22`; both IDs must be in the waiver set for the composite tile to classify.
+
+### Architectural note
+
+`_KNOWN_WAIVER_RULES` is still a static set. The TODO in the comment at `drc.py:_KNOWN_WAIVER_RULES` ("foundry-cell rules must be classified spatially") is now satisfied for the rules already in the set — `verify_drc` provides the spatial classification via auto-computed primitive footprints. Adding new rules to the set is a controlled action: it should be a rule that is BOTH (a) frequently triggered inside foundry/PDK primitives AND (b) NOT a class of bug the user-paint can plausibly introduce. Anything outside that intersection should remain a real error.
+

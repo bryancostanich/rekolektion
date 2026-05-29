@@ -28,6 +28,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from rekolektion.verify._primitive_footprints import compute_primitive_footprints
 from rekolektion.verify.drc import DRCResult, run_drc
 
 
@@ -77,6 +78,7 @@ def verify_drc(
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
     waiver_footprints: list[tuple[str, float, float, float, float]] | None = None,
+    waiver_margin_um: float = 0.5,
     allow_global_waivers: bool = False,
     keep_gds: bool = False,
 ) -> DRCResult:
@@ -124,12 +126,27 @@ def verify_drc(
 
     try:
         _convert_rkt_to_gds(rkt, gds)
+        # Auto-compute waiver footprints from the cell hierarchy. Every
+        # SRef of a `(meta (generator …))` primitive contributes its
+        # parent-coord bbox as a footprint. Tiles inside those bboxes
+        # that match a known-waiver rule are classified as waivers, not
+        # real errors. The caller can override by passing
+        # `waiver_footprints` explicitly (an empty list disables the
+        # auto-compute path; None — the default — uses it).
+        if waiver_footprints is None:
+            auto_footprints = compute_primitive_footprints(
+                rkt, gds,
+                top_cell_name=cell_name,
+                margin_um=waiver_margin_um,
+            )
+        else:
+            auto_footprints = waiver_footprints
         return run_drc(
             gds,
             cell_name=cell_name,
             pdk_root=pdk_root,
             output_dir=output_dir,
-            waiver_footprints=waiver_footprints,
+            waiver_footprints=auto_footprints,
             allow_global_waivers=allow_global_waivers,
         )
     finally:

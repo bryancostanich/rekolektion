@@ -165,8 +165,60 @@ type MainWindow() as this =
     inherit HostWindow()
     do
         base.Title <- "rekolektion-viz"
-        base.Width <- 1400.0
-        base.Height <- 900.0
+        // Restore window geometry from session.json when present.
+        // Apply size first (always safe), then position only if the
+        // saved location overlaps SOME screen — otherwise leave
+        // Avalonia to centre on the primary screen.  Falls back to
+        // 1400×900 / OS-chosen position on first launch or when
+        // session.json lacks a `window` field.
+        let saved = Services.SessionState.load ()
+        match saved.Window with
+        | Some w when w.Width > 0.0 && w.Height > 0.0 ->
+            base.Width  <- w.Width
+            base.Height <- w.Height
+            // Only restore position when at least one screen contains
+            // the saved top-left.  Guards against the monitor that
+            // hosted the window having been disconnected between
+            // sessions (otherwise the window opens off-screen and
+            // looks broken).  Screen list isn't populated yet at
+            // construction time on some platforms, so the check is
+            // best-effort — if `Screens` is unavailable we apply the
+            // position anyway and let Avalonia handle clipping.
+            base.WindowStartupLocation <-
+                Avalonia.Controls.WindowStartupLocation.Manual
+            let onScreen =
+                try
+                    let screens = this.Screens
+                    if isNull screens || screens.All = null
+                       || screens.All.Count = 0 then
+                        true  // no info → trust the saved value
+                    else
+                        screens.All
+                        |> Seq.exists (fun s ->
+                            let b = s.Bounds
+                            w.X >= b.X
+                            && w.Y >= b.Y
+                            && w.X < b.X + b.Width
+                            && w.Y < b.Y + b.Height)
+                with _ -> true
+            if onScreen then
+                base.Position <- Avalonia.PixelPoint(w.X, w.Y)
+            else
+                base.WindowStartupLocation <-
+                    Avalonia.Controls.WindowStartupLocation.CenterScreen
+        | _ ->
+            base.Width <- 1400.0
+            base.Height <- 900.0
+        // Save geometry on close.  `Closing` fires before the
+        // window destroys itself so the bounds + position are still
+        // readable.
+        this.Closing.Add(fun _ ->
+            let p = this.Position
+            Services.SessionState.saveWindowBounds {
+                Width  = this.Width
+                Height = this.Height
+                X      = p.X
+                Y      = p.Y })
 
         let backend : ServiceBackend = {
             OpenGds = GdsLoading.load

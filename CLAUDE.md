@@ -1,5 +1,13 @@
 # Rekolektion — SRAM Generator for SKY130
 
+## Debugging viz — read `tools/viz/docs/debugging_protocol.md` first
+
+Investigating viz behavior (DRC, ratlines, label flooding, layout
+transforms, MVP / camera math)? Write a headless probe that loads
+the real `.rkt` in-process via `LayoutLoader` + `Flatten` + the Core
+function. **NEVER** ask the user to restart viz for A/B comparison.
+Full pattern + example at `tools/viz/docs/debugging_protocol.md`.
+
 ## Building new cells — read `docs/workflows/rkt_primitive_workflow.md` first
 
 New layout goes through the `.rkt` workflow: Python generators mint

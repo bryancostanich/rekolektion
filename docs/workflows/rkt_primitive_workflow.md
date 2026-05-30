@@ -2389,8 +2389,10 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     **Enforced in tooling.** `place_taps_around` accepts an
     `inside_srefs=[...]` kwarg; when provided, it inspects each
     FET's gate-contact state (from the primitive's cell-name
-    suffix) and raises `ValueError` with the fix recipe if the
-    requested tap side would collide. Use it at every call site:
+    suffix) AND applies the SRef's `rot`/`reflect` transform so
+    the check operates in PARENT-coord sides — not cell-local.
+    Raises `ValueError` with the fix recipe if the requested tap
+    side would collide. Use it at every call site:
 
     ```python
     taps = place_taps_around(
@@ -2399,8 +2401,15 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     )
     ```
 
-    The kwarg is optional for backward compatibility, but every
-    new call should include it.
+    Rotation handling matters: a `_topgate` (gate on cell-local
+    top) SRef'd with `rot=180.0` puts its gate stamp on the
+    PARENT bottom — south-side tap would collide. The check sees
+    the transformed side and fires; the same FET at `rot=-90.0`
+    (gate on parent east) doesn't collide with a south tap and
+    passes silently. `reflect=True` (Y-flip) swaps cell-local
+    top/bottom stamps before rotation, per the SRef-transforms
+    matrix. The kwarg is optional for backward compatibility, but
+    every new call should include it.
 
 ---
 

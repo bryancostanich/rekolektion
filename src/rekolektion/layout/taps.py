@@ -110,8 +110,8 @@ def _um_to_dbu(value: float, dbu_nm: int = 1) -> int:
 
 
 def _fet_gate_contacts(sref: rkt.SRef, primitives_dir: Path) -> tuple[bool, bool] | None:
-    """Infer the FET primitive's (topc, botc) from its cell name. Returns
-    None for non-FET cells (the check then has no opinion on them).
+    """Infer the FET primitive's (topc, botc) — in CELL-LOCAL coords —
+    from its cell name. Returns None for non-FET cells.
 
     Encoding follows `_fet_cell_name` in `primitives/sky130/fet.py`:
 
@@ -121,6 +121,10 @@ def _fet_gate_contacts(sref: rkt.SRef, primitives_dir: Path) -> tuple[bool, bool
 
     Non-FET primitives (resistors, caps, BJTs, …) return None — they
     don't have gate stamps that could collide with a tap strap.
+
+    Callers should use `_fet_gate_parent_sides` (below) for
+    collision detection — that helper applies the SRef's rot/reflect
+    transform so the check sees PARENT-coord sides, not cell-local.
     """
 
     from rekolektion.layout.placement import inspect_primitive
@@ -144,6 +148,63 @@ def _fet_gate_contacts(sref: rkt.SRef, primitives_dir: Path) -> tuple[bool, bool
     # default returns both-present, the caller's tap location decides
     # whether that's a real collision).
     return (True, True)
+
+
+# Rotation mapping: which PARENT side does the FET's cell-local
+# top / bottom gate li1 strap land on after rot (degrees, multiple
+# of 90°)?
+#
+# Rotation is CCW; rot=180 flips top↔bottom, rot=±90 swaps
+# vertical axis for horizontal. See workflow doc "SRef transforms"
+# for the matrix derivation.
+_ROT_TOP_SIDE = {0: "top", 90: "left", 180: "bottom", 270: "right"}
+_ROT_BOTTOM_SIDE = {0: "bottom", 90: "right", 180: "top", 270: "left"}
+
+
+def _fet_gate_parent_sides(
+    sref: rkt.SRef, primitives_dir: Path
+) -> set[str] | None:
+    """Return the PARENT-coord sides ('top'/'bottom'/'left'/'right')
+    where the FET's gate li1 stamps land after the SRef's
+    rot/reflect transform. Returns None for non-FETs.
+
+    The cell-local (topc, botc) tuple is from `_fet_gate_contacts`.
+    `reflect=True` is Y-flip per the workflow doc — it swaps the
+    cell-local top and bottom stamps BEFORE rotation. Rotation then
+    maps each remaining cell-local stamp to a parent side via the
+    `_ROT_TOP_SIDE` / `_ROT_BOTTOM_SIDE` tables.
+
+    For non-axis-aligned rotations (anything not a multiple of 90°),
+    the helper conservatively returns all four sides — the caller's
+    tap-side spec will likely match one and the check fires loudly,
+    rather than silently passing.
+    """
+
+    contacts = _fet_gate_contacts(sref, primitives_dir)
+    if contacts is None:
+        return None
+    topc, botc = contacts
+
+    rot = getattr(sref, "rot", 0.0) or 0.0
+    reflect = getattr(sref, "reflect", False) or False
+
+    # Conservative path for non-axis-aligned rotations.
+    rot_norm = round(rot / 90.0) * 90.0 % 360.0
+    if abs((rot % 360.0) - rot_norm) > 1.0:
+        return {"top", "bottom", "left", "right"}
+
+    # Reflect (Y-flip) swaps cell-local top and bottom stamps
+    # BEFORE rotation.
+    if reflect:
+        topc, botc = botc, topc
+
+    rot_key = int(rot_norm)
+    sides: set[str] = set()
+    if topc:
+        sides.add(_ROT_TOP_SIDE[rot_key])
+    if botc:
+        sides.add(_ROT_BOTTOM_SIDE[rot_key])
+    return sides
 
 
 def _build_horizontal_band(
@@ -385,12 +446,13 @@ def place_taps_around(
             )
 
     # Hard Rule #20: refuse to place a tap on a side where any FET
-    # SRef has a gate-li1 stamp. The stamps and the tap strap occupy
-    # overlapping y-ranges on the same li1 plane (~60 nm overlap for
+    # SRef has a gate-li1 stamp (in PARENT-coord sides, accounting
+    # for SRef rot/reflect). The stamps and the tap strap occupy
+    # overlapping ranges on the same li1 plane (~60 nm overlap for
     # default `pfet_hv_W25..._core`) and merge into one polygon —
-    # silently shorting gate to body. DRC waivers around the primitive
-    # footprint hide the underlying li.3 violation; LVS only catches
-    # it when body != source.
+    # silently shorting gate to body. DRC waivers around the
+    # primitive footprint hide the underlying li.3 violation; LVS
+    # only catches it when body != source.
     if inside_srefs:
         if primitives_dir is None:
             from rekolektion.layout.placement import (
@@ -398,21 +460,32 @@ def place_taps_around(
             )
             primitives_dir = _default_primitives_dir()
         primitives_dir = Path(primitives_dir)
-        collisions: list[tuple[str, str, str]] = []
+        collisions: list[tuple[str, str, float, bool]] = []
         for sref in inside_srefs:
-            gate_state = _fet_gate_contacts(sref, primitives_dir)
-            if gate_state is None:
+            gate_sides = _fet_gate_parent_sides(sref, primitives_dir)
+            if gate_sides is None:
                 continue
-            topc, botc = gate_state
-            if "bottom" in sides and botc:
-                collisions.append((sref.cell, "bottom", "botc=False"))
-            if "top" in sides and topc:
-                collisions.append((sref.cell, "top", "topc=False"))
+            rot = getattr(sref, "rot", 0.0) or 0.0
+            reflect = getattr(sref, "reflect", False) or False
+            for side in sides:
+                if side in gate_sides:
+                    collisions.append((sref.cell, side, rot, reflect))
         if collisions:
+            def _fix_recipe(rot: float, reflect: bool, side: str) -> str:
+                if reflect or (rot and round(rot / 90.0) * 90 % 360 != 0):
+                    return (
+                        f"remove rot={rot:g}/reflect={reflect} OR mint a "
+                        f"variant whose gate stamp does NOT land on "
+                        f"parent '{side}' after the transform"
+                    )
+                # rot=0 + reflect=False: simple botc/topc=False fix.
+                return ("botc=False" if side == "bottom"
+                        else "topc=False" if side == "top"
+                        else f"variant with no '{side}'-side gate stamp")
             lines = "\n  ".join(
-                f"{name}: gate-li1 stamp on the {side} side → re-mint "
-                f"with {fix}"
-                for name, side, fix in collisions
+                f"{name}: gate-li1 stamp on parent '{side}' side "
+                f"(rot={rot:g}, reflect={reflect}) → {_fix_recipe(rot, reflect, side)}"
+                for name, side, rot, reflect in collisions
             )
             raise ValueError(
                 "place_taps_around would collide with FET gate-li1 "

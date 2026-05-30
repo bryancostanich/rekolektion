@@ -87,6 +87,7 @@ nfet_ys2 = max(s.origin[1] + n_info.bbox[3] for s in nfet_row)
 pwell_taps = place_taps_around(
     (nfet_xs1, nfet_ys1, nfet_xs2, nfet_ys2),
     'pwell', sides=('bottom',),
+    inside_srefs=list(nfet_row),     # Hard Rule #20 enforcement
 )
 
 pfet_xs1 = min(s.origin[0] + p_info.bbox[0] for s in pfet_row)
@@ -96,6 +97,7 @@ pfet_ys2 = max(s.origin[1] + p_info.bbox[3] for s in pfet_row)
 nwell_taps = place_taps_around(
     (pfet_xs1, pfet_ys1, pfet_xs2, pfet_ys2),
     'nwell', sides=('top',),
+    inside_srefs=list(pfet_row),     # Hard Rule #20 enforcement
 )
 
 cell_x1 = min(nfet_xs1, pfet_xs1) - 200

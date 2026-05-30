@@ -108,8 +108,10 @@ def union_bbox(srefs, infos):
 n_bbox = union_bbox(nfet_row, [lv_n_info, mv_n_info, mv_n_info])
 p_bbox = union_bbox(pfet_row, [lv_p_info, mv_p_info, mv_p_info])
 
-pwell_taps = place_taps_around(n_bbox, 'pwell', sides=('bottom',))
-nwell_taps = place_taps_around(p_bbox, 'nwell', sides=('top',))
+pwell_taps = place_taps_around(n_bbox, 'pwell', sides=('bottom',),
+                               inside_srefs=list(nfet_row))   # Rule #20
+nwell_taps = place_taps_around(p_bbox, 'nwell', sides=('top',),
+                               inside_srefs=list(pfet_row))   # Rule #20
 
 cell_x1 = min(n_bbox[0], p_bbox[0]) - 200
 cell_x2 = max(n_bbox[2], p_bbox[2]) + 200

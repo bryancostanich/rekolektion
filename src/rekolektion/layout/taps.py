@@ -25,6 +25,7 @@ stay centralized.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from rekolektion.io import rkt
@@ -106,6 +107,43 @@ class TapBandResult:
 
 def _um_to_dbu(value: float, dbu_nm: int = 1) -> int:
     return int(round(value * 1000 / dbu_nm))
+
+
+def _fet_gate_contacts(sref: rkt.SRef, primitives_dir: Path) -> tuple[bool, bool] | None:
+    """Infer the FET primitive's (topc, botc) from its cell name. Returns
+    None for non-FET cells (the check then has no opinion on them).
+
+    Encoding follows `_fet_cell_name` in `primitives/sky130/fet.py`:
+
+      - `<...>_topgate` (suffix) → topc=True, botc=False
+      - `<...>_botgate` (suffix) → topc=False, botc=True
+      - `<...>_core` (no further suffix) → topc=True, botc=True (default)
+
+    Non-FET primitives (resistors, caps, BJTs, …) return None — they
+    don't have gate stamps that could collide with a tap strap.
+    """
+
+    from rekolektion.layout.placement import inspect_primitive
+
+    try:
+        info = inspect_primitive(sref.cell, primitives_dir=primitives_dir)
+    except Exception:
+        # Primitive missing or unreadable — no opinion. The downstream
+        # build will fail loudly anyway when the SRef can't be resolved.
+        return None
+    if not (info.is_nmos or info.is_pmos):
+        return None
+    name = sref.cell
+    if name.endswith("_topgate"):
+        return (True, False)
+    if name.endswith("_botgate"):
+        return (False, True)
+    # `_core` (no further suffix) → default both-contact variant. Same
+    # for guard-ring variants (those have an internal tap so collision
+    # isn't possible — but the gate stamps still exist; conservative
+    # default returns both-present, the caller's tap location decides
+    # whether that's a real collision).
+    return (True, True)
 
 
 def _build_horizontal_band(
@@ -279,6 +317,8 @@ def place_taps_around(
     sides: tuple[Side, ...] = ("top", "bottom"),
     clearance_um: float = 0.3,
     dbu_nm: int = 1,
+    inside_srefs: list[rkt.SRef] | None = None,
+    primitives_dir: Path | None = None,
 ) -> TapBandResult:
     """Place DRC-clean tap bands around an active region.
 
@@ -300,6 +340,21 @@ def place_taps_around(
     `clearance_um`: gap between the inner bbox and the tap strip.
     Default 0.3 µm is conservative enough for the diff-to-tap
     spacing rule (DIFF_MIN_SPACING = 0.27 µm) plus a little slop.
+
+    `inside_srefs`: when provided, validates that no FET inside the
+    region has a gate-li1 stamp on a requested tap side. The
+    primitive's bottom (or top) gate li1 stamps and the tap strap
+    occupy overlapping y-ranges on the same plane (~60 nm overlap),
+    silently MERGING gate and body. DRC waivers around the primitive
+    footprint hide the underlying `li.3` violation; LVS only catches
+    it when body != source. Raises `ValueError` with the fix recipe
+    (re-mint with `_topgate` / `_botgate`). See Hard Rule #20 in
+    `docs/workflows/rkt_primitive_workflow.md`. Optional but
+    strongly recommended at every call site.
+
+    `primitives_dir`: directory holding primitive `.rkt` files for
+    `inside_srefs` validation. If omitted, walks up from cwd to find
+    `cell_designs/primitives/`.
 
     Returns a `TapBandResult` whose `.elements` is the flat element
     list (rects on tap / implant / licon1 / li1) ready to splat into
@@ -327,6 +382,46 @@ def place_taps_around(
         if s not in ("top", "bottom", "left", "right"):
             raise ValueError(
                 f"side must be one of top/bottom/left/right, got {s!r}"
+            )
+
+    # Hard Rule #20: refuse to place a tap on a side where any FET
+    # SRef has a gate-li1 stamp. The stamps and the tap strap occupy
+    # overlapping y-ranges on the same li1 plane (~60 nm overlap for
+    # default `pfet_hv_W25..._core`) and merge into one polygon —
+    # silently shorting gate to body. DRC waivers around the primitive
+    # footprint hide the underlying li.3 violation; LVS only catches
+    # it when body != source.
+    if inside_srefs:
+        if primitives_dir is None:
+            from rekolektion.layout.placement import (
+                _default_primitives_dir,
+            )
+            primitives_dir = _default_primitives_dir()
+        primitives_dir = Path(primitives_dir)
+        collisions: list[tuple[str, str, str]] = []
+        for sref in inside_srefs:
+            gate_state = _fet_gate_contacts(sref, primitives_dir)
+            if gate_state is None:
+                continue
+            topc, botc = gate_state
+            if "bottom" in sides and botc:
+                collisions.append((sref.cell, "bottom", "botc=False"))
+            if "top" in sides and topc:
+                collisions.append((sref.cell, "top", "topc=False"))
+        if collisions:
+            lines = "\n  ".join(
+                f"{name}: gate-li1 stamp on the {side} side → re-mint "
+                f"with {fix}"
+                for name, side, fix in collisions
+            )
+            raise ValueError(
+                "place_taps_around would collide with FET gate-li1 "
+                "stamps on the requested side(s). The collision merges "
+                "gate <-> body on li1 silently (DRC waives the boundary "
+                "li.3 violation; LVS only catches it when body != "
+                "source). See Hard Rule #20 in "
+                "docs/workflows/rkt_primitive_workflow.md.\n  "
+                + lines
             )
 
     rules = SKY130Rules()

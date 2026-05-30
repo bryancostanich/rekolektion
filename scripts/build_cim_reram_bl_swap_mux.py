@@ -80,6 +80,9 @@ taps = place_taps_around(
     (DIFF_X1, DIFF_Y1, DIFF_X2, DIFF_Y2),
     "nwell",
     sides=("bottom",),
+    inside_srefs=[pmos],     # enforces Hard Rule #20 — would refuse
+                             # to band south if the FET still carried
+                             # a bottom gate-li1 stamp (default variant).
 )
 
 # ─── vdd rail over the tap strap ───────────────────────────────────

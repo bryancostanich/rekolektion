@@ -2386,6 +2386,22 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     See the "_topgate/_botgate" boxed note in *Authoring a
     primitive* for the geometric detail.
 
+    **Enforced in tooling.** `place_taps_around` accepts an
+    `inside_srefs=[...]` kwarg; when provided, it inspects each
+    FET's gate-contact state (from the primitive's cell-name
+    suffix) and raises `ValueError` with the fix recipe if the
+    requested tap side would collide. Use it at every call site:
+
+    ```python
+    taps = place_taps_around(
+        active_bbox, "nwell", sides=("bottom",),
+        inside_srefs=[pmos_sref],   # Hard Rule #20
+    )
+    ```
+
+    The kwarg is optional for backward compatibility, but every
+    new call should include it.
+
 ---
 
 ## Quick smoke test

@@ -422,6 +422,159 @@ let checkWithToggles
                                     BboxA = gapBb
                                     BboxB = None }
                             | _ -> ()
+                // Same-component thin-step detection (notch / inward
+                // outline step). The classical per-pair loop above
+                // catches gaps between distinct components but
+                // misses the case where two rects merge into one
+                // component yet form an outline step shorter than
+                // `limit` (e.g. a strip + tub where the tub sits on
+                // top with a 22 nm Y overshoot — Magic flags the
+                // corner notch as a spacing violation; viz's
+                // per-pair gap check skips the same-component pair
+                // and reports nothing). See
+                // docs/plans/viz_drc_step_detection.md for the
+                // algorithm and edge-case analysis.
+                //
+                // For each pair (A, B) in the same component, check
+                // each of the four facing-edge directions:
+                //   top-top    — both yMax on outline, ΔY < limit
+                //   bottom-bot — both yMin on outline, ΔY < limit
+                //   left-left  — both xMin on outline, ΔX < limit
+                //   right-rgt  — both xMax on outline, ΔX < limit
+                // "edge on outline" means: there exists at least one
+                // column (or row) along that edge where no other
+                // rect in the same component covers above/below/
+                // beside it. Implemented by subtracting the covering
+                // rects' projections from the edge's full range —
+                // non-empty remainder means the edge contributes to
+                // the merged outline somewhere.
+                //
+                // Violation bbox: the strip between the two edge
+                // positions, spanning the orthogonal-axis overlap.
+                // Magic emits per-corner tiles; this emits the full
+                // overlap span — wider than Magic's but flags the
+                // same underlying violation.
+                let intervalSubtract (a, b) (covers: (int64 * int64) list) =
+                    // Subtract the union of `covers` from [a, b].
+                    // Returns the residual list of disjoint
+                    // sub-intervals. Sort, merge overlaps, then
+                    // sweep.
+                    let clip (lo, hi) =
+                        max lo a, min hi b
+                    let cs =
+                        covers
+                        |> List.map clip
+                        |> List.filter (fun (lo, hi) -> lo < hi)
+                        |> List.sortBy fst
+                    let mutable cursor = a
+                    let out = ResizeArray<int64 * int64>()
+                    for (lo, hi) in cs do
+                        if lo > cursor then out.Add(cursor, lo)
+                        if hi > cursor then cursor <- hi
+                    if cursor < b then out.Add(cursor, b)
+                    List.ofSeq out
+                let comp i = find i
+                // edge: which axis the edge lies along (X or Y) and
+                // which extremum (min/max). We project the covering
+                // rects onto the edge's own axis.
+                let topOnOutline (i: int) =
+                    let (_, (ax1, _, ax2, ay2), _) = polys.[i]
+                    let ci = comp i
+                    let covers =
+                        [ for k in 0 .. n - 1 do
+                            if k <> i && comp k = ci then
+                              let (_, (kx1, ky1, kx2, ky2), _) = polys.[k]
+                              if ky1 <= ay2 && ky2 > ay2 then
+                                yield (kx1, kx2) ]
+                    intervalSubtract (ax1, ax2) covers |> List.isEmpty |> not
+                let bottomOnOutline (i: int) =
+                    let (_, (ax1, ay1, ax2, _), _) = polys.[i]
+                    let ci = comp i
+                    let covers =
+                        [ for k in 0 .. n - 1 do
+                            if k <> i && comp k = ci then
+                              let (_, (kx1, ky1, kx2, ky2), _) = polys.[k]
+                              if ky2 >= ay1 && ky1 < ay1 then
+                                yield (kx1, kx2) ]
+                    intervalSubtract (ax1, ax2) covers |> List.isEmpty |> not
+                let leftOnOutline (i: int) =
+                    let (_, (ax1, ay1, _, ay2), _) = polys.[i]
+                    let ci = comp i
+                    let covers =
+                        [ for k in 0 .. n - 1 do
+                            if k <> i && comp k = ci then
+                              let (_, (kx1, ky1, kx2, ky2), _) = polys.[k]
+                              if kx2 >= ax1 && kx1 < ax1 then
+                                yield (ky1, ky2) ]
+                    intervalSubtract (ay1, ay2) covers |> List.isEmpty |> not
+                let rightOnOutline (i: int) =
+                    let (_, (_, ay1, ax2, ay2), _) = polys.[i]
+                    let ci = comp i
+                    let covers =
+                        [ for k in 0 .. n - 1 do
+                            if k <> i && comp k = ci then
+                              let (_, (kx1, ky1, kx2, ky2), _) = polys.[k]
+                              if kx1 <= ax2 && kx2 > ax2 then
+                                yield (ky1, ky2) ]
+                    intervalSubtract (ay1, ay2) covers |> List.isEmpty |> not
+                let emit measured bb =
+                    result.Add {
+                        Rule = name
+                        LayerNumber = layer.Number
+                        LayerType   = layer.DataType
+                        LimitDbu    = limit
+                        MeasuredDbu = measured
+                        BboxA = bb
+                        BboxB = None }
+                for i in 0 .. n - 1 do
+                    let (_, (ax1, ay1, ax2, ay2), _) = polys.[i]
+                    for j in i + 1 .. n - 1 do
+                        if comp i = comp j then
+                            let (_, (bx1, by1, bx2, by2), _) = polys.[j]
+                            // Top–top step: both face UP.
+                            let dY = abs (ay2 - by2)
+                            if dY > 0L && dY < limit then
+                                let xLo = max ax1 bx1
+                                let xHi = min ax2 bx2
+                                if xLo < xHi
+                                   && topOnOutline i
+                                   && topOnOutline j then
+                                    let yLo = min ay2 by2
+                                    let yHi = max ay2 by2
+                                    emit dY (xLo, yLo, xHi, yHi)
+                            // Bottom–bottom step: both face DOWN.
+                            let dYb = abs (ay1 - by1)
+                            if dYb > 0L && dYb < limit then
+                                let xLo = max ax1 bx1
+                                let xHi = min ax2 bx2
+                                if xLo < xHi
+                                   && bottomOnOutline i
+                                   && bottomOnOutline j then
+                                    let yLo = min ay1 by1
+                                    let yHi = max ay1 by1
+                                    emit dYb (xLo, yLo, xHi, yHi)
+                            // Left–left step: both face LEFT.
+                            let dXl = abs (ax1 - bx1)
+                            if dXl > 0L && dXl < limit then
+                                let yLo = max ay1 by1
+                                let yHi = min ay2 by2
+                                if yLo < yHi
+                                   && leftOnOutline i
+                                   && leftOnOutline j then
+                                    let xLo = min ax1 bx1
+                                    let xHi = max ax1 bx1
+                                    emit dXl (xLo, yLo, xHi, yHi)
+                            // Right–right step: both face RIGHT.
+                            let dXr = abs (ax2 - bx2)
+                            if dXr > 0L && dXr < limit then
+                                let yLo = max ay1 by1
+                                let yHi = min ay2 by2
+                                if yLo < yHi
+                                   && rightOnOutline i
+                                   && rightOnOutline j then
+                                    let xLo = min ax2 bx2
+                                    let xHi = max ax2 bx2
+                                    emit dXr (xLo, yLo, xHi, yHi)
         | Rules.CrossSpacing (name, layerA, layerB, minUm, condA, condB) ->
             // Same orthogonal-only rule as same-layer Spacing.
             // Overlap = same net at this layer pair (e.g. poly

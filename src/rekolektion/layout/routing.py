@@ -45,7 +45,14 @@ _VIA_STACK = [
     ("licon1", "diff",  "li1",  0.17, 0.06, 0.08),
     ("mcon",   "li1",   "met1", 0.17, 0.00, 0.06),
     ("via",    "met1",  "met2", 0.15, 0.085, 0.085),
-    ("via2",   "met2",  "met3", 0.20, 0.085, 0.095),
+    # via2 met2-encl bumped from 0.085 (at-threshold) to 0.10 — the
+    # 0.085 value is the SKY130 strict-axis minimum when met2 is at
+    # min-width, but it leaves zero margin and a couple of nm of poly
+    # snap can push the enclosure under the limit on stricter checkers
+    # (viz's encoded sky130.yaml flags this even when Magic doesn't).
+    # 0.10 gives a 400 nm pad around the 200 nm cut on both axes —
+    # 100 nm encl, comfortably above the strict-axis threshold.
+    ("via2",   "met2",  "met3", 0.20, 0.10, 0.10),
 ]
 
 

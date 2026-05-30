@@ -357,11 +357,11 @@ FA_X_NF = 27923   # nf.Y pin X (after nand_F origin)
 FA_X_LF = 27935   # lf.IN pin X
 # nf.Y end stack
 signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
-    x1=FA_X_NF-185, y1=-1355, x2=FA_X_NF+185, y2=-985))
+    x1=FA_X_NF-200, y1=-1370, x2=FA_X_NF+200, y2=-970))
 signal_routes.extend(place_via((FA_X_NF, -1170), "met2", "met3"))
 # lf.IN end stack
 signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
-    x1=FA_X_LF-185, y1=9010, x2=FA_X_LF+185, y2=9380))
+    x1=FA_X_LF-200, y1=8995, x2=FA_X_LF+200, y2=9395))
 signal_routes.extend(place_via((FA_X_LF, 9195), "met2", "met3"))
 # Met3 vertical bridge between via2 cuts
 signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
@@ -375,11 +375,11 @@ SR_Y_NS = -8681
 SR_Y_LS = 9250
 # ns.Y end stack
 signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
-    x1=SR_X_NS-185, y1=SR_Y_NS-185, x2=SR_X_NS+185, y2=SR_Y_NS+185))
+    x1=SR_X_NS-200, y1=SR_Y_NS-200, x2=SR_X_NS+200, y2=SR_Y_NS+200))
 signal_routes.extend(place_via((SR_X_NS, SR_Y_NS), "met2", "met3"))
 # ls.IN end stack
 signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met2"),
-    x1=SR_X_LS-185, y1=SR_Y_LS-185, x2=SR_X_LS+185, y2=SR_Y_LS+185))
+    x1=SR_X_LS-200, y1=SR_Y_LS-200, x2=SR_X_LS+200, y2=SR_Y_LS+200))
 signal_routes.extend(place_via((SR_X_LS, SR_Y_LS), "met2", "met3"))
 # Met3 L: horizontal at SR_Y_NS + vertical at SR_X_LS
 signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met3"),
@@ -473,7 +473,7 @@ signal_routes.append(rkt.Rect(layer=rkt.named("sky130", "met1"),
 # edge y=-5840) and nand_S (north edge y=-6161). All four metal
 # layers stacked at the same point: li1 → mcon → met1 → via1 →
 # met2 → via2 → met3.
-def m2_pad(x, y, half=185):
+def m2_pad(x, y, half=200):
     """Met2 pad for via2 lower enclosure (≥85 nm on a 200 nm cut)."""
     return rkt.Rect(layer=rkt.named("sky130", "met2"),
         x1=x-half, y1=y-half, x2=x+half, y2=y+half)

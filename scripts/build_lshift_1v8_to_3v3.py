@@ -358,6 +358,41 @@ gate_routes.extend(place_wire(
 ))
 gate_routes.extend(place_via(pu_outn_ext.center, "met1", "met2"))
 
+# ─── Implant bridges across LV/MV cell abutments ────────────────────
+# The LV NFET / PFET primitives (W=1, L=0.15) and MV primitives
+# (W=4 L=0.5 NFET, W=2 L=0.5 PFET) each carry their own nsdm/psdm
+# rect sized to enclose their own diff. At the LV→MV0 abutment
+# (x≈1090 LV-right to x≈1235 MV0-left, 145 nm apart) and at the
+# MV0→MV1 abutment (x≈2565 MV0-right to x≈2935 MV1-left, 370 nm
+# apart) the implant rects don't bridge.
+#
+# Magic's sky130B.tech doesn't enforce nsdm.2 / psdm.2 (380 nm
+# spacing) — but the published sky130 design rules do, and viz's
+# encoded ruleset flags both gaps. Paint small parent-paint nsdm
+# and psdm bridges that overlap the abutting primitives' implant
+# rects on each side, eliminating the cross-cell gap.
+implant_bridges = []
+
+# Bridge spans: 10 nm of overlap with each primitive's implant rect.
+# Coords from flattened-GDS measurement of the rebuilt lshift —
+# LV nsdm ends at x=1090, MV0 nsdm starts at x=1235, etc.
+
+# nsdm bridges (NFET row, y inside LV nsdm range -780..+470)
+# LV → MV0 NFET (145 nm gap, x=1090..1235)
+implant_bridges.append(rkt.Rect(layer=rkt.named("sky130", "nsdm"),
+    x1=1080, y1=-780, x2=1245, y2=470))
+# MV0 → MV1 NFET (370 nm gap, x=2565..2935)
+implant_bridges.append(rkt.Rect(layer=rkt.named("sky130", "nsdm"),
+    x1=2555, y1=-780, x2=2945, y2=470))
+
+# psdm bridges (PFET row, y inside LV psdm range 4806..7056)
+# LV → MV0 PFET (145 nm gap)
+implant_bridges.append(rkt.Rect(layer=rkt.named("sky130", "psdm"),
+    x1=1080, y1=4806, x2=1245, y2=7056))
+# MV0 → MV1 PFET (370 nm gap)
+implant_bridges.append(rkt.Rect(layer=rkt.named("sky130", "psdm"),
+    x1=2555, y1=4806, x2=2945, y2=7056))
+
 port_labels = [
     # Extra VDDA1/VSS port labels at the LEFT edge of the rails so
     # parent SRefs can tap either end of the rail. PortName so they
@@ -423,6 +458,7 @@ doc = rkt.Document(
                 *vdd_pin,
                 *power_routes,
                 *gate_routes,
+                *implant_bridges,
                 *port_labels,
             ],
         ),

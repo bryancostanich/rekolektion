@@ -400,6 +400,23 @@ let projectGeometry (s : DragState) (doc : Document) : Rectangle list =
                         // No clean touching — couldn't tell which
                         // end. Leave the neighbour as-is.
                         (idx, n))
+        // Cross-wire touching neighbours also "handle" their
+        // endpoint by being stretched alongside the drag — without
+        // marking the handled flag, projectGeometry used to fire a
+        // bridge at the same endpoint AND emit the stretched
+        // touching neighbour, producing duplicate geometry at the
+        // covered end (Bug #1 in segment-drag audit 2026-05-30).
+        for (_, n) in s.TouchingNeighbors do
+            match touchedEnd orig s.Axis n with
+            | Some LowEnd  -> lowHandled <- true
+            | Some HighEnd -> highHandled <- true
+            | None -> ()
+        // Anchor-aware bridge suppression. A bridge ONLY makes
+        // sense when the dragged endpoint had something
+        // anchoring it across the connection (pin / contact /
+        // via stack).  Firing a bridge into empty space paints
+        // a stub the user has to clean up — see Bug #2 in
+        // segment-drag audit 2026-05-30.
         // Bridges for the dragged endpoints that didn't get a
         // perpendicular stretch (true terminus, anchored to a pin).
         let bridges =

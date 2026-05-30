@@ -2354,17 +2354,24 @@ type GdsCanvasControl() as this =
         e.Pointer.Capture this
         this.Focus () |> ignore
 
-        // route_editing_plan.md v1.1 — segment drag. Left-click in
-        // EDIT-ROUTING MODE that lands on a wire-tagged rect picks
-        // up the segment for perpendicular drag.  Outside of edit-
-        // routing mode the default is "click = select" so the user
-        // can pick rails to inspect their net without accidentally
-        // grabbing a met1 segment.  Wire mode (W) is for drawing
-        // new wires; edit-routing mode (E) is for moving existing
-        // ones.
+        // route_editing_plan.md v1.1 — segment drag. Left-click that
+        // lands on a wire-tagged rect on a ROUTING LAYER picks up
+        // the segment for perpendicular drag (with stretch + bridge
+        // semantics in `Routing.SegmentDrag`).  The pickup runs
+        // independent of Edit Routing mode — dragging a wire is the
+        // natural way to move one; requiring a separate mode toggle
+        // (E) just to drag was confusing and broke the user's
+        // muscle memory.
+        //
+        // Wire mode (W) and an in-flight draft still take precedence
+        // (they're for DRAWING new wires, not moving existing ones).
+        // Click-without-drag still selects the wire via the zero-
+        // delta commit path in `Msg.SegmentDragCommit`, so the
+        // "click = inspect this rail" workflow is preserved — the
+        // segment-drag pickup is invisible until the user actually
+        // drags.
         let inIdleClick =
             props.IsLeftButtonPressed
-            && this.EditRoutingMode
             && not this.RoutingMode
             && (this.DraftRoute).IsNone
             && (this.SegmentDrag).IsNone
@@ -2684,9 +2691,45 @@ type GdsCanvasControl() as this =
                 // polygon-selection drag.
                 ()
             | None ->
+            // Routing-layer polygons in the TOP cell preempt the
+            // instance hit-test below.  Without this, a parent-paint
+            // wire (met1..met5, li1) sitting visually on top of an
+            // SRef's bbox can't be picked — every press lands on
+            // the underlying SRef and starts a cell drag instead.
+            // Limited to ROUTING layers so that non-routing parent
+            // paint (nwell, diff, implant, etc.) — which often spans
+            // huge areas inside cells — doesn't suck every click away
+            // from instance selection.
+            let routingPolyPick : (string * int) option =
+                match this.Library with
+                | Some lib ->
+                    let referenced =
+                        System.Collections.Generic.HashSet<string>()
+                    for c in lib.Cells do
+                        for el in c.Elements do
+                            match el with
+                            | SRefEl sr -> referenced.Add sr.Cell |> ignore
+                            | ARefEl ar -> referenced.Add ar.Cell |> ignore
+                            | _ -> ()
+                    let topOpt =
+                        lib.Cells
+                        |> List.tryFind (fun c -> not (referenced.Contains c.Name))
+                        |> Option.orElseWith (fun () ->
+                            lib.Cells |> List.tryHead)
+                    topOpt
+                    |> Option.bind (fun top ->
+                        let pt : Point =
+                            { X = int64 (System.Math.Round wx)
+                              Y = int64 (System.Math.Round wy) }
+                        let isRouting (layer: Layer) =
+                            Routing.ViaStack.isRoutingLayer
+                                (Rkt.ToGds.layerToGds layer)
+                        Layout.Picking.pickBoundaryFiltered pt isRouting top.Elements
+                        |> Option.map (fun (idx, _) -> top.Name, idx))
+                | None -> None
             let hit =
                 Instances.hitTest this.Instances (int64 (System.Math.Round wx)) (int64 (System.Math.Round wy))
-            if hit.Length > 0 then
+            if hit.Length > 0 && routingPolyPick.IsNone then
                 // Front-most under the cursor = the SMALLEST
                 // bbox containing the click. When a small cell
                 // (e.g. ReRAM stack) sits inside a larger cell's
@@ -2745,12 +2788,17 @@ type GdsCanvasControl() as this =
                 dragStartCentroidY <- cy
                 dragKind <- if next.IsEmpty then PanDrag else SelectionDrag
             else
-                // No instance hit → fall back to top-cell
-                // polygon pick. Direct met / licon / etc. paint
-                // in the top cell (not inside an SRef) is
-                // selectable here — sets `Selection` so the
-                // inspector shows the polygon's layer and net.
+                // No instance hit (or routing-layer preempt fired) →
+                // fall back to top-cell polygon pick. Routing-layer
+                // preempt result is reused verbatim; otherwise a
+                // fresh broad pick across ALL element types runs so
+                // non-routing parent paint (licon, areaid, etc.) is
+                // still selectable when nothing else covers the
+                // click.
                 let polyPick =
+                    match routingPolyPick with
+                    | Some pick -> Some pick
+                    | None ->
                     match this.Library with
                     | Some lib ->
                         let referenced =

@@ -300,3 +300,99 @@ let ``projectGeometry: L-shape wire stretches the one perpendicular neighbour an
     // plus halfW on each side.
     bxLo |> should equal 400L
     bxHi |> should equal 800L
+
+// --- bridge / touching-neighbour dedup (Bug #1 audit 2026-05-30) -------
+//
+// Before the fix, projectGeometry fired a low / high bridge for any
+// endpoint whose SAME-WireId perpendicular neighbours didn't cover
+// it — but CROSS-WireId TouchingNeighbors that stretched into the
+// same endpoint were ignored by the handled flags.  Result: a
+// stretched cross-wire neighbour AND an L-corner bridge both
+// emitted at the same end, painting duplicate geometry the user
+// has to clean up.
+
+[<Fact>]
+let ``projectGeometry: touching neighbour at low end suppresses low bridge`` () =
+    // Horizontal wire A from x=0 to 1000, y=0..100, half-width 50.
+    // Vertical wire B sits at A's LEFT end (x=0..100) so its
+    // bounds-overlap classifies as LowEnd.  Drag A down by dy=200
+    // → A' at y=[200,300].  B's low face (y=0) follows the drag,
+    // so stretched B = x=[0,100] y=[200,800].
+    //
+    // Without dedup: A' + low bridge x=[0,100] y=[0,300] +
+    // high bridge x=[900,1000] y=[0,300] + stretched B → 4 rects
+    // with low bridge OVERLAPPING stretched B at x=[0,100] y=[0,200].
+    // With dedup: 3 rects (no low bridge).
+    let a = mkRect (0L,   0L, 1000L, 100L) |> Wire.setWireId 1
+    let b = mkRect (0L,   0L, 100L,  800L) |> Wire.setWireId 2
+    let doc = mkDoc [ mkCell "top" [ a; b ] ]
+    let s =
+        SegmentDrag.start (Some 1) "top" 0 a 500L 50L false Set.empty doc
+        |> SegmentDrag.setCursor 500L 250L  // dy = 200
+    let geom = SegmentDrag.projectGeometry s doc
+    geom |> List.length |> should equal 3
+    // High bridge: xEndpoint = xHighCenter = 1000 - halfW(50) = 950.
+    // halfW = 50 → X1 = 900, X2 = 1000. Y spans original-to-new:
+    // Y1 = min(0, 200) = 0, Y2 = max(100, 300) = 300.
+    geom
+    |> List.exists (fun r ->
+        r.X1 = 900L && r.X2 = 1000L
+        && r.Y1 = 0L && r.Y2 = 300L)
+    |> should equal true
+    // Low bridge would have been at x=[0,100] y=[0,300] — must NOT
+    // appear (stretched B already covers x=[0,100] y=[200,800]).
+    let lowBridgeCandidates =
+        geom
+        |> List.filter (fun r ->
+            r.X1 = 0L && r.X2 = 100L
+            && r.Y1 = 0L && r.Y2 = 300L)
+    lowBridgeCandidates |> List.length |> should equal 0
+
+[<Fact>]
+let ``projectGeometry: touching neighbour at high end suppresses high bridge`` () =
+    // Mirror of the low-end case — B sits at A's RIGHT end.
+    let a = mkRect (0L,    0L, 1000L, 100L) |> Wire.setWireId 1
+    let b = mkRect (900L,  0L, 1000L, 800L) |> Wire.setWireId 2
+    let doc = mkDoc [ mkCell "top" [ a; b ] ]
+    let s =
+        SegmentDrag.start (Some 1) "top" 0 a 500L 50L false Set.empty doc
+        |> SegmentDrag.setCursor 500L 250L
+    let geom = SegmentDrag.projectGeometry s doc
+    geom |> List.length |> should equal 3
+    // Low bridge must exist at x=[0,100] y=[0,300].
+    geom
+    |> List.exists (fun r ->
+        r.X1 = 0L && r.X2 = 100L
+        && r.Y1 = 0L && r.Y2 = 300L)
+    |> should equal true
+
+[<Fact>]
+let ``projectGeometry: touching neighbours at both ends suppress both bridges`` () =
+    // Wire A with TWO cross-wire neighbours touching its low and
+    // high ends.  Both ends get stretched perpendicular coverage;
+    // no bridges needed.
+    let a = mkRect (0L,    0L, 1000L, 100L) |> Wire.setWireId 1
+    let b = mkRect (0L,    0L, 100L,  800L) |> Wire.setWireId 2  // low end
+    let c = mkRect (900L,  0L, 1000L, 800L) |> Wire.setWireId 3  // high end
+    let doc = mkDoc [ mkCell "top" [ a; b; c ] ]
+    let s =
+        SegmentDrag.start (Some 1) "top" 0 a 500L 50L false Set.empty doc
+        |> SegmentDrag.setCursor 500L 250L
+    let geom = SegmentDrag.projectGeometry s doc
+    // 1 dragged + 2 stretched = 3.  No bridges.
+    geom |> List.length |> should equal 3
+
+[<Fact>]
+let ``projectGeometry: middle touching neighbour does NOT suppress bridges`` () =
+    // B in the MIDDLE of A (not touching either end via bounds-
+    // overlap) is correctly classified by touchedEnd as None, so
+    // both bridges still fire.  Guards against an over-broad dedup.
+    let a = mkRect (0L,    0L, 1000L, 100L) |> Wire.setWireId 1
+    let b = mkRect (400L,  0L, 500L,  800L) |> Wire.setWireId 2  // middle
+    let doc = mkDoc [ mkCell "top" [ a; b ] ]
+    let s =
+        SegmentDrag.start (Some 1) "top" 0 a 500L 50L false Set.empty doc
+        |> SegmentDrag.setCursor 500L 250L
+    let geom = SegmentDrag.projectGeometry s doc
+    // 1 dragged + 2 bridges + 1 stretched B = 4.
+    geom |> List.length |> should equal 4

@@ -62,6 +62,16 @@ let private indexOf (layer : int * int) : int option =
 let isRoutingLayer (layer : int * int) : bool =
     (indexOf layer).IsSome
 
+/// True if `layer` is a contact / via cut layer that ANCHORS a wire
+/// to something below or above it: licon1 (66, 44), mcon (67, 44),
+/// or any of via..via4. Used by SegmentDrag to decide whether an
+/// endpoint truly anchors to a pin / via stack (so a bridge keeps
+/// the connection intact across the drag) or is a free terminus
+/// (no bridge needed — would just paint a stub into empty space).
+let isViaOrContactLayer (layer : int * int) : bool =
+    Array.contains layer viaBetween
+    || layer = (66, 44)   // licon1 — diff/poly ↔ li1
+
 /// Single step in a via stack: a metal layer plus the via that
 /// connects it UPWARD to the next metal. The last step's `Via`
 /// connects to the top metal, which is included as the next step's

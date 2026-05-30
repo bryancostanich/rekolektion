@@ -40,6 +40,74 @@ let pointInPolygon (p: Point) (poly: Point list) : bool =
                     inside <- not inside
         inside || onEdge
 
+/// Materialise a `Rectangle` element into a `Poly` so the picker can
+/// return a uniform shape regardless of source element kind. Shared
+/// between the all-element picker and the filtered picker.
+let private rectToPoly (r: Rectangle) : Poly =
+    let pts : Point list = [
+        { X = r.X1; Y = r.Y1 }
+        { X = r.X2; Y = r.Y1 }
+        { X = r.X2; Y = r.Y2 }
+        { X = r.X1; Y = r.Y2 }
+        { X = r.X1; Y = r.Y1 }
+    ]
+    { Layer = r.Layer
+      Points = pts
+      Net = r.Net
+      Props = r.Props
+      Comments = r.Comments
+      SubFormComments = Map.empty }
+
+let private rectBboxArea (r: Rectangle) : int64 =
+    let xMin, xMax = if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
+    let yMin, yMax = if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
+    (xMax - xMin) * (yMax - yMin)
+
+let private polyBboxArea (p: Poly) : int64 =
+    if p.Points.IsEmpty then System.Int64.MaxValue
+    else
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for q in p.Points do
+            if q.X < xMin then xMin <- q.X
+            if q.X > xMax then xMax <- q.X
+            if q.Y < yMin then yMin <- q.Y
+            if q.Y > yMax then yMax <- q.Y
+        (xMax - xMin) * (yMax - yMin)
+
+/// Pick the smallest-bbox-area element whose layer passes
+/// `layerFilter` AND whose footprint contains `point`. Used by the
+/// canvas to preempt instance hit-test when a parent-paint wire
+/// (routing layers li1, met1..met5) sits visually on top of an
+/// SRef bbox — without this preempt the SRef's bbox always wins
+/// the press and the user can't pick / drag the wire.
+///
+/// Pass `layerFilter = fun _ -> true` for an unrestricted pick.
+let pickBoundaryFiltered
+        (point: Point)
+        (layerFilter: Layer -> bool)
+        (elements: Element list)
+        : (int * Poly) option =
+    elements
+    |> List.indexed
+    |> List.choose (fun (i, e) ->
+        match e with
+        | PolyEl p when layerFilter p.Layer && pointInPolygon point p.Points ->
+            Some (i, p, polyBboxArea p)
+        | RectEl r when
+            layerFilter r.Layer
+            && point.X >= min r.X1 r.X2 && point.X <= max r.X1 r.X2
+            && point.Y >= min r.Y1 r.Y2 && point.Y <= max r.Y1 r.Y2 ->
+            Some (i, rectToPoly r, rectBboxArea r)
+        | _ -> None)
+    |> function
+        | [] -> None
+        | hits ->
+            let (i, p, _) = hits |> List.minBy (fun (_, _, a) -> a)
+            Some (i, p)
+
 /// Pick the first matching polygon in a cell's element list. Returns
 /// the element index alongside so the caller can relate it to a
 /// Sidecar PolygonRef. `RectEl` (4-coord rectangles) also picks —

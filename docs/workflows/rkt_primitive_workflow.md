@@ -1504,6 +1504,82 @@ labels:
 | Reusing a FET pin as a named net | Paint a `NetName` label at the pin location (won't collide with the primitive's `DeviceTerminal` label — different kind, same string is fine) |
 | Reusing a sub-block port as a named net | Same — paint a `NetName` label at the SRef's port location; it overrides the sub-block's `PortName` for parent-level net visibility |
 
+### Parent NetName labels at SRef port coords — do this during placement, not after
+
+When you SRef a sub-block (`d11_pmos_pair` inside `d11_ota_v4`, etc.),
+the sub-block's `PortName` labels (vinn, vinp, vbp_tail, s1_outn,
+s1_outp, …) are correctly **hidden** from the parent's net view —
+viz skips them as ratlines, LVS skips them as ports. That's the point
+of `PortName`.
+
+But during placement-phase layout work — before any parent-painted
+routing exists — that hiding means the parent has **no net view at
+all** beyond whatever leaks through (VDD/VSS from `place_rail`'s
+NetName rail labels; `internal=True` labels which still surface in
+viz). You can't see which port is `vinn` vs `vinp` vs `vbp_tail`
+without zooming into the sub-cell. Routing planning becomes guesswork.
+
+**Fix: paint a parent-level `NetName` label at every sub-block port
+coord, translated by the SRef origin, as part of the placement
+step.** The label sits on the sub-cell's port polygon (li1, met2,
+etc.) through the SRef boundary; Magic's hierarchical extraction
+binds the parent label to the sub-cell's port at the right layer.
+Same-text labels across multiple SRefs surface as ratlines in viz
+— exactly what's needed to plan pass-2 routing topology (which
+cluster has the densest pin-set per HR15, which drops collide per
+HR14, etc.).
+
+**The labels are not "labels in empty space."** A NetName label at
+a sub-block port coord lands on the sub-block's port polygon (which
+is on the relevant layer at that coord); Magic's port-promotion
+through the SRef boundary attaches the parent label to that
+polygon. When pass-2 routing paints a wire to the port, the wire
+merges into the same polygon and the existing label still names
+the resulting net.
+
+**How to apply.** When emitting the parent .rkt, read each
+sub-cell's PortName labels (via `rkt.read_file` + filter by
+`kind == LabelKind.PORT_NAME`), translate each by the SRef
+origin, and add a NetName label at the translated coord on the
+same layer. Same text, kind defaults to NetName at the parent.
+
+```python
+def port_labels_of(rkt_path):
+    """[(layer, text, origin)] for kind=PortName labels in the cell's
+    top-cell elements."""
+    doc = rkt.read_file(Path(rkt_path))
+    top = next(c for c in doc.cells if c.name == doc.top_cell)
+    return [
+        (el.layer, el.text, el.origin)
+        for el in top.elements
+        if isinstance(el, rkt.Label) and el.kind == rkt.LabelKind.PORT_NAME
+    ]
+
+parent_port_labels = []
+for sref, sub_rkt_path in sub_cells:
+    for layer, text, origin in port_labels_of(sub_rkt_path):
+        parent_port_labels.append(rkt.Label(
+            layer=layer, text=text,
+            origin=(sref.origin[0] + origin[0],
+                    sref.origin[1] + origin[1]),
+        ))
+# … drop parent_port_labels into the parent cell's elements list.
+```
+
+**Same-text duplicates are intentional.** Multiple sub-cells with a
+port labeled `s1_outp` produce multiple NetName labels at the
+parent, each at the relevant sub-cell's port. Viz uses the same-text
+match to draw ratlines connecting them — that's the layout-time net
+view. At LVS extraction, the labels become per-polygon port names
+on what (pre-route) are still electrically distinct polygons; the
+ratlines say "you need to connect these." Pass-2 routing paints the
+wires that actually merge them.
+
+**Do this BEFORE the placement-review gate** (HR12), not after.
+Without these labels, the user can't actually review the placement
+— they see a bag of FETs with no net structure. Placement-review
+without the parent labels is unfair to the reviewer.
+
 ### How to label power rails
 
 The minimum for a block with VDD and VSS supply rails:

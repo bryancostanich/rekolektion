@@ -42,8 +42,16 @@ from rekolektion.primitives.sky130._gds_to_rkt import read_gds
 # flood-fill don't see them as fake nets. v3 (2026-05-18) adds
 # `_fix_met1_min_area` — grows gate-contact met1 pads that the PDK
 # mos_draw proc emits under met1.6 min-area (0.083 µm²), notably
-# on short-L 1.8 V devices.
-_FET_GENERATOR_VERSION = 3
+# on short-L 1.8 V devices. v4 (2026-05-29) adds an `nwell_label`
+# "B" inside every PMOS primitive — without it, Magic's hierarchical
+# port-promotion auto-names the unlabeled nwell node and chains
+# parent labels through to it, mis-merging gate↔body in any cell
+# whose parent labels for body and other nets differ (e.g. T06 Phase
+# B1 cim_reram_bl_swap_mux where body=vdd ≠ source=v_sl_dac_bus).
+# Labeling the primitive nwell as "B" exposes it as a named subckt
+# port; the parent then binds it explicitly by position, no
+# auto-promotion needed.
+_FET_GENERATOR_VERSION = 4
 
 # met1.6 min area in nm² (0.083 µm²). Bumped to 90000 for safety margin
 # — Magic's met1.6 evaluator flagged 83230 (290 × 287) as a violation
@@ -111,6 +119,35 @@ def _fix_met1_min_area(cell: rkt.Cell) -> None:
                 return
             r.y1 -= grow_below
             r.y2 += grow_above
+
+
+def _add_pfet_bulk_label(cell: rkt.Cell) -> None:
+    """Add a `(label sky130:nwell_label "B")` at (0, 0) for PMOS
+    primitives. Magic reads this as the nwell node's name, exposing
+    it as a named port at the primitive subckt level (`.subckt …
+    D G S B`). Without the label the nwell node is autonamed
+    (`w_<digits>_<digits>#`) and Magic's hierarchical port-promotion
+    aliases it against whichever parent label happens to sit over
+    the nwell — chaining gate↔body in any cell whose body and gate
+    parent-labels are distinct.
+
+    No-op if the cell already has a `nwell_label` (rare: hand-edited
+    primitive). Kind is `DEVICE_TERMINAL` to match D/G/S — that hides
+    the label from the viz Nets panel (it's a FET port, not a net).
+    """
+
+    nwell_label_layer = rkt.named("sky130", "nwell_label")
+    for el in cell.elements:
+        if isinstance(el, rkt.Label) and el.layer == nwell_label_layer:
+            return
+    cell.elements.append(
+        rkt.Label(
+            layer=nwell_label_layer,
+            text="B",
+            origin=(0, 0),
+            kind=rkt.LabelKind.DEVICE_TERMINAL,
+        )
+    )
 
 
 def _tag_fet_port_labels(cell: rkt.Cell) -> None:
@@ -383,6 +420,14 @@ def _build_fet(
                 # 1.8 V devices). Runs before label tagging since it
                 # only touches Rects.
                 _fix_met1_min_area(cell)
+                # PMOS: tag the nwell with a primitive-level "B"
+                # label so Magic exposes it as a named subckt port
+                # (D/G/S/B) instead of autonaming it `w_<digits>#`
+                # and letting `port makeall` chain parent labels
+                # through it. NMOS bodies are global psub (VSUBS)
+                # — Magic handles that without a label.
+                if prefix.startswith("pfet"):
+                    _add_pfet_bulk_label(cell)
                 # Tag every li1_label-layered label inside this cell
                 # as DeviceTerminal. mos_draw's `doports 1` emits
                 # them; they're FET port annotations, not nets. Runs

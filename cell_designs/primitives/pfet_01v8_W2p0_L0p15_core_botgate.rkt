@@ -8,7 +8,7 @@
       (params (w 2.0) (l 0.15) (nf 1) (m 1) (guard false) (topc false) (botc true))
       (source "magic-cif sky130B")
       (generated "2026-05-29")
-      (digest "sha256:434db705337d29f26ead6733b1537a6c9fe5e3eb0e610434bb9f8400c2b151eb"))
+      (digest "sha256:4bc80947179fd9dcd8a3dcecf71ac2a4b05901b2b26e8eb6883c5f3402ee7029"))
     (rect (layer sky130:nwell) -545 -1320 545 1490)
     (rect (layer sky130:diff) -365 -820 365 1180)
     (rect (layer sky130:psdm) -490 -945 490 1305)

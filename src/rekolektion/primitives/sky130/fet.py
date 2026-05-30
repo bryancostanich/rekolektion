@@ -51,7 +51,7 @@ from rekolektion.primitives.sky130._gds_to_rkt import read_gds
 # Labeling the primitive nwell as "B" exposes it as a named subckt
 # port; the parent then binds it explicitly by position, no
 # auto-promotion needed.
-_FET_GENERATOR_VERSION = 4
+_FET_GENERATOR_VERSION = 9
 
 # met1.6 min area in nm² (0.083 µm²). Bumped to 90000 for safety margin
 # — Magic's met1.6 evaluator flagged 83230 (290 × 287) as a violation
@@ -175,6 +175,149 @@ def _tag_fet_port_labels(cell: rkt.Cell) -> None:
         if el.layer != li1_label_layer:
             continue
         el.kind = rkt.LabelKind.DEVICE_TERMINAL
+
+
+def _add_m_stacked_ties(cell: rkt.Cell, m: int, is_pmos: bool) -> None:
+    """For m>1 (multiplicity) primitives, bridge the m stacked devices'
+    D/S met1 columns + nwell/implant overlays so Magic extracts ONE
+    device with m paralleled, not m separate FETs.
+
+    The PDK draws m as stacked devices each with its own li1/met1/
+    nwell/psdm/(hvi) per finger — no internal ties between them.
+    Without bridging, Magic at the parent sees the primitive subckt
+    expose m × {D, S, G, B} ports (D0/D1/.../Dm-1, etc.) and the
+    parent can't tie them together because Magic's hierarchical
+    port-promotion doesn't merge parent-painted met1 with primitive-
+    SRef'd met1 across the SRef boundary (rekolektion CLAUDE.md trap).
+    The fix is to paint the bridges INSIDE the primitive cell so the
+    merge happens at primitive-extract time, before the SRef boundary
+    matters.
+
+    Painted bridges:
+      - met1 vertical strip in each S/D column (overlaps all m stubs)
+      - nwell overlay spanning all m fingers (PMOS only)
+      - psdm / nsdm overlay spanning all m fingers
+      - hvi overlay spanning all m fingers (HV variants)
+    """
+
+    if m < 2:
+        return
+
+    met1_layer = rkt.named("sky130", "met1")
+    vertical_strips: list[rkt.Rect] = []
+    for el in cell.elements:
+        if not isinstance(el, rkt.Rect):
+            continue
+        if el.layer != met1_layer:
+            continue
+        w = el.x2 - el.x1
+        h = el.y2 - el.y1
+        if h > 4 * w:
+            vertical_strips.append(el)
+
+    # Group by x-center → one column per S/D position (2 columns for
+    # nf=1; more for higher nf).
+    from collections import defaultdict
+    columns: dict[int, list[rkt.Rect]] = defaultdict(list)
+    for r in vertical_strips:
+        xc = (r.x1 + r.x2) // 2
+        columns[xc].append(r)
+
+    # In each column, bridge the m per-finger met1 stubs via a
+    # vertical met1 wire OFFSET OUTWARD from the column center.
+    # The PDK places gate met1 stubs (x=±480) at the inter-finger
+    # gaps — a centered bridge would sit 50 nm from those stubs in
+    # the gap y range and trip met1.2 (140 nm). Offsetting outward
+    # by 95 nm keeps the bridge 190 nm clear of the gate stubs
+    # while still overlapping each per-finger D/S stub by 90 nm so
+    # they merge into one polygon.
+    OUTER_OFFSET_NM = 95     # offset from column center, outward
+    BRIDGE_HALF = 70         # 140 nm wire (met1.1 min)
+    new_rects: list[rkt.Element] = []
+    for rects in columns.values():
+        if len(rects) < 2:
+            continue
+        xc = (rects[0].x1 + rects[0].x2) // 2
+        wire_center = xc - OUTER_OFFSET_NM if xc < 0 else xc + OUTER_OFFSET_NM
+        y_min = min(r.y1 for r in rects)
+        y_max = max(r.y2 for r in rects)
+        new_rects.append(rkt.Rect(layer=met1_layer,
+            x1=wire_center - BRIDGE_HALF, y1=y_min,
+            x2=wire_center + BRIDGE_HALF, y2=y_max))
+
+    # Bridge gate li1 stubs vertically. The PDK paints horizontal
+    # li1 gate stubs at each finger's gate-licon position. Without a
+    # bridge, the 4 gate polys are electrically separate (Magic
+    # extracts them as 4 nodes that ext2spice happens to name "G"
+    # via label consolidation — same name doesn't mean same net in
+    # silicon). A vertical li1 strap at the cell center spans all m
+    # stub y positions, merging them on li1 into one continuous gate
+    # net.
+    li1_layer = rkt.named("sky130", "li1")
+    gate_stubs: list[rkt.Rect] = []
+    for el in cell.elements:
+        if not isinstance(el, rkt.Rect):
+            continue
+        if el.layer != li1_layer:
+            continue
+        w = el.x2 - el.x1
+        h = el.y2 - el.y1
+        # Gate stubs are wider than tall (typical PDK ratio ~6:1).
+        if w > 3 * h:
+            gate_stubs.append(el)
+    if len(gate_stubs) >= 2:
+        # Gate stubs are typically ~1000 nm wide and sit between the
+        # S/D columns with only ~60 nm of clearance to them. A bridge
+        # at the full stub width would violate li.3 (170 nm min). Use
+        # a NARROW vertical strap centered at the stub center x —
+        # 170 nm wide (li1 min width) keeps ample clearance to the
+        # S/D columns AND still overlaps the wider existing stubs at
+        # each finger so the merge happens on li1.
+        gx_centers = [(r.x1 + r.x2) // 2 for r in gate_stubs]
+        gx_center = sum(gx_centers) // len(gx_centers)
+        LI1_MIN_HALF = 85   # 170 nm total width
+        gy_min = min(r.y1 for r in gate_stubs)
+        gy_max = max(r.y2 for r in gate_stubs)
+        new_rects.append(rkt.Rect(layer=li1_layer,
+            x1=gx_center - LI1_MIN_HALF, y1=gy_min,
+            x2=gx_center + LI1_MIN_HALF, y2=gy_max))
+
+    # Bridge device implant / well layers. Each layer with >1 rect
+    # gets a union-bbox overlay so the m per-finger copies merge.
+    BRIDGE_LAYERS = ["nwell", "psdm", "nsdm", "hvi"]
+    for layer_name in BRIDGE_LAYERS:
+        layer = rkt.named("sky130", layer_name)
+        rects = [el for el in cell.elements
+                 if isinstance(el, rkt.Rect) and el.layer == layer]
+        if len(rects) < 2:
+            continue
+        x_min = min(r.x1 for r in rects)
+        y_min = min(r.y1 for r in rects)
+        x_max = max(r.x2 for r in rects)
+        y_max = max(r.y2 for r in rects)
+        new_rects.append(rkt.Rect(layer=layer,
+            x1=x_min, y1=y_min, x2=x_max, y2=y_max))
+
+    cell.elements.extend(new_rects)
+
+    # Consolidate D0/D1/.../S0/.../G0/.../B0/... labels down to D/S/G/B
+    # so the cell exposes the conventional 4-pin interface at LVS time.
+    li1_label_layer = rkt.named("sky130", "li1_label")
+    new_labels: list[rkt.Element] = []
+    for el in cell.elements:
+        if not isinstance(el, rkt.Label):
+            new_labels.append(el)
+            continue
+        if el.layer != li1_label_layer:
+            new_labels.append(el)
+            continue
+        if el.text and el.text[0] in ("D", "S", "G") and el.text[1:].isdigit():
+            new_labels.append(rkt.Label(
+                layer=el.layer, text=el.text[0], origin=el.origin,
+            ))
+        else:
+            new_labels.append(el)
+    cell.elements = new_labels
 
 
 def _add_multifinger_sd_ties(cell: rkt.Cell, nf: int) -> None:
@@ -415,6 +558,8 @@ def _build_fet(
                 # of one. Inject D and S met2 straps to fix that.
                 if nf > 1:
                     _add_multifinger_sd_ties(cell, nf)
+                if m > 1:
+                    _add_m_stacked_ties(cell, m, is_pmos=prefix.startswith("pfet"))
                 # Grow any met1 pad that violates met1.6 min-area
                 # (PDK mos_draw emits under-area gate pads on short-L
                 # 1.8 V devices). Runs before label tagging since it

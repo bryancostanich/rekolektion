@@ -917,6 +917,300 @@ let translateSelectionsWithLabels
         |> fun d -> translateSelectionWithLabels d instSelection dxDbu dyDbu
         |> fun d -> translatePolygonsWithLabels d polySelection dxDbu dyDbu
 
+// -- Rotate / mirror SRefs with label-following --------------------
+//
+// Mirrors `translateSelectionWithLabels` for the rigid-transform
+// case (rotate / mirror around `pivot`). Without these, rotating
+// an SRef leaves any parent-cell label anchored to one of its
+// flat polys stranded at the pre-rotation world coords. Ratlines
+// (recomputed every paint) then anchor to the stale label
+// position — the visible "ratlines don't follow rotation" bug.
+//
+// Anchor rule matches `Net.Ratlines.anchorForLabel` exactly: the
+// smallest same-layer-number bbox-containing flat polygon. We
+// enumerate ALL anchor candidates (top-cell direct paint + every
+// instance's flat polys), not just the moved ones, so the
+// smallest-area tiebreak picks the right anchor — a label sitting
+// on a tiny moved poly inside a wider non-moved bbox should
+// anchor to (and travel with) the tiny one.
+
+/// Convert a rigid 2×2 R + pivot into a point transform
+/// `(x, y) → (rx, ry)` snapped to int64.  Same formula as the SRef
+/// origin path in `transformSelection` (line 567-574), lifted so
+/// labels and individual polygon vertices can reuse it.
+let private pointXformOf
+        ((ra, rb, rc, rd): float * float * float * float)
+        ((px, py): int64 * int64)
+        : int64 -> int64 -> int64 * int64 =
+    fun x y ->
+        let dx = float (x - px)
+        let dy = float (y - py)
+        let nx = ra * dx + rb * dy + float px
+        let ny = rc * dx + rd * dy + float py
+        int64 (System.Math.Round nx), int64 (System.Math.Round ny)
+
+let private transformSelectionWithLabels
+        (doc: Document)
+        (selectionByIndex: Set<int>)
+        (R: float * float * float * float)
+        (pivot: int64 * int64)
+        : Document =
+    if selectionByIndex.IsEmpty then doc
+    else
+        match findTop doc with
+        | None -> doc
+        | Some top ->
+            // Same candidate-set construction as
+            // translateSelectionWithLabels.
+            let polyBboxFor (poly: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon)
+                    : (int * int64 * int64 * int64 * int64) option =
+                if poly.Points.Length = 0 then None
+                else
+                    let mutable xMin = System.Int64.MaxValue
+                    let mutable yMin = System.Int64.MaxValue
+                    let mutable xMax = System.Int64.MinValue
+                    let mutable yMax = System.Int64.MinValue
+                    for pt in poly.Points do
+                        if pt.X < xMin then xMin <- pt.X
+                        if pt.X > xMax then xMax <- pt.X
+                        if pt.Y < yMin then yMin <- pt.Y
+                        if pt.Y > yMax then yMax <- pt.Y
+                    Some (poly.Layer, xMin, yMin, xMax, yMax)
+            let candidates =
+                ResizeArray<int option * int * int64 * int64 * int64 * int64>()
+            for el in Rekolektion.Viz.Core.Layout.Flatten.flattenTopCellDirect doc do
+                match polyBboxFor el with
+                | Some (ln, xMin, yMin, xMax, yMax) ->
+                    candidates.Add (None, ln, xMin, yMin, xMax, yMax)
+                | None -> ()
+            for inst in enumerate doc do
+                let polys =
+                    Rekolektion.Viz.Core.Layout.Flatten.flattenInstance doc inst.Index
+                for poly in polys do
+                    match polyBboxFor poly with
+                    | Some (ln, xMin, yMin, xMax, yMax) ->
+                        candidates.Add (Some inst.Index, ln, xMin, yMin, xMax, yMax)
+                    | None -> ()
+            let labelsToTransform = System.Collections.Generic.HashSet<int>()
+            top.Elements
+            |> List.iteri (fun i el ->
+                match el with
+                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                    let labelLn = layerNumberOf l.Layer
+                    let mutable best : int option voption = ValueNone
+                    let mutable bestArea = System.Int64.MaxValue
+                    for (tag, ln, xMin, yMin, xMax, yMax) in candidates do
+                        if ln = labelLn
+                           && l.Origin.X >= xMin && l.Origin.X <= xMax
+                           && l.Origin.Y >= yMin && l.Origin.Y <= yMax then
+                            let area = (xMax - xMin) * (yMax - yMin)
+                            if area < bestArea then
+                                bestArea <- area
+                                best <- ValueSome tag
+                    match best with
+                    | ValueSome (Some k) when selectionByIndex.Contains k ->
+                        labelsToTransform.Add i |> ignore
+                    | _ -> ()
+                | _ -> ())
+            // SRefs in selection get the existing rigid-R transform;
+            // marked labels get the same point transform around pivot.
+            let (ra, rb, rc, rd) = R
+            let (px, py) = pivot
+            let labelXform = pointXformOf R pivot
+            let elems' =
+                top.Elements
+                |> List.mapi (fun idx el ->
+                    if selectionByIndex.Contains idx then
+                        match el with
+                        | SRefEl sr ->
+                            let oldLin = linearOfSref sr
+                            let newLin = mul2x2 R oldLin
+                            let ox = sr.Origin.X
+                            let oy = sr.Origin.Y
+                            let dx = float (ox - px)
+                            let dy = float (oy - py)
+                            let nx = ra * dx + rb * dy + float px
+                            let ny = rc * dx + rd * dy + float py
+                            let newOX = int64 (System.Math.Round nx)
+                            let newOY = int64 (System.Math.Round ny)
+                            SRefEl (srefWith sr newLin newOX newOY)
+                        | other -> other
+                    elif labelsToTransform.Contains idx then
+                        match el with
+                        | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                            let nx, ny = labelXform l.Origin.X l.Origin.Y
+                            Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                { l with
+                                    Origin =
+                                        ({ X = nx; Y = ny }
+                                         : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                        | other -> other
+                    else el)
+            withTopElements doc top elems'
+
+/// Rotate every SRef in `selectionByIndex` 90° CCW around `pivot`,
+/// AND any top-cell label anchored (per `Net.Ratlines.anchorForLabel`
+/// rule) to a flat polygon inside one of the moved SRefs.
+let rotate90SelectionWithLabels
+        (doc: Document)
+        (selectionByIndex: Set<int>)
+        (pivot: int64 * int64)
+        : Document =
+    transformSelectionWithLabels doc selectionByIndex R_rot90 pivot
+
+/// Mirror every SRef in `selectionByIndex` about the X axis through
+/// `pivot` (flips Y), AND any anchored top-cell label.
+let mirrorXSelectionWithLabels
+        (doc: Document)
+        (selectionByIndex: Set<int>)
+        (pivot: int64 * int64)
+        : Document =
+    transformSelectionWithLabels doc selectionByIndex R_mirrorX pivot
+
+/// Mirror every SRef in `selectionByIndex` about the Y axis through
+/// `pivot` (flips X), AND any anchored top-cell label.
+let mirrorYSelectionWithLabels
+        (doc: Document)
+        (selectionByIndex: Set<int>)
+        (pivot: int64 * int64)
+        : Document =
+    transformSelectionWithLabels doc selectionByIndex R_mirrorY pivot
+
+// -- Rotate / mirror polygons with label-following -----------------
+//
+// Mirrors `translatePolygonsWithLabels` for the rigid-transform
+// case. Walks the same `anchorMapForCell` so a label whose anchor
+// is in `polySelection` rotates / mirrors with it. Operates per-cell
+// because labels and their anchors live in the same Cell.Elements
+// list; the candidate-list logic from the SRef path doesn't apply.
+
+let private transformPolygonsWithLabelsCore
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (R: float * float * float * float)
+        (pivot: int64 * int64)
+        : Document =
+    if polySelection.IsEmpty then doc
+    else
+        let perCell =
+            polySelection
+            |> Set.toList
+            |> List.groupBy fst
+            |> List.map (fun (s, items) -> s, items |> List.map snd |> Set.ofList)
+            |> Map.ofList
+        let pointXform = pointXformOf R pivot
+        let xformPts (pts: Rekolektion.Viz.Core.Rkt.Types.Point list) =
+            pts
+            |> List.map (fun (p: Rekolektion.Viz.Core.Rkt.Types.Point) ->
+                let nx, ny = pointXform p.X p.Y
+                ({ X = nx; Y = ny } : Rekolektion.Viz.Core.Rkt.Types.Point))
+        let updatedCells =
+            doc.Cells
+            |> List.map (fun c ->
+                match Map.tryFind c.Name perCell with
+                | None -> c
+                | Some indices ->
+                    let anchorMap = anchorMapForCell c
+                    let elems' =
+                        c.Elements
+                        |> List.mapi (fun i el ->
+                            if indices.Contains i then
+                                match el with
+                                | Rekolektion.Viz.Core.Rkt.Types.PolyEl p ->
+                                    Rekolektion.Viz.Core.Rkt.Types.PolyEl
+                                        { p with Points = xformPts p.Points }
+                                | Rekolektion.Viz.Core.Rkt.Types.PathEl p ->
+                                    Rekolektion.Viz.Core.Rkt.Types.PathEl
+                                        { p with Points = xformPts p.Points }
+                                | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+                                    let nx1, ny1 = pointXform r.X1 r.Y1
+                                    let nx2, ny2 = pointXform r.X2 r.Y2
+                                    let xMin, xMax =
+                                        if nx1 <= nx2 then nx1, nx2 else nx2, nx1
+                                    let yMin, yMax =
+                                        if ny1 <= ny2 then ny1, ny2 else ny2, ny1
+                                    Rekolektion.Viz.Core.Rkt.Types.RectEl
+                                        { r with
+                                            X1 = xMin; Y1 = yMin
+                                            X2 = xMax; Y2 = yMax }
+                                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                                    // Gap-2 fix: explicit label
+                                    // selection now transforms.
+                                    let nx, ny = pointXform l.Origin.X l.Origin.Y
+                                    Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                        { l with
+                                            Origin =
+                                                ({ X = nx; Y = ny }
+                                                 : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                                | other -> other
+                            else
+                                match el, Map.tryFind i anchorMap with
+                                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l, Some anchorIdx
+                                        when indices.Contains anchorIdx ->
+                                    let nx, ny = pointXform l.Origin.X l.Origin.Y
+                                    Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                        { l with
+                                            Origin =
+                                                ({ X = nx; Y = ny }
+                                                 : Rekolektion.Viz.Core.Rkt.Types.Point) }
+                                | _ -> el)
+                    { c with Elements = elems' })
+        { doc with Cells = updatedCells }
+
+let rotate90PolygonsWithLabels
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    transformPolygonsWithLabelsCore doc polySelection R_rot90 pivot
+
+let mirrorXPolygonsWithLabels
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    transformPolygonsWithLabelsCore doc polySelection R_mirrorX pivot
+
+let mirrorYPolygonsWithLabels
+        (doc: Document)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    transformPolygonsWithLabelsCore doc polySelection R_mirrorY pivot
+
+/// Combined rotate (or mirror) of mixed SRef + polygon selection
+/// with label-following on BOTH sides. Mirrors
+/// `translateSelectionsWithLabels`.
+let rotate90SelectionsWithLabels
+        (doc: Document)
+        (instSelection: Set<int>)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    doc
+    |> fun d -> rotate90SelectionWithLabels d instSelection pivot
+    |> fun d -> rotate90PolygonsWithLabels d polySelection pivot
+
+let mirrorXSelectionsWithLabels
+        (doc: Document)
+        (instSelection: Set<int>)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    doc
+    |> fun d -> mirrorXSelectionWithLabels d instSelection pivot
+    |> fun d -> mirrorXPolygonsWithLabels d polySelection pivot
+
+let mirrorYSelectionsWithLabels
+        (doc: Document)
+        (instSelection: Set<int>)
+        (polySelection: Set<string * int>)
+        (pivot: int64 * int64)
+        : Document =
+    doc
+    |> fun d -> mirrorYSelectionWithLabels d instSelection pivot
+    |> fun d -> mirrorYPolygonsWithLabels d polySelection pivot
+
 // -- Polygon rotate / mirror --------------------------------------
 //
 // Mirror of `rotate90Selection` / `mirrorXSelection` /
@@ -974,6 +1268,15 @@ let private transformPolygons
                                         { r with
                                             X1 = xMin; Y1 = yMin
                                             X2 = xMax; Y2 = yMax }
+                                | Rekolektion.Viz.Core.Rkt.Types.LabelEl l ->
+                                    // Gap-2 fix: an explicitly-
+                                    // selected label transforms.
+                                    let nx, ny = pointXform l.Origin.X l.Origin.Y
+                                    Rekolektion.Viz.Core.Rkt.Types.LabelEl
+                                        { l with
+                                            Origin =
+                                                ({ X = nx; Y = ny }
+                                                 : Rekolektion.Viz.Core.Rkt.Types.Point) }
                                 | other -> other)
                     { c with Elements = elems' })
         { doc with Cells = updatedCells }

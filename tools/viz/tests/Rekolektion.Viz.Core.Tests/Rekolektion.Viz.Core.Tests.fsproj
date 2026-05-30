@@ -27,6 +27,7 @@
     <Compile Include="RatlinesTests.fs" />
     <Compile Include="MagReaderTests.fs" />
     <Compile Include="SmokeP0Instances.fs" />
+    <Compile Include="InstancesLabelFollowingTests.fs" />
     <Compile Include="DrcCheckTests.fs" />
     <Compile Include="MagWriterTests.fs" />
     <Compile Include="GdsWriterTests.fs" />

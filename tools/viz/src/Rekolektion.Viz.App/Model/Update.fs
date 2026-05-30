@@ -1216,17 +1216,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 let lib' =
                                     match msg with
                                     | Msg.RotateSelection90 ->
-                                        mc.Document
-                                        |> fun d -> Layout.Instances.rotate90Selection d instSel pivot
-                                        |> fun d -> Layout.Instances.rotate90Polygons d polySel pivot
+                                        Layout.Instances.rotate90SelectionsWithLabels
+                                            mc.Document instSel polySel pivot
                                     | Msg.MirrorSelectionX ->
-                                        mc.Document
-                                        |> fun d -> Layout.Instances.mirrorXSelection d instSel pivot
-                                        |> fun d -> Layout.Instances.mirrorXPolygons d polySel pivot
+                                        Layout.Instances.mirrorXSelectionsWithLabels
+                                            mc.Document instSel polySel pivot
                                     | _ ->
-                                        mc.Document
-                                        |> fun d -> Layout.Instances.mirrorYSelection d instSel pivot
-                                        |> fun d -> Layout.Instances.mirrorYPolygons d polySel pivot
+                                        Layout.Instances.mirrorYSelectionsWithLabels
+                                            mc.Document instSel polySel pivot
                                 let flat' = Layout.Flatten.flatten lib'
                                 let inst' = Layout.Instances.enumerate lib'
                                 let mc' =

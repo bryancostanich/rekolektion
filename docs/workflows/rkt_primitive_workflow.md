@@ -68,9 +68,9 @@ pfet = gen_pfet_hv(w_um=2.4, l_um=1.0, guard=False)
 | Function | What it makes | Notes |
 | -------- | ------------- | ----- |
 | `gen_nfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV nfet (`sky130_fd_pr__nfet_g5v0d10v5`) | see below |
-| `gen_pfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV pfet (`sky130_fd_pr__pfet_g5v0d10v5`) | same params |
+| `gen_pfet_hv(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 5 V HV pfet (`sky130_fd_pr__pfet_g5v0d10v5`) | bulk port labeled `B` at primitive level (FET generator v4, 2026-05-29) — extracted .subckt is `D G S B`, parent binds body explicitly by position |
 | `gen_nfet_01v8(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 1.8 V LV nfet (`sky130_fd_pr__nfet_01v8`) | same shape as HV; used for VCCD1 / VCCD2 analog (Track 37 BG, OTA, etc.) |
-| `gen_pfet_01v8(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 1.8 V LV pfet (`sky130_fd_pr__pfet_01v8`) | same shape as HV |
+| `gen_pfet_01v8(w_um, l_um, nf=1, m=1, guard=False, topc=True, botc=True)` | sky130 1.8 V LV pfet (`sky130_fd_pr__pfet_01v8`) | bulk port labeled `B` at primitive level (v4) — same as `gen_pfet_hv` |
 | `gen_pnp_05v5(kind, nx=1, ny=1)` | 5.5 V substrate PNP — `kind="small"` → W=0.68×L=0.68 µm, `kind="large"` → W=3.40×L=3.40 µm (≈25× area ratio) | Fixed-geometry device (no `w`/`l` knob); the variant IS the size. Canonical sub-bandgap pair |
 | `gen_res_xhigh_po(width_um, l_um, m=1, guard=False, snake=0)` | xpoly high-sheet poly resistor (~2 kΩ/□) | `width_um` must be one of `0.35`, `0.69`, `1.41`, `2.85`, `5.73` µm (PDK-fixed widths); `l_um` is free |
 | `gen_cap_mim_m3(w_um, l_um, stack=1)` | MIM capacitor between met3 + capm (`stack=1`) or capm + capm2 (`stack=2`) | W and L each must be 2.0 ≤ x ≤ 30.0 µm. Lives above met3 — area underneath on li1/met1/met2 is free |
@@ -94,6 +94,29 @@ pfet = gen_pfet_hv(w_um=1.0, l_um=0.5, topc=False)   # _botgate
 ```
 
 Why it matters: with default `botc=True`, the bottom gate contact is at `x=(-250, 250)` and the S/D li1 strips are at `x=(310, 480)` / `x=(-480, -310)`. Spacing between them is 60 nm — fine when the S/D li1 stays inside the FET footprint (different y), but if `pin_to_rail` extends S/D li1 *past* the FET's bottom edge, it now lives at the same y as the gate stub and the 60 nm gap violates `li.3`. Using `botc=False` removes the conflicting stub entirely.
+
+> **The same collision hits body taps placed south of a default
+> (both-contact) PMOS — and it's silent at DRC.** `place_taps_around`
+> with `sides=("bottom",)` lands the tap's li1 strap right under the
+> primitive's bottom gate li1 stamps. Concrete example for the
+> `pfet_hv_W25p0_L0p5_nf10` default variant: bottom gate li1 stamps at
+> y=-12905..-12735; default tap-band li1 strap at y≈-13175..-12845 →
+> **60 nm overlap in y** at the same plane. The two polygons merge
+> on li1; the extracted gate net becomes the body net.
+>
+> DRC waivers around primitive footprints typically hide the
+> underlying `li.3` violation, so the only signal is LVS — and the
+> bug masquerades as a "gate↔body merge through autonamed parent
+> metal" because the extractor names the merged polygon by its
+> dominant layer / corner. Time burned chasing the wrong cause: real.
+>
+> **Rule:** for any PMOS that will receive a south-side body tap,
+> mint it with `botc=False` (`_topgate`); for north-side taps,
+> `topc=False` (`_botgate`). Phase A srcmux escaped this trap because
+> body=S=VDDA1 there — the spurious merge produced the right net by
+> coincidence. Cells where body ≠ source (Phase B1 `cim_reram_bl_swap_mux`,
+> any pass-gate MUX, any cascode where body needs to track VDD)
+> have no such coincidence and will fail LVS. See **Hard Rule #20**.
 
 > **`_core` means "designed to abut or live in a parent tub."** It is
 > *not* a "smaller" or "lighter" primitive — it's a primitive that has
@@ -1758,6 +1781,7 @@ All of these pass `verify_drc` and fail `verify_lvs`.
 | ------- | ---------- | --- |
 | "net X not found in layout" | label exists but flood-fill can't reach a port | add a parent-paint wire merging the two islands; or correct the label position |
 | "extra net in layout" | un-named polygon picked up by extraction as a floating net | label the polygon, or short it to the intended net with parent paint |
+| Gate net merges with body net in extracted layout (`X*/G` shares a node with `X*/B`); merge chain looks like `instance/G ↔ m1_<n>_<n># ↔ instance/B ↔ <body_label>` with no-attr middle merges that look like a Magic hierarchical-port-promotion bug | NOT a Magic bug. The primitive's bottom (or top) gate li1 strap overlaps the body tap's li1 strap on the same plane — silent geometric merge, hidden behind primitive-footprint DRC waivers. See **Hard Rule #20** | re-mint the primitive with `botc=False` (for south taps) or `topc=False` (for north taps), update the build script to read the tap's `inner_bbox` from the actual primitive diff bbox (which is asymmetric in the gate-stub-stripped variants), DRC + LVS re-verify |
 | "port matching failed" with port present in both .subckt lines, but `node "X" 0 0 …` in the layout `.ext` (zero tile count) | parent label is on the primitive's li1 strap but offset from the primitive's extracted *port* tile by ~100 nm — Magic creates a floating port instead of merging with the SRef pin | move the label to the port coord from the primitive's `.ext` (`grep "^port " <prim>.ext`).  See **Labeling a primitive's pin** in the Naming nets section |
 | "device mismatch — M3 W/L differs" | called a generator with wrong params | re-mint the primitive with the schematic's parameters |
 | "extra device — unexpected nfet" | a primitive SRef'd by accident, or a guard-ring variant minted instead of `_core` | drop the extra SRef; check `guard=` |
@@ -2330,6 +2354,37 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     **flat-extract LVS** (see *Step 3 — LVS* §"Flat-extract LVS")
     as the gold-standard verification for any cell with
     reflected SRefs.
+
+20. **Match the FET's gate-contact variant to the body-tap side —
+    `_topgate` (`botc=False`) for south taps, `_botgate`
+    (`topc=False`) for north taps. NEVER body-tap a default
+    (both-contact) variant on the close side.** The primitive's
+    bottom gate li1 stamps and the body tap's li1 strap occupy
+    overlapping y-ranges on the same plane — they merge into one
+    polygon and silently tie gate to body in the extracted netlist.
+    DRC waivers around the primitive footprint typically hide the
+    underlying `li.3` violation; the only signal is an LVS
+    "gate↔body merge through autonamed parent metal" symptom that
+    looks like a Magic hierarchical extract bug but is actually
+    real geometric overlap.
+
+    Concrete trigger: `pfet_hv_W25p0_L0p5_nf10_core` default variant
+    + `place_taps_around(sides=("bottom",))` → bottom gate li1
+    at y=-12905..-12735 overlaps tap li1 strap at y=-13175..-12845
+    by 60 nm. Found 2026-05-29 burning a half-day on bl_swap_mux LVS.
+
+    For body-tied-to-source PMOSes (Phase A srcmux, current
+    mirrors with body=VDD=S) the trap is silent and the netlist
+    happens to come out right by coincidence — but the FET is
+    still drawing wrong silicon. **Mint correctly anyway.** The
+    `inspect_primitive` helper handles either variant; the
+    body-tap inner_bbox should be read from the actual primitive's
+    diff bbox (the `_topgate` / `_botgate` variants are
+    asymmetric — diff extends past the missing-contact side), not
+    hardcoded.
+
+    See the "_topgate/_botgate" boxed note in *Authoring a
+    primitive* for the geometric detail.
 
 ---
 

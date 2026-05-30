@@ -9,10 +9,12 @@ Schematic:
   .subckt cim_reram_bl_swap_mux v_sl_dac_bus bl_rail bl_swap_mux_en_n vdd
   XM_sw bl_rail bl_swap_mux_en_n v_sl_dac_bus vdd pfet_g5v0d10v5 w=25 l=0.5
 
-The cell has no internal nets — S / D / G / body all exit as port
-labels on the primitive's own straps (S and D on li1 at y=0, G on li1
-at y=+12820, body via parent n+ tap south of diff with a met1 "vdd"
-strap on top).
+Layout shape: S and D exit as li1 labels at y=0 on the FET's existing
+S/D straps; G exits via a met1→via1→met2 stack to a parent met2 label
+north of the FET; body net via parent n+ tap south of diff, met1 "vdd"
+rail on top.
+
+Uses the `_topgate` PMOS variant (`botc=False`) — see Hard Rule #20.
 """
 from pathlib import Path
 
@@ -20,34 +22,15 @@ from rekolektion.io import rkt
 from rekolektion.layout import inspect_primitive, place_taps_around
 
 # ─── Subcell ────────────────────────────────────────────────────────
-PMOS25_NAME = "pfet_hv_W25p0_L0p5_nf10_core"
+PMOS25_NAME = "pfet_hv_W25p0_L0p5_nf10_core_topgate"
+# _topgate (botc=False) — no bottom gate contact. The bottom gate li1
+# strap in the default variant overlaps the south-side body-tap li1
+# strap on the SAME plane (gate y=-12905..-12735, tap y=-13175..-12845
+# → 60 nm overlap), MERGING gate and body into one extracted net.
+# This is the gate↔body LVS bug. _topgate variant eliminates the
+# bottom strap; the body tap then has no collision path.
 pmos_info = inspect_primitive(PMOS25_NAME)
-print(f"pmos25 bbox: {pmos_info.bbox}")  # expect ≈ (-4275, -13000, 4275, 13000)
-
-# Tiny "gate port" sub-cell: holds the PortName label
-# "bl_swap_mux_en_n" on a small met2 patch. SRef'd inside the bl_swap
-# top cell, the label becomes a SUB-CELL PORT — Magic's hierarchical
-# extract names the W25 PMOS gate via this sub-cell port the same way
-# Phase A srcmux does with lshift.OUT_N. Direct PARENT labels at the
-# gate area trigger Magic's port-promotion bug: the auto-promoted
-# w_..._# nwell port gets mis-merged with the parent gate label,
-# tying gate to body. Using a sub-cell port-label avoids that path.
-GATE_PORT_CELL = "bl_swap_mux_en_n_port"
-# Sub-cell carries the bl_swap_mux_en_n label on a small met2 patch.
-# When SRef'd at a coord north of all nwell, its labeled polygon
-# sits unambiguously outside nwell. Magic's port-promotion rule that
-# merges over-nwell labeled polygons with the primitive's B port
-# doesn't apply, and the sub-cell port aliases correctly with the
-# W=25 PMOS gate via parent met2 routing.
-gate_port_subcell = rkt.Cell(
-    name=GATE_PORT_CELL,
-    elements=[
-        rkt.Rect(layer=rkt.named("sky130", "met2"),
-                 x1=-160, y1=-160, x2=160, y2=160),
-        rkt.port_label(layer=rkt.named("sky130", "met2_label"),
-                       text="bl_swap_mux_en_n", origin=(0, 0)),
-    ],
-)
+print(f"pmos25 bbox: {pmos_info.bbox}")
 
 # ─── Placement: single PMOS at origin ──────────────────────────────
 pmos = rkt.SRef(cell=PMOS25_NAME, origin=(0, 0))
@@ -82,14 +65,16 @@ parent_paints = [
 ]
 
 # ─── Body tap band — south side ────────────────────────────────────
-# inner_bbox = primitive's diff bbox (y=±12500, x=±4095 per the .rkt).
-# place_taps_around defaults clearance_um=0.3, band_width≈0.42 µm →
-# tap-band center ≈ y_min - 0.3 µm - 0.21 µm = -13010 nm; south edge
-# of the implant rect ≈ -13220 nm. The 900 nm parent-nwell south
-# margin (down to -13900) leaves > 0.65 µm enclosure of the n-tap
-# implant (nwell.5: encl of n-tap ≥ 0.18 µm).
-DIFF_X1, DIFF_Y1 = -4095, -12500
-DIFF_X2, DIFF_Y2 = +4095, +12500
+# inner_bbox = primitive's actual diff bbox. The topgate variant has
+# an asymmetric diff (y=-12680..+12320 vs the symmetric ±12500 of the
+# default-gate variant) — hardcoded values would underclear the
+# south-side nsd.5a/5b spacing rule (≥0.125 µm MV-pdiff to MV-ntap).
+# Read the bbox from the actual primitive.
+import re as _re
+_p = Path(f"cell_designs/primitives/{PMOS25_NAME}.rkt").read_text()
+_diff_match = _re.search(r"\(rect \(layer sky130:diff\) (-?\d+) (-?\d+) (-?\d+) (-?\d+)\)", _p)
+DIFF_X1, DIFF_Y1, DIFF_X2, DIFF_Y2 = (int(g) for g in _diff_match.groups())
+print(f"primitive diff bbox: ({DIFF_X1}, {DIFF_Y1}, {DIFF_X2}, {DIFF_Y2})")
 
 taps = place_taps_around(
     (DIFF_X1, DIFF_Y1, DIFF_X2, DIFF_Y2),
@@ -104,7 +89,7 @@ taps = place_taps_around(
 # li1 geometry comes from place_taps_around; we figure the bbox out
 # from the inner geometry to keep the rail width tight.
 TAP_BAND_HALF = 210         # _DEFAULT_TAP_WIDTH_UM/2 (≈ 0.42 µm wide)
-TAP_BAND_Y = DIFF_Y1 - 300 - TAP_BAND_HALF   # = -13010
+TAP_BAND_Y = DIFF_Y1 - 300 - TAP_BAND_HALF   # 0.3 µm clearance south of diff
 RAIL_HALF = 170             # 0.34 µm rail (covers mcon enclosure)
 RAIL_Y = TAP_BAND_Y          # center rail on strap
 
@@ -144,29 +129,21 @@ GATE_VIA_X = 395             # center of primitive gate pad (165..625)
 GATE_VIA_Y = 12820           # primitive gate met1 pad center
 
 # NO parent met1 pad — drop via1 directly onto the primitive's met1
-# gate pad. Adding a parent-painted m1 polygon there creates an
-# autonamed m1 node that Magic chains into the nwell port, tying gate
-# to body. The primitive's met1 has 40 nm enclosure on the asymmetric
-# axis (below the 60 nm wide-axis rule), which would trip via1.5b in
-# strict mode but lands inside the primitive footprint waiver.
+# gate pad. The primitive's met1 has 40 nm enclosure on the asymmetric
+# axis (below the 60 nm wide-axis rule), which trips via1.5b in strict
+# mode but lands inside the primitive-footprint waiver.
 gate_via1 = list(place_via((GATE_VIA_X, GATE_VIA_Y), "met1", "met2"))
 
-# Met2 wire from gate via1 north, extending well past the parent
-# nwell top (y=+13005) and terminating at a labeled SUB-CELL pad.
-# Phase A srcmux works because its W=25 PMOS gate label comes from
-# a SUB-CELL PORT (lsh.OUT_N) whose labeled polygon is FAR from the
-# nwell. Magic's port-promotion appears to merge any parent labeled
-# polygon that overlaps nwell with the primitive's B port; the only
-# safe spot is inside a sub-cell whose labeled polygon sits outside
-# every nwell rectangle.
+# Met2 wire from gate via1 north to where the bl_swap_mux_en_n label
+# sits, well clear of the parent nwell.
 GATE_MET2_HALF = 160
-GATE_MET2_Y_TOP = 14000      # 1 µm past primitive nwell top
+GATE_MET2_Y_TOP = 14000
+GATE_LABEL_Y = 13800
 gate_met2_wire = rkt.Rect(
     layer=rkt.named("sky130", "met2"),
     x1=GATE_VIA_X - GATE_MET2_HALF, y1=GATE_VIA_Y - GATE_MET2_HALF,
     x2=GATE_VIA_X + GATE_MET2_HALF, y2=GATE_MET2_Y_TOP,
 )
-GATE_SUBCELL_Y = 13800       # well above parent nwell top (13005)
 
 # Pick label positions on the FET's existing li1 straps.
 # Per the primitive: S at x ∈ {-3160, -1580, 0, +1580, +3160}, y=0.
@@ -177,17 +154,11 @@ port_labels = [
     port_lbl("li1_label",  "v_sl_dac_bus",    (0,    0)),       # S center
     port_lbl("li1_label",  "bl_rail",         (790,  0)),       # D adjacent
     port_lbl("met1_label", "vdd",             (0,    RAIL_Y)),  # body rail
-    # bl_swap_mux_en_n is supplied by the SRef'd gate_port_subcell
-    # below, whose labeled met2 patch sits outside every nwell rect.
+    # G — direct parent label on the met2 gate wire. The _topgate
+    # PMOS variant eliminates the bottom gate li1 strap, so the body
+    # tap can no longer collide on li1 to merge gate↔body.
+    port_lbl("met2_label", "bl_swap_mux_en_n",(GATE_VIA_X, GATE_LABEL_Y)),
 ]
-
-# SRef gate-port sub-cell at a coord north of all nwell, so its
-# labeled met2 patch is unambiguously outside nwell. The gate met2
-# wire extends north to overlap the sub-cell's patch and merge.
-gate_port_sref = rkt.SRef(
-    cell=GATE_PORT_CELL,
-    origin=(GATE_VIA_X, GATE_SUBCELL_Y),
-)
 
 # ─── Assemble doc ──────────────────────────────────────────────────
 doc = rkt.Document(
@@ -195,7 +166,6 @@ doc = rkt.Document(
         rkt.Import(path=f"../primitives/{PMOS25_NAME}.rkt"),
     ],
     cells=[
-        gate_port_subcell,
         rkt.Cell(
             name="cim_reram_bl_swap_mux",
             elements=[
@@ -206,7 +176,6 @@ doc = rkt.Document(
                 *mcon_stitches,
                 *gate_via1,
                 gate_met2_wire,
-                gate_port_sref,
                 *port_labels,
             ],
         ),

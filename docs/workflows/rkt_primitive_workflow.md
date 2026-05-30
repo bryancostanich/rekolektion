@@ -620,6 +620,13 @@ the cheapest loop in the entire workflow.
 
 The agent surfaces, the user decides whether to keep going:
 
+0. **Paint parent NetName labels at every sub-cell PortName-label
+   coord** (translated by the SRef origin).  Sub-cell `PortName`
+   labels are correctly hidden from the parent's net view — without
+   parent-painted `NetName` mirrors, viz shows a bag of FETs with no
+   net structure and placement-review is unfair to the reviewer.
+   See §"Parent NetName labels at SRef port coords" for the recipe.
+   Do this *before* opening viz in step 1.
 1. **Open in viz**: `mcp__rekolektion-viz__rekolektion_viz_open` (or
    `dotnet run -- app cell_designs/<group>/<block>.rkt`) so the user
    can see the silicon-truth view. **Pass the `.rkt` path** — never
@@ -2323,14 +2330,20 @@ same as before. The `_fix_met1_min_area` post-processing pass in
 12. **Never start routing without a placement-review gate with
     the user.** After cells are placed and rails/taps are in, but
     before any `pin_to_rail` / `pin_patch` / `place_wire` call,
-    stop.  Open the block in viz, describe the placement in text
-    (dimensions, cell positions, alignment / aspect quirks), and
-    ask the user: "placement OK or want changes?"  Routing begins
-    only on approval.  Skipping this gate is the most expensive
-    mistake in the workflow — every redirect after wiring starts
-    burns N turns of unwinding.  Editing an existing block to
-    fix a known bug is exempt; new layout-from-scratch is not.
-    See **Placement review** above for the full procedure.
+    stop.  **First, paint parent `NetName` labels at every
+    sub-cell `PortName`-label coord (translated by the SRef
+    origin) — see §"Parent NetName labels at SRef port coords"
+    for the recipe.** Without that mirror, sub-cell ports are
+    invisible to the parent's net view and the user is reviewing
+    a bag of FETs with no net structure.  Then open the block in
+    viz, describe the placement in text (dimensions, cell
+    positions, alignment / aspect quirks), and ask the user:
+    "placement OK or want changes?"  Routing begins only on
+    approval.  Skipping this gate is the most expensive mistake
+    in the workflow — every redirect after wiring starts burns N
+    turns of unwinding.  Editing an existing block to fix a known
+    bug is exempt; new layout-from-scratch is not.  See
+    **Placement review** above for the full procedure.
 
 13. **Bridge in-cluster pins on parent metal before dropping to a
     trunk — never drop per-pin when a net touches multiple pins in

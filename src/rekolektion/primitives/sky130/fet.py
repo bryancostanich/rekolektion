@@ -597,3 +597,84 @@ def gen_pfet_01v8(
         primitives_dir=primitives_dir,
         abut_pad_nm=10,
     )
+
+
+def gen_nfet_01v8_lvt(
+    w_um: float,
+    l_um: float,
+    *,
+    nf: int = 1,
+    m: int = 1,
+    guard: bool = False,
+    topc: bool = True,
+    botc: bool = True,
+    primitives_dir: Path | None = None,
+) -> str:
+    """Mint (or fetch cached) a 1.8 V LV-Vt nfet primitive `.rkt`.
+
+    Same semantics as `gen_nfet_01v8`; routes to the PDK's
+    `sky130::sky130_fd_pr__nfet_01v8_lvt_draw` proc, which paints
+    the standard 1.8 V nfet stack plus the `nsdm_lvt` implant for
+    the low-Vt bin. Sub-block uses: D11 OTA input pair candidates,
+    D12 trim-DAC current branches, D13 pass-gate complements,
+    B1.5 SAR-comparator tail / regen pairs (head-to-head with
+    pfet-LVT Stage 1).
+    """
+
+    # Shares the 1.8 V implant geometry with the non-LVT sibling,
+    # so the diff/tap.3 abutment-safety pad (10 nm) carries over —
+    # bbox-edge abutment by `place_row` stays DRC-clean by construction.
+    return _build_fet(
+        prefix="nfet_01v8_lvt",
+        draw_proc="sky130::sky130_fd_pr__nfet_01v8_lvt_draw",
+        defaults_proc="sky130::sky130_fd_pr__nfet_01v8_lvt_defaults",
+        w_um=w_um,
+        l_um=l_um,
+        nf=nf,
+        m=m,
+        guard=guard,
+        topc=topc,
+        botc=botc,
+        primitives_dir=primitives_dir,
+        abut_pad_nm=10,
+    )
+
+
+def gen_pfet_01v8_lvt(
+    w_um: float,
+    l_um: float,
+    *,
+    nf: int = 1,
+    m: int = 1,
+    guard: bool = False,
+    topc: bool = True,
+    botc: bool = True,
+    primitives_dir: Path | None = None,
+) -> str:
+    """Mint (or fetch cached) a 1.8 V LV-Vt pfet primitive `.rkt`.
+
+    Same semantics as `gen_pfet_01v8`; routes to the PDK's
+    `sky130::sky130_fd_pr__pfet_01v8_lvt_draw` proc, which paints
+    the standard 1.8 V pfet stack plus the `psdm_lvt` implant for
+    the low-Vt bin. Sub-block uses: D11 OTA input pair, D12 trim
+    DAC's pfet-mirror branch, D13 mux pass-gates, B1.5 SAR
+    comparator Stage 1 input + M2 cross-coupled pair (the
+    A_VT ≈ 45 mV·µm Pelgrom-audit lesson lives on this bin).
+    """
+
+    # Same 10 nm abutment-safety pad as the non-LVT 01v8 pfet —
+    # see gen_nfet_01v8 for the diff/tap.3 rationale.
+    return _build_fet(
+        prefix="pfet_01v8_lvt",
+        draw_proc="sky130::sky130_fd_pr__pfet_01v8_lvt_draw",
+        defaults_proc="sky130::sky130_fd_pr__pfet_01v8_lvt_defaults",
+        w_um=w_um,
+        l_um=l_um,
+        nf=nf,
+        m=m,
+        guard=guard,
+        topc=topc,
+        botc=botc,
+        primitives_dir=primitives_dir,
+        abut_pad_nm=10,
+    )

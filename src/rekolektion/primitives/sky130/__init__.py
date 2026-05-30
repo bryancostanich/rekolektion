@@ -16,8 +16,10 @@ from rekolektion.primitives.sky130.bjt import gen_pnp_05v5
 from rekolektion.primitives.sky130.capacitor import gen_cap_mim_m3
 from rekolektion.primitives.sky130.fet import (
     gen_nfet_01v8,
+    gen_nfet_01v8_lvt,
     gen_nfet_hv,
     gen_pfet_01v8,
+    gen_pfet_01v8_lvt,
     gen_pfet_hv,
 )
 from rekolektion.primitives.sky130.reram import gen_reram_cell
@@ -26,8 +28,10 @@ from rekolektion.primitives.sky130.resistor import gen_res_xhigh_po
 __all__ = [
     "gen_cap_mim_m3",
     "gen_nfet_01v8",
+    "gen_nfet_01v8_lvt",
     "gen_nfet_hv",
     "gen_pfet_01v8",
+    "gen_pfet_01v8_lvt",
     "gen_pfet_hv",
     "gen_pnp_05v5",
     "gen_reram_cell",

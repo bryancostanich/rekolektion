@@ -23,8 +23,12 @@ from rekolektion.primitives.sky130._device_builder import build_device, fmt_um
 
 
 _CAP_MIM_STACKS: dict[int, str] = {
-    1: "1",   # cap_mim_m3_1 (single dielectric)
-    2: "2",   # cap_mim_m3_2 (double dielectric, ~2x capacitance)
+    1: "1",   # cap_mim_m3_1 — MIM dielectric sits on met3 (top plate between met3/met4)
+    2: "2",   # cap_mim_m3_2 — MIM dielectric sits on met4 (top plate between met4/met5)
+    #          Both are single-dielectric ~2 fF/µm². _m3_2 is NOT 2x denser —
+    #          it's a second MIM layer at a different stack height. To get 2x
+    #          density, parallel _m3_1 + _m3_2 over the same plate area
+    #          (requires hand layout; not exposed by this generator).
 }
 
 
@@ -45,9 +49,18 @@ def gen_cap_mim_m3(
         Plate width / length in µm. Each must be 2.0 ≤ x ≤ 30.0
         (PDK ``wmin``/``wmax`` / ``lmin``/``lmax``).
     stack : 1 | 2, default 1
-        Which MIM stack to use. ``1`` is the single-dielectric
-        ``cap_mim_m3_1`` (≈ 2 fF/µm²); ``2`` is the double-stack
-        ``cap_mim_m3_2`` (≈ 4 fF/µm²) at higher mask cost.
+        Which MIM layer to use. Both are single-dielectric devices
+        with ≈ 2 fF/µm² area capacitance — `stack` selects the
+        metal-stack height, NOT the density.
+          ``1`` — ``cap_mim_m3_1``: dielectric on met3 (top plate
+                  between met3 and met4). Use this by default.
+          ``2`` — ``cap_mim_m3_2``: dielectric on met4 (top plate
+                  between met4 and met5). Same density, higher
+                  vertical position. Useful when met3 is congested
+                  with routing under the cap.
+        To get ~2× area density, two `_m3_1` and `_m3_2` instances
+        must be paralleled over the same plate area — that's not
+        exposed by this generator; it requires hand layout.
     bconnect : bool, default True
         Route the bottom plate up to met3 via the standard bottom
         contact ring. PDK default is on; disable only if the parent

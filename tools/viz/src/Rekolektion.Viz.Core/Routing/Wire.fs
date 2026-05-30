@@ -68,6 +68,20 @@ let maxWireId (doc : Document) : int =
 let nextWireId (doc : Document) : int =
     maxWireId doc + 1
 
+/// ⚠ TECH DEBT — remove (or comment out) once topology-aware
+/// routing lands.  See `docs/topology_aware_routing.md`.
+///
+/// This is a byte-identical-bbox dedup backstop: it cleans up
+/// duplicates AFTER they're emitted instead of preventing them at
+/// route-plan time.  The proper fix (Phase 1: pin-level sharing at
+/// commit, Phase 2: net-aware path planning) recognises shared
+/// anchors / spans during routing and never emits the dupes in the
+/// first place.  Once Phase 1 ships, this function should still be
+/// removable — Phase 1 covers the byte-identical case too — but
+/// keep it as a one-shot `TidyRoutingGeometry` fallback for files
+/// authored under earlier routers if the cleanup story isn't
+/// otherwise covered.
+///
 /// Collapse RectEls that share an identical (layer, normalised
 /// bbox) within each cell.  The FIRST occurrence in document
 /// order wins — its props, including its wire-id, are kept; every

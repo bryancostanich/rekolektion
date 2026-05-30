@@ -40,6 +40,91 @@ module AppDispatch =
     let setCurrentActivePath (p: string option) =
         Services.AppDispatch.currentActivePath <- p
 
+/// Pure window-level keymap: given the current `Model` (or `None`
+/// during boot) and a keypress, return the `Msg` to dispatch (or
+/// `None` if the key isn't bound for that model state). Pulled out
+/// of the KeyDown handler so the order-sensitive interactions —
+/// layer-focus keys vs. Tighten-mode capture, in-flight route keys
+/// vs. global Esc/Delete — are unit-testable without driving
+/// Avalonia events.
+///
+/// Match order matters: F# top-to-bottom first-match. Layer-focus
+/// arms (` 1 2 3 4 0) carry `when not tighten` guards so the
+/// number-keys-as-Tighten-commit arm at the bottom can catch them
+/// when Tighten mode is active.
+module KeyMap =
+    let dispatchFor (model: Model.Model option) (key: Key) (mods: KeyModifiers) : Msg.Msg option =
+        let tighten =
+            model
+            |> Option.map (fun m -> m.TightenMode)
+            |> Option.defaultValue false
+        let segmentDrag =
+            model
+            |> Option.map (fun m -> m.SegmentDrag.IsSome)
+            |> Option.defaultValue false
+        let routingActive =
+            model
+            |> Option.map (fun m -> m.RoutingMode || m.DraftRoute.IsSome)
+            |> Option.defaultValue false
+        let draftRoute =
+            model
+            |> Option.map (fun m -> m.DraftRoute.IsSome)
+            |> Option.defaultValue false
+        match key, mods with
+        | Key.D,     KeyModifiers.None -> Some Msg.ToggleDimensions
+        | Key.R,     KeyModifiers.None -> Some Msg.ToggleDrc
+        | Key.O,     KeyModifiers.None -> Some Msg.ToggleDebugOverlay
+        | Key.W,     KeyModifiers.None -> Some Msg.ToggleRoutingMode
+        | Key.U,     KeyModifiers.None -> Some Msg.ToggleRatlines
+        | Key.L,     KeyModifiers.None -> Some Msg.ToggleRuler
+        | Key.G,     KeyModifiers.None -> Some Msg.ToggleGrid
+        | Key.S,     KeyModifiers.None -> Some Msg.ToggleSnap
+        | Key.D,     KeyModifiers.Meta -> Some Msg.DuplicateSelection
+        | Key.Z,     KeyModifiers.Meta -> Some Msg.UndoActiveMacro
+        | Key.Z,     m when m = (KeyModifiers.Meta ||| KeyModifiers.Shift) ->
+            Some Msg.RedoActiveMacro
+        | Key.Space, KeyModifiers.None -> Some Msg.RotateSelection90
+        | Key.X,     KeyModifiers.None -> Some Msg.MirrorSelectionX
+        | Key.Y,     KeyModifiers.None -> Some Msg.MirrorSelectionY
+        | Key.T,     KeyModifiers.None -> Some Msg.ToggleTightenMode
+        | Key.E,     KeyModifiers.None -> Some Msg.ToggleEditRoutingMode
+        | Key.OemTilde, KeyModifiers.None when not tighten ->
+            Some (Msg.SetActiveLayer (Some (67, 20)))   // li1
+        | Key.D1, KeyModifiers.None when not tighten ->
+            Some (Msg.SetActiveLayer (Some (68, 20)))   // met1
+        | Key.D2, KeyModifiers.None when not tighten ->
+            Some (Msg.SetActiveLayer (Some (69, 20)))   // met2
+        | Key.D3, KeyModifiers.None when not tighten ->
+            Some (Msg.SetActiveLayer (Some (70, 20)))   // met3
+        | Key.D4, KeyModifiers.None when not tighten ->
+            Some (Msg.SetActiveLayer (Some (71, 20)))   // met4
+        | Key.D0,     KeyModifiers.None
+        | Key.NumPad0, KeyModifiers.None when not tighten ->
+            Some (Msg.SetActiveLayer None)
+        | Key.Escape, KeyModifiers.None when segmentDrag ->
+            Some Msg.SegmentDragCancel
+        | Key.Escape, KeyModifiers.None when routingActive ->
+            Some Msg.RouteStop
+        | Key.Enter, KeyModifiers.None when draftRoute ->
+            Some Msg.RouteFinish
+        | Key.Back, KeyModifiers.None when draftRoute ->
+            Some Msg.RouteBackspace
+        | Key.OemQuestion, KeyModifiers.None when draftRoute ->
+            Some Msg.RouteFlipPosture
+        | Key.Escape, KeyModifiers.None when tighten ->
+            Some Msg.ToggleTightenMode
+        | Key.Delete, KeyModifiers.None
+        | Key.Back,   KeyModifiers.None ->
+            Some Msg.DeleteSelection
+        | k, KeyModifiers.None when tighten ->
+            match k with
+            | Key.D1 | Key.NumPad1 -> Some (Msg.CommitTighten 1)
+            | Key.D2 | Key.NumPad2 -> Some (Msg.CommitTighten 2)
+            | Key.D3 | Key.NumPad3 -> Some (Msg.CommitTighten 3)
+            | Key.D4 | Key.NumPad4 -> Some (Msg.CommitTighten 4)
+            | _ -> None
+        | _ -> None
+
 module private Subscriptions =
 
     /// Dispatch wrapper used by `Program.runWithDispatch` below. FuncUI's
@@ -186,172 +271,13 @@ type MainWindow() as this =
         // local handler. Routes through AppDispatch so the Elmish
         // loop owns the state transition.
         this.KeyDown.Add(fun e ->
-            match e.Key, e.KeyModifiers with
-            | Key.D, KeyModifiers.None ->
-                AppDispatch.send Msg.ToggleDimensions
+            match KeyMap.dispatchFor
+                    Services.AppDispatch.currentModel
+                    e.Key e.KeyModifiers with
+            | Some msg ->
+                AppDispatch.send msg
                 e.Handled <- true
-            | Key.R, KeyModifiers.None ->
-                AppDispatch.send Msg.ToggleDrc
-                e.Handled <- true
-            | Key.O, KeyModifiers.None ->
-                // O = walkaround debug overlay. Shows obstacle
-                // bboxes during active drafts.
-                AppDispatch.send Msg.ToggleDebugOverlay
-                e.Handled <- true
-            | Key.W, KeyModifiers.None ->
-                // W = wire (interactive routing tool, ADR-0002).
-                AppDispatch.send Msg.ToggleRoutingMode
-                e.Handled <- true
-            | Key.U, KeyModifiers.None ->
-                // U = ratlines master on/off.
-                AppDispatch.send Msg.ToggleRatlines
-                e.Handled <- true
-            | Key.L, KeyModifiers.None ->
-                // L = ruler overlay.
-                AppDispatch.send Msg.ToggleRuler
-                e.Handled <- true
-            | Key.G, KeyModifiers.None ->
-                AppDispatch.send Msg.ToggleGrid
-                e.Handled <- true
-            | Key.S, KeyModifiers.None ->
-                AppDispatch.send Msg.ToggleSnap
-                e.Handled <- true
-            | Key.D, KeyModifiers.Meta ->
-                // Cmd+D — duplicate the current instance selection.
-                AppDispatch.send Msg.DuplicateSelection
-                e.Handled <- true
-            | Key.Z, KeyModifiers.Meta ->
-                AppDispatch.send Msg.UndoActiveMacro
-                e.Handled <- true
-            | Key.Z, mods when mods = (KeyModifiers.Meta ||| KeyModifiers.Shift) ->
-                AppDispatch.send Msg.RedoActiveMacro
-                e.Handled <- true
-            | Key.Space, KeyModifiers.None ->
-                // Rotate selection 90° CCW around bbox centroid.
-                AppDispatch.send Msg.RotateSelection90
-                e.Handled <- true
-            | Key.X, KeyModifiers.None ->
-                // Mirror about X-axis (flips Y) through bbox centroid.
-                AppDispatch.send Msg.MirrorSelectionX
-                e.Handled <- true
-            | Key.Y, KeyModifiers.None ->
-                // Mirror about Y-axis (flips X) through bbox centroid.
-                AppDispatch.send Msg.MirrorSelectionY
-                e.Handled <- true
-            | Key.T, KeyModifiers.None ->
-                // Toggle Tighten mode: shows numbered candidate
-                // dim arrows; clicking a number commits that
-                // single tighten and exits mode.
-                AppDispatch.send Msg.ToggleTightenMode
-                e.Handled <- true
-            | Key.E, KeyModifiers.None ->
-                // Toggle Edit Routing mode. While on, hovered routing
-                // geometry sprouts gizmo handles for drag-track /
-                // drag-post / Opt-drag-jog operations.
-                AppDispatch.send Msg.ToggleEditRoutingMode
-                e.Handled <- true
-            | Key.OemTilde, KeyModifiers.None ->
-                // Backtick (`) — left of 1 on the number row. Maps to
-                // li1 so the ergonomic order along the row is
-                // li1 / met1 / met2 / met3 / met4.
-                AppDispatch.send (Msg.SetActiveLayer (Some (67, 20)))   // li1
-                e.Handled <- true
-            | Key.D1, KeyModifiers.None ->
-                AppDispatch.send (Msg.SetActiveLayer (Some (68, 20)))   // met1
-                e.Handled <- true
-            | Key.D2, KeyModifiers.None ->
-                AppDispatch.send (Msg.SetActiveLayer (Some (69, 20)))   // met2
-                e.Handled <- true
-            | Key.D3, KeyModifiers.None ->
-                AppDispatch.send (Msg.SetActiveLayer (Some (70, 20)))   // met3
-                e.Handled <- true
-            | Key.D4, KeyModifiers.None ->
-                AppDispatch.send (Msg.SetActiveLayer (Some (71, 20)))   // met4
-                e.Handled <- true
-            | Key.D0, KeyModifiers.None
-            | Key.NumPad0, KeyModifiers.None ->
-                // 0 = clear layer focus; matches the all-layers-shown
-                // state the doc opens in.
-                AppDispatch.send (Msg.SetActiveLayer None)
-                e.Handled <- true
-            // ADR-0002 — in-flight route keys take precedence over the
-            // generic delete / esc bindings when a draft is active.
-            // Esc cancels an in-flight segment drag first (the drag
-            // shouldn't accidentally route-stop). Then falls through
-            // to the route-stop path for an active draft.
-            | Key.Escape, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.SegmentDrag.IsSome)
-                    |> Option.defaultValue false) ->
-                AppDispatch.send Msg.SegmentDragCancel
-                e.Handled <- true
-            // Esc commits the FIXED corners only (stops where the
-            // user last clicked, not where the cursor sat at Esc);
-            // Enter (and right-click) commits the tentative L too.
-            | Key.Escape, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m ->
-                        m.RoutingMode || m.DraftRoute.IsSome)
-                    |> Option.defaultValue false) ->
-                // Trigger on RoutingMode too (not only DraftRoute)
-                // so a stale `currentModel` reading right after the
-                // StartRoute click can't skip the Esc. RouteStop is
-                // a clean no-op when there's no draft to commit.
-                AppDispatch.send Msg.RouteStop
-                e.Handled <- true
-            | Key.Enter, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.DraftRoute.IsSome)
-                    |> Option.defaultValue false) ->
-                AppDispatch.send Msg.RouteFinish
-                e.Handled <- true
-            | Key.Back, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.DraftRoute.IsSome)
-                    |> Option.defaultValue false) ->
-                AppDispatch.send Msg.RouteBackspace
-                e.Handled <- true
-            | Key.OemQuestion, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.DraftRoute.IsSome)
-                    |> Option.defaultValue false) ->
-                // Slash (`/`) flips the L-shape posture mid-route.
-                // Avalonia maps `/` on US layouts to OemQuestion.
-                AppDispatch.send Msg.RouteFlipPosture
-                e.Handled <- true
-            | Key.Escape, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.TightenMode)
-                    |> Option.defaultValue false) ->
-                // Esc inside Tighten mode just exits the mode;
-                // selection clears (the canvas handler) only when
-                // not in mode.
-                AppDispatch.send Msg.ToggleTightenMode
-                e.Handled <- true
-            | Key.Delete, KeyModifiers.None
-            | Key.Back,   KeyModifiers.None ->
-                // Delete every selected polygon + every selected
-                // SRef from the active macro. Avalonia maps the
-                // macOS `delete` key to `Key.Back`; the standalone
-                // forward-delete key on full keyboards is
-                // `Key.Delete`. Handle both.
-                AppDispatch.send Msg.DeleteSelection
-                e.Handled <- true
-            | k, KeyModifiers.None
-              when (Services.AppDispatch.currentModel
-                    |> Option.map (fun m -> m.TightenMode)
-                    |> Option.defaultValue false) ->
-                let n =
-                    match k with
-                    | Key.D1 | Key.NumPad1 -> 1
-                    | Key.D2 | Key.NumPad2 -> 2
-                    | Key.D3 | Key.NumPad3 -> 3
-                    | Key.D4 | Key.NumPad4 -> 4
-                    | _ -> 0
-                if n > 0 then
-                    AppDispatch.send (Msg.CommitTighten n)
-                    e.Handled <- true
-            | _ -> ())
+            | None -> ())
 
 type App() =
     inherit Application()

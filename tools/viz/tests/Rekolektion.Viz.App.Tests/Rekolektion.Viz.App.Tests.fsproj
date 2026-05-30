@@ -17,6 +17,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CameraZoomTests.fs" />
+    <Compile Include="KeyMapTests.fs" />
     <Compile Include="UpdateTests.fs" />
     <Compile Include="RoutedSaveTests.fs" />
     <Compile Include="RecentsTests.fs" />

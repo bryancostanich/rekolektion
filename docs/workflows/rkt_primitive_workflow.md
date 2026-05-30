@@ -2098,6 +2098,49 @@ Mismatch shows up as an LVS property error (e.g., "circuit1: 250
 vs. circuit2: 25, delta=164 %"). Structurally the circuits still
 match; the property error gates an otherwise-clean LVS.
 
+### MIM caps live at the parent — don't absorb them into sub-cell bboxes
+
+`gen_cap_mim_m3` produces a primitive that occupies **met3 and up**
+(`capm` / `capm2` plates plus the met3/met4 contact rings). The area
+underneath — li1, met1, met2 — is electrically and DRC-wise **free
+for any other routing or devices**. That free channel is the whole
+point of using a MIM rather than a poly/MOS cap: the cap pays its
+area cost on the upper metals only.
+
+**The trap:** if you SRef a MIM cap inside a sub-cell, the sub-cell's
+bbox now includes the cap's footprint. Parent placers (every helper
+that consumes `inspect_primitive(...).bbox`, plus any P&R tool that
+sees the sub-cell as a LEF abstract) treat that bbox as **occupied
+area**. Any net the parent wanted to run through the cap's footprint
+at li1/met1/met2 has to detour around the sub-cell — you've thrown
+away the free routing channel.
+
+**Rule:** for any MIM cap large enough to span a useful routing
+channel (rule of thumb: cap bbox bigger than the FET stack it pairs
+with), place the cap at the **parent** that owns the routing context.
+The sub-cell that uses the cap should expose the cap-side nets
+(e.g. `cc_low`, `vout`) as external pins so the parent wires them.
+
+```python
+# In d11_comp (sub-cell): just M_NULL with cc_low as an external pin.
+m_null_sref = rkt.SRef(cell=nfet, origin=(0, 0))
+# ... pwell taps + VSS rail + cc_low label on M_NULL.S met2 strap ...
+
+# In d11_ota_v4 (parent): C_C placed alongside d11_comp, with cc_low
+# wired between d11_comp's external pin and the cap's bottom plate.
+cc_sref = rkt.SRef(cell=mim, origin=(cc_x, cc_y))
+# Now li1/met1/met2 routing can run UNDER the cap freely.
+```
+
+**Exception:** small caps that sit alone in their own cell with no
+FETs underneath (e.g. a dedicated comp-cap-only sub-cell), or
+cap-array primitives where the cap-array IS the block (e.g. SAR
+cap-DAC). The rule kicks in when the cap is bundled WITH FETs in
+the same sub-cell and the cap's bbox dominates.
+
+Bryan flagged this 2026-05-29 reviewing d11_comp v0 (M_NULL + 1 pF
+C_C bundled together — cap moved to the parent on review).
+
 ### Always DRC each primitive standalone after a generator change
 
 Even a no-op-looking generator change (e.g., re-minting for a new

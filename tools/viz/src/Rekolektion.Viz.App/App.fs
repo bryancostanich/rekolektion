@@ -400,21 +400,6 @@ type App() =
             AppDispatch.send Msg.ReloadActiveMacro)
         fileSub.Items.Add(reloadItem)
 
-        fileSub.Items.Add(NativeMenuItemSeparator())
-
-        let undoItem = NativeMenuItem("Undo")
-        undoItem.Gesture <- KeyGesture(Key.Z, KeyModifiers.Meta)
-        undoItem.Click.Add(fun _ ->
-            AppDispatch.send Msg.UndoActiveMacro)
-        fileSub.Items.Add(undoItem)
-
-        let redoItem = NativeMenuItem("Redo")
-        redoItem.Gesture <-
-            KeyGesture(Key.Z, KeyModifiers.Meta ||| KeyModifiers.Shift)
-        redoItem.Click.Add(fun _ ->
-            AppDispatch.send Msg.RedoActiveMacro)
-        fileSub.Items.Add(redoItem)
-
         // Routed-save orchestration: when the active macro has a
         // Library snapshot, plan the save synchronously, then drive
         // conflict / orphan / multi-file dialogs as needed before
@@ -635,16 +620,130 @@ type App() =
         fileItem.Menu <- fileSub
         menu.Items.Add(fileItem)
 
+        // ── Edit menu ─────────────────────────────────────────────
+        // Selection ops. Every keymap binding that mutates the
+        // active macro lives here so users can discover the hot
+        // key alongside the command name.
+        let editItem = NativeMenuItem("Edit")
+        let editSub = NativeMenu()
+        let addItem
+                (parent: NativeMenu)
+                (label: string)
+                (gestureOpt: KeyGesture option)
+                (msg: Msg.Msg) : NativeMenuItem =
+            let mi = NativeMenuItem(label)
+            match gestureOpt with
+            | Some g -> mi.Gesture <- g
+            | None -> ()
+            mi.Click.Add(fun _ -> AppDispatch.send msg)
+            parent.Items.Add(mi)
+            mi
+        let addSeparator (parent: NativeMenu) =
+            parent.Items.Add(NativeMenuItemSeparator())
+        // Undo / Redo migrated from File menu — macOS convention.
+        addItem editSub "Undo"
+            (Some (KeyGesture(Key.Z, KeyModifiers.Meta)))
+            Msg.UndoActiveMacro |> ignore
+        addItem editSub "Redo"
+            (Some (KeyGesture(Key.Z, KeyModifiers.Meta ||| KeyModifiers.Shift)))
+            Msg.RedoActiveMacro |> ignore
+        addSeparator editSub
+        addItem editSub "Duplicate selection"
+            (Some (KeyGesture(Key.D, KeyModifiers.Meta)))
+            Msg.DuplicateSelection |> ignore
+        addItem editSub "Delete selection"
+            (Some (KeyGesture(Key.Delete, KeyModifiers.None)))
+            Msg.DeleteSelection |> ignore
+        addSeparator editSub
+        addItem editSub "Rotate 90° CCW"
+            (Some (KeyGesture(Key.Space, KeyModifiers.None)))
+            Msg.RotateSelection90 |> ignore
+        addItem editSub "Mirror about X axis (flip Y)"
+            (Some (KeyGesture(Key.X, KeyModifiers.None)))
+            Msg.MirrorSelectionX |> ignore
+        addItem editSub "Mirror about Y axis (flip X)"
+            (Some (KeyGesture(Key.Y, KeyModifiers.None)))
+            Msg.MirrorSelectionY |> ignore
+        editItem.Menu <- editSub
+        menu.Items.Add(editItem)
+
+        // ── View menu ─────────────────────────────────────────────
+        // Display toggles (no model mutation).
         let viewItem = NativeMenuItem("View")
         let viewSub = NativeMenu()
-
-        let logItem = NativeMenuItem("Toggle log pane")
-        logItem.Click.Add(fun _ ->
-            AppDispatch.send Msg.ToggleLogPane)
-        viewSub.Items.Add(logItem)
-
+        addItem viewSub "Toggle dimensions"
+            (Some (KeyGesture(Key.D, KeyModifiers.None)))
+            Msg.ToggleDimensions |> ignore
+        addItem viewSub "Toggle DRC overlay"
+            (Some (KeyGesture(Key.R, KeyModifiers.None)))
+            Msg.ToggleDrc |> ignore
+        addItem viewSub "Toggle walkaround debug overlay"
+            (Some (KeyGesture(Key.O, KeyModifiers.None)))
+            Msg.ToggleDebugOverlay |> ignore
+        addItem viewSub "Toggle ratlines"
+            (Some (KeyGesture(Key.U, KeyModifiers.None)))
+            Msg.ToggleRatlines |> ignore
+        addItem viewSub "Toggle ruler"
+            (Some (KeyGesture(Key.L, KeyModifiers.None)))
+            Msg.ToggleRuler |> ignore
+        addItem viewSub "Toggle grid"
+            (Some (KeyGesture(Key.G, KeyModifiers.None)))
+            Msg.ToggleGrid |> ignore
+        addItem viewSub "Toggle snap"
+            (Some (KeyGesture(Key.S, KeyModifiers.None)))
+            Msg.ToggleSnap |> ignore
+        addItem viewSub "Toggle labels"
+            None
+            Msg.ToggleLabels |> ignore
+        addSeparator viewSub
+        addItem viewSub "Toggle log pane"
+            None
+            Msg.ToggleLogPane |> ignore
         viewItem.Menu <- viewSub
         menu.Items.Add(viewItem)
+
+        // ── Mode menu ─────────────────────────────────────────────
+        // Tool / interaction modes.
+        let modeItem = NativeMenuItem("Mode")
+        let modeSub = NativeMenu()
+        addItem modeSub "Wire (draw routes)"
+            (Some (KeyGesture(Key.W, KeyModifiers.None)))
+            Msg.ToggleRoutingMode |> ignore
+        addItem modeSub "Edit routing (segment gizmos)"
+            (Some (KeyGesture(Key.E, KeyModifiers.None)))
+            Msg.ToggleEditRoutingMode |> ignore
+        addItem modeSub "Tighten (numbered candidates)"
+            (Some (KeyGesture(Key.T, KeyModifiers.None)))
+            Msg.ToggleTightenMode |> ignore
+        modeItem.Menu <- modeSub
+        menu.Items.Add(modeItem)
+
+        // ── Layer focus menu ──────────────────────────────────────
+        // Number-row shortcuts that focus a routing layer (dims
+        // others). The Layer menu lets users discover the binding
+        // when they don't know it.
+        let layerItem = NativeMenuItem("Layer focus")
+        let layerSub = NativeMenu()
+        addItem layerSub "li1"
+            (Some (KeyGesture(Key.OemTilde, KeyModifiers.None)))
+            (Msg.SetActiveLayer (Some (67, 20))) |> ignore
+        addItem layerSub "met1"
+            (Some (KeyGesture(Key.D1, KeyModifiers.None)))
+            (Msg.SetActiveLayer (Some (68, 20))) |> ignore
+        addItem layerSub "met2"
+            (Some (KeyGesture(Key.D2, KeyModifiers.None)))
+            (Msg.SetActiveLayer (Some (69, 20))) |> ignore
+        addItem layerSub "met3"
+            (Some (KeyGesture(Key.D3, KeyModifiers.None)))
+            (Msg.SetActiveLayer (Some (70, 20))) |> ignore
+        addItem layerSub "met4"
+            (Some (KeyGesture(Key.D4, KeyModifiers.None)))
+            (Msg.SetActiveLayer (Some (71, 20))) |> ignore
+        addItem layerSub "Clear focus (show all layers)"
+            (Some (KeyGesture(Key.D0, KeyModifiers.None)))
+            (Msg.SetActiveLayer None) |> ignore
+        layerItem.Menu <- layerSub
+        menu.Items.Add(layerItem)
 
         menu
 

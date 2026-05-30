@@ -16,6 +16,7 @@
     <ProjectReference Include="..\..\src\Rekolektion.Viz.App\Rekolektion.Viz.App.fsproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="CameraZoomTests.fs" />
     <Compile Include="UpdateTests.fs" />
     <Compile Include="RoutedSaveTests.fs" />
     <Compile Include="RecentsTests.fs" />

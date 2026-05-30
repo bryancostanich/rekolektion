@@ -5,6 +5,34 @@ open System.Numerics
 
 let private deg2rad d = float32 (d * Math.PI / 180.0)
 
+/// Camera state derived from `zoom` + `extent` per the three-stage
+/// zoom model used by `buildOrbitMvp`. Pulled out so unit tests can
+/// verify the regime boundaries without rendering.
+type CameraState = {
+    /// Camera distance from `target` along the view vector.
+    Radius: float32
+    /// Vertical FOV in radians.
+    FovYRad: float32
+}
+
+/// Three-stage zoom → (radius, fovY).
+///   zoom < 1                →  dolly OUT  (radius = extent*1.5/zoom, FOV 60°)
+///   1 ≤ zoom ≤ fovFloorZoom →  TELEPHOTO (radius = extent*1.5, FOV = 60°/zoom)
+///   zoom > fovFloorZoom     →  dolly IN   (radius = extent*1.5 * fovFloorZoom/zoom,
+///                                          FOV held at fovFloorDeg)
+/// `fovFloorDeg = 2.0` → `fovFloorZoom = 30`.
+/// Lower floor: zoom is clamped to ≥ 0.05.
+let cameraStateForZoom (zoom: float) (extent: float) : CameraState =
+    let fovFloorDeg = 2.0
+    let fovFloorZoom = 60.0 / fovFloorDeg   // = 30
+    let z = max zoom 0.05
+    let dollyOutZoom = min z 1.0
+    let telephotoZoom = max 1.0 (min z fovFloorZoom)
+    let dollyInZoom = max 1.0 (z / fovFloorZoom)
+    let radius = float32 (extent * 1.5 / dollyOutZoom / dollyInZoom)
+    let fovYRad = deg2rad (60.0 / telephotoZoom)
+    { Radius = radius; FovYRad = fovYRad }
+
 /// Build a perspective MVP that frames a sphere of `extent` diameter
 /// centered on `target`. Camera orbits at `radius = extent * 1.5` at
 /// zoom=1 (close enough that perspective parallax across the bbox
@@ -47,15 +75,9 @@ let buildOrbitMvp
         : Matrix4x4 =
     let w, h = bounds
     let aspect = float32 (w / max h 1.0)
-    // Three-stage zoom (see header comment).
-    let fovFloorDeg = 2.0
-    let fovFloorZoom = 60.0 / fovFloorDeg   // = 30
-    let z = max zoom 0.05
-    let dollyOutZoom = min z 1.0                  // < 1 → camera pulls back
-    let telephotoZoom = max 1.0 (min z fovFloorZoom)
-    let dollyInZoom = max 1.0 (z / fovFloorZoom)  // > 1 → camera dives toward target
-    let radius =
-        float32 (extent * 1.5 / dollyOutZoom / dollyInZoom)
+    // Three-stage zoom (see header comment + `cameraStateForZoom`).
+    let cam = cameraStateForZoom zoom extent
+    let radius = cam.Radius
     let yaw = deg2rad yawDeg
     let pitch = deg2rad pitchDeg
     let camOffset =
@@ -64,7 +86,7 @@ let buildOrbitMvp
             radius * MathF.Cos(pitch) * MathF.Cos(yaw),
             radius * MathF.Sin(pitch))
     let camPos = target + camOffset
-    let fovY = deg2rad (60.0 / telephotoZoom)
+    let fovY = cam.FovYRad
     // Bbox-aware near/far. Project the 8 world-space AABB corners
     // onto the view direction and bracket the frustum to that
     // interval (plus a 10% pad — generous enough for ratline and

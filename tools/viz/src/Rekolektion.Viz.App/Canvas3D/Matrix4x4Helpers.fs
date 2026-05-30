@@ -6,12 +6,28 @@ open System.Numerics
 let private deg2rad d = float32 (d * Math.PI / 180.0)
 
 /// Build a perspective MVP that frames a sphere of `extent` diameter
-/// centered on `target`. Camera orbits at `radius = extent * 2.5`,
-/// giving a comfortable FOV without near-clipping the closest face
-/// of the bbox. Yaw/pitch are in degrees relative to the standard
-/// "+Y is forward, +Z is up" basis: pitch=0 puts the camera at the
-/// horizon, pitch=90 directly above. Zoom narrows/widens the FOV
-/// (zoom>1 zooms in).
+/// centered on `target`. Camera orbits at `radius = extent * 1.5` at
+/// zoom=1 (close enough that perspective parallax across the bbox
+/// is visually obvious). Yaw/pitch are in degrees relative to the
+/// standard "+Y is forward, +Z is up" basis: pitch=0 puts the camera
+/// at the horizon, pitch=90 directly above.
+///
+/// Zoom is split into three regimes to avoid the camera tunnelling
+/// into the macro AABB on big cells while still allowing unbounded
+/// "look closer":
+///   zoom < 1                →  dolly OUT  (radius grows, FOV 60°)
+///   zoom = 1                →  reference framing
+///   1 ≤ zoom ≤ fovFloorZoom →  TELEPHOTO (radius held, FOV = 60°/zoom)
+///   zoom > fovFloorZoom     →  dolly IN   (FOV held at fovFloor,
+///                                          radius shrinks toward `target`)
+/// `fovFloorZoom = 60° / fovFloorDeg`. The dolly-in stage drives the
+/// camera toward `target` (the user's pan-target), not bboxCenter, so
+/// the dive goes where the user is actually looking. Earlier "always
+/// dolly toward bboxCenter" design put the camera inside the AABB
+/// sphere for any zoom > ~1.5 on a big cell — wide-span frustums,
+/// wrecked depth precision, "wiggy" view of whatever single voxel was
+/// under the camera. Telephoto-then-dolly keeps the camera outside
+/// the macro until the user has panned to choose a target.
 ///
 /// Perspective (rather than orthographic) matches what users see in
 /// MeshLab / Preview / Blender when opening a GLB — far things look
@@ -31,20 +47,15 @@ let buildOrbitMvp
         : Matrix4x4 =
     let w, h = bounds
     let aspect = float32 (w / max h 1.0)
-    // Camera at 1.5× extent from target at zoom=1 — close enough
-    // that perspective parallax across the bbox is visually obvious
-    // (the near edge is ~3× the size of the far edge with 60° FOV).
-    // Wheel zoom scales RADIUS, not FOV: zoom>1 pulls the camera
-    // closer along the same view ray, zoom<1 pushes it back. FOV
-    // stays at a comfortable 60° at every zoom level, so a heavily
-    // zoomed-in view doesn't degenerate into a 1°-FOV telephoto
-    // cone. (Previous design narrowed FOV with zoom — fine for
-    // small zoom values on similar-sized cells, but on big cells
-    // the user had to scroll the wheel hard to compensate, driving
-    // FOV down to a few degrees and producing pathological
-    // perspective distortion.)
+    // Three-stage zoom (see header comment).
+    let fovFloorDeg = 2.0
+    let fovFloorZoom = 60.0 / fovFloorDeg   // = 30
+    let z = max zoom 0.05
+    let dollyOutZoom = min z 1.0                  // < 1 → camera pulls back
+    let telephotoZoom = max 1.0 (min z fovFloorZoom)
+    let dollyInZoom = max 1.0 (z / fovFloorZoom)  // > 1 → camera dives toward target
     let radius =
-        float32 (extent * 1.5 / max zoom 0.05)
+        float32 (extent * 1.5 / dollyOutZoom / dollyInZoom)
     let yaw = deg2rad yawDeg
     let pitch = deg2rad pitchDeg
     let camOffset =
@@ -53,16 +64,14 @@ let buildOrbitMvp
             radius * MathF.Cos(pitch) * MathF.Cos(yaw),
             radius * MathF.Sin(pitch))
     let camPos = target + camOffset
-    // 60° vertical FOV — fixed regardless of zoom.
-    let fovY = deg2rad 60.0
-    // Bbox-aware near/far. Tying both to `radius` (the old
-    // formula) coupled the frustum depth to zoom: on a deep zoom
-    // the far plane could come in front of the macro's far edge
-    // and clip it. Instead, project the 8 world-space AABB
-    // corners onto the view direction and bracket the frustum to
-    // that interval (plus a 5% pad). Uses `bboxCenter`, not
-    // `target` — the user's pan drifts target away from the bbox
-    // center, but the bbox itself stays put in world coords.
+    let fovY = deg2rad (60.0 / telephotoZoom)
+    // Bbox-aware near/far. Project the 8 world-space AABB corners
+    // onto the view direction and bracket the frustum to that
+    // interval (plus a 10% pad — generous enough for ratline and
+    // label overshoot at the bbox boundary without trashing depth
+    // precision the way the old 200% pad did). Uses `bboxCenter`,
+    // not `target` — the user's pan drifts target away from the
+    // bbox center, but the bbox itself stays put in world coords.
     let forward =
         if radius > 0f then -camOffset / radius
         else Vector3.UnitY
@@ -78,12 +87,7 @@ let buildOrbitMvp
                 if d < minD then minD <- d
                 if d > maxD then maxD <- d
     let span = maxD - minD
-    // Extreme pad — pushes far well past anything the silicon bbox
-    // sees, so auxiliary 3D content (labels, ruler text, axis
-    // markers, ratlines extending to off-bbox labels, mesh-extruder
-    // overshoot) can't get sliced. The 24-bit depth buffer still
-    // has plenty of precision at µm scale even with 3× span.
-    let pad = max 50.0f (span * 2.0f)
+    let pad = max 5.0f (span * 0.1f)
     let near = max 0.01f (minD - pad)
     let far  = maxD + pad
     let proj = Matrix4x4.CreatePerspectiveFieldOfView(fovY, aspect, near, far)

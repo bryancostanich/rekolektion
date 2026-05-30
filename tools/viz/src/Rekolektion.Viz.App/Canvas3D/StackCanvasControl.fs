@@ -3205,10 +3205,13 @@ type StackCanvasControl() =
         // ~1.5× per click-wheel tick (4× faster than 1.15) and
         // accumulates trackpad gestures smoothly.
         let factor = System.Math.Exp(e.Delta.Y * 0.4)
-        // No upper cap — the near/far frustum is bbox-aware so it
-        // stays valid at any zoom. Lower floor of 0.05 keeps the
-        // `radius = extent * 1.5 / zoom` division well-conditioned.
-        zoom <- max 0.05 (zoom * factor)
+        // Upper cap 1000: well past where buildOrbitMvp's three-stage
+        // zoom transitions to dolly-in (zoom > 30, FOV held at 2°,
+        // camera dives toward `target`). Cap is numerical sanity —
+        // at zoom=1000 the camera is ~30× past the FOV-floor radius,
+        // µm-scale features fill the screen.
+        // Lower floor 0.05 keeps the dolly-out division well-conditioned.
+        zoom <- zoom * factor |> max 0.05 |> min 1000.0
         saveCameraFor lastFittedTopCell
         this.RequestNextFrameRendering()
 

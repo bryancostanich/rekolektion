@@ -165,6 +165,60 @@ let paintIn
         // Drop alpha to ~25% to dim non-matching polygons.
         SKColor(c.Red, c.Green, c.Blue, byte (int c.Alpha * 64 / 255))
 
+    // Per-poly bbox + viewport-overlap cull.  d11_ota_v4 has ~7800
+    // flat polys; at any practical zoom level the viewport contains
+    // a small fraction of them.  Skipping off-screen polys before
+    // any SKPath allocation drops paint cost from O(all polys) to
+    // O(visible polys) — pan/zoom becomes responsive instead of
+    // re-painting the whole macro every invalidate.
+    let polyOverlapsViewport (p: FlatPolygon) : bool =
+        // Empty / degenerate poly → keep (treat as visible, the
+        // downstream branch is a no-op for points < 3 anyway).
+        if p.Points.Length = 0 then true
+        else
+            let mutable xMn = System.Int64.MaxValue
+            let mutable yMn = System.Int64.MaxValue
+            let mutable xMx = System.Int64.MinValue
+            let mutable yMx = System.Int64.MinValue
+            for pt in p.Points do
+                if pt.X < xMn then xMn <- pt.X
+                if pt.X > xMx then xMx <- pt.X
+                if pt.Y < yMn then yMn <- pt.Y
+                if pt.Y > yMx then yMx <- pt.Y
+            xMx >= vb.MinX && vb.MaxX >= xMn
+            && yMx >= vb.MinY && vb.MaxY >= yMn
+
+    // Detect closed-rectangle polys (4 distinct corners + closing
+    // repeat) so we can fast-path them through canvas.DrawRect
+    // instead of allocating an SKPath. Rectangles are the bulk of
+    // routing geometry — vias, pads, wire bodies, primitive metal
+    // straps are all 4-point closed quads.
+    let inline isAxisAlignedRect (pts: Point[]) : bool =
+        if pts.Length <> 5 then false
+        else
+            // Exactly 5 points (closing repeat) AND the bbox
+            // corners match the 4 distinct points in any order.
+            // Cheap signature: 2 unique X values and 2 unique Y
+            // values across pts[0..3].
+            let x0 = pts.[0].X
+            let x1 = pts.[1].X
+            let x2 = pts.[2].X
+            let x3 = pts.[3].X
+            let y0 = pts.[0].Y
+            let y1 = pts.[1].Y
+            let y2 = pts.[2].Y
+            let y3 = pts.[3].Y
+            let xLo = min (min x0 x1) (min x2 x3)
+            let xHi = max (max x0 x1) (max x2 x3)
+            let yLo = min (min y0 y1) (min y2 y3)
+            let yHi = max (max y0 y1) (max y2 y3)
+            // Every point is at one of (xLo|xHi, yLo|yHi).
+            let onCorner (p: Point) =
+                (p.X = xLo || p.X = xHi) && (p.Y = yLo || p.Y = yHi)
+            onCorner pts.[0] && onCorner pts.[1]
+            && onCorner pts.[2] && onCorner pts.[3]
+            && pts.[4] = pts.[0]   // closing repeat
+
     for (key, polys) in ordered do
         if Visibility.isLayerVisible toggle key then
             match Layout.Layer.bySky130Number (fst key) (snd key) with
@@ -186,7 +240,8 @@ let paintIn
                         match blockClosure with
                         | Some s -> s.Contains poly.SourceStructure
                         | None   -> true
-                    if poly.Points.Length >= 3 && inBlock then
+                    if poly.Points.Length >= 3 && inBlock
+                       && polyOverlapsViewport poly then
                         let highlightMatch =
                             (not isHighlightActive)
                             || highlightSet.Contains((poly.SourceStructure, poly.SourceIndex))
@@ -194,13 +249,31 @@ let paintIn
                         let isMatch = highlightMatch && focusMatch
                         fill.Color <- if isMatch then fillFull else fillDim
                         stroke.Color <- if isMatch then strokeFull else strokeDim
-                        use path = new SKPath()
-                        path.MoveTo(project vb poly.Points.[0])
-                        for i in 1 .. poly.Points.Length - 1 do
-                            path.LineTo(project vb poly.Points.[i])
-                        path.Close()
-                        canvas.DrawPath(path, fill)
-                        canvas.DrawPath(path, stroke)
+                        if isAxisAlignedRect poly.Points then
+                            // Fast path: axis-aligned rect → DrawRect.
+                            // No SKPath allocation, no per-point
+                            // MoveTo/LineTo.
+                            let mutable xMn = System.Single.MaxValue
+                            let mutable yMn = System.Single.MaxValue
+                            let mutable xMx = System.Single.MinValue
+                            let mutable yMx = System.Single.MinValue
+                            for pt in poly.Points do
+                                let sp = project vb pt
+                                if sp.X < xMn then xMn <- sp.X
+                                if sp.X > xMx then xMx <- sp.X
+                                if sp.Y < yMn then yMn <- sp.Y
+                                if sp.Y > yMx then yMx <- sp.Y
+                            let r = SKRect(xMn, yMn, xMx, yMx)
+                            canvas.DrawRect(r, fill)
+                            canvas.DrawRect(r, stroke)
+                        else
+                            use path = new SKPath()
+                            path.MoveTo(project vb poly.Points.[0])
+                            for i in 1 .. poly.Points.Length - 1 do
+                                path.LineTo(project vb poly.Points.[i])
+                            path.Close()
+                            canvas.DrawPath(path, fill)
+                            canvas.DrawPath(path, stroke)
 
 /// Auto-fit variant: ViewBox derived from polygon bbox.
 let paint (canvas: SKCanvas) (size: int * int) (flat: FlatPolygon array) (toggle: Visibility.ToggleState) : unit =

@@ -426,6 +426,23 @@ let private toolSimulateDrag (args: JsonElement) : ToolResult =
     with ex ->
         toolError (sprintf "simulate_drag failed: %s" ex.Message)
 
+/// Tool: rekolektion_viz_tidy_routing — POST /tidy-routing. Runs
+/// `Routing.Wire.dedupCoincidentRects` on the active macro:
+/// collapses same-(layer, bbox) RectEls per cell so duplicate
+/// via stacks emitted at shared wire endpoints get cleaned up.
+/// Idempotent — safe to re-run. Pushes one undo snapshot on the
+/// viz side. No arguments; the active macro is the implicit
+/// target.
+let private toolTidyRouting (_args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let resp = udsRequest "POST" "/tidy-routing" (Some "{}")
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "tidy_routing failed: %s" ex.Message)
+
 /// Tool: rekolektion_viz_tail_log { sinceLine?, limit? } — read a
 /// trailing slice of the viz JSONL log at `~/.rekolektion/viz.log`.
 /// Reads the file directly (no UDS round-trip) since the MCP server
@@ -763,6 +780,7 @@ let private toolHandlers
         "rekolektion_viz_render",            toolVizRender
         "rekolektion_viz_run_macro",         toolRunMacro
         "rekolektion_viz_emit_lef",          toolEmitLef
+        "rekolektion_viz_tidy_routing",      toolTidyRouting
     ]
 
 /// Static tool schema list for MCP's `tools/list` response. Each
@@ -1057,6 +1075,21 @@ let private toolList : obj =
                                  omitForeignOffset = box {| ``type`` = "boolean" |}
                                  legacyZeroShortForm = box {| ``type`` = "boolean" |} |}
                           required = [| "input"; "output" |] |} |}
+        box {| name = "rekolektion_viz_tidy_routing"
+               description =
+                   "Collapse byte-identical same-layer rects in the \
+                    active macro's Document via \
+                    Routing.Wire.dedupCoincidentRects. Cleans up the \
+                    duplicate-via-stack pattern where two wires \
+                    sharing a physical endpoint each emitted their \
+                    own complete via stack. Idempotent (safe to \
+                    re-run). Pushes one undo snapshot on the viz \
+                    side. No arguments — the active macro is the \
+                    implicit target. Returns `{ok: bool}`."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties = obj()
+                          additionalProperties = false |} |}
     |] |}
 
 // ---------------------------------------------------------------

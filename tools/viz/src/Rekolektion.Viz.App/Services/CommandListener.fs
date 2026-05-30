@@ -199,6 +199,13 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
         | "/close-all" ->
             Dispatcher.UIThread.Post(fun () -> dispatch Msg.CloseAllTabs)
             "{\"ok\":true}"
+        | "/tidy-routing" ->
+            // Runs Routing.Wire.dedupCoincidentRects on the active
+            // macro — collapses byte-identical same-layer rects.
+            // Idempotent and ungoverned (no body), so the empty
+            // payload from the MCP wrapper is fine.
+            Dispatcher.UIThread.Post(fun () -> dispatch Msg.TidyRoutingGeometry)
+            "{\"ok\":true}"
         | _ -> "{\"ok\":false,\"error\":\"unknown path\"}"
     with ex ->
         // Escape any embedded quotes so a thrown message containing

@@ -87,6 +87,7 @@ def verify_lvs(
     extra_flatten_cells: list[str] | None = None,
     extra_equates: list[tuple[str, str]] | None = None,
     port_aliases: list[tuple[str, str]] | None = None,
+    dangling_ports: list[str] | None = None,
 ) -> LVSResult:
     """Run LVS on a `.rkt` block against a reference SPICE schematic.
 
@@ -166,6 +167,7 @@ def verify_lvs(
             extra_flatten_cells=extra_flatten_cells,
             extra_equates=extra_equates,
             port_aliases=port_aliases,
+            dangling_ports=dangling_ports,
         )
     finally:
         if cleanup and gds.exists():

@@ -225,6 +225,135 @@ def _apply_port_aliases(
     return rewritten_path
 
 
+def _apply_dangling_ports(
+    schematic_path: Path,
+    cell_name: str,
+    dangling_ports: list[str],
+    output_dir: Path,
+) -> Path:
+    """Rewrite the schematic to drop ports that the schematic declares
+    but never references in any device line — i.e., interface-compat
+    ports that exist on the .subckt header for parent-side wiring
+    convention but have no internal use.
+
+    Without this shim, the cell author would have to paint a dangling
+    labeled met1 island just so the layout subckt has a matching port
+    name. That wastes silicon and feels like a hack (Bryan 2026-05-30:
+    "that smells. is this the best way to handle that?").
+
+    Safety contract:
+
+    1. VERIFIED. Each named port must appear EXACTLY ONCE — on the
+       `.subckt <cell>` header — and must NOT appear in any device
+       instance line (X / M / R / C / V / etc) or any internal
+       reference. If it's actually wired to something, stripping it
+       would mask a real LVS mismatch. Refused in that case.
+
+    2. CONSTRAINED. Only one transformation: removes the named tokens
+       from the `.subckt` header. No other line edits.
+
+    3. AUDITABLE. Rewritten file saved to
+       `<output_dir>/<schematic-stem>_lvs_dangling_stripped.spice`.
+
+    4. STRICT DIFF. Exactly 2 line changes (1 header removed + 1
+       header rewritten). Aborts on any other delta.
+
+    5. ORIGINAL UNCHANGED. Original file opened read-only.
+
+    Returns the path to the rewritten schematic.
+    """
+
+    schematic_path = Path(schematic_path)
+    original = schematic_path.read_text(encoding="utf-8")
+    lines = original.splitlines()
+
+    # Find the .subckt header for cell_name.
+    subckt_idx: int | None = None
+    for i, ln in enumerate(lines):
+        tokens = ln.strip().split()
+        if (len(tokens) >= 2
+                and tokens[0].lower() == ".subckt"
+                and tokens[1] == cell_name):
+            if subckt_idx is not None:
+                raise PortAliasError(
+                    f"dangling_ports: expected exactly one `.subckt "
+                    f"{cell_name}` declaration in {schematic_path}, "
+                    f"found multiple"
+                )
+            subckt_idx = i
+    if subckt_idx is None:
+        raise PortAliasError(
+            f"dangling_ports: no `.subckt {cell_name}` declaration "
+            f"in {schematic_path}"
+        )
+
+    header_tokens = lines[subckt_idx].split()
+    if len(header_tokens) < 2:
+        raise PortAliasError(
+            f"dangling_ports: malformed .subckt header in {schematic_path}"
+        )
+    declared_ports = set(header_tokens[2:])
+
+    # For each requested port, verify it's declared and verify it's NOT
+    # referenced anywhere in the body (between .subckt and matching
+    # .ends).
+    end_idx: int | None = None
+    for i in range(subckt_idx + 1, len(lines)):
+        tokens = lines[i].strip().split()
+        if tokens and tokens[0].lower() == ".ends":
+            end_idx = i
+            break
+    if end_idx is None:
+        raise PortAliasError(
+            f"dangling_ports: no matching .ends after .subckt "
+            f"{cell_name} in {schematic_path}"
+        )
+
+    for port in dangling_ports:
+        if port not in declared_ports:
+            raise PortAliasError(
+                f"dangling_ports: port `{port}` not declared in "
+                f"`.subckt {cell_name}` — nothing to strip"
+            )
+        # Scan body for references. Tokens on every device line; the
+        # port name must appear nowhere.
+        for i in range(subckt_idx + 1, end_idx):
+            body_tokens = lines[i].split()
+            if port in body_tokens:
+                raise PortAliasError(
+                    f"dangling_ports: port `{port}` is referenced on "
+                    f"line {i+1} of {schematic_path} — it's not "
+                    f"actually dangling. Refusing to strip; stripping "
+                    f"would mask a real LVS mismatch."
+                )
+
+    # Rewrite the header — drop the named ports.
+    new_ports = [t for t in header_tokens[2:] if t not in dangling_ports]
+    new_header = " ".join(header_tokens[:2] + new_ports)
+    out_lines = list(lines)
+    out_lines[subckt_idx] = new_header
+    rewritten = "\n".join(out_lines) + "\n"
+
+    # Verify diff: exactly 2 line-level changes (header − and +).
+    import difflib
+    diff_changes = sum(
+        1 for d in difflib.unified_diff(
+            lines, out_lines, n=0, lineterm="")
+        if d.startswith(("-", "+")) and not d.startswith(("---", "+++"))
+    )
+    if diff_changes != 2:
+        raise PortAliasError(
+            f"dangling_ports: shim produced {diff_changes} line "
+            f"changes; expected 2 (1 header removed + 1 rewritten). "
+            f"Aborting."
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rewritten_path = output_dir / f"{schematic_path.stem}_lvs_dangling_stripped.spice"
+    rewritten_path.write_text(rewritten, encoding="utf-8")
+    return rewritten_path
+
+
 def extract_netlist(
     gds_path: str | Path,
     cell_name: str = "",
@@ -346,6 +475,7 @@ def run_lvs(
     extra_flatten_cells: list[str] | None = None,
     extra_equates: list[tuple[str, str]] | None = None,
     port_aliases: list[tuple[str, str]] | None = None,
+    dangling_ports: list[str] | None = None,
 ) -> LVSResult:
     """Run LVS: extract layout netlist, compare against schematic.
 
@@ -401,6 +531,17 @@ def run_lvs(
         )
         schematic_for_compare = aliased_schematic
         aliases_applied = tuple(port_aliases)
+
+    # Step 1.6: Strip dangling interface-compat ports if requested.
+    # See _apply_dangling_ports for the safety contract — refuses to
+    # strip a port that's actually referenced in the schematic body.
+    if dangling_ports:
+        schematic_for_compare = _apply_dangling_ports(
+            schematic_for_compare,
+            cell_name or "(top)",
+            list(dangling_ports),
+            output_dir,
+        )
 
     # Audit 2026-05-03 / task #108: VSUBS→VSS textual rewrite REMOVED.
     # The same alias is now expressed as a netgen `equate nets VSUBS VSS`

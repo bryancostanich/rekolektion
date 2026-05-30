@@ -215,6 +215,56 @@ let private commitRouteWith
                                         endLayer d.Layer ex ey
                                     |> List.map viaSegToDraft
                                 | _ -> []
+                            // Pin-patch suppression — Bug 1 of the
+                            // d11_ota_v4 routing-failure audit
+                            // (2026-05-30).  A multifinger primitive
+                            // (e.g. d11_stage2's D/S/G strap) bakes
+                            // in its own met1 + mcon contact stack
+                            // at each pin.  When a wire lands on
+                            // that pin, the via-stack + pad emit
+                            // here paints a redundant mcon/via on
+                            // top of the primitive's contact —
+                            // stacked mcons → mcon.2 spacing-zero
+                            // violations (the user saw 33 tiles in
+                            // one cluster).
+                            //
+                            // Skip any pad / via-cut whose centre
+                            // already sits inside an existing flat
+                            // poly on the SAME layer.  Conservative
+                            // — only filters pads + via cuts (which
+                            // are anchored at the snap target),
+                            // leaves the body `segs` untouched (a
+                            // wire that happens to pass over an
+                            // existing rect mid-span still emits
+                            // its body).  Same-net check is geometric
+                            // only — LVS catches actual electrical
+                            // mistakes.
+                            let centreCoveredAt
+                                    (layer: int * int) (cx: int64) (cy: int64) : bool =
+                                let (ln, dt) = layer
+                                mc.FlatPolygons
+                                |> Array.exists (fun p ->
+                                    if p.Layer <> ln || p.DataType <> dt then false
+                                    elif p.Points.Length = 0 then false
+                                    else
+                                        let mutable xMin = System.Int64.MaxValue
+                                        let mutable yMin = System.Int64.MaxValue
+                                        let mutable xMax = System.Int64.MinValue
+                                        let mutable yMax = System.Int64.MinValue
+                                        for pt in p.Points do
+                                            if pt.X < xMin then xMin <- pt.X
+                                            if pt.X > xMax then xMax <- pt.X
+                                            if pt.Y < yMin then yMin <- pt.Y
+                                            if pt.Y > yMax then yMax <- pt.Y
+                                        cx >= xMin && cx <= xMax
+                                        && cy >= yMin && cy <= yMax)
+                            let viaCovered (v: Routing.Draft.DraftSegment) : bool =
+                                let cx = (v.X1 + v.X2) / 2L
+                                let cy = (v.Y1 + v.Y2) / 2L
+                                centreCoveredAt v.Layer cx cy
+                            let startVias = startVias |> List.filter (not << viaCovered)
+                            let endVias   = endVias   |> List.filter (not << viaCovered)
+                            let pads      = pads      |> List.filter (not << viaCovered)
                             let allSegs = pads @ segs @ startVias @ endVias
                             // Stamp every rect in this commit with
                             // the same WireId — the wire and its

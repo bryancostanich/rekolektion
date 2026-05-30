@@ -75,7 +75,13 @@ let private pk (cell: string) (idx: int) : Flatten.PolyKey =
     { Cell = cell; Index = idx; TopInstance = None }
 
 let private mkRectPoly (x0: int64) (y0: int64) (x1: int64) (y1: int64) : Poly = {
-    Layer = Named ("sky130", "met1")
+    // nwell, not met1 — fixture polys must not share a layer with
+    // routes-under-test, otherwise the pin-patch suppression in
+    // commitRouteWith (drops pads whose centre coincides with an
+    // existing same-layer flat poly) would silently filter the
+    // route's endpoint pads and break the "1 wire + 2 pads = 3
+    // rects" expectation.
+    Layer = Named ("sky130", "nwell")
     Points = [
         { X = x0; Y = y0 }
         { X = x1; Y = y0 }

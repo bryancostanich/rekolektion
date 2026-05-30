@@ -68,6 +68,52 @@ let maxWireId (doc : Document) : int =
 let nextWireId (doc : Document) : int =
     maxWireId doc + 1
 
+/// Collapse RectEls that share an identical (layer, normalised
+/// bbox) within each cell.  The FIRST occurrence in document
+/// order wins — its props, including its wire-id, are kept; every
+/// subsequent duplicate is dropped.
+///
+/// Used to clean up the routing-emit pattern where two wires
+/// (different wire-ids) sharing a physical endpoint each paint
+/// their own complete via stack — fully overlapped mcon + via1
+/// + pad geometry that DRC flags as spacing-zero violations.
+/// `commitRouteWith` runs this after every route commit so new
+/// dupes don't accumulate; the `TidyRoutingGeometry` Msg runs it
+/// on demand to clean up files authored before the fix.
+///
+/// Provenance loss: a duplicate's wire-id annotation is dropped
+/// silently.  That wire's `segmentsOf` query returns one fewer
+/// rect at the shared endpoint, but the physical connectivity is
+/// preserved (same rect, both wires terminate on it).  Multi-id
+/// provenance via a (wire-ids n1 n2 …) list prop is a future
+/// schema extension; out of scope for this pass.
+let dedupCoincidentRects (doc : Document) : Document =
+    let layerKey (r : Rectangle) : int * int =
+        Rekolektion.Viz.Core.Rkt.ToGds.layerToGds r.Layer
+    let bboxKey (r : Rectangle) =
+        let (l, d) = layerKey r
+        let xLo = min r.X1 r.X2
+        let xHi = max r.X1 r.X2
+        let yLo = min r.Y1 r.Y2
+        let yHi = max r.Y1 r.Y2
+        (l, d, xLo, yLo, xHi, yHi)
+    let updatedCells =
+        doc.Cells
+        |> List.map (fun c ->
+            let seen =
+                System.Collections.Generic.HashSet<
+                    int * int * int64 * int64 * int64 * int64>()
+            let kept =
+                c.Elements
+                |> List.choose (fun el ->
+                    match el with
+                    | RectEl r ->
+                        if seen.Add (bboxKey r) then Some el
+                        else None
+                    | _ -> Some el)
+            { c with Elements = kept })
+    { doc with Cells = updatedCells }
+
 /// All rectangles in `doc` belonging to wire `id`, in document
 /// order. Empty when no rectangle carries that id. Used by
 /// segment-drag and vertex-edit operations to find the wire's

@@ -104,6 +104,12 @@ type Msg =
     /// were the wire's name; deleting the wire deletes the name.
     /// Pushes one undo snapshot covering all of it.
     | DeleteSelection
+    /// Run Routing.Wire.dedupCoincidentRects across the active
+    /// macro's Document — collapses same-bbox same-layer rects per
+    /// cell.  Cleans up the routing-emit duplicate-via-stack pattern
+    /// in files authored before commit-time dedup landed.  Pushes
+    /// one undo snapshot.  No-op when there's no active macro.
+    | TidyRoutingGeometry
     /// Resize a single top-cell polygon (or rect) so its bbox
     /// becomes `(xMin, yMin, xMax, yMax)`. For a `PolyEl`, every
     /// point lerps from the element's current bbox to the new

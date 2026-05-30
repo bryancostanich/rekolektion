@@ -227,50 +227,61 @@ let private commitRouteWith
                                 |> List.map
                                     (rectOfDraftSegment mc.Document.Pdk
                                      >> Routing.Wire.setWireId wireId)
-                            let doc' = appendRectsToTop rects mc.Document
+                            let docAppended = appendRectsToTop rects mc.Document
+                            // Collapse duplicate-bbox same-layer rects.
+                            // When this new wire's endpoint coincides
+                            // with an existing wire's endpoint, the
+                            // emitted via stack is byte-identical to
+                            // what's already there.  Without dedup the
+                            // overlapped mcon + via1 + pad rects fire
+                            // mcon.2 spacing-zero DRC violations.  The
+                            // existing rect wins (it appears first in
+                            // document order) and keeps its wire-id;
+                            // the new commit's duplicate is silently
+                            // dropped.  See `Routing.Wire.dedup` for
+                            // provenance-loss caveats.
+                            let doc' = Routing.Wire.dedupCoincidentRects docAppended
                             let flat' = Layout.Flatten.flatten doc'
                             let inst' = Layout.Instances.enumerate doc'
                             // Incrementally update the macro's NetEntry
                             // for d.StartNet so the new wire rects are
                             // claimed without re-running LabelFlood
-                            // (30-60s on dense macros). The rects are
-                            // top-cell-direct (TopInstanceIndex = None)
-                            // at known sequential indices appended to
-                            // the top cell. Without this, the new rects
-                            // are foreign to the next walkaround call
-                            // and the wire detours around its OWN just-
-                            // committed segments.
+                            // (30-60s on dense macros).  PolygonRefs
+                            // are derived from the POST-dedup top cell
+                            // by wire-id (not by appended position),
+                            // so rects that dedup dropped don't make
+                            // it into the net — their physical role is
+                            // already covered by the surviving same-
+                            // bbox rect from a prior wire.
                             let nets' =
                                 let topName =
-                                    mc.Document.TopCell
+                                    doc'.TopCell
                                     |> Option.orElseWith (fun () ->
-                                        mc.Document.Cells
+                                        doc'.Cells
                                         |> List.tryHead
                                         |> Option.map (fun c -> c.Name))
-                                let topElemCount =
-                                    match topName with
-                                    | None -> 0
-                                    | Some n ->
-                                        mc.Document.Cells
-                                        |> List.tryFind (fun c -> c.Name = n)
-                                        |> Option.map (fun c -> List.length c.Elements)
-                                        |> Option.defaultValue 0
                                 if d.StartNet = "" || topName.IsNone then mc.Nets
                                 else
-                                    // Each rect carries its own (num,
-                                    // dt) — via cuts on contact layers
-                                    // and pads on intermediate metals
-                                    // need PolygonRefs on those layers,
-                                    // not on the wire layer.
                                     let newRefs : PolygonRef list =
-                                        allSegs
-                                        |> List.mapi (fun i seg ->
-                                            let (num, dt) = seg.Layer
-                                            { Structure = topName.Value
-                                              Layer = num
-                                              DataType = dt
-                                              Index = topElemCount + i
-                                              TopInstanceIndex = None })
+                                        doc'.Cells
+                                        |> List.tryFind (fun c -> c.Name = topName.Value)
+                                        |> Option.map (fun c ->
+                                            c.Elements
+                                            |> List.indexed
+                                            |> List.choose (fun (i, el) ->
+                                                match el with
+                                                | Rekolektion.Viz.Core.Rkt.Types.RectEl r
+                                                    when Routing.Wire.getWireId r = Some wireId ->
+                                                    let (num, dt) =
+                                                        Rekolektion.Viz.Core.Rkt.ToGds.layerToGds r.Layer
+                                                    Some {
+                                                        Structure = topName.Value
+                                                        Layer = num
+                                                        DataType = dt
+                                                        Index = i
+                                                        TopInstanceIndex = None }
+                                                | _ -> None))
+                                        |> Option.defaultValue []
                                     let entry =
                                         match Map.tryFind d.StartNet mc.Nets with
                                         | Some e ->
@@ -1452,6 +1463,40 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     ActiveMacroPath = Some activePath'
                     Selection = Set.empty
                     InstanceSelection = Set.empty }, Cmd.none
+    | Msg.TidyRoutingGeometry ->
+        // One-shot cleanup: collapse same-bbox same-layer rects per
+        // cell.  Cleans files authored before commit-time dedup
+        // landed (see commitRouteWith).  Idempotent on a clean doc.
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some path ->
+            let mutable activePath' = path
+            let openMacros' =
+                model.OpenMacros
+                |> List.map (fun mc ->
+                    if mc.Path <> path then mc
+                    else
+                        let lib' = Routing.Wire.dedupCoincidentRects mc.Document
+                        // Skip the undo + flatten churn when nothing
+                        // changed — dedup is idempotent so re-running
+                        // it on a clean macro is otherwise free.
+                        if lib' = mc.Document then mc
+                        else
+                            let flat' = Layout.Flatten.flatten lib'
+                            let inst' = Layout.Instances.enumerate lib'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Document = lib'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            activePath' <- mc'.Path
+                            mc')
+            { model with
+                OpenMacros = openMacros'
+                ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.MovePolygonDbu (sname, idx, dxDbu, dyDbu) ->
         let key : Layout.Flatten.PolyKey =
             { Cell = sname; Index = idx; TopInstance = None }

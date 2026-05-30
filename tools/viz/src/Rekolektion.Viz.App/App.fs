@@ -664,6 +664,10 @@ type App() =
         addItem editSub "Mirror about Y axis (flip X)"
             (Some (KeyGesture(Key.Y, KeyModifiers.None)))
             Msg.MirrorSelectionY |> ignore
+        addSeparator editSub
+        addItem editSub "Tidy duplicate routing geometry"
+            None
+            Msg.TidyRoutingGeometry |> ignore
         editItem.Menu <- editSub
         menu.Items.Add(editItem)
 

@@ -2543,6 +2543,101 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     matrix. The kwarg is optional for backward compatibility, but
     every new call should include it.
 
+21. **Primitive pin lookups MUST fail loud — never `if pin: emit(...)`.**
+    Any `info.pin(...)` / `pin_coord(...)` / similar lookup against a
+    primitive that should expose a terminal must raise on miss. Silent
+    `if coord is not None: lab(...)` patterns drop the label from the
+    netlist — the component then floats in the routed layout. DRC
+    passes (geometry is fine); LVS may pass if Magic autonames the
+    floating net, or fail loud — outcome depends on extraction config.
+    Either way the silicon is wrong: a floating Miller-comp resistor
+    means no compensation = unstable OTA; a floating body tap means
+    latch-up; a floating S/D pin means wrong inference behavior.
+
+    Burned on: `opamp_lowv_buffer` R_null (2026-05-30). Guessed the
+    poly resistor's terminals were `"1"/"2"` (FET-style); actual is
+    `R1`/`R2`. `info.pin("1")` returned None; `if r1: lab(...)`
+    swallowed; resistor shipped without `net_ota`/`net_cc` labels;
+    Bryan caught it visually in viz before routing started.
+
+    **Apply at every pin-lookup site:**
+
+    1. **Grep the primitive `.rkt` BEFORE writing label code.** Don't
+       guess terminal names from FET muscle memory. Terminal naming
+       differs per primitive class:
+       - FET (`gen_*fet_*`): `D`, `G`, `S`, `B` (PMOS only — NMOS
+         body is psub, no explicit label)
+       - Resistor (`gen_res_*`): `R1`, `R2` (positional)
+       - MIM cap (`gen_cap_mim_m3`): check primitive — typically
+         positional/numeric
+       - BJT (`gen_pnp_05v5`): `Emitter`, `Base`, `Collector` (named;
+         see §"Common LVS failure modes")
+       - Sub-block: whatever the author tagged via `port_label`
+
+    2. **Helper functions must raise, not skip.** Replace the
+       silent-skip pattern with an assertion that lists available
+       terminals:
+
+       ```python
+       def pin_coord(sref, ci, terminal):
+           pin = ci.pin(terminal)
+           if pin is None:
+               available = sorted({p.terminal for p in ci.pins})
+               raise RuntimeError(
+                   f"primitive {ci.name!r} has no pin {terminal!r}; "
+                   f"available terminals: {available}. "
+                   "Silent skip would float the component in routing."
+               )
+           return (sref.origin[0] + pin.origin[0],
+                   sref.origin[1] + pin.origin[1])
+       ```
+
+    3. **Every iterated pin emission must visit every pin of every
+       device.** If a primitive intentionally omits a pin (e.g., NMOS
+       has no `B` because psub is implicit), document the omission
+       explicitly in the per-device pin map — don't fall through to
+       a silent skip. Same logic as `analog_design.md` "compute the
+       operating point for EVERY device before SPICE" — the missing-
+       label case is the layout analog.
+
+    4. **Multi-finger primitives have MULTIPLE pins per terminal —
+       label every one.** `info.pin(terminal)` returns only the FIRST
+       match. For nf>1 primitives, iterate `ci.pins` and label every
+       position whose `terminal` matches. Example: `pfet_*_nf4_*` has
+       4 G pins (one per finger), 2 D pins, 2 S pins; labeling only
+       the first means 3+ unlabeled gate strips that Magic may
+       autoname as a separate net (LVS fails) OR silently misroute
+       (Magic-extraction-quirk-dependent). The workflow already
+       warns about nf>1 needing parent-paint metal jumpers to short
+       finger drains/sources — labels are the analog of that on the
+       net-graph side.
+
+       Use a `pin_coords` plural helper that returns a list; the
+       single-pin `pin_coord` should raise if `len(coords) > 1`,
+       forcing the caller to choose which finger anchors a "single"
+       port label and to label all the rest separately. Example:
+
+       ```python
+       def pin_coords(sref, ci, terminal):
+           matches = [p for p in ci.pins if p.terminal == terminal]
+           if not matches:
+               raise RuntimeError(...)
+           return [(sref.origin[0]+p.origin[0],
+                    sref.origin[1]+p.origin[1]) for p in matches]
+
+       def pin_coord(sref, ci, terminal):
+           coords = pin_coords(sref, ci, terminal)
+           if len(coords) > 1:
+               raise RuntimeError(
+                   f"{ci.name!r} has {len(coords)} {terminal!r} pins "
+                   "(multi-finger). Use pin_coords for labels.")
+           return coords[0]
+       ```
+
+    **Never accept `if pin: lab(...)` in a build script review.** It
+    is a silicon-killing pattern. Same for any pin emission that only
+    visits the first match of a multi-finger device.
+
 ---
 
 ## Quick smoke test

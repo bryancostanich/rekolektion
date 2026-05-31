@@ -364,6 +364,19 @@ tech load {techfile}
 gds read {gds_abs}
 {"" if not cell_name else f"load {cell_name}"}
 select top cell
+# Grow the box past the cell bbox on all four sides. `drc listall why`
+# filters results by the current box, and `select top cell` sets the
+# box flush with the cell's geometry — edge-effect violations
+# (met1.1 min width, nwell.2a spacing across the boundary, etc.) land
+# outside that tight box and get silently dropped. Without the grow,
+# rekolektion (and CLAUDE.md's interactive recipe) under-report DRC
+# tiles vs what Magic actually computes. Tile coordinates are in
+# Magic-internal units; 100 internal units == 50 nm at the sky130B
+# scale factor of 2, so 2000 ≈ 1 µm of margin in every direction.
+box grow n 2000
+box grow s 2000
+box grow e 2000
+box grow w 2000
 drc catchup
 set why_list [drc listall why]
 

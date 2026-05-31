@@ -51,7 +51,7 @@ from rekolektion.primitives.sky130._gds_to_rkt import read_gds
 # Labeling the primitive nwell as "B" exposes it as a named subckt
 # port; the parent then binds it explicitly by position, no
 # auto-promotion needed.
-_FET_GENERATOR_VERSION = 9
+_FET_GENERATOR_VERSION = 10
 
 # met1.6 min area in nm² (0.083 µm²). Bumped to 90000 for safety margin
 # — Magic's met1.6 evaluator flagged 83230 (290 × 287) as a violation
@@ -416,6 +416,50 @@ def _add_multifinger_sd_ties(cell: rkt.Cell, nf: int) -> None:
 
     cell.elements.extend(_emit_strap(d_idx, d_strap_y))
     cell.elements.extend(_emit_strap(s_idx, s_strap_y))
+
+    # ── Gate bridge ─────────────────────────────────────────────────
+    # The PDK draws each gate finger's top-/bottom-side gate-contact
+    # li1 stub as a separate horizontal strip (≈170 nm tall, ≈500 nm
+    # wide), with ~290 nm gaps between adjacent stubs. Magic extracts
+    # each as its own gate node → the primitive becomes N transistors
+    # with N independent G ports. Fix: paint a wide li1 rect at the
+    # same Y as the stubs, spanning all of them — they merge by
+    # same-layer overlap into one continuous polygon.
+    li1_layer = rkt.named("sky130", "li1")
+    # Find candidate gate li1 stubs: short-and-wide (w > 2*h, h close
+    # to li1 min ≈170 nm) and well above/below the diff strip Y range.
+    gate_stubs: list[rkt.Rect] = []
+    for el in cell.elements:
+        if not isinstance(el, rkt.Rect) or el.layer != li1_layer:
+            continue
+        w = el.x2 - el.x1
+        h = el.y2 - el.y1
+        if h >= w:
+            continue
+        if w < 2 * h:
+            continue
+        # Stub Y must be outside the D/S diff Y range (we identified
+        # sd_y_min/max above). Stubs above sd_y_max → topc gates;
+        # stubs below sd_y_min → botc gates.
+        if not (el.y1 >= sd_y_max or el.y2 <= sd_y_min):
+            continue
+        gate_stubs.append(el)
+
+    # Group stubs by Y-band (same row → same gate strap candidate).
+    by_y: dict[tuple[int, int], list[rkt.Rect]] = {}
+    for s in gate_stubs:
+        by_y.setdefault((s.y1, s.y2), []).append(s)
+
+    gate_bridges: list[rkt.Element] = []
+    for (y1, y2), stubs in by_y.items():
+        if len(stubs) < 2:
+            continue
+        x_min = min(s.x1 for s in stubs)
+        x_max = max(s.x2 for s in stubs)
+        gate_bridges.append(rkt.Rect(
+            layer=li1_layer, x1=x_min, y1=y1, x2=x_max, y2=y2,
+        ))
+    cell.elements.extend(gate_bridges)
 
     # Consolidate the per-finger labels (D0/D2/D4/.../S1/S3/.../G0/.../G9)
     # down to D/S/G so the cell exposes the conventional 4-port

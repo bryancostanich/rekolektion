@@ -51,11 +51,20 @@ let private polyKeyTuples
 /// `msg` log category so a user / agent can replay an action stream
 /// without paying for full payload serialisation. Reflection cost
 /// is negligible vs the dispatch + view diff that follows.
-/// Switch the active tab while preserving per-tab selection state.
-/// Stashes the outgoing tab's (Selection, InstanceSelection,
-/// SelectedRatlines) into SavedSelections under the old path, then
-/// loads the incoming tab's saved sets (empty if never selected
-/// in). No-op when newPath equals the current active path.
+/// Switch the active tab while preserving per-tab state.  Stashes
+/// the outgoing tab's (Selection, InstanceSelection, SelectedRatlines,
+/// Toggle.VisibleRatlines) into SavedSelections under the old path,
+/// then loads the incoming tab's saved sets (empty if never seen).
+/// No-op when newPath equals the current active path.
+///
+/// VisibleRatlines lives in `Toggle` (which is otherwise per-Model,
+/// not per-tab) but the USER-PERCEIVED ratlines-visibility is per-
+/// tab — without this stash/restore, switching tabs would wipe a
+/// curated subset to the next tab's all-nets default and the user
+/// can't recover it short of re-curating manually.  Saved entry
+/// uses `None` for VisibleRatlines when the outgoing tab never had
+/// its ratlines explicitly toggled, so the incoming tab keeps
+/// LoadComplete's default behaviour.
 let private switchActive
         (newPath: string option)
         (model: Model.Model)
@@ -69,15 +78,25 @@ let private switchActive
                 |> Map.add oldPath
                     (model.Selection,
                      model.InstanceSelection,
-                     model.SelectedRatlines)
+                     model.SelectedRatlines,
+                     model.Toggle.VisibleRatlines)
             | None -> model.SavedSelections
-        let sel, instSel, ratSel =
+        let savedEntry =
             match newPath with
-            | Some p ->
-                match Map.tryFind p saved with
-                | Some triple -> triple
-                | None -> Set.empty, Set.empty, Set.empty
-            | None -> Set.empty, Set.empty, Set.empty
+            | Some p -> Map.tryFind p saved
+            | None -> None
+        let sel, instSel, ratSel, visRat =
+            match savedEntry with
+            | Some quad -> quad
+            | None -> Set.empty, Set.empty, Set.empty, Set.empty
+        // Restore VisibleRatlines from the incoming tab's saved
+        // entry when present.  Without a saved entry (first time
+        // switching to this tab), leave Toggle.VisibleRatlines
+        // alone — LoadComplete's all-nets default applies.
+        let toggle' =
+            match savedEntry with
+            | Some _ -> { model.Toggle with VisibleRatlines = visRat }
+            | None -> model.Toggle
         // Drop the new tab's entry from the saved map — it's live
         // now in the top-level fields, so keeping a stale copy
         // would let the next switch resurrect old state.
@@ -90,6 +109,7 @@ let private switchActive
             Selection = sel
             InstanceSelection = instSel
             SelectedRatlines = ratSel
+            Toggle = toggle'
             SavedSelections = saved' }
 
 // ADR-0002 — route-commit helpers used by RouteFinish.
@@ -440,32 +460,40 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     backend.DeriveNets macro.Document
                     (fun nets -> Msg.NetsLoaded (macro.Path, nets))
                     (fun ex -> Msg.LogLine (sprintf "net derivation failed: %s" ex.Message))
-        // Ratlines-on state carries across file loads, but the
-        // visible-net SET is per-macro. Stale net names from the
-        // previous file's nets wouldn't match anything in the new
-        // macro, so nothing would render until the user toggled
-        // the button twice. Refresh to the new macro's nets when
-        // ratlines were on.
-        let toggle' =
-            if model.Toggle.VisibleRatlines.IsEmpty then toggle'
-            elif macro.Nets.IsEmpty then toggle'  // wait for NetsLoaded
-            else
-                let newNets = macro.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
-                Visibility.setVisibleRatlines newNets toggle'
-        // Stash the old tab's selection and load anything saved for
-        // the newly-active path (typically empty on a fresh load,
-        // populated when the user reloaded the same path). Doing
-        // this through switchActive keeps the per-tab selection
-        // contract consistent with explicit tab clicks.
+        // Stash the old tab's selection FIRST so the outgoing tab's
+        // VisibleRatlines is captured at its TRUE value (the user's
+        // curated subset).  The ratlines-carry-across-load override
+        // below applies AFTER, to the incoming tab only.  Without
+        // this order, the override would stomp the outgoing tab's
+        // Toggle.VisibleRatlines before switchActive stashed it, and
+        // switching back to the prior tab would resurrect the
+        // stomped value.
+        let wasSavedForIncoming =
+            model.SavedSelections |> Map.containsKey macro.Path
         let switched =
             switchActive (Some macro.Path)
                 { model with
                     OpenMacros = openMacros
                     RecentFiles = recents
                     Toggle = toggle' }
+        // Ratlines-on state carries across file loads, but the
+        // visible-net SET is per-macro.  When the incoming tab has
+        // no saved entry (brand new), propagate the carry-on
+        // behaviour: refresh VisibleRatlines to the new macro's
+        // nets.  When the incoming tab HAS a saved entry,
+        // switchActive already restored its saved VisibleRatlines —
+        // don't overwrite it.
+        let switched' =
+            if wasSavedForIncoming then switched
+            elif switched.Toggle.VisibleRatlines.IsEmpty then switched
+            elif macro.Nets.IsEmpty then switched   // wait for NetsLoaded
+            else
+                let newNets = macro.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                { switched with
+                    Toggle = Visibility.setVisibleRatlines newNets switched.Toggle }
         // Persist open-tabs list so the next launch reopens them.
-        backend.PersistSession switched
-        switched, cmd
+        backend.PersistSession switched'
+        switched', cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
         // the user closed the tab while net derivation was in flight.

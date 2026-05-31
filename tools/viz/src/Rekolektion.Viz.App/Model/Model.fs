@@ -109,7 +109,14 @@ type Model = {
     /// selection across switches — the in-flight active fields
     /// stay the same so the canvas / inspector code is
     /// unchanged.
-    SavedSelections : Map<string, Set<Layout.Flatten.PolyKey> * Set<int> * Set<string>>
+    /// Per-tab snapshot quad: (polygon Selection, InstanceSelection,
+    /// SelectedRatlines, Toggle.VisibleRatlines).  Stashed by
+    /// switchActive when leaving a tab; restored on return.  Without
+    /// the 4th element, a per-tab curated visible-ratlines subset
+    /// gets stomped by LoadComplete (which sets VisibleRatlines to
+    /// all-nets-of-newly-loaded-macro) and the user's prior
+    /// selection on the original tab is lost.
+    SavedSelections : Map<string, Set<Layout.Flatten.PolyKey> * Set<int> * Set<string> * Set<string>>
     /// Whether the canvas draws the dimension overlay (arrows +
     /// µm labels between selected instances and their nearest
     /// in-radius neighbors). Toggleable via TopBar / D key. Off

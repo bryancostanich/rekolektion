@@ -19,6 +19,7 @@
     <Compile Include="CameraZoomTests.fs" />
     <Compile Include="KeyMapTests.fs" />
     <Compile Include="SessionStateTests.fs" />
+    <Compile Include="TabSwitchRatlinesTests.fs" />
     <Compile Include="UpdateTests.fs" />
     <Compile Include="RoutedSaveTests.fs" />
     <Compile Include="RecentsTests.fs" />

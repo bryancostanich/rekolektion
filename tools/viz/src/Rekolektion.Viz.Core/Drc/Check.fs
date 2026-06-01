@@ -562,7 +562,15 @@ let checkWithToggles
             // the condition are excluded from the violation
             // calculation.
             //
-            // Per-cluster reporting falls out of the post-pass.
+            // Compat semantics:
+            //   * Magic: emit one Violation per region slab/
+            //     interval — sensible for the Magic-vs-viz
+            //     parity tests + canvas per-cluster UX.
+            //   * Klayout: emit four Violations per failing
+            //     inner polygon (one per bbox edge) to match
+            //     KLayout deck's edge-pair count on symmetric
+            //     square inners. nonClusterableRules keeps the
+            //     post-pass from merging them.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let outers = polysOnLayer idx outer
@@ -575,21 +583,61 @@ let checkWithToggles
                     |> Array.map (fun (p, _, _) -> p)
                 if innerPolysFiltered.Length > 0 then
                     let outerR = Region.ofPolygons outerPolys
-                    let innerR = Region.ofPolygons innerPolysFiltered
                     let outerCore = Size.shrink limit outerR
-                    let violations = Boolean.subtract innerR outerCore
-                    for slab in violations.Slabs do
-                        for iv in slab.Intervals do
-                            let m =
-                                min (iv.X2 - iv.X1) slab.Height
-                            result.Add {
-                                Rule = name
-                                LayerNumber = inner.Number
-                                LayerType   = inner.DataType
-                                LimitDbu    = limit
-                                MeasuredDbu = m
-                                BboxA = (iv.X1, slab.Y, iv.X2, slab.Y + slab.Height)
-                                BboxB = None }
+                    match compat with
+                    | Compat.Klayout ->
+                        // KLayout's `outer.edges.enclosing(inner, N)`
+                        // semantics: only fires when outer EXISTS
+                        // near the inner but the enclosure margin is
+                        // < N.  The "no outer at all" case is
+                        // covered by a separate MustBeInside-style
+                        // rule (`via.4a_a`, `m2.4_a`, etc.) in the
+                        // deck.  We mirror that here — skip inners
+                        // whose bbox has no outer touching at all.
+                        //
+                        // Per qualifying inner: 4 edge-bbox emits
+                        // when the inner's interior isn't fully
+                        // inside outer-core.
+                        for ip in innerPolysFiltered do
+                            let iBb = bboxOf ip
+                            let (ix1, iy1, ix2, iy2) = iBb
+                            let hasNearbyOuter =
+                                outers |> Array.exists (fun (_, oBb, _) ->
+                                    bboxOverlaps iBb oBb)
+                            if hasNearbyOuter then
+                                let iR = Region.ofPolygons [| ip |]
+                                let leftover = Boolean.subtract iR outerCore
+                                if leftover.Slabs.Length > 0 then
+                                    let edges = [|
+                                        (ix1, iy1, ix2, iy1)
+                                        (ix1, iy2, ix2, iy2)
+                                        (ix1, iy1, ix1, iy2)
+                                        (ix2, iy1, ix2, iy2)
+                                    |]
+                                    for edgeBb in edges do
+                                        result.Add {
+                                            Rule = name
+                                            LayerNumber = inner.Number
+                                            LayerType   = inner.DataType
+                                            LimitDbu    = limit
+                                            MeasuredDbu = 0L
+                                            BboxA = edgeBb
+                                            BboxB = None }
+                    | Compat.Magic ->
+                        let innerR = Region.ofPolygons innerPolysFiltered
+                        let violations = Boolean.subtract innerR outerCore
+                        for slab in violations.Slabs do
+                            for iv in slab.Intervals do
+                                let m =
+                                    min (iv.X2 - iv.X1) slab.Height
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = inner.Number
+                                    LayerType   = inner.DataType
+                                    LimitDbu    = limit
+                                    MeasuredDbu = m
+                                    BboxA = (iv.X1, slab.Y, iv.X2, slab.Y + slab.Height)
+                                    BboxB = None }
         | Rules.EnclosureOfIntersection (name, outer, inner, withL, minUm) ->
             // Like Enclosure, but the "inner" being checked is the
             // intersection (inner ∩ withL). Matches Magic's
@@ -1225,15 +1273,17 @@ let checkWithToggles
     // Track 02 Phase 4 — rules whose emit style is "one violation
     // per failing edge" or "one per uncovered source" don't want
     // the spatial-clustering post-pass to merge their independent
-    // emits.  Derived from view.Rules by kind; under Compat.Klayout
-    // the Enclosure / AsymEnclosure family will also land here once
-    // edge-counting is wired up.  See Fork #2 of
-    // docs/decisions/autonomous_2026-06-01.md.
+    // emits.  Derived from view.Rules by kind:
+    //   * MustBeInside (any compat) — one per uncovered source
+    //   * Enclosure (Klayout only) — four per failing inner
+    // See Fork #2 of docs/decisions/autonomous_2026-06-01.md.
     let nonClusterableRules : Set<string> =
         view.Rules
         |> List.choose (fun r ->
             match r with
             | Rules.MustBeInside (n, _, _) -> Some n
+            | Rules.Enclosure (n, _, _, _, _) when compat = Compat.Klayout ->
+                Some n
             | _ -> None)
         |> Set.ofList
     waivedViolations

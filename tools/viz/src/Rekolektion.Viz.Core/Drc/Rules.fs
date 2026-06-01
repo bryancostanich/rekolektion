@@ -775,15 +775,22 @@ module Klayout =
         // polygon-style `.not().output()` emission.
         //
         // KLayout's edge-style containment cousins (`via.4a_a`,
-        // which uses `.drc(width == 0.15).not().output()`) need a
-        // size-filtered + edge-counting variant — deferred.
-        // KLayout's sub-min-margin enclosure rules (via.4a sym,
-        // via.5a asym, m2.4 sym, m2.5 asym, m1.5 asym) need the
-        // existing Enclosure / AsymEnclosure rule kinds refitted
-        // for edge-counting under Compat.Klayout — deferred.
+        // which uses `.drc(width == 0.15).not().output()`) need
+        // a size-filtered + edge-counting variant — deferred.
+        // The asymmetric `via.5a` (0.085 alt-enclosure) and
+        // `m2.5` (0.085 alt) need AsymEnclosure edge-counting —
+        // deferred until per-side gap computation lands.
         MustBeInside ("ct.4",   mcon, li1)   // mcon must be covered by li1
         MustBeInside ("m1.4",   mcon, met1)  // mcon must be enclosed by m1
         MustBeInside ("m2.4_a", via,  met2)  // via1 must be enclosed by m2
+        // --- Symmetric Enclosure (sub-min margin) ---
+        //
+        // Edge-counting under Compat.Klayout: emits 4 violations
+        // per under-enclosed inner — matches KLayout deck's
+        // per-edge output. The post-pass clustering skips these
+        // via nonClusterableRules.
+        Enclosure ("via.4a", met1, via, 0.055, Always)
+        Enclosure ("m2.4",   met2, via, 0.055, Always)
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

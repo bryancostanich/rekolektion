@@ -41,11 +41,12 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 27 rules promotable on the KLayout
+**Coverage as of 2026-06-01: 28 rules promotable on the KLayout
 diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
 met3 plus mcon + via1 size rules plus poly / nwell width+spacing
 plus nsdm / psdm width AND spacing plus three containment
-("must-be-inside") rules — `ct.4`, `m1.4`, `m2.4_a`.
+("must-be-inside") rules — `ct.4`, `m1.4`, `m2.4_a` — plus the
+edge-counted symmetric Enclosure rules `via.4a` and `m2.4`.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
@@ -68,6 +69,8 @@ plus nsdm / psdm width AND spacing plus three containment
 | `ct.4` | OK | FAIL | mcon must be covered by li1. New `MustBeInside` rule kind; polygon-style emit (1 violation per uncovered mcon). |
 | `m1.4` | OK | FAIL | mcon must be enclosed by m1. Same kind. |
 | `m2.4_a` | OK | FAIL | via1 must be enclosed by m2 (in periphery). Same kind. |
+| `via.4a` | OK | FAIL | Symmetric m1 enclosure of via1 ≥ 0.055 µm. Edge-counted under Compat.Klayout — 4 violations per under-enclosed inner. Skipped when no m1 exists near the via (`via.4a_a` is the deck's rule for that case). |
+| `m2.4` | OK | FAIL | Symmetric m2 enclosure of via1 ≥ 0.055 µm. Same edge-counting. |
 | `poly.1a` | OK | OK | Min poly width 0.15 µm. |
 | `poly.2` | OK | OK | Min poly spacing 0.21 µm. Spacing delta seen on metal layers does NOT recur here. |
 | `nwell.1` | OK | OK | Min nwell width 0.84 µm. |
@@ -83,27 +86,28 @@ Surfaced by the mcon, via1, and via.4a_underenclosed corpus cells.
 Splits into two structural problems that have to land before any
 of these rules can flip green on the KLayout diagonal:
 
-**Problem 1 — edge-pair counting vs polygon counting.** KLayout's
-deck output counts edge-pairs: a symmetric under-enclosure on a
-square inner counts 4× (one per failing edge). F#'s `Enclosure`
-check emits one violation per failing inner polygon. Probed on
-`viol_via.4a_underenclosed`: F# reports `via.4a=1` per via,
-ext-KLayout reports 4. Same logical violation, different counts.
-The harness's exact-match gate would always read FAIL on
-symmetric enclosure rules even though F#'s check is functionally
-correct.
+**Problem 1 — edge-pair counting vs polygon counting (landed
+for symmetric Enclosure).** The `Enclosure` handler in
+`Drc/Check.fs` now branches on compat:
 
-Two ways out:
+- `Compat.Magic` — emit one Violation per region slab/interval
+  (the existing Magic-fidelity morphology output).
+- `Compat.Klayout` — for each inner polygon whose interior is
+  not fully inside the outer-shrunk-by-N core AND whose bbox
+  overlaps at least one outer (so the rule fires only when
+  outer is present, matching KLayout's
+  `outer.edges.enclosing(inner, N)` semantics): emit 4
+  violations (one per inner bbox edge). The post-pass
+  clustering skips these via `nonClusterableRules`.
 
-- (a) Tighten F# Enclosure to emit one violation per failing
-  edge, matching KLayout's edge-pair convention.  Engine
-  internals change inside `Drc/Check.fs`.
-- (b) Relax the harness to accept "both > 0" on edge-vs-polygon
-  counting rules.  Soft signal, easier landing.
+Result: `via.4a` and `m2.4` (symmetric 0.055 µm enclosures)
+green on the KLayout diagonal.
 
-(a) is the right answer long-term — Phase 5 F#-primary needs
-KLayout-equivalent counts, not just KLayout-equivalent rule
-firing.  Pre-Phase-5 batch.
+`AsymEnclosure` is structurally similar but with per-axis
+thresholds — needs its own edge-counting branch (per-side gap
+computation against `oneDirUm` / `otherDirUm`). Tracks:
+`via.4b`, `via.5a` (KLayout asym name), `m2.5`, `m1.5`. Queued
+as its own batch.
 
 **Problem 2 — "must be inside" rule kind (landed).** New
 `MustBeInside (name, source, destination)` rule kind in

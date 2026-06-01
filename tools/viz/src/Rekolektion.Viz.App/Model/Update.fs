@@ -814,6 +814,10 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let model' = { model with ShowDrc = not model.ShowDrc }
         backend.PersistSession model'
         model', Cmd.none
+    | Msg.ToggleDrcLabels ->
+        let model' = { model with ShowDrcLabels = not model.ShowDrcLabels }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleDebugOverlay ->
         { model with DebugOverlay = not model.DebugOverlay }, Cmd.none
     | Msg.ScrubDispersedWires ->

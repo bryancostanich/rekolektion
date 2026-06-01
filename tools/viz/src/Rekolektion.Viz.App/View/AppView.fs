@@ -68,6 +68,10 @@ let private gds2DShowDrcAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowDrcProperty, v, ValueNone)
 
+let private gds2DShowDrcLabelsAttr (v: bool) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
+        GdsCanvasControl.ShowDrcLabelsProperty, v, ValueNone)
+
 let private gds2DDebugOverlayAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.DebugOverlayProperty, v, ValueNone)
@@ -307,6 +311,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DShowDimensionsAttr model.ShowDimensions
               gds2DToggleDimensionsHandlerAttr toggleDimensionsHandler
               gds2DShowDrcAttr model.ShowDrc
+              gds2DShowDrcLabelsAttr model.ShowDrcLabels
               gds2DDebugOverlayAttr model.DebugOverlay
               gds2DDisabledDrcRulesAttr model.DisabledDrcRules
               gds2DShowGridAttr model.ShowGrid

@@ -43,8 +43,28 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.padding (Thickness(10.0, 2.0))
             Button.fontSize 12.0
             Button.verticalAlignment VerticalAlignment.Center
-            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.margin (Thickness(0.0, 0.0, 0.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ToggleDrc)
+        ] :> IView
+    // DRC tooltip-label toggle sits flush against the DRC button —
+    // same red accent family so the two visually group as
+    // "DRC: highlights + labels". Independent of ShowDrc — labels
+    // can be hidden even when highlights are on. Hotkey: Shift+R.
+    let drcLabelsBg =
+        if model.ShowDrcLabels then "#7a2c2c" else "#262626"
+    let drcLabelsFg =
+        if model.ShowDrcLabels then "#ffffff" else "#bbbbbb"
+    let drcLabelsToggle : IView =
+        Button.create [
+            Button.content "Labels (⇧R)"
+            Button.background drcLabelsBg
+            Button.foreground drcLabelsFg
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.onClick (fun _ -> dispatch Msg.ToggleDrcLabels)
         ] :> IView
     // "On" = at least one net's ratline is visible. Master toggle
     // (U key / button) flips between all-on and all-off in Update.
@@ -145,6 +165,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     scrubButton
                                     ratlinesToggle
                                     drcToggle
+                                    drcLabelsToggle
                                     dimensionsToggle
                                 ]
                             ]

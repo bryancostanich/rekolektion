@@ -129,6 +129,13 @@ type Model = {
     /// layer — fine for a single-cell edit, expensive on a full
     /// macro flatten.
     ShowDrc : bool
+    /// Whether the DRC overlay paints the per-violation tooltip
+    /// labels (rule name + measured/limit gap). Independent of
+    /// `ShowDrc` — labels can be hidden while the violation
+    /// highlights stay visible. Default true. Toggled by
+    /// `ToggleDrcLabels` (Shift+R or the TopBar "Labels" button
+    /// inside the DRC group). Persisted across restarts.
+    ShowDrcLabels : bool
     /// Debug overlay for the walkaround router (O key). When on
     /// AND a draft is in flight, the canvas paints every obstacle
     /// bbox the walkaround currently sees so the user can verify
@@ -236,6 +243,7 @@ let empty : Model = {
     SavedSelections = Map.empty
     ShowDimensions = false
     ShowDrc = false
+    ShowDrcLabels = true
     DisabledDrcRules = Set.empty
     DrcView = Drc.Rules.defaultView
     ShowGrid = true

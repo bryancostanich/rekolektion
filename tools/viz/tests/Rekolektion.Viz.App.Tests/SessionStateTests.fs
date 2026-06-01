@@ -206,6 +206,7 @@ let ``empty defaults match Model.empty defaults`` () =
     e.ShowLabels     |> should equal true
     e.RatlinesArmed  |> should equal false
     e.ShowDrc        |> should equal false
+    e.ShowDrcLabels  |> should equal true
     e.ShowDimensions |> should equal false
 
 [<Fact>]
@@ -218,6 +219,7 @@ let ``each display toggle round-trips through the flipped state`` () =
             ShowLabels     = false
             RatlinesArmed  = true
             ShowDrc        = true
+            ShowDrcLabels  = false
             ShowDimensions = true }
     roundTrip flipped |> should equal flipped
 
@@ -231,19 +233,20 @@ let ``parse defaults each display toggle on legacy files missing the fields`` ()
     restored.ShowLabels     |> should equal true
     restored.RatlinesArmed  |> should equal false
     restored.ShowDrc        |> should equal false
+    restored.ShowDrcLabels  |> should equal true
     restored.ShowDimensions |> should equal false
 
 [<Fact>]
 let ``serialize emits each display-toggle key`` () =
     let json = SessionState.serialize SessionState.empty
     for key in [ "snapEnabled"; "showRuler"; "showGrid"; "showLabels"
-                 "ratlinesArmed"; "showDrc"; "showDimensions" ] do
+                 "ratlinesArmed"; "showDrc"; "showDrcLabels"; "showDimensions" ] do
         json |> should haveSubstring (sprintf "\"%s\":" key)
 
 [<Fact>]
 let ``parse honours each display-toggle value from disk`` () =
     let json =
-        """{"layers":[],"openPaths":[],"snapEnabled":true,"showRuler":false,"showGrid":false,"showLabels":false,"ratlinesArmed":true,"showDrc":true,"showDimensions":true}"""
+        """{"layers":[],"openPaths":[],"snapEnabled":true,"showRuler":false,"showGrid":false,"showLabels":false,"ratlinesArmed":true,"showDrc":true,"showDrcLabels":false,"showDimensions":true}"""
     let s = SessionState.parse json
     s.SnapEnabled    |> should equal true
     s.ShowRuler      |> should equal false
@@ -251,4 +254,5 @@ let ``parse honours each display-toggle value from disk`` () =
     s.ShowLabels     |> should equal false
     s.RatlinesArmed  |> should equal true
     s.ShowDrc        |> should equal true
+    s.ShowDrcLabels  |> should equal false
     s.ShowDimensions |> should equal true

@@ -85,11 +85,17 @@ let private orthEndpoints
 /// `"met2.2 (overrides/v1.yaml): 0.139<0.140 um"`. Pass
 /// `Map.empty` when there's no view-derived provenance (legacy
 /// callers / `Rules.defaultView`).
+///
+/// `showLabels = false` paints the violation outlines + connector
+/// lines but skips the per-violation rule-name / measurement
+/// tooltip text. Useful on dense macros where the label boxes
+/// stack into an unreadable wall.
 let render
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
         (umPerDbu: float)
         (provenance: Map<string, string>)
+        (showLabels: bool)
         (violations: Check.Violation array) =
     if violations.Length = 0 then () else
     use stroke =
@@ -140,19 +146,22 @@ let render
                 // emits orthogonally-facing pairs — but degrade
                 // gracefully without a diagonal scribble.
                 ()
-        // Label sits above the first bbox.
-        let label = formatLabel provenance umPerDbu v
-        let mutable bounds = SKRect()
-        text.MeasureText(label, &bounds) |> ignore
-        let padX = 4.0f
-        let padY = 2.0f
-        let lx = rA.Left
-        let ly = rA.Top - padY * 2.0f - bounds.Height
-        let bgRect =
-            SKRect(
-                lx - padX,
-                ly - padY,
-                lx + bounds.Width + padX,
-                ly + bounds.Height + padY)
-        canvas.DrawRect(bgRect, textBg)
-        canvas.DrawText(label, lx, ly + bounds.Height - 1.0f, text)
+        // Label sits above the first bbox. Skipped wholesale when
+        // showLabels is off — the user wants the violation
+        // highlights without the tooltip-text noise.
+        if showLabels then
+            let label = formatLabel provenance umPerDbu v
+            let mutable bounds = SKRect()
+            text.MeasureText(label, &bounds) |> ignore
+            let padX = 4.0f
+            let padY = 2.0f
+            let lx = rA.Left
+            let ly = rA.Top - padY * 2.0f - bounds.Height
+            let bgRect =
+                SKRect(
+                    lx - padX,
+                    ly - padY,
+                    lx + bounds.Width + padX,
+                    ly + bounds.Height + padY)
+            canvas.DrawRect(bgRect, textBg)
+            canvas.DrawText(label, lx, ly + bounds.Height - 1.0f, text)

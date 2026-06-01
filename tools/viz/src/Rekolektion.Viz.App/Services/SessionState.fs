@@ -60,6 +60,7 @@ type State = {
     ShowLabels     : bool   // default true
     RatlinesArmed  : bool   // U / TopBar — default false
     ShowDrc        : bool   // R key — default false
+    ShowDrcLabels  : bool   // Shift+R — default true (DRC tooltip labels)
     ShowDimensions : bool   // D key — default false
 }
 
@@ -75,6 +76,7 @@ let empty : State = {
     ShowLabels     = true
     RatlinesArmed  = false
     ShowDrc        = false
+    ShowDrcLabels  = true
     ShowDimensions = false
 }
 
@@ -170,6 +172,7 @@ let parse (json: string) : State =
           ShowLabels     = boolField "showLabels"     true
           RatlinesArmed  = boolField "ratlinesArmed"  false
           ShowDrc        = boolField "showDrc"        false
+          ShowDrcLabels  = boolField "showDrcLabels"  true
           ShowDimensions = boolField "showDimensions" false }
     with _ -> empty
 
@@ -228,6 +231,7 @@ let serialize (state: State) : string =
     appendBool "showLabels"     state.ShowLabels
     appendBool "ratlinesArmed"  state.RatlinesArmed
     appendBool "showDrc"        state.ShowDrc
+    appendBool "showDrcLabels"  state.ShowDrcLabels
     appendBool "showDimensions" state.ShowDimensions
     sb.Append "}" |> ignore
     sb.ToString()
@@ -300,6 +304,7 @@ let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
         ShowLabels     = model.ShowLabels
         RatlinesArmed  = model.RatlinesArmed
         ShowDrc        = model.ShowDrc
+        ShowDrcLabels  = model.ShowDrcLabels
         ShowDimensions = model.ShowDimensions
     }
 

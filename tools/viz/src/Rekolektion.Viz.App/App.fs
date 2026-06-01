@@ -73,6 +73,7 @@ module KeyMap =
         match key, mods with
         | Key.D,     KeyModifiers.None -> Some Msg.ToggleDimensions
         | Key.R,     KeyModifiers.None -> Some Msg.ToggleDrc
+        | Key.R,     KeyModifiers.Shift -> Some Msg.ToggleDrcLabels
         | Key.O,     KeyModifiers.None -> Some Msg.ToggleDebugOverlay
         | Key.W,     KeyModifiers.None -> Some Msg.ToggleRoutingMode
         | Key.U,     KeyModifiers.None -> Some Msg.ToggleRatlines
@@ -322,6 +323,7 @@ type MainWindow() as this =
                 ShowLabels     = sess.ShowLabels
                 RatlinesArmed  = sess.RatlinesArmed
                 ShowDrc        = sess.ShowDrc
+                ShowDrcLabels  = sess.ShowDrcLabels
                 ShowDimensions = sess.ShowDimensions },
             Cmd.batch (reopenCmds @ activateCmd)
         let update = Update.update backend
@@ -697,6 +699,9 @@ type App() =
         addItem viewSub "Toggle DRC overlay"
             (Some (KeyGesture(Key.R, KeyModifiers.None)))
             Msg.ToggleDrc |> ignore
+        addItem viewSub "Toggle DRC labels"
+            (Some (KeyGesture(Key.R, KeyModifiers.Shift)))
+            Msg.ToggleDrcLabels |> ignore
         addItem viewSub "Toggle walkaround debug overlay"
             (Some (KeyGesture(Key.O, KeyModifiers.None)))
             Msg.ToggleDebugOverlay |> ignore

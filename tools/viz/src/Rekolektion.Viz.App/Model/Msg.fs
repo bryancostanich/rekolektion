@@ -142,6 +142,12 @@ type Msg =
     | ToggleDimensions
     /// Flip the in-process DRC overlay on/off.
     | ToggleDrc
+    /// Flip the per-violation tooltip-label overlay on/off
+    /// (rule name + measured/limit text painted next to each
+    /// violation bbox). Independent of `ToggleDrc` — the user
+    /// can keep the highlights on while hiding the label text
+    /// noise. Shift+R or TopBar "Labels" button in the DRC group.
+    | ToggleDrcLabels
     /// Toggle the major/minor grid dot overlay (G key).
     | ToggleGrid
     /// Toggle the origin-anchored ruler overlay (L key).

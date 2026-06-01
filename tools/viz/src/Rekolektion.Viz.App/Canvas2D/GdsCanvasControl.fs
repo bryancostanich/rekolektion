@@ -131,7 +131,8 @@ type private SkiaDraw(bounds: Rect,
                       segmentDragDoc: Document option,
                       debugOverlay: bool,
                       netMap: Map<string, Rekolektion.Viz.Core.Sidecar.Types.NetEntry>,
-                      flatPolygonsForDebug: FlatPolygon array) =
+                      flatPolygonsForDebug: FlatPolygon array,
+                      showDrcLabels: bool) =
     interface ICustomDrawOperation with
         member _.Bounds = bounds
         member _.Equals(_: ICustomDrawOperation) = false
@@ -443,7 +444,7 @@ type private SkiaDraw(bounds: Rect,
                     if visibleViolations.Length > 0 then
                         DrcOverlay.render canvas vb
                             (float lib.Units.DbuNm * 1.0e-3)
-                            drcProvenance visibleViolations
+                            drcProvenance showDrcLabels visibleViolations
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
@@ -1288,6 +1289,12 @@ type GdsCanvasControl() as this =
     static member val ShowDrcProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrc", false)
         with get
+    /// Whether the DRC overlay paints per-violation tooltip labels
+    /// (rule name + measured/limit gap). Independent of ShowDrc —
+    /// labels can be hidden while highlights stay visible.
+    static member val ShowDrcLabelsProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowDrcLabels", true)
+        with get
     /// Magic-compatible rule names the user has silenced. Passed
     /// through to Drc.Check.checkWithToggles so violations of
     /// listed rules don't render. Plumbing only — no UI yet; the
@@ -1567,6 +1574,10 @@ type GdsCanvasControl() as this =
     member this.ShowDrc
         with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcProperty, v) |> ignore
+
+    member this.ShowDrcLabels
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowDrcLabelsProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowDrcLabelsProperty, v) |> ignore
 
     member this.DebugOverlay
         with get() : bool = this.GetValue(GdsCanvasControl.DebugOverlayProperty)
@@ -1879,6 +1890,7 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.InstanceSelectionProperty
              || e.Property = GdsCanvasControl.ShowDimensionsProperty
              || e.Property = GdsCanvasControl.ShowDrcProperty
+             || e.Property = GdsCanvasControl.ShowDrcLabelsProperty
              || e.Property = GdsCanvasControl.DebugOverlayProperty
              || e.Property = GdsCanvasControl.DisabledDrcRulesProperty
              || e.Property = GdsCanvasControl.VisibleRatlinesProperty
@@ -4202,7 +4214,7 @@ type GdsCanvasControl() as this =
                 if this.ShowDrc || (this.DraftRoute).IsSome
                 then cachedRouteLiveViolations
                 else [||]
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons, this.ShowDrcLabels))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

@@ -317,7 +317,7 @@ let cmdDrc (args: string list) : int =
         let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
         let view = Rekolektion.Viz.Core.Drc.Rules.viewFor compat
         let viols =
-            Rekolektion.Viz.Core.Drc.Check.checkWithCompat
+            Rekolektion.Viz.Core.Drc.Check.check
                 compat view doc.Units flat
         let layerName n d =
             match Rekolektion.Viz.Core.Layout.Layer.bySky130Number n d with

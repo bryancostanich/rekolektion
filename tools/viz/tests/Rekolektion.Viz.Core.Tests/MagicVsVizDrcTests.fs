@@ -226,7 +226,7 @@ let private compareDrc
     // YAML loader the GUI shows zero rpm.1 fires; with
     // `defaultView` the parity test would still see them.
     let view = Drc.RulesYaml.loadEffectiveOrDefault "sky130" None
-    let vizViolations = Drc.Check.check view units flat
+    let vizViolations = Drc.Check.check Drc.Compat.Magic view units flat
     let vizByRule =
         vizViolations
         |> Array.groupBy (fun v -> v.Rule)

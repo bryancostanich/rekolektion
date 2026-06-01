@@ -135,7 +135,7 @@ type BiasGenLi3Probe(out : ITestOutputHelper) =
         // met1.2 fires viz actually finds inside the probe window.
         let units = doc.Units
         let allViolations =
-            Drc.Check.check Drc.Rules.defaultView units flat
+            Drc.Check.check Drc.Compat.Magic Drc.Rules.defaultView units flat
         let inWindow (v : Drc.Check.Violation) =
             bboxesOverlap v.BboxA probeBbox
             || (match v.BboxB with

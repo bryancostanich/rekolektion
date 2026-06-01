@@ -2066,7 +2066,9 @@ type GdsCanvasControl() as this =
                                     |> Routing.Draft.toFlatPolygons
                                 | None -> [||]
                             let liveResult =
-                                Drc.Check.runLiveWithIndexTimed snapshotView
+                                Drc.Check.runLiveWithIndexTimed
+                                    Drc.Compat.Magic
+                                    snapshotView
                                     snapshotUnits snapshotFlat cellIndex
                                     draftFlat snapshotNets snapshotStartNet
                                     snapshotDisabled phaseTimings
@@ -4036,6 +4038,7 @@ type GdsCanvasControl() as this =
                         let tags = Drc.Implant.tagAll staticFlat
                         let vs =
                             Drc.Check.checkWithToggles
+                                Drc.Compat.Magic
                                 this.DrcView
                                 lib.Units staticFlat tags disabled
                         cachedDrcFlat <- staticFlat
@@ -4088,6 +4091,7 @@ type GdsCanvasControl() as this =
                             // live state — slow but correct.
                             let tags = Drc.Implant.tagAll renderFlat
                             Drc.Check.checkWithToggles
+                                Drc.Compat.Magic
                                 this.DrcView
                                 renderLib.Units renderFlat tags disabled
                         else
@@ -4143,6 +4147,7 @@ type GdsCanvasControl() as this =
                                 Drc.Implant.tagAll smallFlat
                             let fresh =
                                 Drc.Check.checkWithToggles
+                                    Drc.Compat.Magic
                                     this.DrcView
                                     renderLib.Units smallFlat smallTags disabled
                             Array.append kept fresh

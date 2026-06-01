@@ -291,6 +291,7 @@ let private condMatches
 /// want neighborhood-restriction further if any single layer
 /// crosses ~10k polys.
 let checkWithToggles
+        (compat: Compat.Compat)
         (view: Rules.RulesetView)
         (units: Units)
         (flat: FlatPolygon array)
@@ -1308,13 +1309,11 @@ let private applyImplantClose
         (flat: FlatPolygon array) : FlatPolygon array =
     // KLayout external doesn't apply this preprocessing — `nsdm.1` /
     // `psdm.1` spacing fires on the literal gap regardless of any
-    // grow-merge intuition. Under `Compat.Klayout` we bypass the
-    // closure so F# Klayout matches that semantics. Magic-compat
+    // grow-merge intuition.  Under `Compat.Klayout` we bypass the
+    // closure so F# Klayout matches that semantics.  Magic-compat
     // keeps the grow-shrink to match Magic external's view of an
     // implant region as one merged feature.
-    match compat with
-    | Compat.Klayout -> flat
-    | Compat.Magic   ->
+    if compat = Compat.Klayout then flat else
     let nsdmKey = (93, 44)
     let psdmKey = (94, 20)
     let bridgeRadius = 190L   // close at 190 nm bridges any gap ≤380 nm
@@ -1351,31 +1350,18 @@ let private applyImplantClose
             && not (p.Layer = fst psdmKey && p.DataType = snd psdmKey))
     Array.concat [ other; nsdmOut; psdmOut ]
 
-/// Backward-compatible entry point: same signature as before, no
-/// toggles, no implant tags. Computes implant tags internally.
-/// Tests + callers without a tag pipeline call this; the canvas
-/// uses `checkWithToggles` directly so the tag computation is
-/// shared with other consumers.
+/// Entry point that computes implant tags internally and runs
+/// the full check with no rule toggles. Tests and callers without
+/// a tag pipeline call this; the canvas uses `checkWithToggles`
+/// directly so the tag computation is shared with other consumers.
 ///
-/// Implicitly Magic-compat — preserves the pre-Track-02 behavior
-/// so the dozen existing callers (App canvas, routing helpers,
-/// model, scripts) continue working unchanged. New callers that
-/// want compat-aware semantics should use `checkWithCompat`.
+/// `compat` selects which authority's rules / semantics drive the
+/// check — Klayout default, Magic permanent alternate. Applies to
+/// `applyImplantClose` (skipped under Klayout, run under Magic),
+/// the per-rule emit style (edge-counting under Klayout, polygon
+/// under Magic, for the enclosure family), and post-pass
+/// clustering (skipped for rules that emit one-per-edge).
 let check
-        (view: Rules.RulesetView)
-        (units: Units)
-        (flat: FlatPolygon array)
-        : Violation array =
-    let flat = applyImplantClose Compat.Magic flat
-    let tags = Implant.tagAll flat
-    checkWithToggles view units flat tags Set.empty
-
-/// Compat-aware entry point (Track 02 Phase 4). Same as `check`
-/// but threads `compat` through `applyImplantClose` so KLayout
-/// compat bypasses the implant grow-shrink (which KLayout external
-/// doesn't apply).  Equivalency-harness path and any new caller
-/// targeting Phase 5 F#-primary go through here.
-let checkWithCompat
         (compat: Compat.Compat)
         (view: Rules.RulesetView)
         (units: Units)
@@ -1383,7 +1369,7 @@ let checkWithCompat
         : Violation array =
     let flat = applyImplantClose compat flat
     let tags = Implant.tagAll flat
-    checkWithToggles view units flat tags Set.empty
+    checkWithToggles compat view units flat tags Set.empty
 
 /// ADR-0003 — precompute the cross-net overlap violations within
 /// the cell itself (no draft involved). O(N²) over `cellFlat` so
@@ -1507,6 +1493,7 @@ let newPhaseTimings () : LivePhaseTimings = {
 }
 
 let runLiveWithIndexTimed
+        (compat: Compat.Compat)
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
@@ -1573,7 +1560,7 @@ let runLiveWithIndexTimed
         |> List.map Rules.nameOf
         |> Set.ofList
     let disabled' = Set.union disabledRules nonLiveDisabled
-    let standardViolations = checkWithToggles view units combined tags disabled'
+    let standardViolations = checkWithToggles compat view units combined tags disabled'
     phaseSw.Stop()
     timings.StandardMs <- phaseSw.ElapsedMilliseconds
 
@@ -1660,6 +1647,7 @@ let runLiveWithIndexTimed
 /// that don't want phase breakdown stay simple. Production canvas
 /// uses the `Timed` variant + log.
 let runLiveWithIndex
+        (compat: Compat.Compat)
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
@@ -1670,7 +1658,7 @@ let runLiveWithIndex
         (disabledRules: Set<string>)
         : Violation array =
     runLiveWithIndexTimed
-        view units cellFlat cellIndex draftFlat nets draftStartNet
+        compat view units cellFlat cellIndex draftFlat nets draftStartNet
         disabledRules (newPhaseTimings ())
 
 /// `runLive` convenience: builds the spatial index inline from
@@ -1680,6 +1668,7 @@ let runLiveWithIndex
 /// moves and call `runLiveWithIndex` directly — the index build is
 /// O(cell-size) so doing it per-frame defeats the point.
 let runLive
+        (compat: Compat.Compat)
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
@@ -1693,7 +1682,7 @@ let runLive
     let cellIndex =
         Rekolektion.Viz.Core.Spatial.UniformGrid.build cellSize bboxes
     runLiveWithIndex
-        view units cellFlat cellIndex draftFlat nets draftStartNet disabledRules
+        compat view units cellFlat cellIndex draftFlat nets draftStartNet disabledRules
 
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),

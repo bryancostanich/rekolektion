@@ -805,19 +805,38 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         { model with
             Selection = sel
             SelectedRatlines = ratlines' }, Cmd.none
-    | Msg.ClearSelection -> { model with Selection = Set.empty }, Cmd.none
+    | Msg.ClearSelection ->
+        // Esc clears the polygon selection AND the Inspector's DRC
+        // violation focus — single keystroke wipes every transient
+        // "what's currently picked" state.
+        { model with
+            Selection = Set.empty
+            SelectedDrcViolation = None }, Cmd.none
     | Msg.ToggleDimensions ->
         let model' = { model with ShowDimensions = not model.ShowDimensions }
         backend.PersistSession model'
         model', Cmd.none
     | Msg.ToggleDrc ->
-        let model' = { model with ShowDrc = not model.ShowDrc }
+        let next = not model.ShowDrc
+        // Turning DRC off drops the violation selection so toggling
+        // back on doesn't surface stale Inspector contents (per the
+        // 2026-05-31 spec: "turning off drops the selection").
+        let selected' =
+            if next then model.SelectedDrcViolation else None
+        let model' =
+            { model with
+                ShowDrc = next
+                SelectedDrcViolation = selected' }
         backend.PersistSession model'
         model', Cmd.none
     | Msg.ToggleDrcLabels ->
         let model' = { model with ShowDrcLabels = not model.ShowDrcLabels }
         backend.PersistSession model'
         model', Cmd.none
+    | Msg.DrcViolationPicked v ->
+        { model with SelectedDrcViolation = Some v }, Cmd.none
+    | Msg.ClearDrcSelection ->
+        { model with SelectedDrcViolation = None }, Cmd.none
     | Msg.ToggleDebugOverlay ->
         { model with DebugOverlay = not model.DebugOverlay }, Cmd.none
     | Msg.ScrubDispersedWires ->

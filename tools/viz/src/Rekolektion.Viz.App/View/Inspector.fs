@@ -284,17 +284,107 @@ let private ratlineDetails (model: Model.Model) : IView list =
                             i xum yum p.ZUm p.LabelCount inst)
                         [ SelectableTextBlock.fontSize 11.0 ] ]
 
+/// Format a Check.Violation as a multi-line plain-text block.
+/// Separated from the Inspector view so it can be unit-tested
+/// without an Avalonia harness. The Inspector renders this exact
+/// string inside a single `SelectableTextBlock` so the user can
+/// drag-select the entire DRC Violation section as one contiguous
+/// region and copy with Cmd/Ctrl+C.
+let formatViolationForClipboard
+        (model: Model.Model)
+        (v: Drc.Check.Violation) : string =
+    let dbuNm =
+        match Model.activeMacro model with
+        | Some m -> float m.Document.Units.DbuNm
+        | None -> 1.0
+    let umPerDbu = dbuNm * 1.0e-3
+    let toUm (n: int64) = float n * umPerDbu
+    let formatBbox ((x1, y1, x2, y2): int64 * int64 * int64 * int64) =
+        sprintf "(%.3f, %.3f) → (%.3f, %.3f) µm"
+            (toUm x1) (toUm y1) (toUm x2) (toUm y2)
+    let ruleKind =
+        model.DrcView.Rules
+        |> List.tryPick (fun r ->
+            match r with
+            | Drc.Rules.Width (n, _, _) when n = v.Rule -> Some "Width"
+            | Drc.Rules.Spacing (n, _, _) when n = v.Rule -> Some "Spacing"
+            | Drc.Rules.MinArea (n, _, _) when n = v.Rule -> Some "MinArea"
+            | Drc.Rules.Enclosure (n, _, _, _, _) when n = v.Rule -> Some "Enclosure"
+            | Drc.Rules.AsymEnclosure (n, _, _, _, _, _) when n = v.Rule -> Some "AsymEnclosure"
+            | Drc.Rules.CrossSpacing (n, _, _, _, _, _) when n = v.Rule -> Some "CrossSpacing"
+            | Drc.Rules.Endcap (n, _, _, _) when n = v.Rule -> Some "Endcap"
+            | Drc.Rules.BoundaryCrossing (n, _, _, _) when n = v.Rule -> Some "BoundaryCrossing"
+            | Drc.Rules.ImplantOutsideWellSpacing (n, _, _, _, _) when n = v.Rule -> Some "ImplantOutsideWellSpacing"
+            | _ -> None)
+        |> Option.defaultValue "(rule)"
+    let layerName =
+        Layout.Layer.bySky130Number v.LayerNumber v.LayerType
+        |> Option.map (fun l ->
+            sprintf "%s (%d/%d)" l.Name v.LayerNumber v.LayerType)
+        |> Option.defaultValue
+            (sprintf "(unknown) (%d/%d)" v.LayerNumber v.LayerType)
+    let lines = System.Collections.Generic.List<string>()
+    lines.Add "DRC Violation"
+    lines.Add (sprintf "rule: %s (%s)" v.Rule ruleKind)
+    lines.Add (sprintf "limit: %.3f µm" (toUm v.LimitDbu))
+    lines.Add (sprintf "measured: %.3f < %.3f µm"
+                (toUm v.MeasuredDbu) (toUm v.LimitDbu))
+    lines.Add (sprintf "layer: %s" layerName)
+    match Map.tryFind v.Rule model.DrcView.Provenance with
+    | Some src ->
+        lines.Add (sprintf "source: %s"
+                    (System.IO.Path.GetFileName src))
+    | None -> ()
+    lines.Add (sprintf "bbox A: %s" (formatBbox v.BboxA))
+    match v.BboxB with
+    | Some bb -> lines.Add (sprintf "bbox B: %s" (formatBbox bb))
+    | None -> ()
+    System.String.Join("\n", lines)
+
+/// Pretty-print one Check.Violation as a single SelectableTextBlock
+/// so the user can drag-select the entire DRC Violation block and
+/// copy with Cmd/Ctrl+C. The text content comes from
+/// `formatViolationForClipboard` — same string used by the unit
+/// tests, so what the user sees IS what the tests assert on.
+///
+/// Per-row styling (bold/red heading) is sacrificed in exchange for
+/// cross-row selection. The leading "DRC Violation" line at the top
+/// of the block plus the dark red foreground for the whole block
+/// keeps the section visually distinct from neighbour Inspector
+/// sections.
+let private drcViolationDetails
+        (model: Model.Model)
+        (v: Drc.Check.Violation) : IView list =
+    let text = formatViolationForClipboard model v
+    [
+        SelectableTextBlock.create [
+            SelectableTextBlock.text text
+            SelectableTextBlock.textWrapping TextWrapping.Wrap
+            SelectableTextBlock.margin (Avalonia.Thickness(0.0, 6.0, 0.0, 2.0))
+        ] :> IView
+    ]
+
 let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
     let polySel = model.Selection
     let instSel = model.InstanceSelection
     let ratSel = model.SelectedRatlines
+    let drcSel = model.SelectedDrcViolation
     let body : IView list =
         [
             yield TextBlock.create [
                 TextBlock.text "Inspector"
                 TextBlock.fontWeight FontWeight.Bold
             ] :> IView
-            if polySel.IsEmpty && instSel.IsEmpty && ratSel.IsEmpty then
+            // DRC violation details, when selected. Rendered ahead
+            // of polygon / instance / ratline details because the
+            // user explicitly clicked the overlay to ask about THIS
+            // violation; the other selections (if any) come along
+            // as ambient context.
+            match drcSel with
+            | Some v -> yield! drcViolationDetails model v
+            | None -> ()
+            if polySel.IsEmpty && instSel.IsEmpty && ratSel.IsEmpty
+               && drcSel.IsNone then
                 yield TextBlock.create [
                     TextBlock.text "(nothing selected)"
                     TextBlock.foreground "#888"

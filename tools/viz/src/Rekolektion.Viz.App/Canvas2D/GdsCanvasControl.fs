@@ -119,6 +119,8 @@ type private SkiaDraw(bounds: Rect,
                       toggle: Visibility.ToggleState,
                       overlay: SelectionOverlay,
                       tightenHitsOut: TightenOverlay.LabelHit array ref,
+                      drcHitsOut: DrcOverlay.DrcHit array ref,
+                      drcVisibleViolationsOut: Drc.Check.Violation array ref,
                       resizeHitsOut: ResizeHandleHit array ref,
                       draftRoute: Routing.Draft.DraftRoute option,
                       routeLiveViolations: Drc.Check.Violation array,
@@ -425,6 +427,12 @@ type private SkiaDraw(bounds: Rect,
                             | _ -> ()
                         | _ -> ()
 
+                // Clear DRC hit-test caches up front so a frame
+                // where the overlay no longer renders (DRC turned
+                // off, all violations filtered out, etc.) drops
+                // stale hit rects from a prior frame.
+                drcHitsOut := [||]
+                drcVisibleViolationsOut := [||]
                 if overlay.Violations.Length > 0 then
                     // Filter the violation array by per-layer DRC
                     // toggles and the layerless "Other" bucket.
@@ -442,9 +450,20 @@ type private SkiaDraw(bounds: Rect,
                         Drc.Filter.filterArray panelLayers toggle
                             overlay.Violations
                     if visibleViolations.Length > 0 then
+                        let drcHits =
+                            System.Collections.Generic.List<DrcOverlay.DrcHit>()
                         DrcOverlay.render canvas vb
                             (float lib.Units.DbuNm * 1.0e-3)
-                            drcProvenance showDrcLabels visibleViolations
+                            drcProvenance showDrcLabels drcHits
+                            visibleViolations
+                        // Publish the hit-rect snapshot + the
+                        // exact violation array we just painted
+                        // so OnPointerPressed can resolve a click
+                        // to the underlying Violation. Cleared
+                        // when the overlay isn't painted (else
+                        // branch below).
+                        drcHitsOut := drcHits.ToArray()
+                        drcVisibleViolationsOut := visibleViolations
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
@@ -1194,6 +1213,15 @@ type GdsCanvasControl() as this =
     // commit handler dispatches `CommitTighten i` and the model
     // exits mode.
     let tightenHits : TightenOverlay.LabelHit array ref = ref [||]
+    // DRC overlay hit-test caches. `drcHits` carries the screen-
+    // pixel rects of every clickable violation element (label box
+    // + outline bboxes), index-keyed; `drcVisibleViolations`
+    // mirrors the violation array passed to DrcOverlay.render so
+    // OnPointerPressed can resolve a hit index back to the
+    // underlying Check.Violation. Both are cleared at the top of
+    // every paint so a frame without DRC overlay drops stale data.
+    let drcHits : DrcOverlay.DrcHit array ref = ref [||]
+    let drcVisibleViolations : Drc.Check.Violation array ref = ref [||]
     // Marquee select state. World-DBU corners, both updated in
     // OnPointerMoved. Render shows a translucent rect; on release
     // we select every instance whose bbox intersects this rect.
@@ -1328,6 +1356,15 @@ type GdsCanvasControl() as this =
             : StyledProperty<Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>> =
         AvaloniaProperty.Register<GdsCanvasControl, Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>>(
             "PolygonPickedHandler", null)
+        with get
+    /// DRC-violation pick callback. Fired when the user left-
+    /// clicks a violation's outline bbox or its label text box.
+    /// Host wires this to `Msg.DrcViolationPicked`. Null = no-op
+    /// listener (canvas still hit-tests; just nobody listens).
+    static member val DrcViolationPickedHandlerProperty
+            : StyledProperty<Action<Drc.Check.Violation>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<Drc.Check.Violation>>(
+            "DrcViolationPickedHandler", null)
         with get
     /// Currently picked top-cell polygons: set of (struct name,
     /// element index). Drives the highlight outline. Empty when
@@ -1622,6 +1659,12 @@ type GdsCanvasControl() as this =
             this.GetValue(GdsCanvasControl.PolygonPickedHandlerProperty)
         and set(v: Action<Rekolektion.Viz.Core.Layout.Flatten.PolyKey>) =
             this.SetValue(GdsCanvasControl.PolygonPickedHandlerProperty, v) |> ignore
+
+    member this.DrcViolationPickedHandler
+        with get() : Action<Drc.Check.Violation> =
+            this.GetValue(GdsCanvasControl.DrcViolationPickedHandlerProperty)
+        and set(v: Action<Drc.Check.Violation>) =
+            this.SetValue(GdsCanvasControl.DrcViolationPickedHandlerProperty, v) |> ignore
 
     member this.SelectedPolygons
         with get() : Set<Rekolektion.Viz.Core.Layout.Flatten.PolyKey> =
@@ -2590,6 +2633,33 @@ type GdsCanvasControl() as this =
                     else "decideAction-Ignore"
                    snapTargetsCount = (this.SnapTargets ()).Length |}
             e.Handled <- true
+        // DRC overlay click. When ShowDrc is on the overlay
+        // publishes per-violation hit rects (label box + outline
+        // bboxes). A left-click that lands inside any of those
+        // rects dispatches DrcViolationPicked with the underlying
+        // Check.Violation so the Inspector can surface details.
+        // Swallows the click so it doesn't ALSO change the polygon
+        // selection — the user is asking about the violation, not
+        // about the metal underneath it. Runs before tighten /
+        // routing because clicking on a violation overlay shouldn't
+        // be hijacked by other modes.
+        if not e.Handled && this.ShowDrc && props.IsLeftButtonPressed then
+            let hits = !drcHits
+            let pxF = float32 p.X
+            let pyF = float32 p.Y
+            let pick =
+                hits
+                |> Array.tryFind (fun h ->
+                    pxF >= h.Rect.Left && pxF <= h.Rect.Right
+                    && pyF >= h.Rect.Top && pyF <= h.Rect.Bottom)
+            match pick with
+            | Some h ->
+                let viols = !drcVisibleViolations
+                if h.Index >= 0 && h.Index < viols.Length then
+                    let cb = this.DrcViolationPickedHandler
+                    if not (isNull cb) then cb.Invoke viols.[h.Index]
+                    e.Handled <- true
+            | None -> ()
         // Tighten mode: a left click on a numbered label commits
         // that candidate. Other clicks are swallowed so the user
         // doesn't accidentally pan, marquee, or change selection
@@ -4214,7 +4284,7 @@ type GdsCanvasControl() as this =
                 if this.ShowDrc || (this.DraftRoute).IsSome
                 then cachedRouteLiveViolations
                 else [||]
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons, this.ShowDrcLabels))
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, drcHits, drcVisibleViolations, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons, this.ShowDrcLabels))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

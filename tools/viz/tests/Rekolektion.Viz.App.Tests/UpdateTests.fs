@@ -252,6 +252,69 @@ let ``PolygonPicked replaces Selection with single`` () =
     let next, _ = Update.update stubBackend (Msg.PolygonPicked (pk "X" 9)) model
     next.Selection |> should equal (Set.singleton (pk "X" 9))
 
+// --- DRC violation selection (Inspector "DRC Violation" section) ----
+
+let private synthViolation (rule: string) : Drc.Check.Violation =
+    { Rule = rule
+      LayerNumber = 68
+      LayerType = 20
+      LimitDbu = 140L
+      MeasuredDbu = 100L
+      BboxA = (0L, 0L, 100L, 100L)
+      BboxB = None }
+
+[<Fact>]
+let ``DrcViolationPicked sets SelectedDrcViolation`` () =
+    let v = synthViolation "met1.2"
+    let next, _ = Update.update stubBackend (Msg.DrcViolationPicked v) Model.empty
+    next.SelectedDrcViolation |> should equal (Some v)
+
+[<Fact>]
+let ``ClearDrcSelection drops the picked violation`` () =
+    let v = synthViolation "met1.2"
+    let model = { Model.empty with SelectedDrcViolation = Some v }
+    let next, _ = Update.update stubBackend Msg.ClearDrcSelection model
+    next.SelectedDrcViolation |> should equal (None : Drc.Check.Violation option)
+
+[<Fact>]
+let ``ClearSelection also drops the DRC selection (Esc wipes everything)`` () =
+    let v = synthViolation "met1.2"
+    let model =
+        { Model.empty with
+            Selection = Set.singleton (pk "A" 1)
+            SelectedDrcViolation = Some v }
+    let next, _ = Update.update stubBackend Msg.ClearSelection model
+    next.Selection |> should equal (Set.empty : Set<Flatten.PolyKey>)
+    next.SelectedDrcViolation |> should equal (None : Drc.Check.Violation option)
+
+[<Fact>]
+let ``ToggleDrc-off drops the DRC selection`` () =
+    let v = synthViolation "met1.2"
+    let model =
+        { Model.empty with
+            ShowDrc = true
+            SelectedDrcViolation = Some v }
+    let next, _ = Update.update stubBackend Msg.ToggleDrc model
+    next.ShowDrc |> should equal false
+    next.SelectedDrcViolation |> should equal (None : Drc.Check.Violation option)
+
+[<Fact>]
+let ``ToggleDrc-on preserves any existing DRC selection`` () =
+    // Edge case: programmatic selection (e.g. from a future test
+    // harness) shouldn't be erased by flipping DRC on. The
+    // OnPropertyChanged + canvas pipeline only sets selection
+    // through DrcViolationPicked, so this scenario is rare, but
+    // the asymmetry between toggle-off / toggle-on should be
+    // explicit.
+    let v = synthViolation "met1.2"
+    let model =
+        { Model.empty with
+            ShowDrc = false
+            SelectedDrcViolation = Some v }
+    let next, _ = Update.update stubBackend Msg.ToggleDrc model
+    next.ShowDrc |> should equal true
+    next.SelectedDrcViolation |> should equal (Some v)
+
 // --- WireSelectAt: bug fix for dispersed-WireId selection -------------
 //
 // Real-world corruption: commits stamped one logical WireId onto many

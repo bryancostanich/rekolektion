@@ -90,13 +90,38 @@ let private orthEndpoints
 /// lines but skips the per-violation rule-name / measurement
 /// tooltip text. Useful on dense macros where the label boxes
 /// stack into an unreadable wall.
+///
+/// Hit-test publication. The renderer pushes one entry into
+/// `hitsOut` per violation describing the screen-pixel regions
+/// the user can click to select it: the outline bbox(es) +
+/// the label box (when shown). The canvas reads these on
+/// PointerPressed to map a click to the underlying Violation
+/// without re-running geometry.
+
+/// Screen-pixel hit region for a clickable DRC violation
+/// element (label box or outline bbox).
+type DrcHit = {
+    /// Index into the `violations` array passed to `render`.
+    /// The canvas uses this to resolve the actual Violation
+    /// record from its current overlay snapshot.
+    Index : int
+    /// Screen-space rect in pixels (origin top-left).
+    Rect  : SKRect
+    /// "label" for the tooltip-text box, "bbox" for either
+    /// outline rect. Diagnostic / ordering hint; the canvas
+    /// doesn't need to interpret it.
+    Kind  : string
+}
+
 let render
         (canvas: SKCanvas)
         (vb: LayerPainter.ViewBox)
         (umPerDbu: float)
         (provenance: Map<string, string>)
         (showLabels: bool)
+        (hitsOut: System.Collections.Generic.List<DrcHit>)
         (violations: Check.Violation array) =
+    hitsOut.Clear()
     if violations.Length = 0 then () else
     use stroke =
         new SKPaint(
@@ -123,14 +148,17 @@ let render
             Color = SKColors.White,
             IsAntialias = true,
             TextSize = 11.0f)
-    for v in violations do
+    for i in 0 .. violations.Length - 1 do
+        let v = violations.[i]
         let rA = bboxToSkRect vb v.BboxA
         canvas.DrawRect(rA, stroke)
+        hitsOut.Add { Index = i; Rect = rA; Kind = "bbox" }
         match v.BboxB with
         | None -> ()
         | Some bb ->
             let rB = bboxToSkRect vb bb
             canvas.DrawRect(rB, stroke)
+            hitsOut.Add { Index = i; Rect = rB; Kind = "bbox" }
             // Connector follows the same orthogonal nearest-edge
             // path the dimension overlay uses — pure horizontal or
             // vertical between the facing edges, no diagonal
@@ -165,3 +193,4 @@ let render
                     ly + bounds.Height + padY)
             canvas.DrawRect(bgRect, textBg)
             canvas.DrawText(label, lx, ly + bounds.Height - 1.0f, text)
+            hitsOut.Add { Index = i; Rect = bgRect; Kind = "label" }

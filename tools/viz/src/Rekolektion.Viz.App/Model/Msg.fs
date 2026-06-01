@@ -148,6 +148,13 @@ type Msg =
     /// can keep the highlights on while hiding the label text
     /// noise. Shift+R or TopBar "Labels" button in the DRC group.
     | ToggleDrcLabels
+    /// Fired when the user clicks a DRC violation's outline
+    /// bbox or label box. The clicked Violation becomes the
+    /// Inspector's focus until cleared.
+    | DrcViolationPicked of Rekolektion.Viz.Core.Drc.Check.Violation
+    /// Drop the current DRC-violation selection (Esc /
+    /// implicit on ShowDrc → false).
+    | ClearDrcSelection
     /// Toggle the major/minor grid dot overlay (G key).
     | ToggleGrid
     /// Toggle the origin-anchored ruler overlay (L key).

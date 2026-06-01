@@ -136,6 +136,13 @@ type Model = {
     /// `ToggleDrcLabels` (Shift+R or the TopBar "Labels" button
     /// inside the DRC group). Persisted across restarts.
     ShowDrcLabels : bool
+    /// User-clicked DRC violation. Drives the Inspector "DRC
+    /// Violation" section. Cleared by ClearSelection (Esc),
+    /// ToggleDrc-off (so toggling DRC back on doesn't surface a
+    /// stale selection), or any document edit. Stored as a
+    /// snapshot copy so the inspector stays self-consistent even
+    /// when the live violations array regenerates.
+    SelectedDrcViolation : Drc.Check.Violation option
     /// Debug overlay for the walkaround router (O key). When on
     /// AND a draft is in flight, the canvas paints every obstacle
     /// bbox the walkaround currently sees so the user can verify
@@ -244,6 +251,7 @@ let empty : Model = {
     ShowDimensions = false
     ShowDrc = false
     ShowDrcLabels = true
+    SelectedDrcViolation = None
     DisabledDrcRules = Set.empty
     DrcView = Drc.Rules.defaultView
     ShowGrid = true

@@ -121,6 +121,10 @@ let private gds2DPolygonPickedHandlerAttr (h: System.Action<Layout.Flatten.PolyK
     AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Layout.Flatten.PolyKey>>(
         GdsCanvasControl.PolygonPickedHandlerProperty, h, ValueNone)
 
+let private gds2DDrcViolationPickedHandlerAttr (h: System.Action<Drc.Check.Violation>) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<System.Action<Drc.Check.Violation>>(
+        GdsCanvasControl.DrcViolationPickedHandlerProperty, h, ValueNone)
+
 let private gds2DSelectedPolygonsAttr (v: Set<Layout.Flatten.PolyKey>) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<Set<Layout.Flatten.PolyKey>>(
         GdsCanvasControl.SelectedPolygonsProperty, v, ValueNone)
@@ -330,6 +334,9 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DPolygonPickedHandlerAttr
                   (System.Action<Layout.Flatten.PolyKey>(fun pk ->
                       dispatch (Msg.PolygonPicked pk)))
+              gds2DDrcViolationPickedHandlerAttr
+                  (System.Action<Drc.Check.Violation>(fun v ->
+                      dispatch (Msg.DrcViolationPicked v)))
               gds2DSetPolygonSelectionHandlerAttr
                   (System.Action<Set<Layout.Flatten.PolyKey>>(fun sel ->
                       dispatch (Msg.SetPolygonSelection sel)))

@@ -36,6 +36,25 @@ The `_align_ref_ports` aligner in `scripts/run_lvs_cim.py:54` and `scripts/run_l
 
 **Before any "obvious" label-fix attempt: read `b09c441`, `a97f56f`, `audit/hack_inventory.md` entry A1, and tasks #64 / #110.**
 
+### Off-grid coords look like Magic rotation bugs but aren't
+
+If you're seeing phantom 14-nm-sliver `poly.2` violations on a rotated SRef (`rot=90` / `rot=270` SRef in the parent), or KLayout reporting `*_OFFGRID` violations the Python helpers seem to have prevented — the layout almost certainly has off-grid coords from build-script composition arithmetic that bypassed the snap helpers.
+
+**Diagnose first**, don't reach for a Magic workaround:
+
+```bash
+# Standalone gate — pinpoints cell + element_kind + coord.
+.venv/bin/python -m rekolektion.cli verify-grid path/to/block.rkt
+
+# Or via the unified gate (verify_drc surfaces grid in its summary).
+.venv/bin/python -c "from rekolektion.verify import verify_drc; \
+  print(verify_drc('path/to/block.rkt').summary())"
+```
+
+**Why it looks like a Magic bug.** Magic's rotation transform paths interact badly with off-grid edges and emit phantom 14-nm slivers that read like real `poly.2` violations. The fix is NOT a Magic workaround (`full=True` masks some but not all of them); it's to snap the source coords on the rekolektion side. After Track 01 (`silicon_correct`, 2026-06-01), every `place_*` helper, `verify_drc`, and the F# `to-gds` emitter all snap by construction. If you're still seeing off-grid: a build script is doing direct arithmetic that bypasses the helpers — find the leak and route through `snap_dbu`.
+
+**Reference:** `docs/workflows/rkt_primitive_workflow.md` Hard Rule #23, commits `083751c` / `5041caa` / `a96aec5` for the snap infrastructure, `tests/test_grid_registry_parity.py` for the Python ↔ F# parity contract.
+
 
 
 ## After Every Bitcell Change

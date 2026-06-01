@@ -27,7 +27,7 @@ almost always a better answer here.
 > | Track | What it changes | When to trust this doc again |
 > |---|---|---|
 > | **01 grid-snap conclusive fix** | Every coord emitted by rekolektion lands on the PDK manufacturing grid (5 nm SKY130). New `verify_grid` validator; `place_*` helpers snap their output; F# `to-gds` enforces grid on emit. The 2111-line `Drc/Check.fs` and the build-script ROUTES tables both need a sweep. | When `verify_grid` is referenced as a Step in the DRC/LVS section below and all cells in `source/cell_designs/` pass it. |
-> | **02 DRC engine: Magic → KLayout primary** | `verify_drc` default flips from Magic to KLayout. `Drc/Check.fs` calibrated rule-by-rule against KLayout (currently calibrated to Magic). Magic stays available for LVS extraction only. The `full=True` parameter goes away (KLayout has no fast/full split). | When this doc's "Step 2 — DRC" section references KLayout as the primary engine. |
+> | **02 DRC: KLayout primary, Magic permanent alternate** | `verify_drc` default flips to KLayout-compat. `Rules.Magic.fs` (renamed from `Rules.fs`) frozen as a permanent supported alternate; `Rules.Klayout.fs` built alongside and becomes the default. F# `Drc.Check.run` accepts `?compat:Compat = Klayout|Magic`. F# in-viz checker becomes the **primary** engine for Python `verify_drc` too — external tool invocation moves to opt-in `external=True`. Magic stays available for LVS extraction. The `full=True` parameter becomes Magic-compat-only (ignored under KLayout). | When this doc's "Step 2 — DRC" section references KLayout as the default compat target, the F# checker as the primary engine, and Magic-compat as a permanent alternate. |
 > | **03 GDS round-trip equivalency with KLayout** | rekolektion's GDS reader (`OfGds.fs`) and writer (`ToGds.fs`) become KLayout-spec-conformant. Round-trip tests exist. STRANS / ANGLE / PROPATTR / AREF edge cases reconciled. | When the spec-conformance doc at `rekolektion/docs/internals/gds_spec_conformance.md` exists and tests pass. |
 > | **04 P&R density + antenna via KLayout** | OpenLane flow uses KLayout decks for density + antenna instead of Magic. Lower priority; not blocking. Lives in the `moroder` repo. | When `moroder/` configs reference KLayout for these stages. |
 >
@@ -2741,6 +2741,52 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     already overwritten the disk file repeatedly. No `.bak` files
     existed because the build script wrote directly. Hand-edits
     unrecoverable. Cost: hours.
+
+23. **Every coordinate in a `.rkt` must land on the PDK
+    manufacturing grid.** SKY130 = 5 nm. `rekolektion.layout.snap`
+    (`snap_dbu` / `snap_point` / `snap_rect` / `grid_for`), every
+    `place_*` helper, `placed_pin`, and the F# `to-gds` emitter
+    all enforce this — but only if you flow your coords through
+    them. Direct arithmetic in a build script can produce off-grid
+    intermediates that the helpers never see:
+
+    ```python
+    # WRONG — (x1 + x2) // 2 with odd sum lands off the 5-nm grid.
+    label_x = (rail_bbox[0] + rail_bbox[2]) // 2
+
+    # WRONG — accumulator drifts off-grid 1 nm per iteration.
+    cursor = pin_x + 173        # 173 is not a multiple of 5
+
+    # RIGHT — pass intermediates through snap_dbu before use.
+    from rekolektion.layout.snap import snap_dbu, snap_point
+    label_x = snap_dbu((rail_bbox[0] + rail_bbox[2]) // 2, pdk="sky130")
+    ```
+
+    The `verify_grid(rkt_path)` validator fails any `.rkt` whose
+    coords don't snap; `verify_drc(strict_grid=True)` — the default —
+    folds off-grid violations into `real_errors` and trips
+    `clean=False`. Cross-language parity between
+    `rekolektion.tech._PDK_GRIDS_NM` and
+    `Rekolektion.Viz.Core.Tech.gridDbu` is asserted by
+    `tests/test_grid_registry_parity.py` so the Python and F#
+    sides can't silently drift.
+
+    **Why this exists.** Off-grid coords are a foundry sign-off
+    DRC failure in their own right (the chip ships rejected). On
+    SKY130 they also cause Magic to emit phantom
+    14-nm-sliver `poly.2` violations under rotated SRefs that look
+    like real geometry bugs and consume hours of debug. KLayout DRC
+    on the unsnapped `bias_gen.rkt` reported 9525 `*_OFFGRID`
+    plus 4 real DRC tiles that were caused entirely by sub-grid
+    edge displacement. Track 01 (`silicon_correct`) ships the snap
+    everywhere and pins this rule.
+
+    **Burned on** `bias_gen.rkt` (2026-06-01) — multiple hours
+    chasing what looked like a Magic-rotation bug turned out to be
+    off-grid composition arithmetic in the build script. Magic's
+    rotated-SRef phantom-violation behaviour is real but secondary;
+    the primary fault was off-grid coords leaking through every
+    helper that didn't snap inputs.
 
 ---
 

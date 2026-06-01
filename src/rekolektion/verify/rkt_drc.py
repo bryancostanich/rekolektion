@@ -26,11 +26,18 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import warnings
 from pathlib import Path
+from typing import Literal
 
 from rekolektion.verify._primitive_footprints import compute_primitive_footprints
 from rekolektion.verify.drc import DRCResult, run_drc
+from rekolektion.verify.drc_klayout import run_drc_klayout
 from rekolektion.verify.grid import verify_grid
+
+
+Compat = Literal["klayout", "magic"]
+DEFAULT_COMPAT: Compat = "klayout"
 
 
 def _repo_root() -> Path:
@@ -84,13 +91,20 @@ def verify_drc(
     keep_gds: bool = False,
     full: bool = False,
     strict_grid: bool = True,
+    compat: Compat = DEFAULT_COMPAT,
+    external: bool = True,
 ) -> DRCResult:
-    """Run Magic DRC on a `.rkt` block.
+    """Run DRC on a `.rkt` block.
 
-    Converts the block to GDS via the viz CLI's `to-gds` verb,
-    then delegates to `rekolektion.verify.drc.run_drc` for the
-    Magic invocation and report parsing. Returns the same
-    `DRCResult` type the existing flow uses.
+    Converts the block to GDS via the viz CLI's `to-gds` verb, then
+    delegates to the matching engine for the requested `compat` target.
+    Returns the same `DRCResult` type either path produces.
+
+    The `compat` flag selects **which authority's rules** the result is
+    checked against — KLayout (default) or Magic (permanent supported
+    alternate). `external=True` (Phase 2) routes through the matching
+    external binary; Phase 5 will introduce `external=False` to drive
+    the F# in-viz checker directly with the same compat target.
 
     Args:
         rkt_path: Path to the `.rkt` block. Supports the full
@@ -99,32 +113,49 @@ def verify_drc(
         cell_name: Top cell name. If empty, the GDS's first cell is
             used (matches `run_drc`'s default behavior).
         pdk_root / output_dir / waiver_footprints / allow_global_waivers:
-            Forwarded verbatim to `run_drc`.
-        keep_gds: When True, the intermediate `.gds` is left on
-            disk in `output_dir` (or a tempfile path) for inspection.
-            Default False — the temp file gets cleaned up.
-        full: When True, Magic runs `drc style drc(full)` — the
-            sign-off rule set (latch-up LU.2/LU.3, implant-aware
-            diff/tap.9 + licon.9, nwell.4 connectivity, etc.).
-            Default False uses the fast geometry-only style. Slower
-            on larger cells; opt in when you want sign-off-grade
-            results.
-        strict_grid: When True (default), runs `verify_grid` before
-            Magic and escalates any off-grid coords into the
-            returned `DRCResult` (clean=False, violations folded
-            into `real_errors`). Set to False to observe off-grid
-            without escalating — the grid count still appears in
-            the summary but doesn't gate `clean`. Off-grid coords
-            are a foundry sign-off failure in their own right; the
-            strict default catches them before they reach Magic
-            (where they manifest as phantom 14-nm-sliver poly.2
-            violations under rotated SRefs and are hard to
-            attribute).
+            Forwarded verbatim to the engine.
+        keep_gds: When True, the intermediate `.gds` is left on disk in
+            `output_dir` (or a tempfile path) for inspection.
+        full: Magic-compat only. When True under `compat="magic"`,
+            Magic runs `drc style drc(full)` (sign-off rule set:
+            latch-up LU.2/LU.3, implant-aware diff/tap.9 + licon.9,
+            nwell.4 connectivity). Under `compat="klayout"` the
+            parameter is IGNORED (KLayout has no fast/full split —
+            it's always full) and a DeprecationWarning is issued so
+            call sites notice.
+        strict_grid: When True (default), runs `verify_grid` before the
+            DRC engine and escalates any off-grid coords into the
+            returned `DRCResult`. See Track 01 (silicon_correct).
+        compat: Which authority's DRC rules to evaluate against.
+            Default `"klayout"`; `"magic"` keeps the legacy path
+            available as a permanent supported alternate. See
+            Track 02 (silicon_correct).
+        external: Phase 2: always True (route through the matching
+            external binary). Phase 5: default flips to False
+            (route through the F# in-viz checker).  Passing
+            `external=False` raises NotImplementedError in Phase 2.
 
     Returns:
         `DRCResult` with `.clean`, `.real_error_count`, `.real_errors`,
-        etc. Same surface as `run_drc`.
+        etc. Engine-agnostic.
     """
+    if not external:
+        raise NotImplementedError(
+            "external=False (F#-primary DRC path) lands in Track 02 Phase 5. "
+            "Until then, leave external=True (default)."
+        )
+    if compat not in ("klayout", "magic"):
+        raise ValueError(
+            f"compat must be 'klayout' or 'magic', got {compat!r}"
+        )
+    if full and compat == "klayout":
+        warnings.warn(
+            "full=True is Magic-only (KLayout has no fast/full split — "
+            "it is always full). Ignored under compat='klayout'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        full = False
 
     # Resolve to an absolute path BEFORE handing the rkt off to any
     # subprocess. `_convert_rkt_to_gds` runs `dotnet -- to-gds` with
@@ -172,15 +203,31 @@ def verify_drc(
             )
         else:
             auto_footprints = waiver_footprints
-        drc_result = run_drc(
-            gds,
-            cell_name=cell_name,
-            pdk_root=pdk_root,
-            output_dir=output_dir,
-            waiver_footprints=auto_footprints,
-            allow_global_waivers=allow_global_waivers,
-            full=full,
-        )
+        if compat == "magic":
+            drc_result = run_drc(
+                gds,
+                cell_name=cell_name,
+                pdk_root=pdk_root,
+                output_dir=output_dir,
+                waiver_footprints=auto_footprints,
+                allow_global_waivers=allow_global_waivers,
+                full=full,
+            )
+        else:
+            # KLayout's `offgrid=true` would double-report what
+            # `verify_grid` (Track 01) already surfaces.  Suppress it
+            # here so the unified DRCResult doesn't show the same
+            # off-grid coord twice — once on the grid line, once on the
+            # KLayout-rule line.
+            drc_result = run_drc_klayout(
+                gds,
+                cell_name=cell_name,
+                pdk_root=pdk_root,
+                output_dir=output_dir,
+                waiver_footprints=auto_footprints,
+                allow_global_waivers=allow_global_waivers,
+                offgrid=False,
+            )
         # Fold grid violations into the DRCResult so callers see one
         # combined verdict.  Grid is reported as a single synthesized
         # error line per cell to keep the report scannable; details

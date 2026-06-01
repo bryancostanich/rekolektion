@@ -126,6 +126,26 @@ def _cmd_verify_grid(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_verify_drc(args: argparse.Namespace) -> None:
+    """Run DRC on a `.rkt` block against the chosen compat target."""
+    from rekolektion.verify import verify_drc
+
+    result = verify_drc(
+        args.rkt,
+        cell_name=args.cell or "",
+        compat=args.compat,
+        full=args.full,
+        strict_grid=args.strict_grid,
+    )
+    print(result.summary())
+    if not result.clean:
+        # Print the real-error list with one rule per line — matches
+        # the existing rkt_drc.verify_drc summary contract.
+        for line in result.real_errors:
+            print(f"  {line}")
+        sys.exit(1)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="rekolektion",
@@ -189,6 +209,38 @@ def main(argv: list[str] | None = None) -> None:
         "(pdk …) line (sky130 = 5 nm).",
     )
     p_grid.set_defaults(func=_cmd_verify_grid)
+
+    # --- verify-drc subcommand ---
+    p_drc = sub.add_parser(
+        "verify-drc",
+        help="Run DRC on a .rkt against KLayout (default) or Magic rules",
+    )
+    p_drc.add_argument("rkt", help="Path to the .rkt to verify")
+    p_drc.add_argument(
+        "--compat",
+        default="klayout",
+        choices=["klayout", "magic"],
+        help="Which authority's DRC rules to check against (default: klayout)",
+    )
+    p_drc.add_argument(
+        "--cell",
+        default=None,
+        help="Top cell name (default: GDS's first cell)",
+    )
+    p_drc.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help="Magic-only: use the sign-off rule set (LU.2/LU.3, etc.). "
+        "Ignored with a warning under --compat klayout.",
+    )
+    p_drc.add_argument(
+        "--strict-grid",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Escalate off-grid coords to errors (default: on)",
+    )
+    p_drc.set_defaults(func=_cmd_verify_drc)
 
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):

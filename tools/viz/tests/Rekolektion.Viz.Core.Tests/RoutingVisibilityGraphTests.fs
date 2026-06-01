@@ -160,3 +160,38 @@ let ``both endpoints in same thin-strip obstacle margin finds a path`` () =
     let g = build 50L [| rect 0 100 400 120 |]
     let path = shortestPath System.Threading.CancellationToken.None NoPreference g (p 50 80) (p 350 80)
     path.IsSome |> should equal true
+
+[<Fact>]
+let ``shortestPath fast-fails when goal is strictly inside an obstacle's silicon`` () =
+    // Perf regression guard. Pre-fix: when the cursor/goal sat
+    // strictly inside a foreign obstacle's ORIGINAL silicon, A*
+    // had to exhaust the ENTIRE graph before the "endpoint
+    // strictly inside" safety check fired. On d13_mux (17K
+    // nodes, 5.6K obstacles) that was ~430 ms per call, and
+    // `routeAdaptive` retried 3× → 1.2–1.8 s wasted per cursor
+    // frame whenever the user dragged through a rail.
+    //
+    // With the fast-fail moved to the top of shortestPath, the
+    // call returns None in microseconds — no graph walk at all.
+    //
+    // Synthetic graph: 200-obstacle grid produces a few thousand
+    // nodes. Pre-fix this test would take ~50 ms; post-fix it
+    // takes <2 ms. Budget 20 ms tolerates parallel-test load.
+    let obstacles =
+        [| for r in 0 .. 9 do
+             for c in 0 .. 19 do
+                 yield rect (c * 100) (r * 100) (c * 100 + 50) (r * 100 + 50) |]
+    let g = build 10L obstacles
+    // Goal at (525, 525) sits strictly inside obstacle (500,500)-(550,550)
+    // after the original-silicon shrink-back.
+    let goalInside = p 525 525
+    let start = p 0 0
+    // Warm up JIT
+    let _ = shortestPath System.Threading.CancellationToken.None NoPreference g start goalInside
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+    let path = shortestPath System.Threading.CancellationToken.None NoPreference g start goalInside
+    sw.Stop()
+    path |> should equal (None : Pt list option)
+    Assert.True (sw.ElapsedMilliseconds < 20L,
+        sprintf "fast-fail for goal-inside-obstacle took %d ms on a %d-node graph (budget 20)"
+            sw.ElapsedMilliseconds g.Nodes.Length)

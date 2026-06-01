@@ -50,6 +50,10 @@
     <Compile Include="RoutingLiveDrcTests.fs" />
     <Compile Include="RoutingObstaclesTests.fs" />
     <Compile Include="RoutingVisibilityGraphTests.fs" />
+    <Compile Include="D13MuxRouteShapeTests.fs" />
+    <Compile Include="D13MuxSnapPerfTests.fs" />
+    <Compile Include="D13MuxDragPerfProbe.fs" />
+    <Compile Include="MagicVsVizDrcTests.fs" />
     <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="RoutingSegmentDragTests.fs" />
@@ -74,6 +78,18 @@
     </Content>
     <Content Include="..\..\testdata\lef\*.rkt">
       <Link>testdata\lef\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\testdata\cell_designs\column_readout_chain\*.rkt">
+      <Link>testdata\cell_designs\column_readout_chain\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\testdata\cell_designs\primitives\*.rkt">
+      <Link>testdata\cell_designs\primitives\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\testdata\cell_designs\dac\opamp_buffer_r2r\*.rkt">
+      <Link>testdata\cell_designs\dac\opamp_buffer_r2r\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

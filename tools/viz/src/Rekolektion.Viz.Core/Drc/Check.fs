@@ -626,29 +626,42 @@ let checkWithToggles
                 for (_, ibb, iIdx) in inners do
                     let iTags = Implant.tagOf tags iIdx
                     if condMatches cond iTags then
-                        // Find the covering outer with the best
-                        // (largest min-axis) per-axis margin.
-                        let mutable bestPair :
+                        // The rule passes if ANY covering outer
+                        // satisfies the asymmetric enclosure (in
+                        // either axis assignment). Magic merges
+                        // touching outers into one feature and
+                        // checks the merge; a merged feature's
+                        // extent is the AABB of all its polys, so
+                        // if any single poly passes the per-axis
+                        // thresholds, the merged feature passes.
+                        // (Previous "best-scoring outer" logic
+                        // tied on the worse axis margin and could
+                        // pick a failing outer when a sibling
+                        // passed — see Met15ProbeTests for the
+                        // bias_gen / b1_5_stage1 case.)
+                        let mutable passingFound = false
+                        let mutable bestFailing :
                                 (int64 * int64 *
                                  (int64 * int64 * int64 * int64)) voption =
                             ValueNone
                         for (_, obb, _) in outers do
-                            if bboxOverlaps obb ibb then
+                            if not passingFound && bboxOverlaps obb ibb then
                                 let xM, yM = bboxContainsMarginAxis ibb obb
-                                // Score = (min axis satisfied,
-                                // max axis satisfied). We keep
-                                // the pair that maximises the
-                                // smaller-axis margin (i.e.
-                                // closest to passing).
-                                let score = min xM yM
-                                match bestPair with
-                                | ValueNone ->
-                                    bestPair <- ValueSome (xM, yM, obb)
-                                | ValueSome (bx, by, _) when score > (min bx by) ->
-                                    bestPair <- ValueSome (xM, yM, obb)
-                                | _ -> ()
-                        match bestPair with
-                        | ValueNone ->
+                                let assignA = xM >= oneLim   && yM >= otherLim
+                                let assignB = xM >= otherLim && yM >= oneLim
+                                if assignA || assignB then
+                                    passingFound <- true
+                                else
+                                    let score = min xM yM
+                                    match bestFailing with
+                                    | ValueNone ->
+                                        bestFailing <- ValueSome (xM, yM, obb)
+                                    | ValueSome (bx, by, _) when score > (min bx by) ->
+                                        bestFailing <- ValueSome (xM, yM, obb)
+                                    | _ -> ()
+                        if not passingFound then
+                          match bestFailing with
+                          | ValueNone ->
                             result.Add {
                                 Rule = name
                                 LayerNumber = inner.Number
@@ -657,9 +670,7 @@ let checkWithToggles
                                 MeasuredDbu = 0L
                                 BboxA = ibb
                                 BboxB = None }
-                        | ValueSome (xM, yM, obb) ->
-                            // Try both axis assignments. Pass if
-                            // either works.
+                          | ValueSome (xM, yM, obb) ->
                             let assignA =
                                 xM >= oneLim   && yM >= otherLim
                             let assignB =

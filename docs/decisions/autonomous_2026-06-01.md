@@ -293,7 +293,188 @@ reality. Take B.
 
 ---
 
+---
+
+## Fork #3 — How does Phase 5's `verify_drc(external=False)` reach the F# checker?
+
+**Decision point.** Phase 4 has Klayout side at 100% rule coverage
+on the corpus diagonal. Phase 5 flips the Python `verify_drc`
+default from "shell out to ext-KLayout / ext-Magic binary" to
+"run our own F# checker". The wire between Python and F# is the
+mechanism choice.
+
+### Option A — Reuse the existing viz CLI `drc` verb
+
+Python `verify_drc(external=False)` calls
+`dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- drc
+--compat <c> <rkt>`. The CLI already emits TSV (rule, layer, bbox,
+...) on stdout plus a totals line on stderr. Parse those, build
+the existing `DRCResult` shape.
+
+The harness module `verify/drc_equivalency.py` already has
+`_run_fsharp` doing exactly this — moving it to a reusable spot
++ wiring `verify_drc(external=False)` to call it = the whole
+Phase 5.1 work.
+
+- **Correctness.** F# checker runs against the same view +
+  Compat that the user requested. Bit-identical to today's
+  harness path.
+- **Cleanliness.** Reuses the CLI surface that already exists +
+  is tested by Phase 4 harness. One subprocess hop, one parse,
+  done. No new dependency added.
+- **Future cost.** Per-call dotnet startup is ~1 sec (mitigated
+  by caching JIT in subsequent calls, but each `verify_drc`
+  invocation pays it). Acceptable for the verify workflow, which
+  runs per-cell at edit time, not in tight loops.
+
+### Option B — pythonnet to load the F# assembly in-process
+
+Add `pythonnet` as a Python dependency. Load
+`Rekolektion.Viz.Core.dll` at import time. Call
+`Rekolektion.Viz.Core.Drc.Check.check(...)` directly via .NET
+interop.
+
+- **Correctness.** Same checker, but type marshalling at the
+  Python ↔ .NET boundary adds risk (FlatPolygon array, View
+  record, etc.). Equivalence harness would need to cover the
+  marshalled path too.
+- **Cleanliness.** Removes the subprocess hop and stdout parsing.
+  But adds a hefty dependency + Avalonia (UI library that
+  Rekolektion.Viz.Core transitively pulls in via App) for the
+  load.
+- **Future cost.** Per-call cost is ~0 ms (in-process). Total
+  worth if `verify_drc` is called hundreds of times per session.
+  Today it's not.
+
+### Option C — F# DLL with hand-written C ABI
+
+Build a small Rust/F#-with-C-export shim. Python ctypes loads
+the shim, marshals geometry as int64 arrays.
+
+- **Correctness.** Same checker, hand-written ABI surface adds a
+  failure mode at every boundary crossing.
+- **Cleanliness.** Lowest dependency footprint (no dotnet, no
+  pythonnet) BUT requires building + shipping a native shim per
+  platform.
+- **Future cost.** Most setup work; least per-call overhead.
+
+### Symmetric quantification
+
+| Axis | A: subprocess | B: pythonnet | C: native ABI |
+|---|---|---|---|
+| Correctness — bit-identical to harness | YES | mostly (boundary marshalling) | mostly (boundary marshalling) |
+| Cleanliness — fewest moving parts | one subprocess hop | new dep + transitive UI lib | native build per platform |
+| Future cost — per-call latency | ~1 sec (dotnet startup) | 0 ms | 0 ms |
+| Future cost — total surface to maintain | the existing CLI | pythonnet bindings + bridge code | C ABI + shim + bridge |
+| Hack tag | None | None — pythonnet is supported tooling | None |
+
+### Counter-cases
+
+- **B over A.** Per-call latency. Real concern if Phase 5+
+  unlocks a workload that calls verify_drc(external=False) in a
+  tight loop. Counter: today's use cases are per-cell edits
+  (humans + small batches), where a 1-sec hop is invisible.
+- **C over A.** Lowest dependency footprint. Counter: cross-
+  platform build complexity in trade for shaving 1 sec on a
+  workflow that already runs in the multi-second range
+  (verify_drc includes GDS conversion + grid check). Not worth.
+- **A over B.** Subprocess overhead. Counter: dotnet startup is
+  already paid by the viz App on every launch; the CLI version
+  is the same JIT'd code path. The 1 sec is mostly Avalonia +
+  trace init, much of which we don't need for headless checking
+  — could trim later if it bites.
+
+### Recommendation
+
+**Option A (CLI subprocess).** Matches the plan's stated
+preference, reuses existing tested code paths (harness
+`_run_fsharp` is a working Phase 4 proof), and avoids new deps.
+Bit-identical to the Phase 4 harness so the equivalency table
+predicts production behavior. Take it.
+
+---
+
+## Fork #4 — Should `verify_drc` flip its default to `external=False`?
+
+**Decision point.** Phase 5.4 of the plan says: "Once Phase 4
+coverage is ≥80% Magic + 100% Klayout-sign-off-rules, change
+external default from True → False."
+
+KLayout side hits 100% on the corpus seed (31/31 rules). Magic
+side coverage is partial — F# Magic still has the spacing-tile
+delta on met-layers + label-swap on nsdm/psdm, surfaced by the
+harness as the off-diagonal informational column. These are F#
+Magic engine bugs, not Klayout-side blockers.
+
+The flip is binary: defaults to F#, callers requesting external
+still get external on `external=True`.
+
+### Option A — Flip default everywhere
+
+`verify_drc(external=False)` is the new default. Existing call
+sites get F# semantics. Klayout-target callers (the new default
+under `compat`) get full F# coverage. Magic-target callers get
+F# Magic which has known deltas — they should be passing
+`external=True` to get the existing behavior, but a few will
+silently change semantics.
+
+### Option B — Flip default only under `compat="klayout"`
+
+`verify_drc()` defaults to `external=False` if `compat="klayout"`
+(today's default), `external=True` if `compat="magic"`. Reflects
+that we've proven equivalence on the Klayout side but not the
+Magic side.
+
+### Option C — Don't flip yet, only enable opt-in
+
+Leave `external=True` as the default. Callers can pass
+`external=False` to opt into the F# path. Phase 6 of the plan
+becomes the actual flip — once F# Magic gets its parity work.
+
+### Symmetric quantification
+
+| Axis | A: flip everywhere | B: flip Klayout only | C: don't flip |
+|---|---|---|---|
+| Correctness — every caller gets the engine they actually want | NO — Magic-target callers silently switch | YES — only proven-equivalent path becomes default | YES |
+| Cleanliness — one consistent default | YES | NO — compat-dependent default | YES |
+| Future cost — when F# Magic lands parity, what changes? | nothing (already default) | flip Magic default too | flip everything |
+| Hack tag | None | None — orthogonal defaults aren't a hack | None — staying conservative isn't a hack |
+
+### Counter-cases
+
+- **A over B.** Cleanliness — one default for everything reads
+  better. Counter: silently shifting Magic-target callers to a
+  known-buggy-vs-ext-Magic F# path is correctness regression.
+  Magic-callers expect ext-Magic semantics; F# Magic doesn't
+  match. Defaults must point at the validated path; the Klayout
+  side IS validated, the Magic side isn't.
+- **A over C.** Faster F# adoption. Counter: same correctness
+  problem.
+- **B over C.** Phase 5 of the plan says flip default once
+  coverage is met. Klayout side meets it. Honoring the plan
+  while protecting Magic-target callers from a silent regression
+  is the right move.
+
+### Recommendation
+
+**Option B (flip default only under `compat="klayout"`).**
+
+- Correctness wins: Klayout-target callers get the validated
+  fast path; Magic-target callers keep the validated slow path
+  until F# Magic gets its own parity work.
+- Cleanliness penalty (compat-dependent default) is real but
+  small — one extra branch in the Python orchestrator, one
+  sentence in the docstring.
+- Future cost: when F# Magic lands parity, flip Magic side's
+  default too. Single edit, no surprises.
+
+The plan implicitly assumed Magic side would land parity first;
+Phase 4 actually finished Klayout side first. Adapting the
+default-flip rule to "where we have parity" is the cleanest
+read.
+
+---
+
 ## End-of-run status
 
-Will regenerate as I close commits. Top of file gets the live
-status block.
+(Regenerated at run close — see below.)

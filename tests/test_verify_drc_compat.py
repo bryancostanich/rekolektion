@@ -31,9 +31,10 @@ def _stub_result(cell_name: str = "stub") -> object:
 
 @pytest.fixture
 def _patch_engines(monkeypatch, tmp_path):
-    """Replace both run_drc + run_drc_klayout with recording stubs and
-    short-circuit the GDS conversion + grid check.  Yields a dict
-    capturing which engine was called and with what kwargs."""
+    """Replace run_drc / run_drc_klayout / run_drc_fsharp with
+    recording stubs and short-circuit the GDS conversion + grid
+    check. Yields a dict capturing which engine was called and with
+    what kwargs."""
     seen: dict[str, dict] = {}
 
     def _fake_magic(gds_path, **kw):
@@ -43,6 +44,10 @@ def _patch_engines(monkeypatch, tmp_path):
     def _fake_klayout(gds_path, **kw):
         seen["klayout"] = {"gds_path": gds_path, **kw}
         return _stub_result("klayout_stub")
+
+    def _fake_fsharp(rkt_path, **kw):
+        seen["fsharp"] = {"rkt_path": rkt_path, **kw}
+        return _stub_result("fsharp_stub")
 
     def _fake_convert(rkt, gds):
         # Touch the target so downstream existence checks pass.
@@ -62,6 +67,7 @@ def _patch_engines(monkeypatch, tmp_path):
     import rekolektion.verify.rkt_drc as mod
     monkeypatch.setattr(mod, "run_drc", _fake_magic)
     monkeypatch.setattr(mod, "run_drc_klayout", _fake_klayout)
+    monkeypatch.setattr(mod, "run_drc_fsharp", _fake_fsharp)
     monkeypatch.setattr(mod, "_convert_rkt_to_gds", _fake_convert)
     monkeypatch.setattr(mod, "compute_primitive_footprints", _fake_footprints)
     monkeypatch.setattr(mod, "verify_grid", _fake_grid)
@@ -83,28 +89,52 @@ def _touch_rkt(tmp_path: Path) -> Path:
 # Routing logic
 # ---------------------------------------------------------------------------
 
-def test_verify_drc_default_routes_to_klayout(_patch_engines, tmp_path):
+def test_verify_drc_default_routes_to_fsharp(_patch_engines, tmp_path):
+    """compat=klayout (default) + external=None (default) → F# fast
+    path per Track 02 Phase 5 Fork #4."""
     from rekolektion.verify import verify_drc
 
     rkt = _touch_rkt(tmp_path)
     verify_drc(rkt)
-    assert "klayout" in _patch_engines and "magic" not in _patch_engines
+    assert "fsharp" in _patch_engines
+    assert "klayout" not in _patch_engines
+    assert "magic" not in _patch_engines
+    assert _patch_engines["fsharp"]["compat"] == "klayout"
 
 
 def test_verify_drc_compat_magic_routes_to_run_drc(_patch_engines, tmp_path):
+    """compat=magic (default external=True) → ext-Magic until F#
+    Magic gets its own parity work."""
     from rekolektion.verify import verify_drc
 
     rkt = _touch_rkt(tmp_path)
     verify_drc(rkt, compat="magic")
-    assert "magic" in _patch_engines and "klayout" not in _patch_engines
+    assert "magic" in _patch_engines
+    assert "klayout" not in _patch_engines
+    assert "fsharp" not in _patch_engines
 
 
-def test_verify_drc_compat_klayout_explicit(_patch_engines, tmp_path):
+def test_verify_drc_explicit_external_klayout(_patch_engines, tmp_path):
+    """Explicit external=True under compat=klayout routes to
+    ext-KLayout (the default-flip override case)."""
     from rekolektion.verify import verify_drc
 
     rkt = _touch_rkt(tmp_path)
-    verify_drc(rkt, compat="klayout")
-    assert "klayout" in _patch_engines and "magic" not in _patch_engines
+    verify_drc(rkt, compat="klayout", external=True)
+    assert "klayout" in _patch_engines
+    assert "fsharp" not in _patch_engines
+
+
+def test_verify_drc_explicit_external_false_magic_uses_fsharp(_patch_engines, tmp_path):
+    """external=False under compat=magic forces the F# path even
+    though it's not the validated default for Magic. Caller opt-in."""
+    from rekolektion.verify import verify_drc
+
+    rkt = _touch_rkt(tmp_path)
+    verify_drc(rkt, compat="magic", external=False)
+    assert "fsharp" in _patch_engines
+    assert _patch_engines["fsharp"]["compat"] == "magic"
+    assert "magic" not in _patch_engines
 
 
 def test_verify_drc_invalid_compat_raises(_patch_engines, tmp_path):
@@ -115,13 +145,8 @@ def test_verify_drc_invalid_compat_raises(_patch_engines, tmp_path):
         verify_drc(rkt, compat="calibre")  # type: ignore[arg-type]
 
 
-def test_verify_drc_external_false_raises_not_implemented(_patch_engines, tmp_path):
-    """Phase 5 will land external=False — until then, fail loudly."""
-    from rekolektion.verify import verify_drc
-
-    rkt = _touch_rkt(tmp_path)
-    with pytest.raises(NotImplementedError, match="Phase 5"):
-        verify_drc(rkt, external=False)
+## (test_verify_drc_*_default_routes_* and external-override
+## variants live above near the matrix coverage.)
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +163,7 @@ def test_full_true_forwarded_to_magic(_patch_engines, tmp_path):
 
 def test_full_true_under_klayout_warns_and_ignored(_patch_engines, tmp_path):
     """KLayout has no fast/full split; passing full=True should emit a
-    DeprecationWarning and NOT forward the parameter (KLayout's engine
+    DeprecationWarning and NOT forward the parameter (the engine
     signature doesn't have one)."""
     from rekolektion.verify import verify_drc
 
@@ -149,9 +174,9 @@ def test_full_true_under_klayout_warns_and_ignored(_patch_engines, tmp_path):
     deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert len(deprecations) == 1
     assert "Magic-only" in str(deprecations[0].message)
-    # KLayout engine doesn't accept `full`; the stub records whatever it
-    # was called with — must not include `full`.
-    assert "full" not in _patch_engines["klayout"]
+    # Under the new default-flip (Fork #4), klayout/None routes to
+    # F#.  The fsharp stub never receives `full`.
+    assert "full" not in _patch_engines["fsharp"]
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +184,14 @@ def test_full_true_under_klayout_warns_and_ignored(_patch_engines, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_klayout_engine_called_with_offgrid_false(_patch_engines, tmp_path):
+    """When the caller explicitly opts back into the external
+    KLayout binary (external=True), the orchestrator passes
+    `offgrid=False` so Track 01's `verify_grid` stays the single
+    off-grid authority."""
     from rekolektion.verify import verify_drc
 
     rkt = _touch_rkt(tmp_path)
-    verify_drc(rkt)  # default compat=klayout
+    verify_drc(rkt, compat="klayout", external=True)
     assert _patch_engines["klayout"]["offgrid"] is False
 
 
@@ -240,6 +269,42 @@ klayout_e2e = pytest.mark.skipif(
 
 @pytest.mark.klayout
 @klayout_e2e
+def test_verify_drc_fsharp_primary_path(tmp_path):
+    """End-to-end through the F# primary path:
+    verify_drc(compat="klayout") with the default-flipped external
+    → routes through `viz drc --compat klayout` → emits matching
+    violation counts against ext-KLayout."""
+    from rekolektion.io import rkt as rkt_io
+    from rekolektion.verify import verify_drc
+
+    doc = rkt_io.Document(
+        cells=[
+            rkt_io.Cell(
+                name="thinwire_fs",
+                elements=[
+                    rkt_io.Rect(
+                        layer=rkt_io.named("sky130", "met1"),
+                        x1=0, y1=0, x2=3000, y2=100,
+                    ),
+                ],
+            ),
+        ],
+        top_cell="thinwire_fs",
+    )
+    rkt_path = tmp_path / "thinwire_fs.rkt"
+    rkt_path.write_text(rkt_io.write(doc))
+
+    # Default external=None resolves to F# under compat="klayout".
+    result = verify_drc(
+        rkt_path, cell_name="thinwire_fs",
+        output_dir=tmp_path, strict_grid=False,
+    )
+    assert result.error_count >= 1
+    assert any("m1.1" in line or "met1.1" in line for line in result.errors)
+
+
+@pytest.mark.klayout
+@klayout_e2e
 def test_verify_drc_klayout_end_to_end(tmp_path):
     """Build a tiny .rkt with a sub-min met1 wire, run through the full
     orchestrator (rkt → GDS → KLayout DRC → DRCResult), confirm it
@@ -268,6 +333,7 @@ def test_verify_drc_klayout_end_to_end(tmp_path):
         rkt_path,
         cell_name="thinwire_e2e",
         compat="klayout",
+        external=True,        # exercise the external KLayout binary path
         output_dir=tmp_path,
         strict_grid=False,    # focus on width — coords are on-grid anyway
     )

@@ -281,6 +281,130 @@ def parse_lyrdb(report_path: Path) -> tuple[list[_RawViolation], dict[str, str]]
 # Public API
 # ---------------------------------------------------------------------------
 
+def run_drc_fsharp(
+    rkt_path: str | Path,
+    cell_name: str = "",
+    compat: str = "klayout",
+    output_dir: str | Path | None = None,
+) -> DRCResult:
+    """Run the F# in-process DRC checker (`viz drc`) on a .rkt block.
+
+    Track 02 Phase 5: this is the primary path for `verify_drc` when
+    `external=False` (default under `compat="klayout"`).  Invokes the
+    same `dotnet run -- drc --compat <c> <rkt>` CLI verb the Phase 4
+    equivalency harness uses, parses the TSV output, and produces a
+    `DRCResult` shape compatible with the external-tool paths.
+
+    Note: takes `.rkt` directly — no GDS conversion needed, since the
+    F# checker walks the LayoutLoader pipeline natively.
+
+    Args:
+        rkt_path: Path to the .rkt block.
+        cell_name: Top cell name (informational only — the F# checker
+            walks the doc's top cell automatically).
+        compat: 'klayout' or 'magic'.  Selects which Rules.* submodule
+            the F# CLI evaluates against.
+        output_dir: Directory for the log file (stdout + stderr from
+            dotnet).  Uses a tempdir if not provided.
+
+    Returns:
+        DRCResult with the same shape `run_drc_klayout` / `run_drc`
+        return.  `cell_name` is filled from the .rkt's top cell if
+        not provided.
+    """
+    rkt_path = Path(rkt_path).resolve()
+    if not rkt_path.exists():
+        raise FileNotFoundError(f".rkt not found: {rkt_path}")
+
+    if output_dir is None:
+        output_dir = Path(tempfile.mkdtemp(prefix="rekolektion_drc_fsharp_"))
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / "drc_fsharp.log"
+
+    # Locate the viz CLI project; same walk as rkt_drc.
+    here = Path(__file__).resolve()
+    cli_proj: Path | None = None
+    for ancestor in [here, *here.parents]:
+        candidate = ancestor / "tools" / "viz" / "src" / "Rekolektion.Viz.Cli"
+        if candidate.is_dir():
+            cli_proj = candidate
+            break
+    if cli_proj is None:
+        raise RuntimeError(
+            f"couldn't locate Rekolektion.Viz.Cli from {here} — "
+            "F# DRC needs the viz CLI source tree"
+        )
+
+    cmd = [
+        "dotnet", "run", "--project", str(cli_proj), "--",
+        "drc", "--compat", compat, str(rkt_path),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(cli_proj.parents[3]),
+            timeout=600,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "dotnet not found on PATH. Install: https://dotnet.microsoft.com/download"
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"F# DRC timed out after 600s on {rkt_path}")
+
+    log_path.write_text(
+        f"$ {' '.join(cmd)}\n\nreturncode={proc.returncode}\n\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}\n"
+    )
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"F# DRC failed (returncode={proc.returncode}); see {log_path}"
+        )
+
+    # Parse total from stderr's "=== N violations (compat=...) ===".
+    total = 0
+    total_re = re.compile(r"===\s+(\d+)\s+violations")
+    for line in proc.stderr.splitlines():
+        m = total_re.search(line)
+        if m:
+            total = int(m.group(1))
+            break
+
+    # Parse per-row TSV from stdout.  Header row first, then one row
+    # per violation: rule \t layer \t limit_dbu \t measured_dbu \t bbox_a \t bbox_b
+    errors: list[str] = []
+    per_rule_counts: dict[str, int] = {}
+    for line in proc.stdout.splitlines()[1:]:
+        cols = line.split("\t")
+        if not cols or not cols[0].strip():
+            continue
+        rule = cols[0].strip()
+        per_rule_counts[rule] = per_rule_counts.get(rule, 0) + 1
+    # Build Magic-shaped "Violation (N tiles): ... (rule)" lines so
+    # downstream consumers that grep on rule IDs work uniformly across
+    # all three engines (F# / ext-KLayout / ext-Magic).
+    for rule, n in per_rule_counts.items():
+        errors.append(f"Violation ({n} tiles): F# rule {rule} ({rule})")
+
+    # Every emit is real — F# doesn't have a separate waiver pipeline
+    # yet (foundry-footprint waivers live on the GDS side via
+    # `compute_primitive_footprints`).  Pending Phase 6.
+    return DRCResult(
+        clean=(total == 0),
+        error_count=total,
+        real_error_count=total,
+        waiver_error_count=0,
+        errors=errors,
+        real_errors=errors,
+        log_path=log_path,
+        cell_name=cell_name or rkt_path.stem,
+    )
+
+
 def run_drc_klayout(
     gds_path: str | Path,
     cell_name: str = "",

@@ -32,7 +32,7 @@ from typing import Literal
 
 from rekolektion.verify._primitive_footprints import compute_primitive_footprints
 from rekolektion.verify.drc import DRCResult, run_drc
-from rekolektion.verify.drc_klayout import run_drc_klayout
+from rekolektion.verify.drc_klayout import run_drc_fsharp, run_drc_klayout
 from rekolektion.verify.grid import verify_grid
 
 
@@ -92,7 +92,7 @@ def verify_drc(
     full: bool = False,
     strict_grid: bool = True,
     compat: Compat = DEFAULT_COMPAT,
-    external: bool = True,
+    external: bool | None = None,
 ) -> DRCResult:
     """Run DRC on a `.rkt` block.
 
@@ -130,24 +130,31 @@ def verify_drc(
             Default `"klayout"`; `"magic"` keeps the legacy path
             available as a permanent supported alternate. See
             Track 02 (silicon_correct).
-        external: Phase 2: always True (route through the matching
-            external binary). Phase 5: default flips to False
-            (route through the F# in-viz checker).  Passing
-            `external=False` raises NotImplementedError in Phase 2.
+        external: Routes the DRC call through the matching external
+            binary (`external=True`) or the F# in-process checker
+            (`external=False`). Default is compat-conditional per
+            Track 02 Phase 5 Fork #4 (autonomous_2026-06-01.md):
+              * compat="klayout" → external=False (F# primary).
+                Klayout side has 100% per-rule equivalency on the
+                Phase 4 corpus, so F# is the validated fast path.
+              * compat="magic" → external=True (Magic primary).
+                F# Magic has known deltas vs ext-Magic that haven't
+                been worked yet; until they do, ext-Magic stays the
+                validated path.
+            Pass `external=True` or `external=False` explicitly to
+            override the compat-conditional default.
 
     Returns:
         `DRCResult` with `.clean`, `.real_error_count`, `.real_errors`,
         etc. Engine-agnostic.
     """
-    if not external:
-        raise NotImplementedError(
-            "external=False (F#-primary DRC path) lands in Track 02 Phase 5. "
-            "Until then, leave external=True (default)."
-        )
     if compat not in ("klayout", "magic"):
         raise ValueError(
             f"compat must be 'klayout' or 'magic', got {compat!r}"
         )
+    # Resolve compat-conditional default for external.
+    if external is None:
+        external = (compat == "magic")
     if full and compat == "klayout":
         warnings.warn(
             "full=True is Magic-only (KLayout has no fast/full split — "
@@ -189,6 +196,36 @@ def verify_drc(
     # off-grid drift surfaces with a clear cell+coord report rather
     # than as phantom poly.2 tiles deep inside the DRC log.
     grid_result = verify_grid(rkt)
+
+    # Phase 5 F#-primary fast path: external=False routes straight
+    # to the F# CLI (`viz drc --compat ...`).  No GDS conversion,
+    # no foundry-footprint waiver pass — the F# checker walks the
+    # .rkt directly via LayoutLoader.  Foundry-waiver coverage on
+    # this path is deferred to Phase 6.
+    if not external:
+        drc_result = run_drc_fsharp(
+            rkt, cell_name=cell_name, compat=compat, output_dir=output_dir,
+        )
+        # Fold grid violations into the result so callers see one
+        # unified verdict.  Same shape as the external paths below.
+        if grid_result.off_grid:
+            by_cell: dict[str, int] = {}
+            for v in grid_result.off_grid:
+                by_cell[v.cell] = by_cell.get(v.cell, 0) + 1
+            for cell, count in sorted(by_cell.items()):
+                msg = (
+                    f"({count}) grid: off-grid coords in cell "
+                    f"{cell!r} (grid={grid_result.grid} nm)"
+                )
+                drc_result.errors.append(msg)
+                if strict_grid:
+                    drc_result.real_errors.append(msg)
+            drc_result.error_count += len(grid_result.off_grid)
+            if strict_grid:
+                drc_result.real_error_count += len(grid_result.off_grid)
+                drc_result.clean = False
+        drc_result.grid = grid_result  # type: ignore[attr-defined]
+        return drc_result
 
     # Materialize the GDS. Either to a stable location (when output_dir
     # supplied AND keep_gds=True) or to a tempfile.

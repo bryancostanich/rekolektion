@@ -81,6 +81,7 @@ def verify_drc(
     waiver_margin_um: float = 0.0,
     allow_global_waivers: bool = False,
     keep_gds: bool = False,
+    full: bool = False,
 ) -> DRCResult:
     """Run Magic DRC on a `.rkt` block.
 
@@ -100,6 +101,12 @@ def verify_drc(
         keep_gds: When True, the intermediate `.gds` is left on
             disk in `output_dir` (or a tempfile path) for inspection.
             Default False — the temp file gets cleaned up.
+        full: When True, Magic runs `drc style drc(full)` — the
+            sign-off rule set (latch-up LU.2/LU.3, implant-aware
+            diff/tap.9 + licon.9, nwell.4 connectivity, etc.).
+            Default False uses the fast geometry-only style. Slower
+            on larger cells; opt in when you want sign-off-grade
+            results.
 
     Returns:
         `DRCResult` with `.clean`, `.real_error_count`, `.real_errors`,
@@ -148,6 +155,7 @@ def verify_drc(
             output_dir=output_dir,
             waiver_footprints=auto_footprints,
             allow_global_waivers=allow_global_waivers,
+            full=full,
         )
     finally:
         if cleanup and gds.exists():

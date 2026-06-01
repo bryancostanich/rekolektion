@@ -1791,6 +1791,32 @@ if not result.clean:
         print(" ", err)
 ```
 
+By default `verify_drc` uses Magic's fast geometry-only style —
+fine for iteration. For sign-off-grade results pass `full=True`:
+
+```python
+result = verify_drc(
+    "cell_designs/my_group/my_block.rkt",
+    full=True,   # drc style drc(full): LU.2/LU.3, licon.9, nwell.4, …
+)
+```
+
+`full=True` switches Magic to `drc style drc(full)` before
+`drc catchup`, surfacing the sign-off rule set:
+
+- **Latch-up** (`LU.2`, `LU.3`) — every n-diff must be within
+  15 µm of a licon-contacted p-tap; every p-diff within 15 µm of
+  a licon-contacted n-tap inside the same merged nwell.
+- **Implant-aware diffusion-tap spacing** (`diff/tap.9`,
+  `licon.9 + psdm.5a`) — derived from `(diff ∩ implant) - nwell`.
+- **Well connectivity** (`nwell.4`) — every nwell must contain a
+  metal-connected n-tap.
+
+It's slower — typically 2–5× on opamp-sized cells, more on full
+macros (the latch-up grow-and-subtract loop walks the whole
+well/substrate area). Keep iteration on the fast default; flip to
+`full=True` once you're close to sign-off.
+
 `verify_drc` converts the block to GDS via the viz CLI's `to-gds`
 verb, loads it into Magic, runs `drc check` against the
 `sky130B.tech` deck, parses the violation report, and returns a

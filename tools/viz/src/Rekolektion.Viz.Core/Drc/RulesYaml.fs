@@ -122,6 +122,7 @@ let private kindOf (r: Rule) : string =
     | ImplantOutsideWellSpacing _ -> "implant-outside-well-spacing"
     | EnclosureOfIntersection _ -> "enclosure-of-intersection"
     | MustBeInside _ -> "must-be-inside"
+    | MustBeInsideEdgewise _ -> "must-be-inside-edgewise"
 
 // --- LayerKey conversion -----------------------------------------------
 
@@ -198,6 +199,10 @@ let toYamlRule (r: Rule) : YamlRule =
     | MustBeInside (_, source, destination) ->
         y.Source <- layerOf source
         y.Destination <- layerOf destination
+    | MustBeInsideEdgewise (_, source, destination, sizeUm) ->
+        y.Source <- layerOf source
+        y.Destination <- layerOf destination
+        y.MinUm <- Nullable sizeUm
     y
 
 // --- YamlRule → Rule ---------------------------------------------------

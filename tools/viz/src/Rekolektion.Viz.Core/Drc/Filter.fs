@@ -53,6 +53,8 @@ let layersOfRule (rule: Rules.Rule) : Set<Visibility.LayerKey> =
         Set.ofList [toTuple outer; toTuple inner; toTuple withL]
     | Rules.MustBeInside (_, src, dst) ->
         Set.ofList [toTuple src; toTuple dst]
+    | Rules.MustBeInsideEdgewise (_, src, dst, _) ->
+        Set.ofList [toTuple src; toTuple dst]
 
 /// Lookup table: rule name → set of participating layers. Built once
 /// from `Rules.allRules` and used by `layersOfViolation` to resolve a

@@ -41,13 +41,16 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 30 rules promotable on the KLayout
-diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
-met3 plus mcon + via1 size rules plus poly / nwell width+spacing
-plus nsdm / psdm width AND spacing plus three containment
-("must-be-inside") rules — `ct.4`, `m1.4`, `m2.4_a` — plus the
-edge-counted symmetric Enclosure rules `via.4a` and `m2.4` plus
-the asymmetric Enclosures `via.5a`, `m2.5`, `m1.5`.
+**Coverage as of 2026-06-01: 31 rules promotable on the KLayout
+diagonal. Every rule the corpus surfaces is now green.**
+
+Includes Width / Spacing / MinArea families on li1, met1, met2,
+met3; mcon + via1 size rules; poly / nwell width+spacing; nsdm /
+psdm width AND spacing; three polygon-style containment rules
+(`ct.4`, `m1.4`, `m2.4_a`); edge-counted symmetric Enclosures
+(`via.4a`, `m2.4`); asymmetric Enclosures (`via.5a`, `m2.5`,
+`m1.5`); and the size-filtered edge-style `via.4a_a` via the
+new `MustBeInsideEdgewise` rule kind.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
@@ -75,6 +78,7 @@ the asymmetric Enclosures `via.5a`, `m2.5`, `m1.5`.
 | `via.5a` | OK | FAIL | Asymmetric m1 enclosure of via1 (0.085 / 0.055). Polygon-style under both compats — KLayout deck emits via the `via.interacting(...)` Region output, F# AsymEnclosure already emits one per failing inner. Nearby-outer guard added under Compat.Klayout to suppress the "no outer at all" case (caught by `via.4a_a` instead). |
 | `m2.5` | OK | FAIL | Asymmetric m2 enclosure of via1 (0.085 / 0.055). Same. |
 | `m1.5` | OK | FAIL | Asymmetric m1 enclosure of mcon (0.06 / 0.03). Same. |
+| `via.4a_a` | OK | FAIL | 0.15 µm via1 squares must be enclosed by m1. New `MustBeInsideEdgewise (source, destination, sizeUm)` rule kind — only fires on sources whose bbox is a square of exact `sizeUm × sizeUm`; emits 4 edge violations per matching uncovered square. Matches KLayout deck's `squares.drc(width == 0.15).not(m1).output(...)` exactly. |
 | `poly.1a` | OK | OK | Min poly width 0.15 µm. |
 | `poly.2` | OK | OK | Min poly spacing 0.21 µm. Spacing delta seen on metal layers does NOT recur here. |
 | `nwell.1` | OK | OK | Min nwell width 0.84 µm. |

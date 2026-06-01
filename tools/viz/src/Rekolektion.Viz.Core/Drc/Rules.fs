@@ -261,6 +261,21 @@ type Rule =
         name: string
         * source: LayerKey
         * destination: LayerKey
+    /// Size-filtered, edge-counting variant of `MustBeInside`.
+    /// Only fires on source polygons whose bbox is a square of
+    /// EXACTLY `sizeUm` × `sizeUm` (matches KLayout deck's
+    /// `source.squares.drc(width == N)` filter).  Emits one
+    /// violation per failing source EDGE (4 per uncovered
+    /// square).
+    ///
+    /// Used for `via.4a_a` (0.15 µm via must be enclosed by m1)
+    /// and the cousin rules that combine a fixed-size shape
+    /// filter with per-edge emission.
+    | MustBeInsideEdgewise of
+        name: string
+        * source: LayerKey
+        * destination: LayerKey
+        * sizeUm: float
 
 /// Magic-compatible name of a rule. Used by the renderer (label
 /// next to the violation marker) and by toggle filters keyed on
@@ -278,6 +293,7 @@ let nameOf (rule: Rule) : string =
     | ImplantOutsideWellSpacing (n, _, _, _, _) -> n
     | EnclosureOfIntersection (n, _, _, _, _) -> n
     | MustBeInside (n, _, _) -> n
+    | MustBeInsideEdgewise (n, _, _, _) -> n
 
 // --- Rule table ---------------------------------------------------------
 // Ordering follows `sky130.py` top-to-bottom for ease of diffing,
@@ -634,6 +650,7 @@ let isLiveEligible (rule: Rule) : bool =
     // have available cheaply.  Commit-time only — matches the
     // BoundaryCrossing classification.
     | MustBeInside _ -> false
+    | MustBeInsideEdgewise _ -> false
 
 let liveRules : Rule list =
     allRules |> List.filter isLiveEligible
@@ -804,6 +821,13 @@ module Klayout =
         AsymEnclosure ("via.5a", met1, via,  0.085, 0.055, Always)
         AsymEnclosure ("m2.5",   met2, via,  0.085, 0.055, Always)
         AsymEnclosure ("m1.5",   met1, mcon, 0.06,  0.03,  Always)
+        // --- Size-filtered edge-style containment ---
+        //
+        // KLayout deck pattern:
+        //   rectVIA.squares.drc(width == 0.15).not(m1).output("via.4a_a")
+        // Only fires on 0.15 µm via1 squares not enclosed by m1.
+        // 4 emit per uncovered matching square.
+        MustBeInsideEdgewise ("via.4a_a", via, met1, 0.15)
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

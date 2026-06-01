@@ -929,6 +929,45 @@ let checkWithToggles
                         MeasuredDbu = 0L
                         BboxA = sBb
                         BboxB = None }
+        | Rules.MustBeInsideEdgewise (name, source, destination, sizeUm) ->
+            // Size-filtered containment, edge-style emission.
+            // Mirrors KLayout deck pattern:
+            //   source.squares.drc(width == N).not(destination)
+            // Source polys whose bbox is NOT a square of size N
+            // are silently excluded.  Matching squares not
+            // covered by any destination contribute 4 violations
+            // each (one per bbox edge), matching KLayout's
+            // per-edge output count.
+            let sizeDbu = umToDbu umPerDbu sizeUm
+            if sizeDbu > 0L then
+                let sources = polysOnLayer idx source
+                let destinations = polysOnLayer idx destination
+                for (_, sBb, _) in sources do
+                    let (sx1, sy1, sx2, sy2) = sBb
+                    let w = sx2 - sx1
+                    let h = sy2 - sy1
+                    if w = sizeDbu && h = sizeDbu then
+                        let coveredByAny =
+                            destinations |> Array.exists (fun (_, dBb, _) ->
+                                let (dx1, dy1, dx2, dy2) = dBb
+                                sx1 >= dx1 && sy1 >= dy1
+                                && sx2 <= dx2 && sy2 <= dy2)
+                        if not coveredByAny then
+                            let edges = [|
+                                (sx1, sy1, sx2, sy1)
+                                (sx1, sy2, sx2, sy2)
+                                (sx1, sy1, sx1, sy2)
+                                (sx2, sy1, sx2, sy2)
+                            |]
+                            for edgeBb in edges do
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = source.Number
+                                    LayerType   = source.DataType
+                                    LimitDbu    = sizeDbu
+                                    MeasuredDbu = 0L
+                                    BboxA = edgeBb
+                                    BboxB = None }
         | Rules.ImplantOutsideWellSpacing (name, implant, active, well, minUm) ->
             // Build the actual diffusion-outside-well region
             // via polygon booleans, then check distance to
@@ -1291,6 +1330,7 @@ let checkWithToggles
         |> List.choose (fun r ->
             match r with
             | Rules.MustBeInside (n, _, _) -> Some n
+            | Rules.MustBeInsideEdgewise (n, _, _, _) -> Some n
             | Rules.Enclosure (n, _, _, _, _) when compat = Compat.Klayout ->
                 Some n
             | _ -> None)

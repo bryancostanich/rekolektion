@@ -70,6 +70,20 @@ def netgen_setup(pdk_root: Path | str | None = None) -> Path:
     return pdk_path(pdk_root) / "libs.tech" / "netgen" / f"{PDK_VARIANT}_setup.tcl"
 
 
+def klayout_techdir(pdk_root: Path | str | None = None) -> Path:
+    """Return the directory containing the active variant's KLayout DRC files."""
+    return pdk_path(pdk_root) / "libs.tech" / "klayout" / "drc"
+
+
+def klayout_deck(pdk_root: Path | str | None = None) -> Path:
+    """Return path to the main KLayout DRC deck for the active PDK variant.
+
+    For sky130A this is `sky130A_mr.drc`; for sky130B it is `sky130B_mr.drc`.
+    The deck is a Ruby script that KLayout executes via `klayout -b -r`.
+    """
+    return klayout_techdir(pdk_root) / f"{PDK_VARIANT}_mr.drc"
+
+
 # ---------------------------------------------------------------------------
 # GDS layer/datatype mapping for SKY130
 # ---------------------------------------------------------------------------

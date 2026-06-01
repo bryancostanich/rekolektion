@@ -14,6 +14,37 @@ almost always a better answer here.
 
 ---
 
+> ## ⚠️ CONSTRUCTION NOTICE — silicon_correct project active
+>
+> *Posted 2026-06-01. Clean up this section when the linked tracks land.*
+>
+> Several foundational correctness fixes are in flight under the
+> `khalkulo/conductor/projects/silicon_correct/` planning project.
+> The following guidance in this doc is **partially out of date**
+> while these tracks execute; this notice will be removed and the
+> doc rewritten once each track ships.
+>
+> | Track | What it changes | When to trust this doc again |
+> |---|---|---|
+> | **01 grid-snap conclusive fix** | Every coord emitted by rekolektion lands on the PDK manufacturing grid (5 nm SKY130). New `verify_grid` validator; `place_*` helpers snap their output; F# `to-gds` enforces grid on emit. The 2111-line `Drc/Check.fs` and the build-script ROUTES tables both need a sweep. | When `verify_grid` is referenced as a Step in the DRC/LVS section below and all cells in `source/cell_designs/` pass it. |
+> | **02 DRC engine: Magic → KLayout primary** | `verify_drc` default flips from Magic to KLayout. `Drc/Check.fs` calibrated rule-by-rule against KLayout (currently calibrated to Magic). Magic stays available for LVS extraction only. The `full=True` parameter goes away (KLayout has no fast/full split). | When this doc's "Step 2 — DRC" section references KLayout as the primary engine. |
+> | **03 GDS round-trip equivalency with KLayout** | rekolektion's GDS reader (`OfGds.fs`) and writer (`ToGds.fs`) become KLayout-spec-conformant. Round-trip tests exist. STRANS / ANGLE / PROPATTR / AREF edge cases reconciled. | When the spec-conformance doc at `rekolektion/docs/internals/gds_spec_conformance.md` exists and tests pass. |
+> | **04 P&R density + antenna via KLayout** | OpenLane flow uses KLayout decks for density + antenna instead of Magic. Lower priority; not blocking. Lives in the `moroder` repo. | When `moroder/` configs reference KLayout for these stages. |
+>
+> ### What to do in the meantime (during the construction)
+>
+> 1. **Magic DRC has known bugs on rotated SRefs.** Specifically: `cgm_core` rot=90 in the bias_gen reproducer produces 114 phantom 14-nm poly.2 slivers (default style) or 22 (sign-off style); KLayout finds the real 70 violations. Cross-check anything suspicious with KLayout DRC.
+> 2. **Use `verify_drc(full=True)` for any DRC during this period.** The default fast style adds more phantom-on-rotation noise. `full=True` still has rotation-specific phantoms for some compositions (ctat at 180/270, output_legs at 90) but is closer to KLayout-equivalent.
+> 3. **Off-grid coordinates are a real foundry-blocking bug.** Don't write `(x1 + x2) // 2` or `tap.x + 200` without ensuring the result lands on a 5-nm boundary. Use `snap_dbu` if the helper exists in your branch; otherwise round explicitly. `verify_grid` (Track 01) will eventually fail these automatically.
+> 4. **Hand-routed wires (`ROUTES = [...]` tables in build scripts) are likely off-grid.** They were captured from viz drag-routes which don't grid-align. After Track 01 lands, these will be flagged and need a sweep. Don't add new ones without snap-on-emit in your script's `route_rects` construction.
+> 5. **LVS stays on Magic.** The DRC migration doesn't touch LVS. `verify_lvs` is the same as today.
+>
+> The session notes that produced this notice are deep in the
+> `silicon_correct` track plans. Read those for the full context
+> before changing anything in this doc.
+
+---
+
 ## The mental model
 
 ```
@@ -1816,6 +1847,22 @@ It's slower — typically 2–5× on opamp-sized cells, more on full
 macros (the latch-up grow-and-subtract loop walks the whole
 well/substrate area). Keep iteration on the fast default; flip to
 `full=True` once you're close to sign-off.
+
+> **Hard Rule: any DRC on a parent that SRefs a sub-cell at
+> `rot=90` or `rot=270` MUST use `full=True`.** Magic's fast
+> default style produces phantom violations on 90°/270°-rotated
+> composed cells — typically a long 14-nm vertical strip of
+> `poly.2` errors in empty space outside the cell's bbox, plus
+> spurious `li.3` / `mcon.2` / `met1.2`. The sign-off rule set
+> (`drc style drc(full)`) does not have this bug — it returns the
+> same orientation-invariant tile count at rot=0/90/180/270 for
+> any given composition. If you see 50+ unexplained tiles
+> concentrated in a sliver after rotating, you are almost
+> certainly hitting this bug; re-run with `full=True` before
+> chasing any layout fix. Documented and reproduced 2026-06-01 on
+> SKY130 `bias_gen_cgm_core`: fast-style at rot=90 reported 114
+> errors (96 phantom poly.2 + 18 baseline); `full=True` at the
+> same rotation reported the same 22 errors as at rot=0.
 
 `verify_drc` converts the block to GDS via the viz CLI's `to-gds`
 verb, loads it into Magic, runs `drc check` against the

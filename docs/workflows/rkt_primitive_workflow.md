@@ -2638,6 +2638,37 @@ same as before. The `_fix_met1_min_area` post-processing pass in
     is a silicon-killing pattern. Same for any pin emission that only
     visits the first match of a multi-finger device.
 
+22. **Build scripts MUST cp-backup the existing `.rkt` before
+    overwriting it.** Once you've shown a `.rkt` to a user (in viz,
+    for placement review, for routing), they may have hand-edited it
+    in viz and saved to disk. Re-running the build script without a
+    backup destroys those edits with no recovery path. Even if you
+    *think* the script is a byte-faithful reproducer, run the backup
+    anyway — script bugs or stale-versus-disk drift will silently
+    eat the hand-edits.
+
+    Pattern at the top of `main()`:
+
+    ```python
+    import datetime, shutil
+    if OUT_PATH.exists():
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = OUT_PATH.with_suffix(f".rkt.bak.{ts}")
+        shutil.copy2(OUT_PATH, bak)
+        print(f"backed up existing .rkt → {bak.name}")
+    ```
+
+    Backups are cheap (a few KB each); recovery from a missing
+    backup costs hours of user re-work. Keep them; sweep older
+    `.bak.*` files periodically if the directory gets cluttered.
+
+    Burned on `opamp_lowv_buffer` (2026-05-30). The user had a
+    hand-edited backup-named tab open in viz; viz restart cleared
+    the in-memory state; the user's previous build-script runs had
+    already overwritten the disk file repeatedly. No `.bak` files
+    existed because the build script wrote directly. Hand-edits
+    unrecoverable. Cost: hours.
+
 ---
 
 ## Quick smoke test

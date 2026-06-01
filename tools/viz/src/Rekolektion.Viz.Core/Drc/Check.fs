@@ -38,14 +38,29 @@ let private bboxOf (poly: FlatPolygon) : int64 * int64 * int64 * int64 =
         if p.Y > yMax then yMax <- p.Y
     xMin, yMin, xMax, yMax
 
-/// Orthogonal facing-edge gap, with the gap REGION as a bbox:
-/// returns `Some (d, gapBbox)` when the two input bboxes have a
-/// facing edge, and `None` otherwise. The gap bbox covers the
-/// rectangular strip between the two facing edges — gap-wide on
-/// the perpendicular axis, common-projection-long on the
-/// parallel axis. Clustering uses this small bbox so violations
-/// at unrelated gaps don't merge by virtue of their polygon
-/// pair's union encompassing the whole layer.
+/// Gap between two bboxes WITH the gap REGION as a bbox. Returns
+/// `Some (d, gapBbox)` covering three cases:
+///   * Overlapping bboxes (both axes overlap): d=0, gapBbox = the
+///     intersection.
+///   * Facing-edge orthogonal pair (one axis overlaps): d = the
+///     perpendicular gap, gapBbox = strip between the facing
+///     edges (common-projection × gap).
+///   * Diagonal-corner pair (neither axis overlaps): d = Euclidean
+///     corner-to-corner distance, gapBbox = the rectangle spanned
+///     by the closest corners (xGap × yGap).
+///
+/// The diagonal case matches Magic's behaviour when `drc euclidean
+/// on` is set (the harness uses this — sky130 sign-off DRC runs
+/// Euclidean). PROBE-confirmed on opamp_buffer_r2r: two parent
+/// mcons at (9600,415,9770,585) and (9351,665,9521,835) have no
+/// orthogonal overlap but their closest corners are
+/// sqrt(79² + 80²) ≈ 112 nm apart — under mcon.2's 190 nm limit.
+/// Magic fires; viz wasn't, because the diagonal branch used to
+/// return None.
+///
+/// Clustering uses the gap bbox so violations at unrelated gaps
+/// don't merge by virtue of their polygon pair's union
+/// encompassing the whole layer.
 let private bboxOrthoGapAndRegion
         ((ax1, ay1, ax2, ay2): int64 * int64 * int64 * int64)
         ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
@@ -80,7 +95,23 @@ let private bboxOrthoGapAndRegion
         let gy2 = min ay2 by2
         Some (g, (gx1, gy1, gx2, gy2))
     else
-        None
+        // Diagonal pair — closest-corner Euclidean gap and the
+        // corner-region bbox between them.
+        let gx1, gx2 =
+            if ax2 <= bx1 then ax2, bx1
+            else bx2, ax1
+        let gy1, gy2 =
+            if ay2 <= by1 then ay2, by1
+            else by2, ay1
+        let xGap = gx2 - gx1
+        let yGap = gy2 - gy1
+        let dx = float xGap
+        let dy = float yGap
+        let d = sqrt (dx * dx + dy * dy)
+        // Round to integer DBU. Sub-DBU rounds up to 1 so we don't
+        // false-trigger when corners are at sub-grid offsets.
+        let euclid = max 1L (int64 (System.Math.Round d))
+        Some (euclid, (gx1, gy1, gx2, gy2))
 
 /// Orthogonal facing-edge gap: returns `Some d` when the two
 /// bboxes have a facing edge (one axis's projections overlap,

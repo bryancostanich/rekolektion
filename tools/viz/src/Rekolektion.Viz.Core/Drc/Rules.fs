@@ -723,6 +723,12 @@ module Klayout =
         Width   ("li.1", li1,  0.17)
         Spacing ("li.3", li1,  0.17)
         MinArea ("li.6", li1,  0.0561)  // 0.17 × 0.33 effective min
+        // --- mcon (li1↔met1 contact) ---
+        Width   ("ct.1_a", mcon, 0.17)  // min mcon width
+        Spacing ("ct.2",   mcon, 0.19)  // min mcon spacing
+        // --- via1 (met1↔met2) ---
+        Width   ("via.1a_a", via, 0.15) // min via1 width
+        Spacing ("via.2",    via, 0.17) // min via1 spacing
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

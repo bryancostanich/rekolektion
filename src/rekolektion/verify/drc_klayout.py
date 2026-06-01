@@ -82,6 +82,17 @@ _KLAYOUT_TO_MAGIC_RULE: dict[str, str] = {
     "difftap.3":   "diff/tap.3",
     "difftap.8":   "diff/tap.8",
     "difftap.9":   "diff/tap.9",
+    # KLayout uses `ct.*` for mcon-class rules; Magic uses `mcon.*`.
+    "ct.1_a": "mcon.1",
+    "ct.1_b": "mcon.1",     # ct.1_b is the matching max-length
+                            # half — buckets with mcon.1 for
+                            # comparison since F# Magic uses one
+                            # Width rule to cover both.
+    "ct.2":   "mcon.2",
+    # KLayout uses `via.1a_a` for via1 min width (via.1 is a shape
+    # check, not a size check); Magic uses `via.1` for the size.
+    "via.1a_a": "via.1",
+    "via.1a_b": "via.1",    # max-length companion, same bucket
     # Add more as Phase 4 corpus surfaces them.
 }
 

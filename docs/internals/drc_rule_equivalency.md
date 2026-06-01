@@ -41,16 +41,19 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 12 rules promotable on the KLayout
-diagonal.** Width / Spacing / MinArea on li1, met1, met2, met3.
+**Coverage as of 2026-06-01: 16 rules promotable on the KLayout
+diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
+met3 plus mcon + via1 size rules.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
-| `li.1` | OK | FAIL | Width 0.17 µm. ext-Magic fires `li.c1` (core variant) alongside `li.1` on non-COREID geometry → 2 tiles vs F# Magic's 1. Magic-only delta. |
-| `li.3` | OK | FAIL | Spacing 0.17 µm. Same Magic core-vs-peri delta. |
-| `li.6` | OK | FAIL | Min area 0.0561 µm². Same Magic core-vs-peri delta. |
+| `li.1` | OK | FAIL | Width 0.17 µm. ext-Magic core/peri delta. |
+| `li.3` | OK | FAIL | Spacing 0.17 µm. Same. |
+| `li.6` | OK | FAIL | Min area 0.0561 µm². Same. |
+| `mcon.1` | OK | FAIL | Min mcon width 0.17 µm (KLayout deck name `ct.1_a`). Per-cell gate is FAIL because ext-KLayout also fires `ct.4` (mcon must be covered by li) which F# Klayout hasn't implemented. Per-rule gate is OK — the size check itself matches. |
+| `mcon.2` | OK | FAIL | Min mcon spacing 0.19 µm (KLayout `ct.2`). Same per-cell caveat as mcon.1. |
 | `met1.1` | OK | OK | Width 0.14 µm. |
-| `met1.2` | OK | FAIL | Spacing 0.14 µm. Magic-side spacing-tile delta — see below. |
+| `met1.2` | OK | FAIL | Spacing 0.14 µm. Magic spacing-tile delta. |
 | `met1.6` | OK | OK | Min area 0.083 µm². |
 | `met2.1` | OK | OK | Width 0.14 µm. |
 | `met2.2` | OK | FAIL | Spacing 0.14 µm. Same. |
@@ -58,6 +61,25 @@ diagonal.** Width / Spacing / MinArea on li1, met1, met2, met3.
 | `met3.1` | OK | OK | Width 0.30 µm. |
 | `met3.2` | OK | FAIL | Spacing 0.30 µm. Same. |
 | `met3.6` | OK | OK | Min area 0.240 µm². |
+| `via.1` | OK | FAIL | Min via1 width 0.15 µm (KLayout deck name `via.1a_a`). Per-cell gate is FAIL because ext-KLayout also fires the via1 enclosure family (`via.4a`/`via.5a`) which F# Klayout hasn't implemented yet. |
+| `via.2` | OK | FAIL | Min via1 spacing 0.17 µm. Same per-cell caveat. |
+
+### Backlog (rules ext-KLayout fires that F# Klayout doesn't yet implement)
+
+Surfaced by the mcon and via1 corpus cells; these are next on the
+Phase 4 work list:
+
+- `ct.4` — mcon must be covered by li1
+- `via.4a` / `via.4a_a` / `via.4b` — via1 met1 enclosure family
+- `via.5a` / `via.5b` — via1 met2 enclosure family
+- `met1.4` / `met1.5` — met1 mcon enclosure family
+- `met2.4` / `met2.4_a` / `met2.5` — met2 via1 enclosure family
+
+These are all *cross-layer* rules (one layer must enclose / cover
+another). Implementing them requires the Enclosure / AsymEnclosure
+rule kinds, not just the simpler Width / Spacing / MinArea kinds
+used so far. F# Magic has these rule shapes — they just need to be
+mirrored onto the Klayout side with the right deck names.
 
 **F# Magic spacing delta (informational).** On every Width / Spacing
 metal-layer corpus cell that tests two parallel rects with a

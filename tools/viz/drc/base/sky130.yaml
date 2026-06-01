@@ -182,6 +182,16 @@ rules:
   cond-a: always
   cond-b: always
 - name: rpm.1
+  # DISABLED — viz's Width rule doesn't model the psdm-block exception
+  # that sky130A.tech applies: `templayer rpm_block *psd,*mvpsd` then
+  # `rpm_generate = RPM and-not rpm_block`. All foundry res_xhigh_po /
+  # res_high_po primitives have psdm covering the full RPM region, so
+  # Magic correctly waives this width check inside the resistor body.
+  # Until we add a block-layer subtraction term to the Width rule
+  # schema, leaving this enabled yields false positives on every
+  # SKY130 poly resistor instance. Magic-based verify_drc still
+  # enforces rpm.1 correctly.
+  disabled: true
   kind: width
   layer:
     number: 66

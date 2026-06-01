@@ -284,17 +284,38 @@ let cmdDumpLayer (args: string list) : int =
         eprintfn "usage: rekolektion-viz dump-layer <input> <num> <dt>"
         1
 
-/// `drc <input.rkt|.gds|.mag>` — load, flatten, run the full DRC
-/// check, and print every Violation as one CSV-ish line.  Lets the
-/// caller diff viz's reported violations against Magic's output.
+/// `drc [--compat klayout|magic] <input.rkt|.gds|.mag>` — load,
+/// flatten, run the full DRC check against the chosen compat
+/// target, and print every Violation as one CSV-ish line. Lets the
+/// caller (and the Phase 4 equivalency harness) diff viz's reported
+/// violations against either Magic or KLayout output.
+///
+/// Default is `--compat klayout` to match the rest of the project
+/// (Track 02). Phase 3 state: KLayout's F# rule list is empty, so
+/// `--compat klayout` returns 0 violations until Phase 4 populates
+/// rules. Use `--compat magic` for the existing Magic-tuned ruleset.
 let cmdDrc (args: string list) : int =
-    match args with
-    | [path] ->
+    let rec parse (acc: string option) (compat: Rekolektion.Viz.Core.Drc.Compat.Compat) (rest: string list) =
+        match rest with
+        | "--compat" :: v :: tail ->
+            match Rekolektion.Viz.Core.Drc.Compat.parse v with
+            | Some c -> parse acc c tail
+            | None ->
+                eprintfn "drc: unknown --compat value %s (expected klayout|magic)" v
+                Error 2
+        | x :: tail when acc.IsNone -> parse (Some x) compat tail
+        | [] when acc.IsSome -> Ok (acc.Value, compat)
+        | _ ->
+            eprintfn "usage: rekolektion-viz drc [--compat klayout|magic] <input.rkt|.gds|.mag>"
+            Error 1
+    match parse None Rekolektion.Viz.Core.Drc.Compat.defaultCompat args with
+    | Error rc -> rc
+    | Ok (path, compat) ->
         let doc, warnings =
             Rekolektion.Viz.Core.Layout.LayoutLoader.load path
         for w in warnings do eprintfn "[viz] %s" w
         let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
-        let view = Rekolektion.Viz.Core.Drc.Rules.defaultView
+        let view = Rekolektion.Viz.Core.Drc.Rules.viewFor compat
         let viols = Rekolektion.Viz.Core.Drc.Check.check view doc.Units flat
         let layerName n d =
             match Rekolektion.Viz.Core.Layout.Layer.bySky130Number n d with
@@ -312,11 +333,9 @@ let cmdDrc (args: string list) : int =
                 v.Rule (layerName v.LayerNumber v.LayerType)
                 v.LimitDbu v.MeasuredDbu
                 ax1 ay1 ax2 ay2 bStr
-        eprintfn "=== %d violations ===" viols.Length
+        eprintfn "=== %d violations (compat=%s) ==="
+            viols.Length (Rekolektion.Viz.Core.Drc.Compat.toString compat)
         0
-    | _ ->
-        eprintfn "usage: rekolektion-viz drc <input.rkt|.gds|.mag>"
-        1
 
 let cmdRender (_args: string list) : int =
     printfn "render: not yet implemented in Phase 1 (port LayerRenderer pending)"

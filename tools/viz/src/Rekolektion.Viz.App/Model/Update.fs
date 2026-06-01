@@ -628,6 +628,19 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let model' = { model with Toggle = toggle' }
         backend.PersistSession model'
         model', Cmd.none
+    | Msg.ToggleDrcLayer (key, vis) ->
+        let toggle' = Visibility.setDrcVisibleLayer key vis model.Toggle
+        let model' = { model with Toggle = toggle' }
+        backend.PersistSession model'
+        model', Cmd.none
+    | Msg.SetAllDrcVisible vis ->
+        let keys =
+            Layout.Layer.allDrawing
+            |> List.map (fun l -> (l.Number, l.DataType))
+        let toggle' = Visibility.setAllDrcVisible keys vis model.Toggle
+        let model' = { model with Toggle = toggle' }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.SetActiveLayer layer ->
         let toggle' = Visibility.setActiveLayer layer model.Toggle
         let model' = { model with Toggle = toggle' }

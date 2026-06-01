@@ -52,6 +52,16 @@ type Msg =
     /// stale across renders and broke re-enable.
     | FlipLayer        of LayerKey
     | SetAllLayers     of visible: bool
+    /// Per-layer DRC-overlay visibility toggle. Parallel to
+    /// `ToggleLayer` but writes to `ToggleState.DrcVisibleLayers`,
+    /// not `Layers`. Drives the new "D" column in the Layers
+    /// panel — clicking a D checkbox dispatches this directly with
+    /// the target state (read live in the press handler to avoid
+    /// stale-closure capture, same trap `ToggleLayer` documents).
+    | ToggleDrcLayer   of LayerKey * visible: bool
+    /// Master "all DRC on/off" affordance in the Layers section
+    /// header. Sets every known layer's DRC-viz to `visible`.
+    | SetAllDrcVisible of visible: bool
     /// Set the active edit layer (or clear with `None`). Auto-shows
     /// the layer when set. Dispatched by the 0/1/2/3/4 hotkeys.
     | SetActiveLayer   of LayerKey option

@@ -425,9 +425,20 @@ type private SkiaDraw(bounds: Rect,
                         | _ -> ()
 
                 if overlay.Violations.Length > 0 then
-                    DrcOverlay.render canvas vb
-                        (float lib.Units.DbuNm * 1.0e-3)
-                        drcProvenance overlay.Violations
+                    // Filter the violation array by per-layer DRC-viz
+                    // toggles. `keepViolation` returns true when at
+                    // least one of the rule's participating layers
+                    // has its D column on (AND semantics); empty
+                    // result when the user has hidden every layer
+                    // the violations touch. Layerless rules (which
+                    // resolve to an empty layer set in `layersOf`)
+                    // are always kept — see `Drc.Filter`.
+                    let visibleViolations =
+                        Drc.Filter.filterArray toggle overlay.Violations
+                    if visibleViolations.Length > 0 then
+                        DrcOverlay.render canvas vb
+                            (float lib.Units.DbuNm * 1.0e-3)
+                            drcProvenance visibleViolations
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb

@@ -268,8 +268,11 @@ type MainWindow() as this =
             let toggle =
                 let baseToggle = Model.empty.Toggle
                 sess.Layers
-                |> List.fold (fun t (n, d, v) ->
-                    Rekolektion.Viz.Core.Visibility.toggleLayer (n, d) v t) baseToggle
+                |> List.fold (fun t (n, d, v, drc) ->
+                    t
+                    |> Rekolektion.Viz.Core.Visibility.toggleLayer (n, d) v
+                    |> Rekolektion.Viz.Core.Visibility.setDrcVisibleLayer (n, d) drc
+                ) baseToggle
             // ADR-0004 — load the effective DRC ruleset at boot.
             // `loadEffectiveOrDefault` falls back to the F#-coded
             // defaults if the bundled YAML can't be found or fails

@@ -23,6 +23,40 @@ let ``ToggleLayer updates Model.Toggle.Layers`` () =
     Visibility.isLayerVisible next.Toggle (68, 20) |> should equal false
 
 [<Fact>]
+let ``ToggleDrcLayer updates Model.Toggle.DrcVisibleLayers without touching Layers`` () =
+    let init = Model.empty
+    let next, _ = Update.update stubBackend (Msg.ToggleDrcLayer ((68, 20), false)) init
+    Visibility.isDrcVisibleForLayer next.Toggle (68, 20) |> should equal false
+    // Polygon visibility for the same layer is untouched.
+    Visibility.isLayerVisible next.Toggle (68, 20) |> should equal true
+
+[<Fact>]
+let ``ToggleDrcLayer is independent from ToggleLayer`` () =
+    // Sequence: hide polygons, keep DRC on. Both states must coexist
+    // on the same layer key.
+    let next1, _ = Update.update stubBackend (Msg.ToggleLayer ((68, 20), false)) Model.empty
+    let next2, _ = Update.update stubBackend (Msg.ToggleDrcLayer ((68, 20), true)) next1
+    Visibility.isLayerVisible next2.Toggle (68, 20) |> should equal false
+    Visibility.isDrcVisibleForLayer next2.Toggle (68, 20) |> should equal true
+
+[<Fact>]
+let ``SetAllDrcVisible false flips every known drawing layer's DRC off`` () =
+    let next, _ = Update.update stubBackend (Msg.SetAllDrcVisible false) Model.empty
+    // Pick a couple of layers from Layout.Layer.allDrawing to spot-check.
+    // (68, 20) = met1; (66, 20) = poly. Both must now be off.
+    Visibility.isDrcVisibleForLayer next.Toggle (68, 20) |> should equal false
+    Visibility.isDrcVisibleForLayer next.Toggle (66, 20) |> should equal false
+    // And the polygon-visibility column stays at its default (true).
+    Visibility.isLayerVisible next.Toggle (68, 20) |> should equal true
+
+[<Fact>]
+let ``SetAllDrcVisible true after false re-enables every layer`` () =
+    let off, _   = Update.update stubBackend (Msg.SetAllDrcVisible false) Model.empty
+    let onAgain, _ = Update.update stubBackend (Msg.SetAllDrcVisible true)  off
+    Visibility.isDrcVisibleForLayer onAgain.Toggle (68, 20) |> should equal true
+    Visibility.isDrcVisibleForLayer onAgain.Toggle (66, 20) |> should equal true
+
+[<Fact>]
 let ``ToggleNetHighlight flips a net's membership in HighlightedNets`` () =
     let next, _ = Update.update stubBackend (Msg.ToggleNetHighlight "BL") Model.empty
     next.Toggle.HighlightedNets |> should equal (Set.singleton "BL")

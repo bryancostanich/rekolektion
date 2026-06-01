@@ -24,7 +24,7 @@ let ``empty state round-trips`` () =
 [<Fact>]
 let ``layers + openPaths + activePath round-trip`` () =
     let state : SessionState.State = {
-        Layers = [ (68, 20, true); (69, 20, false) ]
+        Layers = [ (68, 20, true, true); (69, 20, false, true) ]
         OpenPaths = [ "/tmp/a.rkt"; "/tmp/b.rkt" ]
         ActivePath = Some "/tmp/a.rkt"
         Window = None
@@ -50,7 +50,7 @@ let ``window bounds round-trip`` () =
 [<Fact>]
 let ``window absent stays absent`` () =
     let state : SessionState.State = {
-        Layers = [ (68, 20, true) ]
+        Layers = [ (68, 20, true, true) ]
         OpenPaths = []
         ActivePath = None
         Window = None
@@ -92,7 +92,7 @@ let ``window with fractional dimensions round-trips`` () =
 [<Fact>]
 let ``mixed full payload round-trips`` () =
     let state : SessionState.State = {
-        Layers = [ (68, 20, true); (94, 20, false); (255, 1, false) ]
+        Layers = [ (68, 20, true, true); (94, 20, false, true); (255, 1, false, false) ]
         OpenPaths = [ "/a/b/c.rkt"; "/x/y/z.gds" ]
         ActivePath = Some "/a/b/c.rkt"
         Window = Some { Width = 1500.0; Height = 950.0; X = 10; Y = 20 }
@@ -111,7 +111,7 @@ let ``json with unknown keys parses to empty for known fields`` () =
     let json =
         """{"layers":[],"openPaths":[],"futureField":"ignored"}"""
     let state = SessionState.parse json
-    state.Layers |> should equal ([] : (int * int * bool) list)
+    state.Layers |> should equal ([] : (int * int * bool * bool) list)
     state.OpenPaths |> should equal ([] : string list)
     state.ActivePath |> should equal (None : string option)
     state.Window |> should equal (None : SessionState.WindowBounds option)
@@ -124,6 +124,51 @@ let ``json with malformed window object falls back to None`` () =
         """{"layers":[],"openPaths":[],"window":{"h":900,"x":0,"y":0}}"""
     let state = SessionState.parse json
     state.Window |> should equal (None : SessionState.WindowBounds option)
+
+[<Fact>]
+let ``serialize includes the drc field per layer entry`` () =
+    let state : SessionState.State =
+        { Layers = [ (68, 20, true, false) ]
+          OpenPaths = []
+          ActivePath = None
+          Window = None }
+    let json = SessionState.serialize state
+    json |> should haveSubstring "\"drc\":false"
+    json |> should haveSubstring "\"v\":true"
+
+[<Fact>]
+let ``parse defaults drc=true on legacy entries missing the field`` () =
+    // Pre-DRC-column session file shape: only n/d/v.
+    let legacy =
+        """{"layers":[{"n":68,"d":20,"v":true},{"n":69,"d":20,"v":false}]}"""
+    let restored = SessionState.parse legacy
+    restored.Layers
+    |> should equal
+        [ (68, 20, true,  true)
+          (69, 20, false, true) ]
+
+[<Fact>]
+let ``parse handles a mix of legacy and drc-enriched entries in one file`` () =
+    let json =
+        """{"layers":[{"n":68,"d":20,"v":true,"drc":false},{"n":69,"d":20,"v":false}]}"""
+    let restored = SessionState.parse json
+    restored.Layers
+    |> should equal
+        [ (68, 20, true,  false)
+          (69, 20, false, true) ]
+
+[<Fact>]
+let ``drc=false then drc=true round-trips per layer`` () =
+    let state : SessionState.State =
+        { Layers =
+              [ (68, 20, true, true)
+                (69, 20, true, false)
+                (70, 20, false, true)
+                (71, 20, false, false) ]
+          OpenPaths = []
+          ActivePath = None
+          Window = None }
+    roundTrip state |> should equal state
 
 [<Fact>]
 let ``ActivePath with escape characters round-trips`` () =

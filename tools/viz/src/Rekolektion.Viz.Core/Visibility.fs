@@ -4,6 +4,16 @@ type LayerKey = int * int       // (number, datatype)
 
 type ToggleState = {
     Layers          : Map<LayerKey, bool>
+    /// Per-layer DRC overlay visibility. Independent of `Layers` —
+    /// turning a layer's polygons off does not hide its DRC tiles
+    /// and vice versa. Lookup defaults to true via
+    /// `defaultValue true` in `isDrcVisibleForLayer`, so the map
+    /// only carries entries the user has actively touched (matches
+    /// the `Layers` convention). A `Drc.Filter.keepViolation` call
+    /// hides a violation iff it carries at least one layer
+    /// association and EVERY associated layer has DRC off.
+    /// Layerless rules (well, transistor, x.2) are immune.
+    DrcVisibleLayers: Map<LayerKey, bool>
     Nets            : Map<string, bool>
     Blocks          : Map<string, bool>
     /// Set of nets currently polygon-highlighted. Polys whose net
@@ -26,6 +36,7 @@ type ToggleState = {
 
 let empty : ToggleState = {
     Layers = Map.empty
+    DrcVisibleLayers = Map.empty
     Nets = Map.empty
     Blocks = Map.empty
     HighlightedNets = Set.empty
@@ -64,6 +75,17 @@ let setAllLayers (keys: LayerKey seq) (visible: bool) (s: ToggleState) : ToggleS
     let layers =
         keys |> Seq.fold (fun acc k -> Map.add k visible acc) s.Layers
     { s with Layers = layers }
+
+let isDrcVisibleForLayer (s: ToggleState) (key: LayerKey) : bool =
+    Map.tryFind key s.DrcVisibleLayers |> Option.defaultValue true
+
+let setDrcVisibleLayer (key: LayerKey) (visible: bool) (s: ToggleState) : ToggleState =
+    { s with DrcVisibleLayers = Map.add key visible s.DrcVisibleLayers }
+
+let setAllDrcVisible (keys: LayerKey seq) (visible: bool) (s: ToggleState) : ToggleState =
+    let next =
+        keys |> Seq.fold (fun acc k -> Map.add k visible acc) s.DrcVisibleLayers
+    { s with DrcVisibleLayers = next }
 
 let toggleNet (name: string) (visible: bool) (s: ToggleState) : ToggleState =
     { s with Nets = Map.add name visible s.Nets }

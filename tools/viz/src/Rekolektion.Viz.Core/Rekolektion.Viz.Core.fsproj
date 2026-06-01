@@ -64,6 +64,7 @@
     <Compile Include="Routing/Pads.fs" />
     <Compile Include="Routing/ViaStack.fs" />
     <Compile Include="Visibility.fs" />
+    <Compile Include="Drc/Filter.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
 </Project>

@@ -66,6 +66,7 @@
     <Compile Include="RegionMaxRectProbeTests.fs" />
     <Compile Include="RegionComponentsTests.fs" />
     <Compile Include="Met15ProbeTests.fs" />
+    <Compile Include="Lu3ProbeTests.fs" />
     <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="RoutingCommitGateTests.fs" />

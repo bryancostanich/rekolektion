@@ -735,6 +735,16 @@ module Klayout =
         // --- N-well ---
         Width   ("nwell.1",  nwell, 0.84) // min nwell width
         Spacing ("nwell.2a", nwell, 1.27) // min nwell spacing
+        // --- Implants (nsdm / psdm) ---
+        //
+        // KLayout deck names these OPPOSITE of F# Magic — deck has
+        // nsdm.1=Spacing nsdm.2=Width; F# Magic has the labels
+        // swapped (pre-existing).  We follow the deck so the
+        // KLayout-diagonal comparison passes.
+        Spacing ("nsdm.1", nsdm, 0.38)  // min nsdm spacing
+        Width   ("nsdm.2", nsdm, 0.38)  // min nsdm width
+        Spacing ("psdm.1", psdm, 0.38)
+        Width   ("psdm.2", psdm, 0.38)
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

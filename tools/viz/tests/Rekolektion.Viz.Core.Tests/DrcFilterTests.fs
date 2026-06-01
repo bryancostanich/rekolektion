@@ -112,13 +112,33 @@ let ``layersOfViolation falls back to primary layer for unknown rule`` () =
     Filter.layersOfViolation v
     |> should equal (Set.singleton (88, 99))
 
-// --- keepViolation: AND semantics ---------------------------------------
+// --- keepViolation: panel + Other buckets -------------------------------
+
+// Stand-in panel set covering the rules the per-layer tests use.
+// Real call sites pass `Layout.Layer.allDrawing` keys.
+let private panel : Set<Visibility.LayerKey> =
+    Set.ofList [
+        (64, 18)  // dnwell
+        (64, 20)  // nwell
+        (65, 20)  // diff
+        (65, 44)  // tap
+        (66, 20)  // poly
+        (66, 44)  // licon1
+        (67, 20)  // li1
+        (67, 44)  // mcon
+        (68, 20)  // met1
+        (68, 44)  // via1
+        (69, 20)  // met2
+        (69, 44)  // via2
+        (70, 20)  // met3
+        (93, 44)  // nsdm
+    ]
 
 [<Fact>]
 let ``keepViolation keeps everything when ToggleState is empty (default ON)`` () =
     let s = Visibility.empty
     let v = mkViolation "met1.1" (68, 20)
-    Filter.keepViolation s v |> should equal true
+    Filter.keepViolation panel s v |> should equal true
 
 [<Fact>]
 let ``keepViolation hides a single-layer rule when its only layer is OFF`` () =
@@ -126,7 +146,7 @@ let ``keepViolation hides a single-layer rule when its only layer is OFF`` () =
         Visibility.empty
         |> Visibility.setDrcVisibleLayer (68, 20) false
     let v = mkViolation "met1.1" (68, 20)
-    Filter.keepViolation s v |> should equal false
+    Filter.keepViolation panel s v |> should equal false
 
 [<Fact>]
 let ``keepViolation hides MinArea when its layer is OFF`` () =
@@ -134,17 +154,17 @@ let ``keepViolation hides MinArea when its layer is OFF`` () =
         Visibility.empty
         |> Visibility.setDrcVisibleLayer (68, 20) false
     let v = mkViolation "met1.6" (68, 20)
-    Filter.keepViolation s v |> should equal false
+    Filter.keepViolation panel s v |> should equal false
 
 [<Fact>]
 let ``keepViolation keeps a two-layer rule when ANY layer is ON`` () =
     // poly.7 is an Endcap on diff + poly. Turn off poly but leave diff
-    // on — rule stays visible (AND semantics require BOTH off to hide).
+    // on — rule stays visible.
     let s =
         Visibility.empty
         |> Visibility.setDrcVisibleLayer (66, 20) false  // poly off
     let v = mkViolation "poly.7" (66, 20)
-    Filter.keepViolation s v |> should equal true
+    Filter.keepViolation panel s v |> should equal true
 
 [<Fact>]
 let ``keepViolation hides a two-layer rule only when BOTH layers are OFF`` () =
@@ -153,7 +173,7 @@ let ``keepViolation hides a two-layer rule only when BOTH layers are OFF`` () =
         |> Visibility.setDrcVisibleLayer (66, 20) false  // poly off
         |> Visibility.setDrcVisibleLayer (65, 20) false  // diff off
     let v = mkViolation "poly.7" (66, 20)
-    Filter.keepViolation s v |> should equal false
+    Filter.keepViolation panel s v |> should equal false
 
 [<Fact>]
 let ``keepViolation hides a three-layer rule only when all three are OFF`` () =
@@ -161,26 +181,58 @@ let ``keepViolation hides a three-layer rule only when all three are OFF`` () =
         Visibility.empty
         |> Visibility.setDrcVisibleLayer (93, 44) false  // nsdm off
         |> Visibility.setDrcVisibleLayer (65, 20) false  // diff off
-    // Implant rule needs nsdm + diff + nwell all off to hide.
-    // With nwell still on, it stays visible.
-    // Note: rule name has a slash — `diff/tap.9`, not `difftap.9`.
     let v = mkViolation "diff/tap.9" (65, 20)
-    Filter.keepViolation s v |> should equal true
+    Filter.keepViolation panel s v |> should equal true
     let s2 = s |> Visibility.setDrcVisibleLayer (64, 20) false  // nwell off
-    Filter.keepViolation s2 v |> should equal false
+    Filter.keepViolation panel s2 v |> should equal false
+
+// --- "Other" bucket: violations on non-panel layers ---------------------
 
 [<Fact>]
-let ``keepViolation falls back to primary-layer gating for unknown rules`` () =
+let ``violation on a non-panel layer falls into the Other bucket`` () =
+    // (88, 99) is not in `panel`. An unknown rule on it falls back to
+    // singleton{(88,99)}, which has empty intersection with `panel`.
+    let v = mkViolation "custom.from.yaml" (88, 99)
+    Filter.isOtherBucket panel v |> should equal true
+
+[<Fact>]
+let ``Other bucket toggle ON keeps non-panel violations visible`` () =
+    let s = Visibility.empty  // DrcVisibleOther = true by default
+    let v = mkViolation "custom.from.yaml" (88, 99)
+    Filter.keepViolation panel s v |> should equal true
+
+[<Fact>]
+let ``Other bucket toggle OFF hides non-panel violations`` () =
+    let s = Visibility.empty |> Visibility.setDrcVisibleOther false
+    let v = mkViolation "custom.from.yaml" (88, 99)
+    Filter.keepViolation panel s v |> should equal false
+
+[<Fact>]
+let ``Other toggle does not affect violations on panel layers`` () =
+    let s = Visibility.empty |> Visibility.setDrcVisibleOther false
+    let v = mkViolation "met1.1" (68, 20)
+    Filter.keepViolation panel s v |> should equal true
+
+[<Fact>]
+let ``Per-layer toggle does not affect Other-bucket violations`` () =
+    // Turning every panel layer's DRC off must NOT hide an Other-bucket
+    // violation, which is governed by DrcVisibleOther alone.
     let s =
         Visibility.empty
-        |> Visibility.setDrcVisibleLayer (88, 99) false
+        |> Visibility.setAllDrcVisible (Set.toSeq panel) false
     let v = mkViolation "custom.from.yaml" (88, 99)
-    Filter.keepViolation s v |> should equal false
-    // Other layer's OFF doesn't affect this unknown-rule violation.
-    let s2 =
-        Visibility.empty
-        |> Visibility.setDrcVisibleLayer (68, 20) false
-    Filter.keepViolation s2 v |> should equal true
+    Filter.keepViolation panel s v |> should equal true
+
+[<Fact>]
+let ``mixed violation: panel-on + other-off stays visible via panel bucket`` () =
+    // Fake rule that touches both panel and non-panel layers via the
+    // fallback isn't directly constructable; emulate by using an
+    // unknown rule whose primary layer IS in the panel.
+    let v = mkViolation "unknown.with.panel.primary" (68, 20)
+    // Primary layer in panel → not an Other case.
+    Filter.isOtherBucket panel v |> should equal false
+    let s = Visibility.empty |> Visibility.setDrcVisibleOther false
+    Filter.keepViolation panel s v |> should equal true
 
 // --- filterArray --------------------------------------------------------
 
@@ -193,7 +245,7 @@ let ``filterArray returns the input array verbatim when all layers are ON`` () =
             mkViolation "met2.2" (69, 20)
             mkViolation "poly.7" (66, 20)
         |]
-    Filter.filterArray s arr |> should equal arr
+    Filter.filterArray panel s arr |> should equal arr
 
 [<Fact>]
 let ``filterArray drops only the violations whose layers are all OFF`` () =
@@ -204,10 +256,33 @@ let ``filterArray drops only the violations whose layers are all OFF`` () =
     let m2 = mkViolation "met2.2" (69, 20)   // kept (met2 still on)
     let p7 = mkViolation "poly.7" (66, 20)   // kept (poly + diff both on)
     let arr = [| m1; m2; p7 |]
-    let kept = Filter.filterArray s arr
+    let kept = Filter.filterArray panel s arr
     kept |> should equal [| m2; p7 |]
 
 [<Fact>]
 let ``filterArray on an empty array returns empty`` () =
     let s = Visibility.empty
-    Filter.filterArray s [||] |> Array.isEmpty |> should equal true
+    Filter.filterArray panel s [||] |> Array.isEmpty |> should equal true
+
+[<Fact>]
+let ``filterArray hides both per-layer OFF and Other OFF in one pass`` () =
+    let s =
+        Visibility.empty
+        |> Visibility.setDrcVisibleLayer (68, 20) false   // met1 off
+        |> Visibility.setDrcVisibleOther false             // Other off
+    let met1 = mkViolation "met1.1" (68, 20)              // panel-hidden
+    let met2 = mkViolation "met2.2" (69, 20)              // panel-kept
+    let other = mkViolation "custom.yaml" (88, 99)        // other-hidden
+    let kept = Filter.filterArray panel s [| met1; met2; other |]
+    kept |> should equal [| met2 |]
+
+[<Fact>]
+let ``setAllDrcIncludingOther false hides every violation in one go`` () =
+    let s =
+        Visibility.empty
+        |> Visibility.setAllDrcIncludingOther (Set.toSeq panel) false
+    let met1  = mkViolation "met1.1"     (68, 20)
+    let poly7 = mkViolation "poly.7"     (66, 20)
+    let other = mkViolation "custom"     (88, 99)
+    let kept = Filter.filterArray panel s [| met1; poly7; other |]
+    kept |> should equal [||]

@@ -273,6 +273,7 @@ type MainWindow() as this =
                     |> Rekolektion.Viz.Core.Visibility.toggleLayer (n, d) v
                     |> Rekolektion.Viz.Core.Visibility.setDrcVisibleLayer (n, d) drc
                 ) baseToggle
+                |> Rekolektion.Viz.Core.Visibility.setDrcVisibleOther sess.DrcOther
             // ADR-0004 — load the effective DRC ruleset at boot.
             // `loadEffectiveOrDefault` falls back to the F#-coded
             // defaults if the bundled YAML can't be found or fails

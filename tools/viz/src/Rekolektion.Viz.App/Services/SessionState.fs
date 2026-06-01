@@ -44,6 +44,12 @@ type State = {
     /// hard-coded default in `MainWindow`).  Multi-monitor clamp
     /// happens at the `MainWindow` consumer, not here.
     Window : WindowBounds option
+    /// "Other" DRC bucket visibility — true means render
+    /// violations whose layers don't appear in the Layers panel.
+    /// Default true (matches `Visibility.empty.DrcVisibleOther`).
+    /// Persisted as a top-level `drcOther` field so it survives
+    /// app restart alongside the per-layer entries.
+    DrcOther : bool
 }
 
 let empty : State = {
@@ -51,6 +57,7 @@ let empty : State = {
     OpenPaths = []
     ActivePath = None
     Window = None
+    DrcOther = true
 }
 
 let private homeDir =
@@ -117,10 +124,18 @@ let parse (json: string) : State =
                     }
                 with _ -> None
             else None
+        let drcOther =
+            let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if root.TryGetProperty("drcOther", &v)
+               && (v.ValueKind = System.Text.Json.JsonValueKind.True
+                   || v.ValueKind = System.Text.Json.JsonValueKind.False)
+            then v.GetBoolean()
+            else true   // legacy files default to "Other on"
         { Layers = layers
           OpenPaths = openPaths
           ActivePath = activePath
-          Window = window }
+          Window = window
+          DrcOther = drcOther }
     with _ -> empty
 
 /// Read the persisted session state. Missing or malformed file
@@ -167,6 +182,9 @@ let serialize (state: State) : string =
             w.Height.ToString(System.Globalization.CultureInfo.InvariantCulture),
             w.X, w.Y) |> ignore
     | None -> ()
+    sb.AppendFormat(
+        ",\"drcOther\":{0}",
+        (if state.DrcOther then "true" else "false")) |> ignore
     sb.Append "}" |> ignore
     sb.ToString()
 
@@ -231,6 +249,7 @@ let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
             |> List.map (fun m -> m.OriginalPath)
         ActivePath = model.ActiveMacroPath
         Window = current.Window
+        DrcOther = Visibility.isDrcVisibleOther model.Toggle
     }
 
 /// Persist only the window bounds, preserving every other field

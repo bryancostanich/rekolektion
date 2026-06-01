@@ -496,6 +496,35 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
         |> List.sortByDescending (fun l -> l.StackZ)
         |> List.map (layerRow model.Toggle dispatch)
 
+    // Layer-visibility (V) and DRC-viz (D) master tri-state.
+    // Mirrors the Nets section's H/R pattern: a small color square
+    // next to the column letter. Tri-state visual — full color =
+    // all rows on, gray = mixed, dark = all off. Click flips the
+    // whole set with empty -> full / non-empty -> empty.
+    let allLayerKeys =
+        Layout.Layer.allDrawing
+        |> List.map (fun l -> (l.Number, l.DataType))
+    let allLayerKeysSet = Set.ofList allLayerKeys
+    // V master state.
+    let vVisibleCount =
+        allLayerKeys
+        |> List.filter (Visibility.isLayerVisible model.Toggle)
+        |> List.length
+    let vAllOn  = vVisibleCount = allLayerKeys.Length && allLayerKeys.Length > 0
+    let vSomeOn = vVisibleCount > 0
+    // D master state — counts include the "Other" bucket so the
+    // tri-state reflects the literal "every DRC tile on/off"
+    // question.
+    let dPanelVisibleCount =
+        allLayerKeys
+        |> List.filter (Visibility.isDrcVisibleForLayer model.Toggle)
+        |> List.length
+    let dOtherOn = Visibility.isDrcVisibleOther model.Toggle
+    let dTotalSlots = allLayerKeys.Length + 1   // panel + Other
+    let dOnCount = dPanelVisibleCount + (if dOtherOn then 1 else 0)
+    let dAllOn  = dOnCount = dTotalSlots && dTotalSlots > 0
+    let dSomeOn = dOnCount > 0
+
     let layersHeader : IView =
         DockPanel.create [
             DockPanel.lastChildFill false
@@ -508,35 +537,61 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                 ] :> IView
                 StackPanel.create [
                     StackPanel.orientation Orientation.Horizontal
-                    StackPanel.spacing 4.0
+                    StackPanel.spacing 6.0
                     DockPanel.dock Dock.Right
                     StackPanel.children [
-                        // Polygon-visibility master toggle (V column).
-                        Button.create [
-                            Button.content "V:all"
-                            Button.fontSize 10.0
-                            Button.padding (Avalonia.Thickness(4.0, 1.0))
-                            Button.onClick (fun _ -> dispatch (Msg.SetAllLayers true))
-                        ] :> IView
-                        Button.create [
-                            Button.content "V:none"
-                            Button.fontSize 10.0
-                            Button.padding (Avalonia.Thickness(4.0, 1.0))
-                            Button.onClick (fun _ -> dispatch (Msg.SetAllLayers false))
-                        ] :> IView
-                        // DRC-overlay master toggle (D column).
-                        Button.create [
-                            Button.content "D:all"
-                            Button.fontSize 10.0
-                            Button.padding (Avalonia.Thickness(4.0, 1.0))
-                            Button.onClick (fun _ -> dispatch (Msg.SetAllDrcVisible true))
-                        ] :> IView
-                        Button.create [
-                            Button.content "D:none"
-                            Button.fontSize 10.0
-                            Button.padding (Avalonia.Thickness(4.0, 1.0))
-                            Button.onClick (fun _ -> dispatch (Msg.SetAllDrcVisible false))
-                        ] :> IView
+                        // V master: blue square + "V" letter.
+                        clickable
+                            (fun () ->
+                                // Read live so the click target is
+                                // computed from the current model
+                                // (FuncUI's lambda re-bind trap).
+                                match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+                                | Some m ->
+                                    let liveSomeOn =
+                                        allLayerKeys
+                                        |> List.exists (Visibility.isLayerVisible m.Toggle)
+                                    let target = not liveSomeOn
+                                    dispatch (Msg.SetAllLayers target)
+                                | None -> ())
+                            (StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 3.0
+                                StackPanel.children [
+                                    masterIndicator vAllOn vSomeOn "#4090ff"
+                                    TextBlock.create [
+                                        TextBlock.text "V"
+                                        TextBlock.fontSize 10.0
+                                        TextBlock.foreground "#bbb"
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                    ] :> IView
+                                ]
+                            ] :> IView)
+                        // D master: orange square + "D" letter.
+                        clickable
+                            (fun () ->
+                                match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+                                | Some m ->
+                                    let liveSomeOn =
+                                        (allLayerKeys
+                                         |> List.exists (Visibility.isDrcVisibleForLayer m.Toggle))
+                                        || Visibility.isDrcVisibleOther m.Toggle
+                                    let target = not liveSomeOn
+                                    dispatch (Msg.SetAllDrcVisible target)
+                                | None -> ())
+                            (StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 3.0
+                                StackPanel.children [
+                                    masterIndicator dAllOn dSomeOn "#e07040"
+                                    TextBlock.create [
+                                        TextBlock.text "D"
+                                        TextBlock.fontSize 10.0
+                                        TextBlock.foreground "#bbb"
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                    ] :> IView
+                                ]
+                            ] :> IView)
                     ]
                 ] :> IView
             ]
@@ -583,13 +638,75 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             ]
         ] :> IView
 
+    // "Other" row — gates the layerless DRC bucket. No swatch
+    // (the bucket is layerless); no V column (polygon visibility
+    // doesn't apply); only a D checkbox + "Other" label. Sits at
+    // the bottom of the Layers list so it doesn't visually
+    // interrupt the layer stack.
+    let otherDrcOn = Visibility.isDrcVisibleOther model.Toggle
+    let otherDrcRow : IView =
+        let readLive () =
+            match Rekolektion.Viz.App.Services.AppDispatch.currentModel with
+            | Some (m: Model.Model) -> Visibility.isDrcVisibleOther m.Toggle
+            | None -> otherDrcOn
+        StackPanel.create [
+            StackPanel.orientation Orientation.Horizontal
+            StackPanel.spacing 6.0
+            StackPanel.verticalAlignment VerticalAlignment.Center
+            StackPanel.children [
+                // Spacer matching the swatch column.
+                Border.create [
+                    Border.width 10.0
+                    Border.height 11.0
+                    Border.background "Transparent"
+                ] :> IView
+                // Empty V slot — keeps the D cell aligned with the
+                // D column above.
+                Border.create [
+                    Border.width 11.0
+                    Border.height 11.0
+                    Border.background "Transparent"
+                ] :> IView
+                // D cell — single click, no drag (only one row,
+                // nothing to drag across).
+                Border.create [
+                    Border.background "Transparent"
+                    Border.cursor (new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand))
+                    Border.onPointerPressed (fun e ->
+                        e.Handled <- true
+                        let target = not (readLive ())
+                        dispatch (Msg.ToggleDrcOther target))
+                    Border.child (
+                        Border.create [
+                            Border.width 11.0
+                            Border.height 11.0
+                            Border.background
+                                (if otherDrcOn then "#e07040" else "#202020")
+                            Border.borderThickness 1.0
+                            Border.borderBrush "#888"
+                            Border.cornerRadius 1.0
+                            Border.verticalAlignment VerticalAlignment.Center
+                        ]
+                    )
+                ] :> IView
+                TextBlock.create [
+                    TextBlock.text "Other"
+                    TextBlock.fontSize 12.0
+                    TextBlock.fontStyle FontStyle.Italic
+                    TextBlock.foreground "#aaa"
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                ] :> IView
+            ]
+        ] :> IView
+
     // Pack layer rows in a tight inner panel so per-row gaps
     // stay 0 even though the outer panel uses 4.0 spacing for
     // section separation.
     let layersBlock : IView =
         StackPanel.create [
             StackPanel.spacing 3.0
-            StackPanel.children (layersColumnHeader :: layerRows)
+            StackPanel.children
+                (layersColumnHeader :: layerRows @ [ otherDrcRow ])
         ] :> IView
 
     let children : IView list =

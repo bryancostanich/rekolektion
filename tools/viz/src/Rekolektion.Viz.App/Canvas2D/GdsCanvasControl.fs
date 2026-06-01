@@ -425,16 +425,21 @@ type private SkiaDraw(bounds: Rect,
                         | _ -> ()
 
                 if overlay.Violations.Length > 0 then
-                    // Filter the violation array by per-layer DRC-viz
-                    // toggles. `keepViolation` returns true when at
-                    // least one of the rule's participating layers
-                    // has its D column on (AND semantics); empty
-                    // result when the user has hidden every layer
-                    // the violations touch. Layerless rules (which
-                    // resolve to an empty layer set in `layersOf`)
-                    // are always kept — see `Drc.Filter`.
+                    // Filter the violation array by per-layer DRC
+                    // toggles and the layerless "Other" bucket.
+                    //   * In-panel layers: visible iff at least one
+                    //     touched layer has D on (OR across the per-
+                    //     layer column).
+                    //   * Out-of-panel layers: visible iff
+                    //     `DrcVisibleOther` is on.
+                    // See `Drc.Filter.keepViolation`.
+                    let panelLayers =
+                        Layer.allDrawing
+                        |> List.map (fun l -> (l.Number, l.DataType))
+                        |> Set.ofList
                     let visibleViolations =
-                        Drc.Filter.filterArray toggle overlay.Violations
+                        Drc.Filter.filterArray panelLayers toggle
+                            overlay.Violations
                     if visibleViolations.Length > 0 then
                         DrcOverlay.render canvas vb
                             (float lib.Units.DbuNm * 1.0e-3)

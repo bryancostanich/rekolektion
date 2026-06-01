@@ -57,6 +57,22 @@ let ``SetAllDrcVisible true after false re-enables every layer`` () =
     Visibility.isDrcVisibleForLayer onAgain.Toggle (66, 20) |> should equal true
 
 [<Fact>]
+let ``SetAllDrcVisible also flips the Other bucket`` () =
+    let off, _ = Update.update stubBackend (Msg.SetAllDrcVisible false) Model.empty
+    Visibility.isDrcVisibleOther off.Toggle |> should equal false
+    let onAgain, _ = Update.update stubBackend (Msg.SetAllDrcVisible true) off
+    Visibility.isDrcVisibleOther onAgain.Toggle |> should equal true
+
+[<Fact>]
+let ``ToggleDrcOther flips only the Other bucket`` () =
+    let next, _ = Update.update stubBackend (Msg.ToggleDrcOther false) Model.empty
+    Visibility.isDrcVisibleOther next.Toggle |> should equal false
+    // Per-layer DRC entries are untouched.
+    Visibility.isDrcVisibleForLayer next.Toggle (68, 20) |> should equal true
+    let back, _ = Update.update stubBackend (Msg.ToggleDrcOther true) next
+    Visibility.isDrcVisibleOther back.Toggle |> should equal true
+
+[<Fact>]
 let ``ToggleNetHighlight flips a net's membership in HighlightedNets`` () =
     let next, _ = Update.update stubBackend (Msg.ToggleNetHighlight "BL") Model.empty
     next.Toggle.HighlightedNets |> should equal (Set.singleton "BL")

@@ -73,29 +73,63 @@ let layersOfViolation (v: Check.Violation) : Set<Visibility.LayerKey> =
     | _ -> Set.singleton (v.LayerNumber, v.LayerType)
 
 /// `true` ⇒ render the violation. `false` ⇒ user has hidden every
-/// layer it touches.
+/// bucket it touches.
 ///
-/// Semantics:
-///   * Layerless rules (`layersOfViolation` returns empty) — kept.
-///     The spec calls these "immune to the toggle". In practice this
-///     branch is unreachable today because `layersOfViolation`
-///     always falls back to the violation's own primary layer pair,
-///     but the predicate is defined for clarity.
-///   * Layer-bearing rules — hidden iff EVERY layer the rule
-///     touches is OFF in `s.DrcVisibleLayers`. Equivalently: shown
-///     when at least one participating layer is ON.
-let keepViolation (s: Visibility.ToggleState) (v: Check.Violation) : bool =
-    let layers = layersOfViolation v
-    if Set.isEmpty layers then true
+/// Two buckets:
+///   * Per-layer — controlled by `s.DrcVisibleLayers`. Applies to
+///     every layer the violation touches that is ALSO in
+///     `panelLayers` (the set of layer keys the Layers panel
+///     surfaces as rows).
+///   * Other — controlled by `s.DrcVisibleOther`. Applies when the
+///     violation touches at least one layer NOT in `panelLayers`
+///     (e.g. label-only or custom-YAML layers the panel doesn't
+///     show).
+///
+/// `keepViolation` shows the tile when EITHER bucket it touches
+/// is on. So:
+///   * Violation entirely on panel layers — shown iff at least one
+///     of those panel layers has DRC on. (OR across panel toggles.)
+///   * Violation entirely on non-panel layers — shown iff
+///     DrcVisibleOther is on.
+///   * Violation touching both — shown iff at least one panel
+///     layer is on OR DrcVisibleOther is on.
+///   * Violation with empty layer set (defensive — shouldn't
+///     happen with the current `layersOfViolation` fallback) —
+///     always shown.
+let keepViolation
+        (panelLayers: Set<Visibility.LayerKey>)
+        (s: Visibility.ToggleState)
+        (v: Check.Violation) : bool =
+    let vLayers = layersOfViolation v
+    if Set.isEmpty vLayers then true
     else
-        layers
-        |> Set.exists (Visibility.isDrcVisibleForLayer s)
+        let onPanel    = Set.intersect vLayers panelLayers
+        let offPanel   = Set.difference vLayers panelLayers
+        let panelOn    =
+            (not (Set.isEmpty onPanel))
+            && (onPanel |> Set.exists (Visibility.isDrcVisibleForLayer s))
+        let otherOn    =
+            (not (Set.isEmpty offPanel))
+            && Visibility.isDrcVisibleOther s
+        panelOn || otherOn
 
-/// Convenience wrapper for the call site. Filters a violations array
-/// in-place-equivalent fashion (returns a new array) — keeps the
-/// shape `DrcOverlay.render` already consumes.
+/// True when the violation lands in the "Other" bucket — every
+/// layer it touches is OUTSIDE `panelLayers`. Used by the call
+/// site and the master tri-state indicator to know how many
+/// tiles a user-facing "Other" toggle is gating.
+let isOtherBucket
+        (panelLayers: Set<Visibility.LayerKey>)
+        (v: Check.Violation) : bool =
+    let vLayers = layersOfViolation v
+    not (Set.isEmpty vLayers)
+    && Set.isEmpty (Set.intersect vLayers panelLayers)
+
+/// Convenience wrapper for the call site. Filters a violations
+/// array in-place-equivalent fashion (returns a new array) — keeps
+/// the shape `DrcOverlay.render` already consumes.
 let filterArray
+        (panelLayers: Set<Visibility.LayerKey>)
         (s: Visibility.ToggleState)
         (violations: Check.Violation array)
         : Check.Violation array =
-    violations |> Array.filter (keepViolation s)
+    violations |> Array.filter (keepViolation panelLayers s)

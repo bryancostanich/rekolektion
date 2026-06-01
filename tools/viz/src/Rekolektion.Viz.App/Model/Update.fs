@@ -637,7 +637,13 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let keys =
             Layout.Layer.allDrawing
             |> List.map (fun l -> (l.Number, l.DataType))
-        let toggle' = Visibility.setAllDrcVisible keys vis model.Toggle
+        let toggle' =
+            Visibility.setAllDrcIncludingOther keys vis model.Toggle
+        let model' = { model with Toggle = toggle' }
+        backend.PersistSession model'
+        model', Cmd.none
+    | Msg.ToggleDrcOther vis ->
+        let toggle' = Visibility.setDrcVisibleOther vis model.Toggle
         let model' = { model with Toggle = toggle' }
         backend.PersistSession model'
         model', Cmd.none

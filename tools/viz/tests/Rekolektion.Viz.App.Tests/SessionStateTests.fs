@@ -28,6 +28,7 @@ let ``layers + openPaths + activePath round-trip`` () =
         OpenPaths = [ "/tmp/a.rkt"; "/tmp/b.rkt" ]
         ActivePath = Some "/tmp/a.rkt"
         Window = None
+        DrcOther = true
     }
     roundTrip state |> should equal state
 
@@ -43,6 +44,7 @@ let ``window bounds round-trip`` () =
             X      = 120
             Y      = 80
         }
+        DrcOther = true
     }
     let result = roundTrip state
     result.Window |> should equal state.Window
@@ -54,6 +56,7 @@ let ``window absent stays absent`` () =
         OpenPaths = []
         ActivePath = None
         Window = None
+        DrcOther = true
     }
     let result = roundTrip state
     result.Window |> should equal (None : SessionState.WindowBounds option)
@@ -70,6 +73,7 @@ let ``window with negative position round-trips (off-primary monitor)`` () =
             X      = -1920
             Y      = -100
         }
+        DrcOther = true
     }
     roundTrip state |> should equal state
 
@@ -86,6 +90,7 @@ let ``window with fractional dimensions round-trips`` () =
             X      = 50
             Y      = 60
         }
+        DrcOther = true
     }
     roundTrip state |> should equal state
 
@@ -96,6 +101,7 @@ let ``mixed full payload round-trips`` () =
         OpenPaths = [ "/a/b/c.rkt"; "/x/y/z.gds" ]
         ActivePath = Some "/a/b/c.rkt"
         Window = Some { Width = 1500.0; Height = 950.0; X = 10; Y = 20 }
+        DrcOther = true
     }
     roundTrip state |> should equal state
 
@@ -131,7 +137,8 @@ let ``serialize includes the drc field per layer entry`` () =
         { Layers = [ (68, 20, true, false) ]
           OpenPaths = []
           ActivePath = None
-          Window = None }
+          Window = None
+          DrcOther = true }
     let json = SessionState.serialize state
     json |> should haveSubstring "\"drc\":false"
     json |> should haveSubstring "\"v\":true"
@@ -158,6 +165,41 @@ let ``parse handles a mix of legacy and drc-enriched entries in one file`` () =
           (69, 20, false, true) ]
 
 [<Fact>]
+let ``drcOther round-trips at the top level`` () =
+    let onState : SessionState.State =
+        { Layers = []
+          OpenPaths = []
+          ActivePath = None
+          Window = None
+          DrcOther = true }
+    let offState = { onState with DrcOther = false }
+    roundTrip onState  |> should equal onState
+    roundTrip offState |> should equal offState
+
+[<Fact>]
+let ``serialize includes the drcOther field`` () =
+    let state : SessionState.State =
+        { Layers = []
+          OpenPaths = []
+          ActivePath = None
+          Window = None
+          DrcOther = false }
+    let json = SessionState.serialize state
+    json |> should haveSubstring "\"drcOther\":false"
+
+[<Fact>]
+let ``parse defaults drcOther=true on legacy files missing the field`` () =
+    let legacy = """{"layers":[],"openPaths":[]}"""
+    let restored = SessionState.parse legacy
+    restored.DrcOther |> should equal true
+
+[<Fact>]
+let ``parse honors drcOther=false from disk`` () =
+    let json = """{"layers":[],"openPaths":[],"drcOther":false}"""
+    let restored = SessionState.parse json
+    restored.DrcOther |> should equal false
+
+[<Fact>]
 let ``drc=false then drc=true round-trips per layer`` () =
     let state : SessionState.State =
         { Layers =
@@ -167,7 +209,8 @@ let ``drc=false then drc=true round-trips per layer`` () =
                 (71, 20, false, false) ]
           OpenPaths = []
           ActivePath = None
-          Window = None }
+          Window = None
+          DrcOther = true }
     roundTrip state |> should equal state
 
 [<Fact>]
@@ -179,5 +222,6 @@ let ``ActivePath with escape characters round-trips`` () =
         OpenPaths = [ "/path/with\"quote.rkt"; "/path/with\\backslash.rkt" ]
         ActivePath = Some "/path/with\"quote.rkt"
         Window = None
+        DrcOther = true
     }
     roundTrip state |> should equal state

@@ -16,18 +16,18 @@ type Settings = {
     /// Minor grid-dot spacing in micrometers (e.g. 1.0 µm).
     GridMinorUm   : float
     /// Snap step in micrometers when S-key snap is on AND no
-    /// modifier is held (e.g. 1.0 µm).
+    /// modifier is held (default 0.1 µm).
     SnapDefaultUm : float
     /// Snap step in micrometers when S-key snap is on AND Alt
-    /// is held during the drag (e.g. 0.5 µm).
+    /// is held during the drag (default 0.01 µm — fine nudge).
     SnapAltUm     : float
 }
 
 let defaults : Settings = {
     GridMajorUm   = 5.0
     GridMinorUm   = 1.0
-    SnapDefaultUm = 0.5
-    SnapAltUm     = 0.1
+    SnapDefaultUm = 0.1
+    SnapAltUm     = 0.01
 }
 
 let private configPath =

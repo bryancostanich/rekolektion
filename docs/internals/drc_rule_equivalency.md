@@ -41,9 +41,9 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 16 rules promotable on the KLayout
+**Coverage as of 2026-06-01: 20 rules promotable on the KLayout
 diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
-met3 plus mcon + via1 size rules.
+met3 plus mcon + via1 size rules plus poly / nwell width+spacing.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
@@ -63,6 +63,10 @@ met3 plus mcon + via1 size rules.
 | `met3.6` | OK | OK | Min area 0.240 µm². |
 | `via.1` | OK | FAIL | Min via1 width 0.15 µm (KLayout deck name `via.1a_a`). Per-cell gate is FAIL because ext-KLayout also fires the via1 enclosure family (`via.4a`/`via.5a`) which F# Klayout hasn't implemented yet. |
 | `via.2` | OK | FAIL | Min via1 spacing 0.17 µm. Same per-cell caveat. |
+| `poly.1a` | OK | OK | Min poly width 0.15 µm. |
+| `poly.2` | OK | OK | Min poly spacing 0.21 µm. Spacing delta seen on metal layers does NOT recur here. |
+| `nwell.1` | OK | OK | Min nwell width 0.84 µm. |
+| `nwell.2a` | OK | OK | Min nwell spacing 1.27 µm — the canonical abut-or-tub rule (workflow Hard Rule #7). |
 
 ### Backlog (rules ext-KLayout fires that F# Klayout doesn't yet implement)
 

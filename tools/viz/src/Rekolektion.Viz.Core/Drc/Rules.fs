@@ -729,6 +729,12 @@ module Klayout =
         // --- via1 (met1↔met2) ---
         Width   ("via.1a_a", via, 0.15) // min via1 width
         Spacing ("via.2",    via, 0.17) // min via1 spacing
+        // --- Polysilicon ---
+        Width   ("poly.1a", poly, 0.15) // min poly width
+        Spacing ("poly.2",  poly, 0.21) // min poly spacing
+        // --- N-well ---
+        Width   ("nwell.1",  nwell, 0.84) // min nwell width
+        Spacing ("nwell.2a", nwell, 1.27) // min nwell spacing
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

@@ -41,6 +41,19 @@ rules:
     datatype: 44
     name: tap
   min-um: 0.27
+- name: difftap.3
+  kind: cross-spacing
+  layer-a:
+    number: 65
+    datatype: 20
+    name: diff
+  layer-b:
+    number: 65
+    datatype: 44
+    name: tap
+  min-um: 0.27
+  cond-a: always
+  cond-b: always
 - name: nwell.1
   kind: width
   layer:
@@ -168,6 +181,12 @@ rules:
   min-um: 0.075
   cond-a: always
   cond-b: always
+- name: rpm.1
+  kind: width
+  layer:
+    number: 66
+    datatype: 13
+  min-um: 1.27
 - name: rpm.3-6-nsd.5a
   kind: cross-spacing
   layer-a:
@@ -277,6 +296,19 @@ rules:
   one-dir-um: 0.08
   other-dir-um: 0.05
   cond: overlaps-poly
+- name: licon.9
+  kind: cross-spacing
+  layer-a:
+    number: 66
+    datatype: 44
+    name: licon1
+  layer-b:
+    number: 65
+    datatype: 20
+    name: diff
+  min-um: 0.235
+  cond-a: overlaps-poly
+  cond-b: psdm-overlaps
 - name: li.5
   kind: asym-enclosure
   outer:

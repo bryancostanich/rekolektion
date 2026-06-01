@@ -9,8 +9,8 @@
 // Requires the Core project to have been built at least once so
 // the DLLs exist at the expected paths.
 
-#r "../src/Rekolektion.Viz.Core/bin/Debug/net10.0/Rekolektion.Viz.Core.dll"
-#r "../../../../../.nuget/packages/yamldotnet/16.2.0/lib/net8.0/YamlDotNet.dll"
+#r "../src/Rekolektion.Viz.Core/bin/Release/net10.0/Rekolektion.Viz.Core.dll"
+#r "nuget: YamlDotNet, 16.2.0"
 
 open System.IO
 open Rekolektion.Viz.Core.Drc

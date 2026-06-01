@@ -270,6 +270,15 @@ let allRules : Rule list = [
     // --- Tap (substrate/well contacts) ---
     Width    ("difftap.2",  tap,   0.26)
     Spacing  ("difftap.3a", tap,   0.27)
+    // Diff (65/20) and tap (65/44) are stored as separate polygons
+    // in the GDS / .rkt but Magic treats them as one "active area"
+    // for spacing — diff↔tap spacing fires under the same
+    // `difftap.3` rule.  Without this CrossSpacing entry viz only
+    // checks diff↔diff (rule above) and tap↔tap (`difftap.3a`),
+    // missing the cross-pair (e.g., a pfet's p-diff vs the chip's
+    // top p-tap strip in opamp_buffer_r2r).  Rule name matches
+    // Magic's emission so MagicVsViz bbox-pairing works.
+    CrossSpacing("difftap.3", diff, tap, 0.27, Always, Always)
 
     // --- N-well ---
     Width    ("nwell.1",    nwell, 0.84)

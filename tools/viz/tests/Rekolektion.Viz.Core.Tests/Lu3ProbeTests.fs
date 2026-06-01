@@ -177,6 +177,45 @@ type Lu3Probe(out: ITestOutputHelper) =
                     a1 b1 a2 b2 hasNsdm inNwell)
 
     [<Fact>]
+    member _.``opamp_buffer_r2r mcon.2 at (9600,475) and (9410,665)`` () =
+        // Magic fires mcon.2 twice at each of bbox(9600,475,9710,585)
+        // and bbox(9410,665,9520,775). The duplicates look like Magic
+        // reporting the same violation under two related deck rules.
+        // Find what mcons are near each location.
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "dac", "opamp_buffer_r2r",
+                            "opamp_buffer_r2r.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let dumpAround (label: string) (cx: int64) (cy: int64) =
+            let window = 1000L
+            let polys =
+                flat
+                |> Array.filter (fun p ->
+                    p.Layer = 67 && p.DataType = 44
+                    && (let (x1,y1,x2,y2) = bboxOf p
+                        x2 > cx - window && x1 < cx + window
+                        && y2 > cy - window && y1 < cy + window))
+                |> Array.sortBy bboxOf
+            out.WriteLine (sprintf
+                "=== %s: mcons near (%d,%d) [%d total] ==="
+                label cx cy polys.Length)
+            for p in polys do
+                let (x1, y1, x2, y2) = bboxOf p
+                out.WriteLine (sprintf
+                    "  bbox=(%d,%d,%d,%d) %dx%d src=%s"
+                    x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
+        dumpAround "fire-1" 9655L 530L     // center of (9600,475,9710,585)
+        dumpAround "fire-2" 9465L 720L     // center of (9410,665,9520,775)
+
+    [<Fact>]
     member _.``b1_5_stage1 waiver decision for mcon.2 gap bbox`` () =
         let path =
             System.Reflection.Assembly.GetExecutingAssembly().Location

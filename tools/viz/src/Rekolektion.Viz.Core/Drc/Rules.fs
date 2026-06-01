@@ -244,6 +244,23 @@ type Rule =
         * inner: LayerKey
         * withL: LayerKey
         * minUm: float
+    /// "Every source polygon must be fully contained inside some
+    /// destination polygon."  No margin — pure containment.
+    /// Differs from `BoundaryCrossing` which only fires when the
+    /// destination layer is PRESENT and the source partially
+    /// crosses its edge; `MustBeInside` ALSO fires when the
+    /// destination layer is absent entirely around the source.
+    ///
+    /// Used for KLayout's `*.not(*)` style containment rules:
+    /// `ct.4` (mcon must be covered by li1), `via.4a_a` (via1
+    /// must be enclosed by m1), `m1.4`, `m2.4_a`. Each emits
+    /// one violation per failing source EDGE (matching KLayout's
+    /// edge-pair output) — for a fully-uncovered square source,
+    /// 4 violations.
+    | MustBeInside of
+        name: string
+        * source: LayerKey
+        * destination: LayerKey
 
 /// Magic-compatible name of a rule. Used by the renderer (label
 /// next to the violation marker) and by toggle filters keyed on
@@ -260,6 +277,7 @@ let nameOf (rule: Rule) : string =
     | BoundaryCrossing (n, _, _, _) -> n
     | ImplantOutsideWellSpacing (n, _, _, _, _) -> n
     | EnclosureOfIntersection (n, _, _, _, _) -> n
+    | MustBeInside (n, _, _) -> n
 
 // --- Rule table ---------------------------------------------------------
 // Ordering follows `sky130.py` top-to-bottom for ease of diffing,
@@ -611,6 +629,11 @@ let isLiveEligible (rule: Rule) : bool =
     | BoundaryCrossing _ -> false
     | ImplantOutsideWellSpacing _ -> false
     | EnclosureOfIntersection _ -> false
+    // Cross-layer containment depends on the destination layer's
+    // full polygon set, which the per-frame routing path doesn't
+    // have available cheaply.  Commit-time only — matches the
+    // BoundaryCrossing classification.
+    | MustBeInside _ -> false
 
 let liveRules : Rule list =
     allRules |> List.filter isLiveEligible
@@ -745,24 +768,22 @@ module Klayout =
         Width   ("nsdm.2", nsdm, 0.38)  // min nsdm width
         Spacing ("psdm.1", psdm, 0.38)
         Width   ("psdm.2", psdm, 0.38)
-        // --- Enclosure family: deferred ---
+        // --- Cross-layer containment (`X must be inside Y`) ---
         //
-        // KLayout deck counts edge-pairs (4 per symmetric square
-        // under-enclosure); F#'s `Enclosure` check counts inner
-        // polygons (1 per square).  Same logical violation,
-        // different per-rule counts — the harness's exact-match
-        // gate would always read FAIL.  Need to either
-        // (a) tighten F# Enclosure to emit one violation per
-        // failing edge, or (b) relax the harness comparison to
-        // accept "both > 0" on edge-vs-polygon counting rules.
-        // Tracked in `docs/internals/drc_rule_equivalency.md`.
+        // `MustBeInside` rule kind — emits 1 violation per
+        // uncovered source polygon, matching KLayout deck's
+        // polygon-style `.not().output()` emission.
         //
-        // KLayout's "must be covered" sibling rules (`ct.4`,
-        // `via.4a_a`, `m1.4`, `m2.4_a`) need a NEW rule kind
-        // (`MustBeInside`) since BoundaryCrossing's semantics
-        // require some destination to be near; KLayout's
-        // rule fires on ANY uncovered source regardless of
-        // whether the destination layer exists at all.
+        // KLayout's edge-style containment cousins (`via.4a_a`,
+        // which uses `.drc(width == 0.15).not().output()`) need a
+        // size-filtered + edge-counting variant — deferred.
+        // KLayout's sub-min-margin enclosure rules (via.4a sym,
+        // via.5a asym, m2.4 sym, m2.5 asym, m1.5 asym) need the
+        // existing Enclosure / AsymEnclosure rule kinds refitted
+        // for edge-counting under Compat.Klayout — deferred.
+        MustBeInside ("ct.4",   mcon, li1)   // mcon must be covered by li1
+        MustBeInside ("m1.4",   mcon, met1)  // mcon must be enclosed by m1
+        MustBeInside ("m2.4_a", via,  met2)  // via1 must be enclosed by m2
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

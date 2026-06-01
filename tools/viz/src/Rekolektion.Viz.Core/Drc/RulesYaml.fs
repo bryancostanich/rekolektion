@@ -121,6 +121,7 @@ let private kindOf (r: Rule) : string =
     | BoundaryCrossing _ -> "boundary-crossing"
     | ImplantOutsideWellSpacing _ -> "implant-outside-well-spacing"
     | EnclosureOfIntersection _ -> "enclosure-of-intersection"
+    | MustBeInside _ -> "must-be-inside"
 
 // --- LayerKey conversion -----------------------------------------------
 
@@ -194,6 +195,9 @@ let toYamlRule (r: Rule) : YamlRule =
         y.Inner <- layerOf inner
         y.With <- layerOf withL
         y.MinUm <- Nullable m
+    | MustBeInside (_, source, destination) ->
+        y.Source <- layerOf source
+        y.Destination <- layerOf destination
     y
 
 // --- YamlRule → Rule ---------------------------------------------------

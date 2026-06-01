@@ -41,11 +41,11 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 24 rules promotable on the KLayout
+**Coverage as of 2026-06-01: 27 rules promotable on the KLayout
 diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
 met3 plus mcon + via1 size rules plus poly / nwell width+spacing
-plus nsdm / psdm width AND spacing (compat-aware implant-close
-lets the KLayout side bypass the F# Magic grow-shrink).
+plus nsdm / psdm width AND spacing plus three containment
+("must-be-inside") rules — `ct.4`, `m1.4`, `m2.4_a`.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
@@ -63,8 +63,11 @@ lets the KLayout side bypass the F# Magic grow-shrink).
 | `met3.1` | OK | OK | Width 0.30 µm. |
 | `met3.2` | OK | FAIL | Spacing 0.30 µm. Same. |
 | `met3.6` | OK | OK | Min area 0.240 µm². |
-| `via.1` | OK | FAIL | Min via1 width 0.15 µm (KLayout deck name `via.1a_a`). Per-cell gate is FAIL because ext-KLayout also fires the via1 enclosure family (`via.4a`/`via.5a`) which F# Klayout hasn't implemented yet. |
-| `via.2` | OK | FAIL | Min via1 spacing 0.17 µm. Same per-cell caveat. |
+| `via.1` | OK | FAIL | Min via1 width 0.15 µm (KLayout deck name `via.1a_a`). |
+| `via.2` | OK | FAIL | Min via1 spacing 0.17 µm. |
+| `ct.4` | OK | FAIL | mcon must be covered by li1. New `MustBeInside` rule kind; polygon-style emit (1 violation per uncovered mcon). |
+| `m1.4` | OK | FAIL | mcon must be enclosed by m1. Same kind. |
+| `m2.4_a` | OK | FAIL | via1 must be enclosed by m2 (in periphery). Same kind. |
 | `poly.1a` | OK | OK | Min poly width 0.15 µm. |
 | `poly.2` | OK | OK | Min poly spacing 0.21 µm. Spacing delta seen on metal layers does NOT recur here. |
 | `nwell.1` | OK | OK | Min nwell width 0.84 µm. |
@@ -102,25 +105,22 @@ Two ways out:
 KLayout-equivalent counts, not just KLayout-equivalent rule
 firing.  Pre-Phase-5 batch.
 
-**Problem 2 — "must be inside" rule kind.** KLayout's `via.not(m1)`
-fires on any via that isn't covered by m1, even when m1 doesn't
-exist anywhere near.  F#'s `BoundaryCrossing` (the closest
-existing kind) only fires when the destination layer is present
-and the source partially crosses or is too near.  It doesn't fire
-when the destination is absent entirely.
+**Problem 2 — "must be inside" rule kind (landed).** New
+`MustBeInside (name, source, destination)` rule kind in
+`Drc/Rules.fs` + matching handler in `Drc/Check.fs`. Polygon-
+style emission (1 violation per uncovered source) matches
+KLayout deck rules whose output flows directly through
+`.not().output()`:
 
-KLayout deck rules in this family:
+- `ct.4` — mcon must be covered by li1 — OK
+- `m1.4` — mcon must be enclosed by met1 — OK
+- `m2.4_a` — via1 must be enclosed by met2 — OK
 
-- `ct.4` — mcon must be covered by li1
-- `via.4a_a` — via1 must be enclosed by met1
-- `m1.4` — mcon must be enclosed by met1
-- `m2.4_a` — via1 must be enclosed by met2
-
-These need a new `MustBeInside (name, source, destination)` rule
-kind on the F# side — fires once per source polygon that isn't
-fully contained inside any destination polygon.  Both in
-`Drc/Rules.fs` (the type + nameOf entry) and `Drc/Check.fs` (the
-matching pattern in `checkWithToggles`).  Pre-Phase-5 batch.
+Still FAIL: `via.4a_a`. Its deck source is
+`rectVIA.squares.drc(width == 0.15).not(m1).output(...)` — both
+size-filtered AND edge-style emit. Needs either a new
+`MustBeInsideEdgewise` rule kind OR a size filter on the existing
+`MustBeInside`. Deferred to its own batch.
 
 ### Backlog: enclosure rules (queued for after the structural fixes)
 

@@ -834,6 +834,43 @@ let checkWithToggles
                             MeasuredDbu = minSepGap
                             BboxA = sBb
                             BboxB = Some nearestDest }
+        | Rules.MustBeInside (name, source, destination) ->
+            // Pure containment: every source polygon MUST be fully
+            // contained inside some destination polygon.  Emits
+            // ONE violation per uncovered source — matches the
+            // KLayout deck's `.not().output()` polygon-style
+            // emission (ct.4, m1.4, m2.4_a).
+            //
+            // Some KLayout containment rules use edge-style emit
+            // (`.drc(width).not().output()` for via.4a_a, etc.).
+            // Those need either a dedicated `MustBeInsideEdgewise`
+            // rule kind or a size-filtered MustBeInside variant —
+            // tracked in the equivalency status doc.
+            //
+            // Conservative bbox-based containment: a source is
+            // considered "inside" if some destination's bbox fully
+            // contains the source's bbox. Sufficient for the
+            // rectangular contact / via geometries this rule
+            // targets; non-rectangular sources would need Region-
+            // based containment.
+            let sources = polysOnLayer idx source
+            let destinations = polysOnLayer idx destination
+            for (_, sBb, _) in sources do
+                let (sx1, sy1, sx2, sy2) = sBb
+                let coveredByAny =
+                    destinations |> Array.exists (fun (_, dBb, _) ->
+                        let (dx1, dy1, dx2, dy2) = dBb
+                        sx1 >= dx1 && sy1 >= dy1
+                        && sx2 <= dx2 && sy2 <= dy2)
+                if not coveredByAny then
+                    result.Add {
+                        Rule = name
+                        LayerNumber = source.Number
+                        LayerType   = source.DataType
+                        LimitDbu    = 0L
+                        MeasuredDbu = 0L
+                        BboxA = sBb
+                        BboxB = None }
         | Rules.ImplantOutsideWellSpacing (name, implant, active, well, minUm) ->
             // Build the actual diffusion-outside-well region
             // via polygon booleans, then check distance to

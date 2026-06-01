@@ -138,8 +138,8 @@ let private flatPolyId (fp : FlatPolygon) : PolyId =
 // xUnit collections, and the BG walkaround in production can race
 // with another task touching the same cache. Locked reads/writes,
 // no torn state, no surprise NullRef on Clear races.
-let private indexCache : System.Collections.Concurrent.ConcurrentDictionary<obj, NetIndex> =
-    System.Collections.Concurrent.ConcurrentDictionary<obj, NetIndex>(HashIdentity.Reference)
+let private indexCache : System.Collections.Concurrent.ConcurrentDictionary<obj, System.Lazy<NetIndex>> =
+    System.Collections.Concurrent.ConcurrentDictionary<obj, System.Lazy<NetIndex>>(HashIdentity.Reference)
 
 let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
     let mutable claims : Map<PolyId, Set<string>> = Map.empty
@@ -200,12 +200,19 @@ let private buildNetIndexFresh (nets : Map<string, NetEntry>) : NetIndex =
 let buildNetIndex (nets : Map<string, NetEntry>) : NetIndex =
     let key = box nets
     match indexCache.TryGetValue(key) with
-    | true, idx -> idx
+    | true, entry -> entry.Value
     | _ ->
-        let idx = buildNetIndexFresh nets
-        if indexCache.Count >= 4 then indexCache.Clear()
-        indexCache.[key] <- idx
-        idx
+        let entry =
+            indexCache.GetOrAdd(
+                key,
+                fun _ ->
+                    System.Lazy<NetIndex>(
+                        (fun () -> buildNetIndexFresh nets),
+                        System.Threading.LazyThreadSafetyMode.ExecutionAndPublication))
+        if indexCache.Count >= 4 then
+            indexCache.Keys |> Seq.tryHead
+            |> Option.iter (fun k -> indexCache.TryRemove(k) |> ignore)
+        entry.Value
 
 /// True when `startNet` claims this polygon AND, for SRef-internal
 /// polys, the claim came from a direct label seed (not the cross-
@@ -418,27 +425,32 @@ let private buildObstacleSetFresh
         { Polygons = polys; Bboxes = bbs; Grid = buildGrid bbs }
 
 // Composite key on (Layer, StartNet) plus reference identity for
-// FlatPolygons and the NetIndex itself. NetIndex is reference-stable
+// FlatPolygons and the NetIndex. NetIndex is reference-stable
 // per Map<string,NetEntry> instance via `indexCache`, so an
-// IdxRef change means LabelFlood re-derived → cache miss.
+// IdxHash change means LabelFlood re-derived → cache miss.
+// IdxHash uses RuntimeHelpers.GetHashCode (reference identity)
+// instead of `box idx` (which triggers structural GetHashCode
+// on the NetIndex maps, costing ~30ms per lookup).
 // Invalidation contract: see `tools/viz/docs/routing_caches.md`.
 [<Struct>]
 type private ObstacleSetKey = {
     Layer    : LayerKey
     StartNet : string
-    FlatRef  : obj
-    IdxRef   : obj
+    FlatRef  : obj    // box flat → reference equality (Array default)
+    IdxHash  : int    // RuntimeHelpers.GetHashCode(idx) → reference identity
 }
 
-let private obstacleSetCache : System.Collections.Concurrent.ConcurrentDictionary<ObstacleSetKey, ObstacleSet> =
-    System.Collections.Concurrent.ConcurrentDictionary<ObstacleSetKey, ObstacleSet>(HashIdentity.Structural)
+let private obstacleSetCache : System.Collections.Concurrent.ConcurrentDictionary<ObstacleSetKey, System.Lazy<ObstacleSet>> =
+    System.Collections.Concurrent.ConcurrentDictionary<ObstacleSetKey, System.Lazy<ObstacleSet>>(HashIdentity.Structural)
 
 /// Memoised obstacle snapshot for `(layer, startNet, flat, idx)`.
 /// Cache key uses reference identity for `flat` and `idx`, so a doc
 /// edit (which re-flattens) or a re-derive (which produces a new
 /// NetIndex) invalidates the entry. Cache trimmed when it grows;
 /// safe across threads since the canvas passes ONE active set per
-/// draft.
+/// draft. Uses Lazy so concurrent callers share one build
+/// (prevents multiple ObstacleSet references → different graphCache
+/// keys from concurrent routeAdaptive calls).
 let obstacleSet
         (layer    : LayerKey)
         (startNet : string)
@@ -446,14 +458,29 @@ let obstacleSet
         (flat     : FlatPolygon array) : ObstacleSet =
     let key : ObstacleSetKey =
         { Layer = layer; StartNet = startNet
-          FlatRef = box flat; IdxRef = box idx }
+          FlatRef = box flat
+          IdxHash = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode idx }
     match obstacleSetCache.TryGetValue(key) with
-    | true, s -> s
+    | true, entry -> entry.Value
     | _ ->
-        let s = buildObstacleSetFresh layer startNet idx flat
-        if obstacleSetCache.Count >= 8 then obstacleSetCache.Clear()
-        obstacleSetCache.[key] <- s
-        s
+        let entry =
+            obstacleSetCache.GetOrAdd(
+                key,
+                fun _ ->
+                    System.Lazy<ObstacleSet>(
+                        (fun () -> buildObstacleSetFresh layer startNet idx flat),
+                        System.Threading.LazyThreadSafetyMode.ExecutionAndPublication))
+        // Only evict on miss — avoids Count contention on every call.
+        if obstacleSetCache.Count >= 8 then
+            obstacleSetCache.Keys |> Seq.tryHead
+            |> Option.iter (fun k -> obstacleSetCache.TryRemove(k) |> ignore)
+        entry.Value
+
+/// Reset all global caches. Used by test fixtures that need
+/// isolation from other test classes' cache entries.
+let ClearCaches () =
+    indexCache.Clear()
+    obstacleSetCache.Clear()
 
 /// Same semantic as `obstaclesInRegion`, served from the cached
 /// snapshot via the uniform grid. First call builds the snapshot;

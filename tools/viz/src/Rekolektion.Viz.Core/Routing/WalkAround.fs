@@ -48,38 +48,66 @@ type BuildKey = {
 // because the region changed; the graph was never reused. Caching
 // the FULL obstacle graph trades one slow build for fast reuse
 // across every subsequent draft frame on the same geometry.
+//
+// **Single-flight semantics.** Value is `Lazy<Prebuilt>` so the
+// FIRST caller for a given key starts the build and subsequent
+// callers for the SAME key block on the same Lazy until it
+// completes, then read the cached result. Pre-fix the cache stored
+// the materialised Prebuilt only AFTER build returned — concurrent
+// callers (canvas dispatch fires per cursor frame; LiveDrc.schedule
+// races a task in the background) would each see "no cache entry"
+// and start their own build. 5 concurrent builds × ~700 ms in
+// isolation → ~16 s each as they fight for parallel threads.
+// Observed live 2026-05-30 on d13_mux. The Lazy wrapper makes the
+// second caller piggy-back on the first's work.
 // Invalidation contract: see `tools/viz/docs/routing_caches.md`.
-let private graphCache : System.Collections.Concurrent.ConcurrentDictionary<obj * int64, VisibilityGraph.Prebuilt> =
-    System.Collections.Concurrent.ConcurrentDictionary<obj * int64, VisibilityGraph.Prebuilt>(HashIdentity.Structural)
+// Key = (ObstacleSet reference-hash, clearance) — reference identity
+// via RuntimeHelpers.GetHashCode avoids structural equality traversal
+// of the ObstacleSet arrays.
+let private graphCache : System.Collections.Concurrent.ConcurrentDictionary<int * int64, System.Lazy<VisibilityGraph.Prebuilt>> =
+    System.Collections.Concurrent.ConcurrentDictionary<int * int64, System.Lazy<VisibilityGraph.Prebuilt>>(HashIdentity.Structural)
 
 /// Build the visibility graph for the picked (Layer, StartNet)
 /// against EVERY obstacle in the macro. First call is slow on
-/// dense macros (~15s on 744 obstacles); subsequent calls for the
-/// same (obstacleSet, clearance) hit the cache and are O(1). The
-/// `region` argument is accepted for backwards-compat but no longer
-/// clips the obstacle set — region clipping at build time was the
-/// reason the graph kept rebuilding per cursor frame and never
-/// produced a stable result for the user during interactive
-/// routing. The search side (`VisibilityGraph.shortestPath`)
-/// handles the start/cursor positions per query without needing a
-/// new graph.
+/// dense macros (~700 ms on a 3135-obstacle macro post-perf-fix);
+/// subsequent calls for the same (obstacleSet, clearance) hit the
+/// cache and are O(1). Concurrent callers for the same key share
+/// the same build via Lazy — only ONE thread runs `VisibilityGraph.build`,
+/// the others block on its result. The `region` argument is accepted
+/// for backwards-compat but no longer clips the obstacle set —
+/// region clipping at build time was the reason the graph kept
+/// rebuilding per cursor frame and never produced a stable result
+/// for the user during interactive routing. The search side
+/// (`VisibilityGraph.shortestPath`) handles the start/cursor
+/// positions per query without needing a new graph.
 let buildGraphInRegion (key : BuildKey) (_region : Obstacles.Region) : VisibilityGraph.Prebuilt =
     let netIdx = Obstacles.buildNetIndex key.NetMapRef
     let set =
         Obstacles.obstacleSet
             key.Layer key.StartNet netIdx key.FlatPolyRef
-    let cacheKey = box set, key.Clearance
+    let cacheKey = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode set, key.Clearance
     match graphCache.TryGetValue(cacheKey) with
-    | true, g -> g
+    | true, entry -> entry.Value
     | _ ->
-        let fullObs = Obstacles.polygonsOf set
-        let g = VisibilityGraph.build key.Clearance fullObs
-        // Trim if cache grows; reference-identity keys mean once
-        // an ObstacleSet is collected the entry is unreachable
+        let entry =
+            graphCache.GetOrAdd(
+                cacheKey,
+                fun _ ->
+                    System.Lazy<VisibilityGraph.Prebuilt>(
+                        (fun () ->
+                            let fullObs = Obstacles.polygonsOf set
+                            VisibilityGraph.build key.Clearance fullObs),
+                        System.Threading.LazyThreadSafetyMode.ExecutionAndPublication))
+        // Trim if cache grows; evict ONE entry (oldest) to avoid
+        // wiping every cached graph. Reference-identity keys mean
+        // once the ObstacleSet is collected the entry is unreachable
         // anyway, but explicit bound keeps memory predictable.
-        if graphCache.Count >= 4 then graphCache.Clear()
-        graphCache.[cacheKey] <- g
-        g
+        if graphCache.Count >= 4 then
+            graphCache.Keys |> Seq.tryHead
+            |> Option.iter (fun k ->
+                if not (System.Object.Equals(k, cacheKey)) then
+                    graphCache.TryRemove(k) |> ignore)
+        entry.Value
 
 /// Run the walk-around. `graph` is a cached `Prebuilt` matching
 /// the current `BuildKey`; `start` and `cursor` are world DBU
@@ -138,9 +166,17 @@ let macroBoundsOf (flat : FlatPolygon array) : MacroBounds option =
                     if pt.Y < yMin then yMin <- pt.Y
                     if pt.Y > yMax then yMax <- pt.Y
             let b = { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
-            if macroBoundsCache.Count >= 4 then macroBoundsCache.Clear()
+            if macroBoundsCache.Count >= 4 then
+                macroBoundsCache.Keys |> Seq.tryHead
+                |> Option.iter (fun k -> macroBoundsCache.TryRemove(k) |> ignore)
             macroBoundsCache.[key] <- b
             Some b
+
+/// Reset all global caches. Used by test fixtures that need
+/// isolation from other test classes' cache entries.
+let ClearCaches () =
+    graphCache.Clear()
+    macroBoundsCache.Clear()
 
 /// Outcome of an adaptive search: the path (if found), the region
 /// the successful (or final) attempt used, the visibility graph

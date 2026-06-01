@@ -51,12 +51,17 @@
     <Compile Include="RoutingLiveDrcTests.fs" />
     <Compile Include="RoutingObstaclesTests.fs" />
     <Compile Include="RoutingVisibilityGraphTests.fs" />
+    <Compile Include="RoutingZRouteProbe.fs" />
+    <Compile Include="D13MuxPerfProbe.fs" />
+    <Compile Include="D13MuxRouteProbe.fs" />
+    <Compile Include="D13MuxCollisionRepro.fs" />
     <Compile Include="D13MuxRouteShapeTests.fs" />
     <Compile Include="D13MuxSnapPerfTests.fs" />
     <Compile Include="D13MuxDragPerfProbe.fs" />
     <Compile Include="MagicVsVizDrcTests.fs" />
     <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
+    <Compile Include="RoutingCommitGateTests.fs" />
     <Compile Include="RoutingSegmentDragTests.fs" />
     <Compile Include="WalkAroundRealMacroTests.fs" />
     <Compile Include="UniformGridTests.fs" />

@@ -2044,8 +2044,9 @@ type GdsCanvasControl() as this =
                                combinedPolys = phaseTimings.CombinedCount |}
                 Routing.LiveDrc.schedule liveDrcState compute postBack onAccept
                 |> ignore
-            // ADR-0006 — walk-around dispatch. Same background-task
-            // pattern as live DRC; results land via the
+            // ADR-0006 — walk-around dispatch. Uses coalescing
+            // schedule (no cancellation) so the ~700ms cold graph
+            // build always completes. Results land via the
             // RouteAutoComputedHandler which the Update arm wires to
             // `Draft.setAuto`.
             if (e.Property = GdsCanvasControl.DraftRouteProperty
@@ -2070,13 +2071,13 @@ type GdsCanvasControl() as this =
                         match List.tryLast draft.Points with
                         | Some pt -> pt
                         | None    -> (cx, cy)
-                    // Skip the trivial walkaround when cursor equals
-                    // the last fixed point (typically fires once at
-                    // StartRoute when the snap target IS the start
-                    // and the cursor lands there). The first user
-                    // cursor movement bumps the dispatch, no cold-
-                    // build cycle wasted on a zero-length search.
-                    if lastPt = (cx, cy) then () else
+                    // Pre-build the visibility graph immediately at
+                    // anchor time so the cold ~700ms build starts
+                    // before the user's first cursor move. The
+                    // zero-length search (start == cursor) is
+                    // trivially handled by shortestPath's
+                    // directShortCircuit path and produces no
+                    // intermediate corners.
                     let layerKey : Routing.Obstacles.LayerKey =
                         { Number = fst draft.Layer; DataType = snd draft.Layer }
                     // Clearance = wire_half_width + min_spacing. The
@@ -2142,8 +2143,26 @@ type GdsCanvasControl() as this =
                             Routing.VisibilityGraph.PreferHFirst
                         | Routing.Draft.VerticalFirst ->
                             Routing.VisibilityGraph.PreferVFirst
+                    // Diagnostic: log the schedule event BEFORE
+                    // dispatch so we can tell "never reached
+                    // dispatch" from "dispatch queued but work
+                    // not yet running". With coalescing, the
+                    // `walkaround` compute log fires only when
+                    // the task actually dequeues the pending work.
+                    Rekolektion.Viz.App.Services.Logger.log "walkaround.schedule"
+                        {| layer = sprintf "%d/%d" layerKey.Number layerKey.DataType
+                           startNet = draft.StartNet
+                           startX = startPt.X; startY = startPt.Y
+                           cursorX = cursorPt.X; cursorY = cursorPt.Y |}
                     let compute (ct : System.Threading.CancellationToken) : (int64 * int64) list =
                         let swBuild = System.Diagnostics.Stopwatch.StartNew()
+                        // Log entry to compute so we can confirm the
+                        // task body actually started running (vs being
+                        // cancelled before `Task.Run` got CPU).
+                        Rekolektion.Viz.App.Services.Logger.log "walkaround.compute.start"
+                            {| startX = startPt.X; startY = startPt.Y
+                               cursorX = cursorPt.X; cursorY = cursorPt.Y
+                               cancelled = ct.IsCancellationRequested |}
                         let emptyGraph () = Routing.VisibilityGraph.build 0L [||]
                         let adaptive =
                             try
@@ -2154,11 +2173,22 @@ type GdsCanvasControl() as this =
                                     initialMargin macroBounds 3
                             with
                             | :? System.OperationCanceledException ->
-                                // Let LiveDrc's task body catch this;
-                                // re-raise so the cancelled token gets
-                                // observed at the dispatch layer.
+                                Rekolektion.Viz.App.Services.Logger.log "walkaround.cancelled"
+                                    {| startX = startPt.X; startY = startPt.Y
+                                       cursorX = cursorPt.X; cursorY = cursorPt.Y
+                                       afterMs = swBuild.ElapsedMilliseconds |}
+                                // With coalescing dispatch the token is
+                                // CancellationToken.None so this catch
+                                // should never fire (routeAdaptive's
+                                // poll is a no-op). Kept for safety.
                                 reraise ()
-                            | _ ->
+                            | ex ->
+                                Rekolektion.Viz.App.Services.Logger.log "walkaround.exception"
+                                    {| startX = startPt.X; startY = startPt.Y
+                                       cursorX = cursorPt.X; cursorY = cursorPt.Y
+                                       afterMs = swBuild.ElapsedMilliseconds
+                                       exceptionType = ex.GetType().FullName
+                                       message = ex.Message |}
                                 { Path = None
                                   FinalRegion =
                                       { XMin = 0L; YMin = 0L
@@ -2369,7 +2399,7 @@ type GdsCanvasControl() as this =
                         Avalonia.Threading.Dispatcher.UIThread.Post(System.Action(action))
                     let onAccept (corners : (int64 * int64) list) =
                         if not (isNull cb) then cb.Invoke(corners)
-                    Routing.LiveDrc.schedule walkAroundState compute postBack onAccept
+                    Routing.LiveDrc.scheduleCoalesce walkAroundState compute postBack onAccept
                     |> ignore
             this.InvalidateVisual()
 

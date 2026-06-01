@@ -16,8 +16,17 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
 
     let hasMacro () = File.Exists macroPath
 
+    let d13MuxPath =
+        "/Users/bryancostanich/git_repos/bryan_costanich/khalkulo/source/cell_designs/column_readout_chain/d13_mux.rkt"
+
+    let hasD13Mux () = File.Exists d13MuxPath
+
     let loadDoc () =
         let doc, _w = Layout.LayoutLoader.load macroPath
+        doc
+
+    let loadD13MuxDoc () =
+        let doc, _w = Layout.LayoutLoader.load d13MuxPath
         doc
 
     [<Fact>]
@@ -438,6 +447,245 @@ type WalkAroundRealMacroTests(out: ITestOutputHelper) =
                         v.Obstacle.XMin v.Obstacle.YMin
                         v.Obstacle.XMax v.Obstacle.YMax)
             viols |> List.length |> should equal 0
+
+    [<Fact>]
+    member _.``REPRO: d13_mux VDD horizontal wire on met1 (64/20)`` () =
+        if not (hasD13Mux ()) then () else
+        let doc = loadD13MuxDoc ()
+        let flat = Layout.Flatten.flatten doc
+        let nets = Net.LabelFlood.derive doc
+        let layer : Obstacles.LayerKey = { Number = 64; DataType = 20 }
+        let startPt : Pt = { X = 28615L; Y = 4510L }
+        let cursorPt : Pt = { X = 40185L; Y = 4510L }
+        let clearance = 70L + 140L
+        let dxAbs = abs (cursorPt.X - startPt.X)
+        let dyAbs = abs (cursorPt.Y - startPt.Y)
+        let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+        let macroBounds : WalkAround.MacroBounds =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+        let key : WalkAround.BuildKey =
+            { Layer = layer; StartNet = "VDD"; Clearance = clearance
+              FlatPolyRef = flat; NetMapRef = nets }
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let result =
+            WalkAround.routeAdaptive System.Threading.CancellationToken.None VisibilityGraph.NoPreference
+                key startPt cursorPt initialMargin macroBounds 0
+        sw.Stop()
+        let pathDesc = match result.Path with Some _ -> "Some" | None -> "None"
+        out.WriteLine(sprintf "met1: obs=%d nodes=%d ex=%d path=%s wc=%dms"
+                        result.Graph.Obstacles.Length result.Graph.Nodes.Length
+                        result.Expansions pathDesc sw.ElapsedMilliseconds)
+        match result.Path with
+        | None ->
+            for i in 0 .. min (result.Graph.Obstacles.Length - 1) 5 do
+                let b = result.Graph.Obstacles.[i]
+                out.WriteLine(sprintf "  obs[%d] bbox=(%d,%d)..(%d,%d)" i b.XMin b.YMin b.XMax b.YMax)
+        | Some path ->
+            out.WriteLine(sprintf "  path nodes (%d):" path.Length)
+            for pt in path do
+                out.WriteLine(sprintf "    (%d, %d)" pt.X pt.Y)
+            let maxLateral =
+                path
+                |> List.map (fun p ->
+                    min (abs (p.X - startPt.X)) (abs (p.X - cursorPt.X)))
+                |> List.max
+            let lateralCap = clearance * 8L
+            out.WriteLine(sprintf "  max lateral deviation: %d (cap %d)" maxLateral lateralCap)
+            maxLateral |> should be (lessThanOrEqualTo lateralCap)
+
+    [<Fact>]
+    member _.``REPRO: d13_mux VDD horizontal wire on via1 (68/20)`` () =
+        if not (hasD13Mux ()) then () else
+        let doc = loadD13MuxDoc ()
+        let flat = Layout.Flatten.flatten doc
+        let nets = Net.LabelFlood.derive doc
+        let layer : Obstacles.LayerKey = { Number = 68; DataType = 20 }
+        let startPt : Pt = { X = 28615L; Y = 4510L }
+        let cursorPt : Pt = { X = 40185L; Y = 4510L }
+        let clearance = 70L + 260L
+        let dxAbs = abs (cursorPt.X - startPt.X)
+        let dyAbs = abs (cursorPt.Y - startPt.Y)
+        let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+        let macroBounds : WalkAround.MacroBounds =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+        let key : WalkAround.BuildKey =
+            { Layer = layer; StartNet = "VDD"; Clearance = clearance
+              FlatPolyRef = flat; NetMapRef = nets }
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let result =
+            WalkAround.routeAdaptive System.Threading.CancellationToken.None VisibilityGraph.NoPreference
+                key startPt cursorPt initialMargin macroBounds 0
+        sw.Stop()
+        let pathDesc = match result.Path with Some _ -> "Some" | None -> "None"
+        out.WriteLine(sprintf "via1: obs=%d nodes=%d ex=%d path=%s wc=%dms"
+                        result.Graph.Obstacles.Length result.Graph.Nodes.Length
+                        result.Expansions pathDesc sw.ElapsedMilliseconds)
+        // Also output test for comparison
+        match result.Path with
+        | None ->
+            for i in 0 .. min (result.Graph.Obstacles.Length - 1) 5 do
+                let b = result.Graph.Obstacles.[i]
+                out.WriteLine(sprintf "  obs[%d] bbox=(%d,%d)..(%d,%d)" i b.XMin b.YMin b.XMax b.YMax)
+        | Some path ->
+            out.WriteLine(sprintf "  path nodes (%d):" path.Length)
+            for pt in path do
+                out.WriteLine(sprintf "    (%d, %d)" pt.X pt.Y)
+
+    [<Fact>]
+    member _.``REPRO: d13_mux VDD via1 exact wire from app selection`` () =
+        // The exact wire the user has selected on the canvas (layer 68/20).
+        // Uses the SAME clearance formula as the canvas dispatch:
+        //   clearance = wireWidth / 2 + minSpacing
+        //   → wireWidth = 140 (via1 default from Pads.wireWidthFor — no
+        //     Width rule for 68/20 so it falls back to 140 DBU)
+        //   → minSpacing = 0  (via1 drawing 68/20 has no DRC Spacing
+        //     rule; the Spacing rule via.2 is for 68/44 "pin")
+        //   → clearance = 70 + 0 = 70 DBU
+        //
+        // Canvas dispatch (GdsCanvasControl.fs:2065-2068):
+        //   let spacing = Pads.spacingFor drcView units draft.Layer
+        //                 |> Option.defaultValue 0L
+        //   let clearance = max 0L (draft.Width / 2L + spacing)
+        if not (hasD13Mux ()) then () else
+        let doc = loadD13MuxDoc ()
+        let flat = Layout.Flatten.flatten doc
+        let nets = Net.LabelFlood.derive doc
+        let layer : Obstacles.LayerKey = { Number = 68; DataType = 20 }
+        let startPt : Pt = { X = 28615L; Y = 4510L }
+        let cursorPt : Pt = { X = 40185L; Y = 4510L }
+        let clearance = 70L
+        out.WriteLine(sprintf "via1 exact-wire test: clearance=%d" clearance)
+        let dxAbs = abs (cursorPt.X - startPt.X)
+        let dyAbs = abs (cursorPt.Y - startPt.Y)
+        let initialMargin = max (dxAbs + dyAbs) (clearance * 4L)
+        let macroBounds : WalkAround.MacroBounds =
+            let mutable xMin = System.Int64.MaxValue
+            let mutable yMin = System.Int64.MaxValue
+            let mutable xMax = System.Int64.MinValue
+            let mutable yMax = System.Int64.MinValue
+            for fp in flat do
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+            { XMin = xMin; YMin = yMin; XMax = xMax; YMax = yMax }
+        let key : WalkAround.BuildKey =
+            { Layer = layer; StartNet = "VDD"; Clearance = clearance
+              FlatPolyRef = flat; NetMapRef = nets }
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let result =
+            WalkAround.routeAdaptive System.Threading.CancellationToken.None VisibilityGraph.NoPreference
+                key startPt cursorPt initialMargin macroBounds 0
+        sw.Stop()
+        let pathDesc = match result.Path with Some _ -> "Some" | None -> "None"
+        out.WriteLine(sprintf "via1: obs=%d nodes=%d ex=%d path=%s wc=%dms"
+                        result.Graph.Obstacles.Length result.Graph.Nodes.Length
+                        result.Expansions pathDesc sw.ElapsedMilliseconds)
+        match result.Path with
+        | None ->
+            out.WriteLine "NO PATH — this is the failure case"
+        | Some path ->
+            out.WriteLine(sprintf "  path nodes (%d):" path.Length)
+            for pt in path do
+                out.WriteLine(sprintf "    (%d, %d)" pt.X pt.Y)
+            // Dump all obstacles whose Y range overlaps the path's Y = 4510
+            // Dump ALL obstacles whose expanded Y range includes start.Y=4510
+            // — these are the obstacles that block the rightward first move.
+            out.WriteLine ""
+            out.WriteLine "  Obstacles blocking horizontal at Y=4510 (YMin <= 4510 <= YMax):"
+            for i in 0 .. result.Graph.Obstacles.Length - 1 do
+                let b = result.Graph.Obstacles.[i]
+                if b.YMin <= 4510L && b.YMax >= 4510L && b.XMax >= 28615L then
+                    let origXMin = b.XMin + clearance
+                    let origYMin = b.YMin + clearance
+                    let origXMax = b.XMax - clearance
+                    let origYMax = b.YMax - clearance
+                    out.WriteLine(sprintf "    obs[%d] expanded=(%d,%d)..(%d,%d) orig=(%d,%d)..(%d,%d)"
+                                    i b.XMin b.YMin b.XMax b.YMax
+                                    origXMin origYMin origXMax origYMax)
+
+            out.WriteLine ""
+            out.WriteLine "  All obstacles expanding to cover Y=4510 with XMax >= start.X=28615:"
+            let startLeft = startPt.X
+            for i in 0 .. result.Graph.Obstacles.Length - 1 do
+                let b = result.Graph.Obstacles.[i]
+                if b.YMin <= 4510L && b.YMax >= 4510L && b.XMax >= startLeft then
+                    let leftEdge = if b.XMin < startLeft then startLeft else b.XMin
+                    let rightEdge = b.XMax
+                    out.WriteLine(sprintf "    obs[%d] xRange=[%d,%d] at Y=4510" i leftEdge rightEdge)
+
+            // Dump ALL obstacles whose expanded Y range includes 4510,
+            // sorted by XMin, to verify no obstacle covers [28615,32414].
+            out.WriteLine ""
+            out.WriteLine "  ALL obstacles at Y=4510 sorted by XMin:"
+            let atY4510 =
+                result.Graph.Obstacles
+                |> Array.filter (fun b -> b.YMin <= 4510L && b.YMax >= 4510L)
+                |> Array.sortBy (fun b -> b.XMin)
+            out.WriteLine(sprintf "    total: %d obstacles" atY4510.Length)
+            for b in atY4510 do
+                out.WriteLine(sprintf "      x=[%d,%d] y=[%d,%d]" b.XMin b.XMax b.YMin b.YMax)
+
+            out.WriteLine ""
+            out.WriteLine "  Net classification for obstacles blocking return path:"
+            let netIdx = Obstacles.buildNetIndex nets
+            let checkObs idx =
+                if idx < result.Graph.Obstacles.Length then
+                    let b = result.Graph.Obstacles.[idx]
+                    let origXMin = b.XMin + clearance
+                    let origYMin = b.YMin + clearance
+                    let origXMax = b.XMax - clearance
+                    let origYMax = b.YMax - clearance
+                    let matchingPolys =
+                        flat
+                        |> Array.filter (fun fp ->
+                            let mutable xMin = System.Int64.MaxValue
+                            let mutable yMin = System.Int64.MaxValue
+                            let mutable xMax = System.Int64.MinValue
+                            let mutable yMax = System.Int64.MinValue
+                            for pt in fp.Points do
+                                if pt.X < xMin then xMin <- pt.X
+                                if pt.X > xMax then xMax <- pt.X
+                                if pt.Y < yMin then yMin <- pt.Y
+                                if pt.Y > yMax then yMax <- pt.Y
+                            xMin = origXMin && yMin = origYMin && xMax = origXMax && yMax = origYMax
+                            && fp.Layer = layer.Number && fp.DataType = layer.DataType)
+                    match matchingPolys with
+                    | [|fp|] ->
+                        let claimants = Obstacles.claimantsOf netIdx fp
+                        out.WriteLine(sprintf "    obs[%d] orig=(%d,%d)..(%d,%d) claimants=%A"
+                                        idx origXMin origYMin origXMax origYMax claimants)
+                    | _ ->
+                        out.WriteLine(sprintf "    obs[%d] orig=(%d,%d)..(%d,%d) [no unique match]"
+                                        idx origXMin origYMin origXMax origYMax)
+            checkObs 1156
+            checkObs 1543
+            checkObs 1562
+            checkObs 1157
+            checkObs 1161
+            checkObs 1171
+            checkObs 1170
 
     [<Fact>]
     member _.``REPRO: drn_R(5145,8965) → (7595,8981) path returned must not cross foreign li1`` () =

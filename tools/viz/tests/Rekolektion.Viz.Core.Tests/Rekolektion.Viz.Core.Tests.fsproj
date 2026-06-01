@@ -60,6 +60,7 @@
     <Compile Include="D13MuxSnapPerfTests.fs" />
     <Compile Include="D13MuxDragPerfProbe.fs" />
     <Compile Include="MagicVsVizDrcTests.fs" />
+    <Compile Include="BiasGenLi3ProbeTests.fs" />
     <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="RoutingCommitGateTests.fs" />

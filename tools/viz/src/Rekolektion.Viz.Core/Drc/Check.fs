@@ -340,79 +340,67 @@ let checkWithToggles
                                 BboxA = (ax1, ay1, ax2, ay2)
                                 BboxB = None }
         | Rules.Spacing (name, layer, minUm) ->
-            // Per-pair facing-edge spacing, but pairs that belong
-            // to the same connected component of the layer are
-            // skipped — they're physically one feature so Magic
-            // doesn't fire spacing between their parts.
+            // Per-pair facing-edge spacing.
             //
-            // Connectivity: bbox overlap OR touching (touch =
-            // connected for SKY130 metal-like layers). Build DSU
-            // over polys by sweeping bboxes once. A bridged
-            // L-shape (A and C, connected via overlapping B) is
-            // detected: A and C end up in the same component, so
-            // the A↔C narrow gap doesn't fire even though their
-            // bboxes don't directly overlap.
+            // The previous version skipped pairs in the same
+            // bbox-overlap-or-touch DSU component on the theory that
+            // they're "physically one feature". That over-merges
+            // bridged П-shapes: when A and C are vertical arms
+            // joined by a horizontal bar B at the top, A↔B and
+            // B↔C overlap, DSU puts A and C in one component, and
+            // the A↔C narrow gap BELOW the bridge gets silently
+            // skipped — even though Magic correctly flags it. The
+            // bias_gen probe surfaced this (28 li.3 magic-only
+            // tiles in two П-channels; see
+            // BiasGenLi3ProbeTests.fs).
             //
-            // Morphology was ruled out: rectilinear closing fills
-            // any cavity narrower than 2·limit anywhere on its
-            // perimeter, even if no edge-pair is < limit apart.
-            // That's closing semantics, not spacing semantics.
+            // The fix preserves the "merged feature" intent
+            // without the DSU. For each pair with a sub-spec
+            // orthogonal gap, check whether any OTHER same-layer
+            // polygon's bbox FULLY CONTAINS the gap region. If yes,
+            // the gap is bridged across its entire length — same
+            // semantics as Magic's tile-based view of a continuous
+            // solid region.  If no, the gap is genuinely open
+            // somewhere along its run, so the violation fires (and
+            // Magic agrees).  Pairs whose bboxes overlap return
+            // g = 0 from `bboxOrthoGapAndRegion` and are excluded
+            // by the `g > 0L` guard — touching / overlapping
+            // rectangles don't false-fire by construction.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let polys = polysOnLayer idx layer
                 let n = polys.Length
-                // DSU over poly indices. Two polys are in the
-                // same component when their bboxes touch or
-                // overlap (right/left edges share a coordinate
-                // OR perpendicular projections overlap with
-                // bbox-intersect on the other axis).
-                let parent = Array.init n id
-                let rec find x =
-                    if parent.[x] = x then x
-                    else
-                        let r = find parent.[x]
-                        parent.[x] <- r
-                        r
-                let union a b =
-                    let ra = find a
-                    let rb = find b
-                    if ra <> rb then parent.[ra] <- rb
-                // Pairwise component build (O(N²) for clarity;
-                // matches the spacing loop's cost so no asymptotic
-                // change).
-                for i in 0 .. n - 1 do
-                    let (_, bbA, _) = polys.[i]
-                    let (ax1, ay1, ax2, ay2) = bbA
-                    for j in i + 1 .. n - 1 do
-                        let (_, bbB, _) = polys.[j]
-                        let (bx1, by1, bx2, by2) = bbB
-                        // 4-connectivity (Magic-compatible): edge-
-                        // sharing only.  Two bboxes are connected
-                        // iff they overlap on one axis AND share/
-                        // overlap on the perpendicular axis.  Pure
-                        // corner-touch (both axes meet only at a
-                        // point) leaves a topological gap — Magic
-                        // treats those as DISTINCT regions and
-                        // fires spacing across the corner.  The
-                        // earlier 8-connectivity unioned corner-
-                        // touching nwells, suppressing real
-                        // `nwell.2a` chevron violations the user
-                        // sees in Magic but not in viz.
-                        let xStrict = ax1 < bx2 && bx1 < ax2
-                        let yStrict = ay1 < by2 && by1 < ay2
-                        let xClosed = ax1 <= bx2 && bx1 <= ax2
-                        let yClosed = ay1 <= by2 && by1 <= ay2
-                        let touches =
-                            (xStrict && yClosed) || (yStrict && xClosed)
-                        if touches then union i j
-                // Spacing per pair, skipping same-component pairs.
+                // Slop = sky130 manufacturing grid (5 nm). Off-grid
+                // GDS coordinates (e.g. a primitive whose cell-local
+                // origin is on a 1 nm offset from its parent) can
+                // leave a sliver of gap region uncovered by the
+                // bridging polygon even though the underlying metal
+                // is silicon-continuous; Magic's tile decomposition
+                // smooths those slivers. Treat any other-polygon
+                // bbox that covers the gap to within `slop` on
+                // every side as containing it.
+                let slop = 5L
+                let containedBy
+                        ((gx1, gy1, gx2, gy2)
+                            : int64 * int64 * int64 * int64)
+                        (i: int) (j: int) : bool =
+                    let mutable k = 0
+                    let mutable hit = false
+                    while not hit && k < n do
+                        if k <> i && k <> j then
+                            let (_, (x1, y1, x2, y2), _) = polys.[k]
+                            if x1 <= gx1 + slop && y1 <= gy1 + slop
+                               && x2 >= gx2 - slop && y2 >= gy2 - slop then
+                                hit <- true
+                        k <- k + 1
+                    hit
                 for i in 0 .. n - 1 do
                     let (_, bbA, _) = polys.[i]
                     for j in i + 1 .. n - 1 do
                         let (_, bbB, _) = polys.[j]
-                        if find i <> find j then
-                            match bboxOrthoGapAndRegion bbA bbB with
-                            | Some (g, gapBb) when g > 0L && g < limit ->
+                        match bboxOrthoGapAndRegion bbA bbB with
+                        | Some (g, gapBb) when g > 0L && g < limit ->
+                            if not (containedBy gapBb i j) then
                                 result.Add {
                                     Rule = name
                                     LayerNumber = layer.Number
@@ -421,7 +409,7 @@ let checkWithToggles
                                     MeasuredDbu = g
                                     BboxA = gapBb
                                     BboxB = None }
-                            | _ -> ()
+                        | _ -> ()
         | Rules.CrossSpacing (name, layerA, layerB, minUm, condA, condB) ->
             // Same orthogonal-only rule as same-layer Spacing.
             // Overlap = same net at this layer pair (e.g. poly

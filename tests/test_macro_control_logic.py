@@ -38,12 +38,11 @@ def test_control_logic_delay_chain_variant_builds():
 
 @pytest.mark.magic
 @pytest.mark.parametrize("use_replica", [True, False])
-def test_control_logic_drc_clean(tmp_path, use_replica):
-    from rekolektion.verify.drc import run_drc
+def test_control_logic_drc_matches_magic(tmp_path, use_replica):
+    from tests._drc_parity import assert_drc_matches_magic
     cell_name = f"ctrl_{'rbl' if use_replica else 'delay'}"
     cl = ControlLogic(use_replica=use_replica, name=cell_name)
     lib = cl.build()
     gds = tmp_path / f"{cell_name}.gds"
     lib.write_gds(str(gds))
-    result = run_drc(gds, cell_name=cell_name, output_dir=tmp_path)
-    assert result.clean, f"use_replica={use_replica}: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name=cell_name, output_dir=tmp_path)

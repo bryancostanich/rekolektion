@@ -17,7 +17,7 @@ from rekolektion.macro.write_driver_row import WriteDriverRow
 
 
 @pytest.mark.magic
-def test_full_stack_mux4_integration_drc_bounded(tmp_path):
+def test_full_stack_mux4_integration_drc_matches_magic(tmp_path):
     """All v2 blocks (array + 4 peripheral rows + decoder + control)
     placed in one top cell, DRC < 1000 errors.
 
@@ -25,7 +25,7 @@ def test_full_stack_mux4_integration_drc_bounded(tmp_path):
       * x = 0  : row decoder (tall column) + control block (above it)
       * x ~ 40 : array column (peripherals below/above array)
     """
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
 
     bits = 8
     mux = 4
@@ -81,15 +81,4 @@ def test_full_stack_mux4_integration_drc_bounded(tmp_path):
     gds = tmp_path / "fs.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="fs_top", output_dir=tmp_path)
-    # Waivers from foundry SRAM cells can be ~hundreds of thousands; the
-    # signal is real (non-waiver) errors. <1000 reals here is a loose
-    # upper bound on unrouted inter-block violations.
-    assert result.real_error_count < 1000, (
-        f"Too many REAL DRC errors ({result.real_error_count}); "
-        f"likely a broken block. (waivers: {result.waiver_error_count})"
-    )
-    print(
-        f"\nFull-stack DRC: real={result.real_error_count} "
-        f"waivers={result.waiver_error_count}"
-    )
+    assert_drc_matches_magic(gds, cell_name="fs_top", output_dir=tmp_path)

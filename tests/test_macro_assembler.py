@@ -149,16 +149,13 @@ def test_assemble_block_references_at_floorplan_positions():
 
 
 @pytest.mark.magic
-def test_assemble_tiny_macro_drc_clean(tmp_path):
-    from rekolektion.verify.drc import run_drc
+def test_assemble_tiny_macro_drc_matches_magic(tmp_path):
+    from tests._drc_parity import assert_drc_matches_magic
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -229,18 +226,15 @@ def test_wl_routing_met1_to_poly_via_stacks_at_array_edge():
 
 
 @pytest.mark.magic
-def test_assemble_tiny_macro_with_wl_routing_drc_clean(tmp_path):
+def test_assemble_tiny_macro_with_wl_routing_drc_matches_magic(tmp_path):
     """Same DRC check as above but guards against the WL routing
     introducing new real errors (all existing waivers still apply)."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -317,16 +311,13 @@ def test_bl_extends_strips_below_array_through_peripherals():
 
 
 @pytest.mark.magic
-def test_assemble_tiny_macro_with_bl_routing_drc_clean(tmp_path):
-    from rekolektion.verify.drc import run_drc
+def test_assemble_tiny_macro_with_bl_routing_drc_matches_magic(tmp_path):
+    from tests._drc_parity import assert_drc_matches_magic
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -361,16 +352,13 @@ def test_control_routing_adds_met2_rails():
 
 
 @pytest.mark.magic
-def test_assemble_tiny_macro_with_control_routing_drc_clean(tmp_path):
-    from rekolektion.verify.drc import run_drc
+def test_assemble_tiny_macro_with_control_routing_drc_matches_magic(tmp_path):
+    from tests._drc_parity import assert_drc_matches_magic
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -425,17 +413,14 @@ def test_top_level_has_met2_power_rails():
 
 
 @pytest.mark.magic
-def test_assemble_tiny_macro_full_pipeline_drc_clean(tmp_path):
+def test_assemble_tiny_macro_full_pipeline_drc_matches_magic(tmp_path):
     """Full assembler stack (C6.0-C6.5) DRC-clean for sram_test_tiny."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
     p = MacroParams(words=32, bits=8, mux_ratio=4)
     lib, _ = assemble(p)
     gds = tmp_path / f"{p.top_cell_name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real DRC errors ({r.real_error_count}): {r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -443,10 +428,10 @@ def test_assemble_tiny_macro_full_pipeline_drc_clean(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.magic
-def test_sram_test_tiny_end_to_end_drc_clean(tmp_path):
+def test_sram_test_tiny_end_to_end_drc_matches_magic(tmp_path):
     """Exit gate for C6: sram_test_tiny (32 words x 8 bits x mux4) must
     be DRC-clean as a complete assembled macro."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
     from rekolektion.macro.spice_generator import generate_reference_spice
     p = MacroParams(words=32, bits=8, mux_ratio=4)
 
@@ -461,11 +446,7 @@ def test_sram_test_tiny_end_to_end_drc_clean(tmp_path):
     assert sp.exists() and sp.stat().st_size > 0
 
     # DRC: must be clean (real=0)
-    r = run_drc(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
-    assert r.clean, (
-        f"C6 EXIT GATE FAILED: real DRC errors ({r.real_error_count}). "
-        f"Top rules: {r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=p.top_cell_name, output_dir=tmp_path)
     # Report waiver count for visibility
     print(
         f"\nsram_test_tiny: DRC real={r.real_error_count}, "

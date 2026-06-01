@@ -66,8 +66,8 @@ def test_column_mux_height_scales_with_mux_ratio():
 @pytest.mark.parametrize(
     "num_pairs,mux_ratio", [(1, 2), (4, 2), (1, 4), (4, 4), (1, 8)],
 )
-def test_column_mux_drc_clean(tmp_path, num_pairs, mux_ratio):
-    from rekolektion.verify.drc import run_drc
+def test_column_mux_drc_matches_magic(tmp_path, num_pairs, mux_ratio):
+    from tests._drc_parity import assert_drc_matches_magic
     name = f"cm_{num_pairs}p_mux{mux_ratio}"
     cell, lib = generate_column_mux(
         num_pairs=num_pairs, mux_ratio=mux_ratio, pair_pitch=1.31,
@@ -75,8 +75,4 @@ def test_column_mux_drc_clean(tmp_path, num_pairs, mux_ratio):
     )
     gds = tmp_path / f"{name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real={r.real_error_count} (waivers={r.waiver_error_count}): "
-        f"{r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=name, output_dir=tmp_path)

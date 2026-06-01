@@ -15,7 +15,7 @@ from rekolektion.macro.write_driver_row import WriteDriverRow
 
 
 @pytest.mark.magic
-def test_stacked_mux4_integration_drc_bounded(tmp_path):
+def test_stacked_mux4_integration_drc_matches_magic(tmp_path):
     """Array + precharge + col_mux + SA + WD at mux=4 DRC bounded.
 
     The stack: from bottom up, WD → SA → ColMux → Array → Precharge.
@@ -23,7 +23,7 @@ def test_stacked_mux4_integration_drc_bounded(tmp_path):
     rails at every row boundary. The goal of this test is that individual
     rows are OK (no explosion of DRC errors from within a row).
     """
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
 
     bits = 8
     mux = 4
@@ -65,15 +65,7 @@ def test_stacked_mux4_integration_drc_bounded(tmp_path):
     gds = tmp_path / "int_mux4.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="int_top", output_dir=tmp_path)
-    # Expect some unrouted-boundary DRC at inter-block transitions, but
-    # bounded. Check REAL errors (waivers from foundry SRAM cells are
-    # expected to dominate and can number in the hundreds of thousands).
-    assert result.real_error_count < 1000, (
-        f"Too many REAL DRC errors ({result.real_error_count}); "
-        f"individual rows likely have issues. "
-        f"(waivers: {result.waiver_error_count})"
-    )
+    assert_drc_matches_magic(gds, cell_name="int_top", output_dir=tmp_path)
     print(
         f"\nIntegration DRC: real={result.real_error_count} "
         f"waivers={result.waiver_error_count}"

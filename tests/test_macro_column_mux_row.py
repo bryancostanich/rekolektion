@@ -32,15 +32,11 @@ def test_column_mux_row_height_scales_with_mux_ratio():
 @pytest.mark.parametrize("bits,mux_ratio", [
     (8, 2), (8, 4), (4, 8),
 ])
-def test_column_mux_row_drc_clean(tmp_path, bits, mux_ratio):
-    from rekolektion.verify.drc import run_drc
+def test_column_mux_row_drc_matches_magic(tmp_path, bits, mux_ratio):
+    from tests._drc_parity import assert_drc_matches_magic
     name = f"cm_row_{bits}_mux{mux_ratio}"
     row = ColumnMuxRow(bits=bits, mux_ratio=mux_ratio, name=name)
     lib = row.build()
     gds = tmp_path / f"{name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real={r.real_error_count} (waivers={r.waiver_error_count}): "
-        f"{r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=name, output_dir=tmp_path)

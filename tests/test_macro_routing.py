@@ -213,9 +213,9 @@ def test_pdn_strap_rejects_below_min_width():
 
 
 @pytest.mark.magic
-def test_horizontal_wire_is_drc_clean(tmp_path):
+def test_horizontal_wire_is_drc_matches_magic(tmp_path):
     """Drawn wire passes Magic DRC against SKY130B deck."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
 
     lib = gdstk.Library(name="test_wire_lib")
     cell = gdstk.Cell("test_wire")
@@ -224,14 +224,13 @@ def test_horizontal_wire_is_drc_clean(tmp_path):
     gds = tmp_path / "test_wire.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="test_wire", output_dir=tmp_path)
-    assert result.clean, f"DRC errors: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name="test_wire", output_dir=tmp_path)
 
 
 @pytest.mark.magic
-def test_via_stack_met1_to_met3_drc_clean(tmp_path):
+def test_via_stack_met1_to_met3_drc_matches_magic(tmp_path):
     """Via stack with wire stubs on each end passes DRC."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
 
     lib = gdstk.Library(name="test_via13_lib")
     cell = gdstk.Cell("test_via13")
@@ -242,13 +241,12 @@ def test_via_stack_met1_to_met3_drc_clean(tmp_path):
     gds = tmp_path / "test_via13.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="test_via13", output_dir=tmp_path)
-    assert result.clean, f"DRC errors: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name="test_via13", output_dir=tmp_path)
 
 
 @pytest.mark.magic
-def test_pdn_strap_drc_clean(tmp_path):
-    from rekolektion.verify.drc import run_drc
+def test_pdn_strap_drc_matches_magic(tmp_path):
+    from tests._drc_parity import assert_drc_matches_magic
 
     lib = gdstk.Library(name="test_pdn_lib")
     cell = gdstk.Cell("test_pdn")
@@ -261,14 +259,13 @@ def test_pdn_strap_drc_clean(tmp_path):
     gds = tmp_path / "test_pdn.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="test_pdn", output_dir=tmp_path)
-    assert result.clean, f"DRC errors: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name="test_pdn", output_dir=tmp_path)
 
 
 @pytest.mark.magic
-def test_via_array_drc_clean(tmp_path):
+def test_via_array_drc_matches_magic(tmp_path):
     """A 4×4 via array connecting met1 up to met4 is DRC clean."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
 
     lib = gdstk.Library(name="test_via_array_lib")
     cell = gdstk.Cell("test_via_array")
@@ -287,8 +284,7 @@ def test_via_array_drc_clean(tmp_path):
     gds = tmp_path / "test_via_array.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="test_via_array", output_dir=tmp_path)
-    assert result.clean, f"DRC errors: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name="test_via_array", output_dir=tmp_path)
 
 
 @pytest.mark.magic
@@ -313,9 +309,9 @@ def test_pin_and_label_extract_as_port(tmp_path):
 
 
 @pytest.mark.magic
-def test_compound_cell_drc_clean(tmp_path):
+def test_compound_cell_drc_matches_magic(tmp_path):
     """A cell using draw_wire + draw_via_stack + draw_pdn_strap is DRC clean."""
-    from rekolektion.verify.drc import run_drc
+    from tests._drc_parity import assert_drc_matches_magic
 
     lib = gdstk.Library(name="test_compound_lib")
     cell = gdstk.Cell("test_compound")
@@ -342,5 +338,4 @@ def test_compound_cell_drc_clean(tmp_path):
     gds = tmp_path / "test_compound.gds"
     lib.write_gds(str(gds))
 
-    result = run_drc(gds, cell_name="test_compound", output_dir=tmp_path)
-    assert result.clean, f"DRC errors: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name="test_compound", output_dir=tmp_path)

@@ -59,16 +59,12 @@ def test_precharge_bitline_x_matches_bitcell_convention():
 @pytest.mark.parametrize(
     "num_pairs,pair_pitch", [(1, 1.31), (4, 1.31), (8, 1.31)]
 )
-def test_precharge_drc_clean(tmp_path, num_pairs, pair_pitch):
-    from rekolektion.verify.drc import run_drc
+def test_precharge_drc_matches_magic(tmp_path, num_pairs, pair_pitch):
+    from tests._drc_parity import assert_drc_matches_magic
     name = f"pc_{num_pairs}_{int(pair_pitch*1000)}"
     cell, lib = generate_precharge(
         num_pairs=num_pairs, pair_pitch=pair_pitch, cell_name=name,
     )
     gds = tmp_path / f"{name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real={r.real_error_count} (waivers={r.waiver_error_count}): "
-        f"{r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=name, output_dir=tmp_path)

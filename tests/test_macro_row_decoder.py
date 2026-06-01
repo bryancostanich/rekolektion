@@ -55,11 +55,10 @@ def test_row_decoder_rejects_unsupported_size():
 
 @pytest.mark.magic
 @pytest.mark.parametrize("num_rows", [32, 128])
-def test_row_decoder_drc_clean(tmp_path, num_rows):
-    from rekolektion.verify.drc import run_drc
+def test_row_decoder_drc_matches_magic(tmp_path, num_rows):
+    from tests._drc_parity import assert_drc_matches_magic
     dec = RowDecoder(num_rows=num_rows, name=f"dec{num_rows}")
     lib = dec.build()
     gds = tmp_path / f"dec{num_rows}.gds"
     lib.write_gds(str(gds))
-    result = run_drc(gds, cell_name=f"dec{num_rows}", output_dir=tmp_path)
-    assert result.clean, f"N={num_rows}: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name=f"dec{num_rows}", output_dir=tmp_path)

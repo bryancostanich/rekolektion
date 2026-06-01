@@ -39,11 +39,10 @@ def test_sense_amp_row_dimensions():
 
 @pytest.mark.magic
 @pytest.mark.parametrize("mux", [2, 4, 8])
-def test_sense_amp_row_drc_clean_all_muxes(tmp_path, mux):
-    from rekolektion.verify.drc import run_drc
+def test_sense_amp_row_drc_matches_magic(tmp_path, mux):
+    from tests._drc_parity import assert_drc_matches_magic
     row = SenseAmpRow(bits=4, mux_ratio=mux, name=f"sa_{mux}")
     lib = row.build()
     gds = tmp_path / f"sa_{mux}.gds"
     lib.write_gds(str(gds))
-    result = run_drc(gds, cell_name=f"sa_{mux}", output_dir=tmp_path)
-    assert result.clean, f"mux={mux} DRC errors: {result.errors}"
+    assert_drc_matches_magic(gds, cell_name=f"sa_{mux}", output_dir=tmp_path)

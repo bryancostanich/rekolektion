@@ -42,15 +42,11 @@ def test_wl_driver_row_exposes_a_and_z_pin_positions():
 
 @pytest.mark.magic
 @pytest.mark.parametrize("num_rows", [4, 8, 16])
-def test_wl_driver_row_drc_clean(tmp_path, num_rows):
-    from rekolektion.verify.drc import run_drc
+def test_wl_driver_row_drc_matches_magic(tmp_path, num_rows):
+    from tests._drc_parity import assert_drc_matches_magic
     name = f"wld_{num_rows}"
     row = WlDriverRow(num_rows=num_rows, name=name)
     lib = row.build()
     gds = tmp_path / f"{name}.gds"
     lib.write_gds(str(gds))
-    r = run_drc(gds, cell_name=name, output_dir=tmp_path)
-    assert r.clean, (
-        f"real={r.real_error_count} (waivers={r.waiver_error_count}): "
-        f"{r.real_errors[:5]}"
-    )
+    assert_drc_matches_magic(gds, cell_name=name, output_dir=tmp_path)

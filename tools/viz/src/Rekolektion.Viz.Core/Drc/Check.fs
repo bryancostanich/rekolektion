@@ -784,6 +784,15 @@ let checkWithToggles
                                     | _ -> ()
                         if not passingFound then
                           match bestFailing with
+                          | ValueNone when compat = Compat.Klayout ->
+                            // KLayout deck's AsymEnclosure semantics:
+                            // the rule fires via `outer.edges
+                            // .enclosing(inner, N)` — no outer near
+                            // inner means no edges to check, no
+                            // violation.  The "no outer at all"
+                            // case is the deck's separate
+                            // MustBeInside-style rule.
+                            ()
                           | ValueNone ->
                             result.Add {
                                 Rule = name

@@ -791,6 +791,19 @@ module Klayout =
         // via nonClusterableRules.
         Enclosure ("via.4a", met1, via, 0.055, Always)
         Enclosure ("m2.4",   met2, via, 0.055, Always)
+        // --- Asymmetric Enclosure (alt-direction margin) ---
+        //
+        // KLayout deck emits these polygon-style (`via_interact`
+        // output of failing inners — one per inner).  F#
+        // AsymEnclosure already emits polygon-style; no compat
+        // branch needed.  Naming follows the deck (KLayout's
+        // `via.5a` is m1 alt-enclosure, NOT m2.5a — KLayout deck
+        // labels asymmetric via1-met1 as via.5a and via1-met2 as
+        // m2.5; F# Magic uses different labels for the same
+        // checks).
+        AsymEnclosure ("via.5a", met1, via,  0.085, 0.055, Always)
+        AsymEnclosure ("m2.5",   met2, via,  0.085, 0.055, Always)
+        AsymEnclosure ("m1.5",   met1, mcon, 0.06,  0.03,  Always)
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

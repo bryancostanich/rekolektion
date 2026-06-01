@@ -41,12 +41,13 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 28 rules promotable on the KLayout
+**Coverage as of 2026-06-01: 30 rules promotable on the KLayout
 diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
 met3 plus mcon + via1 size rules plus poly / nwell width+spacing
 plus nsdm / psdm width AND spacing plus three containment
 ("must-be-inside") rules — `ct.4`, `m1.4`, `m2.4_a` — plus the
-edge-counted symmetric Enclosure rules `via.4a` and `m2.4`.
+edge-counted symmetric Enclosure rules `via.4a` and `m2.4` plus
+the asymmetric Enclosures `via.5a`, `m2.5`, `m1.5`.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
@@ -71,6 +72,9 @@ edge-counted symmetric Enclosure rules `via.4a` and `m2.4`.
 | `m2.4_a` | OK | FAIL | via1 must be enclosed by m2 (in periphery). Same kind. |
 | `via.4a` | OK | FAIL | Symmetric m1 enclosure of via1 ≥ 0.055 µm. Edge-counted under Compat.Klayout — 4 violations per under-enclosed inner. Skipped when no m1 exists near the via (`via.4a_a` is the deck's rule for that case). |
 | `m2.4` | OK | FAIL | Symmetric m2 enclosure of via1 ≥ 0.055 µm. Same edge-counting. |
+| `via.5a` | OK | FAIL | Asymmetric m1 enclosure of via1 (0.085 / 0.055). Polygon-style under both compats — KLayout deck emits via the `via.interacting(...)` Region output, F# AsymEnclosure already emits one per failing inner. Nearby-outer guard added under Compat.Klayout to suppress the "no outer at all" case (caught by `via.4a_a` instead). |
+| `m2.5` | OK | FAIL | Asymmetric m2 enclosure of via1 (0.085 / 0.055). Same. |
+| `m1.5` | OK | FAIL | Asymmetric m1 enclosure of mcon (0.06 / 0.03). Same. |
 | `poly.1a` | OK | OK | Min poly width 0.15 µm. |
 | `poly.2` | OK | OK | Min poly spacing 0.21 µm. Spacing delta seen on metal layers does NOT recur here. |
 | `nwell.1` | OK | OK | Min nwell width 0.84 µm. |
@@ -103,11 +107,14 @@ for symmetric Enclosure).** The `Enclosure` handler in
 Result: `via.4a` and `m2.4` (symmetric 0.055 µm enclosures)
 green on the KLayout diagonal.
 
-`AsymEnclosure` is structurally similar but with per-axis
-thresholds — needs its own edge-counting branch (per-side gap
-computation against `oneDirUm` / `otherDirUm`). Tracks:
-`via.4b`, `via.5a` (KLayout asym name), `m2.5`, `m1.5`. Queued
-as its own batch.
+`AsymEnclosure` was simpler than expected — KLayout's deck for
+these specific rules (`via.5a`, `m2.5`, `m1.5`) emits via
+`via.interacting(error_corners...)` which is polygon-style (one
+per failing inner). F# `AsymEnclosure` already emits polygon-
+style, so no edge-count branch was needed. Only the
+nearby-outer guard (suppress "no outer at all" → MustBeInside
+handles that case) was added under `Compat.Klayout`. Three new
+green rules: `via.5a`, `m2.5`, `m1.5`.
 
 **Problem 2 — "must be inside" rule kind (landed).** New
 `MustBeInside (name, source, destination)` rule kind in

@@ -711,6 +711,14 @@ module Klayout =
         Width   ("m1.1", met1, 0.14)    // min m1 width 0.14 µm
         Spacing ("m1.2", met1, 0.14)    // min m1 spacing 0.14 µm
         MinArea ("m1.6", met1, 0.083)   // min m1 area 0.083 µm²
+        // --- Metal 2 ---
+        Width   ("m2.1", met2, 0.14)
+        Spacing ("m2.2", met2, 0.14)
+        MinArea ("m2.6", met2, 0.0676)  // 0.0676 µm² min area
+        // --- Metal 3 ---
+        Width   ("m3.1", met3, 0.30)
+        Spacing ("m3.2", met3, 0.30)
+        MinArea ("m3.6", met3, 0.240)   // 0.240 µm² min area
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

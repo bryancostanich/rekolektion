@@ -41,15 +41,30 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 3 rules promotable on the KLayout
-diagonal (met1.1, met1.2, met1.6).** All three Magic-side and
-KLayout-side rules now have matching F# implementations.
+**Coverage as of 2026-06-01: 9 rules promotable on the KLayout
+diagonal.** Width / Spacing / MinArea on met1, met2, met3.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
-| `met1.1` | OK | OK | Width 0.14 µm. Proves green on `viol_met1.1_subwidth` (1 tile each side, all four paths). |
-| `met1.2` | OK | FAIL | Spacing 0.14 µm. F# Klayout matches ext-KLayout (1 tile). **F# Magic vs ext-Magic delta:** Magic external reports 2 tiles on `viol_met1.2_subspacing` where F# Magic / ext-KLayout / F# Klayout all report 1. Pre-existing F#-vs-Magic edge-detection difference, not blocking KLayout-side promotion. |
-| `met1.6` | OK | OK | Min area 0.083 µm². Proves green on `viol_met1.6_minarea`. |
+| `met1.1` | OK | OK | Width 0.14 µm. |
+| `met1.2` | OK | FAIL | Spacing 0.14 µm. F# Magic vs ext-Magic spacing delta — see below. |
+| `met1.6` | OK | OK | Min area 0.083 µm². |
+| `met2.1` | OK | OK | Width 0.14 µm. |
+| `met2.2` | OK | FAIL | Spacing 0.14 µm. Same Magic spacing delta. |
+| `met2.6` | OK | OK | Min area 0.0676 µm². |
+| `met3.1` | OK | OK | Width 0.30 µm. |
+| `met3.2` | OK | FAIL | Spacing 0.30 µm. Same Magic spacing delta. |
+| `met3.6` | OK | OK | Min area 0.240 µm². |
+
+**F# Magic spacing delta (informational).** On every Width / Spacing
+metal-layer corpus cell that tests two parallel rects with a
+sub-min gap, ext-Magic reports 2 tiles while F# Magic / ext-KLayout
+/ F# Klayout all report 1. Magic's tiler may be reporting each side
+of the violating gap as a separate tile (one per parallel edge),
+where the other three engines collapse the violation to one
+edge-pair. Pre-existing F# Magic implementation behavior; doesn't
+block KLayout-side promotion since the KLayout diagonal is the
+load-bearing one for Phase 5.
 
 (More rules land as the corpus grows.)
 

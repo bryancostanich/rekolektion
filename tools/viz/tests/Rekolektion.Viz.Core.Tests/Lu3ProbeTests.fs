@@ -71,6 +71,37 @@ type Lu3Probe(out: ITestOutputHelper) =
                 p.Layer p.DataType x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
 
     [<Fact>]
+    member _.``opamp URPM (79/20) polygons`` () =
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "dac", "opamp_buffer_r2r",
+                            "opamp_buffer_r2r.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let urpm =
+            flat |> Array.filter (fun p -> p.Layer = 79 && p.DataType = 20)
+        out.WriteLine (sprintf "URPM (79/20) polys: %d" urpm.Length)
+        for p in urpm do
+            let (x1, y1, x2, y2) = bboxOf p
+            out.WriteLine (sprintf
+                "  urpm bbox=(%d,%d,%d,%d) %dx%d" x1 y1 x2 y2 (x2-x1) (y2-y1))
+        let region = Region.ofPolygons urpm
+        let comps = Components.componentBboxes region
+        out.WriteLine (sprintf "URPM merged components: %d" comps.Length)
+        for (x1, y1, x2, y2) in comps do
+            let w = x2 - x1
+            let h = y2 - y1
+            out.WriteLine (sprintf
+                "  comp bbox=(%d,%d,%d,%d) %dx%d shorter=%d"
+                x1 y1 x2 y2 w h (min w h))
+
+    [<Fact>]
     member _.``opamp polyres polygons and merged components`` () =
         let path =
             System.Reflection.Assembly.GetExecutingAssembly().Location

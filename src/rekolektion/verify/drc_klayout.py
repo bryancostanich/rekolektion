@@ -161,13 +161,22 @@ def _strip_quotes(s: str | None) -> str:
     return m.group(1) if m else s
 
 
+_SHAPE_SPLIT_RE = re.compile(r"[|/]")
+
+
 def _centroid_of_value(value_text: str) -> tuple[float, float] | None:
     """Parse a single <value> string and return its centroid in microns
     if it's a polygon/edge/edge-pair/box. Returns None for non-geometric
     values.
 
     Coords appear as `(x1,y1;x2,y2;...)`; multi-shape values (edge-pair)
-    separate shapes by `|`, e.g. `edge-pair: (3,0;0,0)|(0,0.1;3,0.1)`.
+    separate shapes by either `|` or `/`:
+        edge-pair: (3,0;0,0)|(0,0.1;3,0.1)    ← width  (intra-polygon)
+        edge-pair: (0,0.2;2,0.2)/(2,0.3;0,0.3)  ← space (inter-polygon)
+    KLayout uses the two separators for different edge-pair categories;
+    we accept both interchangeably since both shapes are sequences of
+    (x, y) points and the centroid math is the same.
+
     The centroid is averaged across ALL points of ALL sub-shapes, which
     places the result between the violating edges (the location the
     caller's spatial waiver-footprint check needs)."""
@@ -175,11 +184,11 @@ def _centroid_of_value(value_text: str) -> tuple[float, float] | None:
     if not m:
         return None
     body = m.group(1).strip()
-    # Split into one-or-more shape groups separated by `|`. Each shape is
-    # surrounded by `(...)`.  We accept literal `|` between shapes; any
-    # other format means the value is malformed and we bail.
+    # Split into one-or-more shape groups; each shape is surrounded by
+    # `(...)`.  We accept either `|` or `/` between shapes; any other
+    # format means the value is malformed and we bail.
     pts: list[tuple[float, float]] = []
-    for shape in body.split("|"):
+    for shape in _SHAPE_SPLIT_RE.split(body):
         shape = shape.strip()
         if not shape.startswith("(") or not shape.endswith(")"):
             return None

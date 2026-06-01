@@ -72,6 +72,21 @@ def test_centroid_of_value_edge_pair():
     assert cy == pytest.approx(0.05)
 
 
+def test_centroid_of_value_edge_pair_slash_separator():
+    """KLayout uses `/` between edges of inter-polygon spacing
+    violations (vs `|` for intra-polygon width).  Same point semantics
+    either way — parser must accept both."""
+    from rekolektion.verify.drc_klayout import _centroid_of_value
+
+    out = _centroid_of_value("edge-pair: (0,0.2;2,0.2)/(2,0.3;0,0.3)")
+    assert out is not None
+    cx, cy = out
+    # Points: (0,0.2), (2,0.2), (2,0.3), (0,0.3).
+    # cx = (0+2+2+0)/4 = 1.0; cy = (0.2+0.2+0.3+0.3)/4 = 0.25
+    assert cx == pytest.approx(1.0)
+    assert cy == pytest.approx(0.25)
+
+
 def test_is_waiver_rule_recognizes_known_magic_rules():
     from rekolektion.verify.drc_klayout import _is_waiver_rule
 

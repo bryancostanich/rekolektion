@@ -167,6 +167,24 @@ def verify_drc(
     if not rkt.is_file():
         raise FileNotFoundError(rkt)
 
+    # Auto-extract the .rkt's `(top ...)` cell name when the caller
+    # didn't pin one explicitly. The KLayout deck behaves differently
+    # depending on whether `$top_cell` is set — `m1.space` etc. only
+    # fire correctly when the top cell is known. Without this, calls
+    # like `verify_drc('viol_met1.2_subspacing.rkt', compat='klayout')`
+    # silently report 0 violations on cells that should fail.
+    if not cell_name:
+        try:
+            from rekolektion.io import rkt as rkt_io
+            doc = rkt_io.read_file(rkt)
+            if doc.top_cell:
+                cell_name = doc.top_cell
+        except Exception:
+            # Best-effort — fall through to the engine's own default
+            # if the .rkt parse fails.  The engine still works without
+            # a top cell, just with the caveats above.
+            pass
+
     # Phase 0: grid check.  Runs before the Magic conversion so
     # off-grid drift surfaces with a clear cell+coord report rather
     # than as phantom poly.2 tiles deep inside the DRC log.

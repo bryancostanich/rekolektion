@@ -215,7 +215,18 @@ let private compareDrc
     let flat = Flatten.flatten doc
 
     let units = doc.Units
-    let vizViolations = Drc.Check.check Drc.Rules.defaultView units flat
+    // Load the rule set the way the GUI does — via the bundled
+    // YAML (`drc/base/sky130.yaml`) — so the parity test models
+    // the end-user experience. Bypassing this and using
+    // `Rules.defaultView` directly hides YAML-level overrides
+    // such as `disabled: true` on rpm.1 (the SKY130 RPM width
+    // rule the viz can't model: Magic enforces it via a
+    // `cifwidth rpm_generate` term that subtracts psdm, which
+    // the viz Width-rule schema doesn't yet express). With the
+    // YAML loader the GUI shows zero rpm.1 fires; with
+    // `defaultView` the parity test would still see them.
+    let view = Drc.RulesYaml.loadEffectiveOrDefault "sky130" None
+    let vizViolations = Drc.Check.check view units flat
     let vizByRule =
         vizViolations
         |> Array.groupBy (fun v -> v.Rule)

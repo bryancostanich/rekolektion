@@ -328,3 +328,75 @@ let isFoundryWaived
             |> Array.exists (fun (fx0, fy0, fx1, fy1) ->
                 (fx0 - margin) <= cx && cx <= (fx1 + margin)
                 && (fy0 - margin) <= cy && cy <= (fy1 + margin))
+
+// ---------------------------------------------------------------------
+// Message-text waiver — used by the Magic-vs-viz parity test harness
+// to apply the SAME foundry-waiver filter to Magic's raw output that
+// `verify_drc` applies. Lets the test compare waived-viz to waived-
+// Magic instead of waived-viz to raw-Magic (the old test was
+// comparing across waiver states and "passed" purely on
+// bbox-clustering density similarity — see git history for the
+// false-equivalency analysis).
+//
+// Mirrors the Python implementation in
+// src/rekolektion/verify/drc.py exactly:
+//   - `_extract_rule_ids` (regex pulls the trailing "(...)" rule id
+//     list out of Magic's free-form message, splits on "-" or "+",
+//     strips any leading "N *" multiplier).
+//   - `_is_waiver` (all extracted rule IDs must be in the waiver
+//     table; empty-ID falls through to the message-text-list path
+//     which we don't model here yet — none of our test fixtures
+//     trigger it).
+//   - The per-tile centre-in-expanded-footprint check, with the
+//     margin being the MAX margin across all rule IDs in the
+//     composite (most permissive — matches Python's `max(...)`).
+// ---------------------------------------------------------------------
+
+let private ruleIdRe =
+    System.Text.RegularExpressions.Regex(@"\(([^()]+)\)\s*$")
+let private splitRe =
+    System.Text.RegularExpressions.Regex(@"\s*[-+]\s*")
+let private mulPrefixRe =
+    System.Text.RegularExpressions.Regex(@"^\s*\d+(\.\d+)?\s*\*\s*")
+
+/// Pull the rule IDs out of a Magic DRC message — e.g.
+/// "Metal1 overlap of Via1 < 6 in one direction (via.5a - via.4a)"
+/// → ["via.5a"; "via.4a"]. Returns [] when no parenthesised id
+/// list is present.
+let extractRuleIds (msg: string) : string list =
+    let m = ruleIdRe.Match msg
+    if not m.Success then []
+    else
+        let inner = m.Groups.[1].Value.Trim()
+        splitRe.Split inner
+        |> Array.map (fun p -> mulPrefixRe.Replace(p, "").Trim())
+        |> Array.filter (fun p -> p.Length > 0)
+        |> Array.toList
+
+/// True iff Magic's (msg, bbox) tuple should be waived under the
+/// foundry-cell-internal policy. See module-top comment for the
+/// exact algorithm and the Python reference it mirrors.
+let waiveByMessage
+        (foundryFootprints: (int64 * int64 * int64 * int64) array)
+        (msg: string)
+        ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
+        : bool =
+    let ruleIds = extractRuleIds msg
+    if ruleIds.IsEmpty then false
+    elif foundryFootprints.Length = 0 then false
+    else
+        let margins =
+            ruleIds
+            |> List.map (fun rid -> Map.tryFind rid foundryWaiverMarginNm)
+        if margins |> List.exists Option.isNone then false
+        else
+            let maxMargin =
+                margins
+                |> List.choose id
+                |> List.max
+            let cx = (bx1 + bx2) / 2L
+            let cy = (by1 + by2) / 2L
+            foundryFootprints
+            |> Array.exists (fun (fx0, fy0, fx1, fy1) ->
+                (fx0 - maxMargin) <= cx && cx <= (fx1 + maxMargin)
+                && (fy0 - maxMargin) <= cy && cy <= (fy1 + maxMargin))

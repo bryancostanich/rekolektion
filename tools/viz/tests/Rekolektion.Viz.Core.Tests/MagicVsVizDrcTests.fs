@@ -242,13 +242,36 @@ let private compareDrc
                 | c :: _ -> c.Name
                 | [] -> failwith "no cell in doc"
         let raw = runMagic magicBin pdkRoot gdsPath cellName
-        let magicViolations = parseMagicViolations raw
+        let magicRaw = parseMagicViolations raw
+        let magicRawTotal =
+            magicRaw |> List.sumBy (fun v -> v.Bboxes.Length)
+        // Apply the SAME foundry-waiver to Magic's output that the
+        // viz post-pass applies. Before this filter, the test was
+        // comparing waived-viz (228 fires on tap_mux_row) to RAW
+        // Magic (1266 fires) and "passing" only because every viz
+        // bbox geographically clustered with some Magic fire —
+        // density similarity, not violation-set equivalence.
+        // Mirrors `verify_drc`'s post-pass filter (Waiver.fs and
+        // src/rekolektion/verify/drc.py use the same per-rule
+        // margin table).
+        let foundryFootprints = Drc.Waiver.collectFoundryFootprints flat
+        let magicViolations =
+            magicRaw
+            |> List.map (fun mv ->
+                let survivors =
+                    mv.Bboxes
+                    |> List.filter (fun bb ->
+                        not (Drc.Waiver.waiveByMessage
+                                foundryFootprints mv.Message bb))
+                { mv with Bboxes = survivors })
+            |> List.filter (fun mv -> not mv.Bboxes.IsEmpty)
         let magicTotal =
             magicViolations
             |> List.sumBy (fun v -> v.Bboxes.Length)
+        let waivedTotal = magicRawTotal - magicTotal
         out.WriteLine (sprintf
-            "magic: %d distinct violation messages, %d total tiles"
-            magicViolations.Length magicTotal)
+            "magic: %d distinct violation messages, %d total tiles (%d raw - %d foundry-waived)"
+            magicViolations.Length magicTotal magicRawTotal waivedTotal)
         for mv in magicViolations |> List.truncate 30 do
             out.WriteLine (sprintf "  magic[%s] x %d" mv.Message mv.Bboxes.Length)
         if magicViolations.Length > 30 then

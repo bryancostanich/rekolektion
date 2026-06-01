@@ -347,11 +347,28 @@ let allRules : Rule list = [
     // The 525 nm rule is keyed on n-diff (NSDM ∩ DIFF outside
     // NWELL), modelled with the NsdmNotInNwell condition on
     // the layerB filter — same machinery diff/tap.9 uses.
-    // rpm.1 — minimum RPM/URPM width. The polyres layer (xhrpoly /
-    // uhrpoly derived) is the precision-resistor body. Foundry
-    // cells emit narrow polyres bodies for tight resistance values;
-    // Magic flags any narrow side < 1.27 µm.
-    Width    ("rpm.1",      polyres, 1.27)
+    // rpm.1 — INTENTIONALLY OMITTED from the viz rule set.
+    //
+    // sky130A.tech defines rpm.1 with a CIF-style block-layer
+    // subtraction:
+    //   templayer rpm_block *psd,*mvpsd
+    //   templayer rpm_generate
+    //     and-not rpm_block
+    //   cifwidth rpm_generate 1270 "rpm.1"
+    // i.e. the rule operates on RPM minus PSDM. Every foundry
+    // res_xhigh_po / res_high_po primitive has psdm fully covering
+    // its RPM region, so Magic checks an empty region inside the
+    // resistor body and the rule silently waives. The viz Width
+    // schema doesn't yet model `and-not` terms, so a literal
+    //   Width("rpm.1", polyres, 1.27)
+    // emits a false positive on every foundry poly-resistor
+    // instance. Magic-based verify_drc still enforces rpm.1
+    // correctly via the foundry tech file.
+    //
+    // Previously suppressed via a hand-edited `disabled: true` on
+    // the bundled YAML; that diverged from the F# table and broke
+    // the YAML-stays-in-sync / round-trip tests. Removing the rule
+    // from `allRules` here keeps both sides honest.
     CrossSpacing("rpm.3-6-nsd.5a", polyres, diff, 0.525,
                  Always, NsdmNotInNwell)
     CrossSpacing("rpm.3-7",        polyres, poly, 0.400,

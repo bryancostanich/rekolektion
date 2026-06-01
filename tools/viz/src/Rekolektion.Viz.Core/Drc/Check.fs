@@ -214,6 +214,20 @@ let private polysOnLayer
     | true, arr -> arr
     | _ -> [||]
 
+/// Layers that the Width and Spacing rules treat as merged
+/// connected regions rather than independent polygons. The
+/// `applyImplantClose` pass slab-decomposes psdm/nsdm into
+/// many thin strips of one feature; polyres is built from
+/// SRef'd child slabs that physically abut into one resistor
+/// body. For these layers, per-polygon bbox checks fire
+/// false-positives on the slab strips. Per-component bbox
+/// matches Magic's "one violation per merged feature"
+/// semantics.
+let private isMergingLayer (key: Rules.LayerKey) : bool =
+    (key.Number = 94 && key.DataType = 20)    // psdm
+    || (key.Number = 93 && key.DataType = 44) // nsdm
+    || (key.Number = 66 && key.DataType = 13) // polyres / rpm
+
 /// Test an `InnerCondition` against the implant tags of a single
 /// polygon. Used by Enclosure to skip inner polygons that don't
 /// match the rule's type filter (e.g. licon.5a only checks
@@ -284,16 +298,39 @@ let checkWithToggles
             // perpendicular range and extends past on the
             // narrow axis).
             //
-            // Morphological opening on the Region was tried
-            // and rejected — slab fragmentation produces
-            // thousands of bogus tile-fragment violations on
-            // clean licon arrays, and integer-DBU shrink/grow
-            // can't represent "width ≥ limit passes, < limit
-            // fails" cleanly (the half-grid problem). Per-
-            // polygon with the merge-coverage waiver is what
-            // matches Magic on the cases we've seen.
+            // For "merging" layers (post-implant-close PSDM /
+            // NSDM, and polyres which is similarly composed of
+            // child slabs that physically merge into one
+            // feature) the per-polygon model is wrong: the
+            // input to the rule is already a slab-decomposed
+            // region. We switch to per-component width:
+            // build the Region, take connected components,
+            // and check each component's bbox shorter side.
+            // This matches Magic's "one feature per merged
+            // region" semantics. See plan
+            // `docs/superpowers/plans/2026-05-31-region-based-
+            // drc-rules.md`.
             let limit = umToDbu umPerDbu minUm
-            if limit > 0L then
+            if limit > 0L && isMergingLayer layer then
+                let polys = polysOnLayer idx layer
+                if polys.Length > 0 then
+                    let polyRecs = polys |> Array.map (fun (p, _, _) -> p)
+                    let region = Geometry.Region.ofPolygons polyRecs
+                    let parts = Geometry.Components.componentBboxes region
+                    for (x1, y1, x2, y2) in parts do
+                        let w = x2 - x1
+                        let h = y2 - y1
+                        let m = min w h
+                        if m < limit then
+                            result.Add {
+                                Rule = name
+                                LayerNumber = layer.Number
+                                LayerType   = layer.DataType
+                                LimitDbu    = limit
+                                MeasuredDbu = m
+                                BboxA = (x1, y1, x2, y2)
+                                BboxB = None }
+            elif limit > 0L then
                 let polys = polysOnLayer idx layer
                 for i in 0 .. polys.Length - 1 do
                     let (_, (ax1, ay1, ax2, ay2), _) = polys.[i]
@@ -367,7 +404,38 @@ let checkWithToggles
             // by the `g > 0L` guard — touching / overlapping
             // rectangles don't false-fire by construction.
             let limit = umToDbu umPerDbu minUm
-            if limit > 0L then
+            if limit > 0L && isMergingLayer layer then
+                // Region-based per-component spacing. The
+                // input polygons are slab strips of a merged
+                // feature (psdm/nsdm post-implant-close, or
+                // polyres composed from SRef'd children); the
+                // per-polygon pair loop fires on gaps WITHIN
+                // one feature where slabs almost-touch.
+                // Components are the actual merged features,
+                // so pairwise component gaps are the right
+                // spacing measurement. See plan
+                // `docs/superpowers/plans/2026-05-31-region-
+                // based-drc-rules.md`.
+                let polys = polysOnLayer idx layer
+                if polys.Length > 0 then
+                    let polyRecs = polys |> Array.map (fun (p, _, _) -> p)
+                    let region = Geometry.Region.ofPolygons polyRecs
+                    let parts = Geometry.Components.componentBboxes region
+                    let nParts = parts.Length
+                    for i in 0 .. nParts - 1 do
+                        for j in i + 1 .. nParts - 1 do
+                            match bboxOrthoGapAndRegion parts.[i] parts.[j] with
+                            | Some (g, gapBb) when g > 0L && g < limit ->
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = layer.Number
+                                    LayerType   = layer.DataType
+                                    LimitDbu    = limit
+                                    MeasuredDbu = g
+                                    BboxA = gapBb
+                                    BboxB = None }
+                            | _ -> ()
+            elif limit > 0L then
                 let polys = polysOnLayer idx layer
                 let n = polys.Length
                 // Slop = sky130 manufacturing grid (5 nm). Off-grid

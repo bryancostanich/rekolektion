@@ -64,6 +64,7 @@
     <Compile Include="OpampDiffTap3ProbeTests.fs" />
     <Compile Include="BiasGenPsdm2ProbeTests.fs" />
     <Compile Include="RegionMaxRectProbeTests.fs" />
+    <Compile Include="RegionComponentsTests.fs" />
     <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="RoutingCommitGateTests.fs" />

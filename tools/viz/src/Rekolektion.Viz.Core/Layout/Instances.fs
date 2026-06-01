@@ -684,6 +684,23 @@ let elementBbox
 /// absent (no anchor → label doesn't travel with any edit).
 /// "Smallest" so a label on a thin met1 stripe inside a wider
 /// areaid bbox anchors to the stripe.
+///
+/// **Wire-tagged RectEls (Props carries `wire-id`) are NEVER
+/// anchor candidates.** Routing-emitted rects sit on top of pin
+/// patches the user has already labeled. The "smallest bbox" rule
+/// would otherwise re-point a label from its underlying pin to
+/// the (smaller) wire end-segment, and the DeleteSelection cascade
+/// would then take the label out when the user deletes the wire.
+/// User report (project_viz_known_bugs.md, re-confirmed
+/// 2026-05-31). The key string mirrors `Routing.Wire.wireIdKey` —
+/// inlined here because Routing depends on Layout, not the other
+/// way around.
+let private isWireRect (el: Rekolektion.Viz.Core.Rkt.Types.Element) : bool =
+    match el with
+    | Rekolektion.Viz.Core.Rkt.Types.RectEl r ->
+        r.Props |> List.exists (fun p -> p.Key = "wire-id")
+    | _ -> false
+
 let anchorMapForCell
         (cell: Rekolektion.Viz.Core.Rkt.Types.Cell)
         : Map<int, int> =
@@ -700,6 +717,10 @@ let anchorMapForCell
         let mutable best : int voption = ValueNone
         let mutable bestArea = System.Int64.MaxValue
         for (elIdx, el) in indexed do
+            // Wire rects are routing-owned, not user-owned pins —
+            // skip them so labels never anchor (and never cascade
+            // on wire-delete) to a wire.
+            if isWireRect el then () else
             let layerNum =
                 match el with
                 | Rekolektion.Viz.Core.Rkt.Types.PolyEl p -> Some (layerNumberOf p.Layer)

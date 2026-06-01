@@ -177,6 +177,40 @@ type Lu3Probe(out: ITestOutputHelper) =
                     a1 b1 a2 b2 hasNsdm inNwell)
 
     [<Fact>]
+    member _.``opamp mcons near magic-only mcon2 bbox`` () =
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "dac", "opamp_buffer_r2r",
+                            "opamp_buffer_r2r.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let mcons =
+            flat |> Array.filter (fun p -> p.Layer = 67 && p.DataType = 44)
+        // Magic-only bbox = (9410, 665, 9520, 775), 110x110.
+        // Spacing limit = 38. Find mcons in a 1 µm radius.
+        let nearby =
+            mcons
+            |> Array.filter (fun p ->
+                let (x1, y1, x2, y2) = bboxOf p
+                x1 < 10500L && 8500L < x2 && y1 < 1700L && -300L < y2)
+        out.WriteLine (sprintf
+            "mcons near bbox (9410,665,9520,775): %d" nearby.Length)
+        let sorted =
+            nearby |> Array.sortBy (fun p ->
+                let (x1, y1, _, _) = bboxOf p
+                x1, y1)
+        for p in sorted do
+            let (x1, y1, x2, y2) = bboxOf p
+            out.WriteLine (sprintf
+                "  mcon bbox=(%d,%d,%d,%d) src=%s" x1 y1 x2 y2 p.SourceStructure)
+
+    [<Fact>]
     member _.``opamp URPM (79/20) polygons`` () =
         let path =
             System.Reflection.Assembly.GetExecutingAssembly().Location

@@ -65,12 +65,49 @@ let ``SetAllDrcVisible also flips the Other bucket`` () =
 
 [<Fact>]
 let ``ToggleDrcOther flips only the Other bucket`` () =
-    let next, _ = Update.update stubBackend (Msg.ToggleDrcOther false) Model.empty
+    // Start with ShowDrc on so the Other = false branch leaves it
+    // alone (the auto-enable only fires on Other = true).
+    let init = { Model.empty with ShowDrc = true }
+    let next, _ = Update.update stubBackend (Msg.ToggleDrcOther false) init
     Visibility.isDrcVisibleOther next.Toggle |> should equal false
     // Per-layer DRC entries are untouched.
     Visibility.isDrcVisibleForLayer next.Toggle (68, 20) |> should equal true
     let back, _ = Update.update stubBackend (Msg.ToggleDrcOther true) next
     Visibility.isDrcVisibleOther back.Toggle |> should equal true
+
+[<Fact>]
+let ``ToggleDrcLayer true auto-enables ShowDrc when it was off`` () =
+    // ShowDrc starts false. Clicking a D checkbox to ON implies the
+    // user wants to see DRCs — flip the master.
+    Model.empty.ShowDrc |> should equal false
+    let next, _ = Update.update stubBackend (Msg.ToggleDrcLayer ((68, 20), true)) Model.empty
+    next.ShowDrc |> should equal true
+    Visibility.isDrcVisibleForLayer next.Toggle (68, 20) |> should equal true
+
+[<Fact>]
+let ``ToggleDrcLayer false leaves ShowDrc alone (no surprise opt-out)`` () =
+    let init = { Model.empty with ShowDrc = true }
+    let next, _ = Update.update stubBackend (Msg.ToggleDrcLayer ((68, 20), false)) init
+    next.ShowDrc |> should equal true
+    Visibility.isDrcVisibleForLayer next.Toggle (68, 20) |> should equal false
+
+[<Fact>]
+let ``SetAllDrcVisible true auto-enables ShowDrc`` () =
+    Model.empty.ShowDrc |> should equal false
+    let next, _ = Update.update stubBackend (Msg.SetAllDrcVisible true) Model.empty
+    next.ShowDrc |> should equal true
+
+[<Fact>]
+let ``SetAllDrcVisible false leaves ShowDrc alone`` () =
+    let init = { Model.empty with ShowDrc = true }
+    let next, _ = Update.update stubBackend (Msg.SetAllDrcVisible false) init
+    next.ShowDrc |> should equal true
+
+[<Fact>]
+let ``ToggleDrcOther true auto-enables ShowDrc`` () =
+    Model.empty.ShowDrc |> should equal false
+    let next, _ = Update.update stubBackend (Msg.ToggleDrcOther true) Model.empty
+    next.ShowDrc |> should equal true
 
 [<Fact>]
 let ``ToggleNetHighlight flips a net's membership in HighlightedNets`` () =

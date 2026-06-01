@@ -648,6 +648,140 @@ let viewOf (rules: Rule list) (provenance: Map<string, string>) : RulesetView = 
     Provenance = provenance
 }
 
+// --- Track 02 (silicon_correct) — Magic-compat alias --------------------
+//
+// The entire body of this `Rules` module IS the Magic-flavored
+// ruleset, frozen alongside Magic itself (Magic isn't changing from
+// here out, so neither is this).
+//
+// The nested `Magic` submodule re-exposes the public values under a
+// symmetric name so new code can read `Rules.Magic.allRules`
+// alongside `Rules.Klayout.allRules` without ambiguity. Existing
+// call sites that say `Rules.allRules` continue to work and continue
+// to get Magic semantics — preserving the no-caller-churn guarantee
+// in the Track 02 plan.
+//
+// See: silicon_correct/tracks/02_drc_klayout_primary/plan.md §3.3.
+
+/// Magic-compat alias for `Rules` exports. Frozen.
+module Magic =
+    /// The full Magic-tuned rule list. Same value as `Rules.allRules`
+    /// (and `Rules.defaultView.Rules`); re-exposed here so call sites
+    /// can be explicit about which compat target they want.
+    let allRules : Rule list = allRules
+    let allCrossSpacings : CrossSpacingRule list = allCrossSpacings
+    let liveRules : Rule list = liveRules
+    let liveEligibleNames : Set<string> = liveEligibleNames
+    let defaultView : RulesetView = defaultView
+    let tryFind = tryFind
+
+
+/// KLayout-compat ruleset.
+///
+/// **Phase 3 state (silicon_correct/Track 02): empty placeholder.**
+/// The corpus harness in Phase 4 populates each rule one at a time,
+/// gated by `F#-Klayout ≡ external-KLayout` equivalence on the
+/// per-rule status table at `docs/internals/drc_rule_equivalency.md`.
+///
+/// Until a rule lands here with green equivalency, callers asking for
+/// `compat = Klayout` get an empty rule list. The Python
+/// `verify_drc(compat="klayout")` path (Track 02 Phase 2) routes the
+/// same callers through the KLayout external binary in the meantime,
+/// so coverage isn't lost — it's just slower than the in-viz path.
+///
+/// Rule names match KLayout deck IDs verbatim (`m1.1`, `poly.2`,
+/// `MR_thkox.CON.1`, ...). Translation to Magic-equivalent names
+/// (`met1.1`, etc.) happens only on the Python `verify_drc_klayout`
+/// boundary for waiver-list lookup. Inside the F# engine the deck
+/// name is the source of truth.
+///
+/// Co-located with `Magic` in this file because F# does not allow a
+/// top-level module to share its name with a namespace — splitting
+/// `Klayout` into its own file would force a much larger refactor
+/// of the existing `Rules` module. We can re-evaluate the split in
+/// Phase 4 if this module grows large enough to warrant it.
+module Klayout =
+    /// KLayout-flavored rule list. Empty until Phase 4 promotes
+    /// rules one at a time via the corpus harness.
+    let allRules : Rule list = []
+
+    /// Cross-layer spacing entries derived from `allRules`. Same
+    /// shape as `Rules.allCrossSpacings` but scoped to the KLayout-
+    /// compat rule list — empty until Phase 4 populates `allRules`.
+    let allCrossSpacings : CrossSpacingRule list =
+        allRules
+        |> List.choose (fun r ->
+            match r with
+            | CrossSpacing (_, a, b, m, ca, cb) ->
+                Some { LayerA = a; LayerB = b; MinUm = m
+                       CondA = ca; CondB = cb }
+            | _ -> None)
+
+    /// Live-eligible subset of the KLayout rule list (per-frame
+    /// routing feedback). Phase-4 work that lands a non-`MinArea` /
+    /// `BoundaryCrossing` rule here automatically picks it up via
+    /// `isLiveEligible`.
+    let liveRules : Rule list =
+        allRules |> List.filter isLiveEligible
+
+    let liveEligibleNames : Set<string> =
+        liveRules |> List.map nameOf |> Set.ofList
+
+    /// KLayout-compat default view. Provenance empty — every rule
+    /// (when any exists) is internal F# code. `RulesYaml.merge`
+    /// consumers can build a per-loaded-YAML view on top of this
+    /// base; same pattern as Magic.
+    let defaultView : RulesetView = {
+        Rules = allRules
+        Provenance = Map.empty
+    }
+
+    /// Layer → (width, spacing) lookup. Phase 4 builds this
+    /// incrementally as Width/Spacing rules land in `allRules`;
+    /// for now the empty list produces an empty Map so callers
+    /// fall through cleanly to `None`.
+    let private byKey =
+        allRules
+        |> List.choose (fun r ->
+            match r with
+            | Width (_, l, w) ->
+                Some ((l.Number, l.DataType), (Some w, None))
+            | Spacing (_, l, s) ->
+                Some ((l.Number, l.DataType), (None, Some s))
+            | _ -> None)
+        |> Map.ofList
+
+    /// LayerRule lookup — Magic's `Rules.tryFind` analog. Returns
+    /// `None` for any layer until Phase 4 populates Width/Spacing
+    /// rules. Callers that depend on a hit (e.g. the Tighten path)
+    /// must select `compat = Magic` until the relevant rules land.
+    let tryFind (number: int) (dataType: int) : LayerRule option =
+        match Map.tryFind (number, dataType) byKey with
+        | Some (w, s) ->
+            // Use the same Magic-side display name format
+            // (`"layer{N}_{D}"`) as the fallback in displayName.
+            let display = sprintf "layer%d_%d" number dataType
+            Some { Layer = display
+                   Number = number
+                   DataType = dataType
+                   MinWidthUm = defaultArg w 0.0
+                   MinSpacingUm = defaultArg s 0.0 }
+        | None -> None
+
+
+/// Track 02 (silicon_correct) — compat dispatcher.
+///
+/// One choice point for callers that don't already carry a
+/// `RulesetView`. The engine entry points (`Drc.Check.check`,
+/// `runLive`, etc.) still take a view explicitly so call sites that
+/// already build a custom view (e.g. RulesYaml-loaded) continue to
+/// work unchanged.
+let viewFor (compat: Compat.Compat) : RulesetView =
+    match compat with
+    | Compat.Magic   -> Magic.defaultView
+    | Compat.Klayout -> Klayout.defaultView
+
+
 /// Probe well-known locations for `drc/base/<pdk>.yaml`, walking
 /// upward from the executing assembly so dev runs (test bin, raw
 /// `dotnet run` from any subdir) and installed copies all resolve.

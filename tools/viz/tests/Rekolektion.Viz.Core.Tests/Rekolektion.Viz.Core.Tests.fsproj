@@ -75,6 +75,7 @@
     <Compile Include="UniformGridTests.fs" />
     <Compile Include="LiveDrcTests.fs" />
     <Compile Include="RulesYamlTests.fs" />
+    <Compile Include="DrcCompatTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

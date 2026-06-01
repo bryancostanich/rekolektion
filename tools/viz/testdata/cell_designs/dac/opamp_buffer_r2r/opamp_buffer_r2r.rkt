@@ -33,14 +33,70 @@
     (sref (cell nfet_01v8_W1p0_L2p0_core_topgate) (origin 11100 -9990) (rot 180.0))
     (sref (cell res_xhigh_po_W0p35_L2p6_core) (origin 3300 -9100) (rot -90.0))
     (sref (cell res_xhigh_po_W0p35_L2p6_core) (origin 10400 -8500) (rot -90.0))
-    (rect (layer sky130:tap) 0 5700 20080 6120)
-    (rect (layer sky130:nsdm) -125 5575 20205 6245)
-    (rect (layer sky130:li1) 0 5700 20080 6120)
+    (rect (layer sky130:tap) 0 290 19105 710)
+    (rect (layer sky130:nsdm) -125 165 19230 835)
+    (rect (layer sky130:li1) 0 290 19105 710)
     (rect (layer sky130:met1) -490 290 20500 1210)
     (rect (layer sky130:tap) 0 -18065 18730 -17645)
     (rect (layer sky130:psdm) -125 -18190 18855 -17520)
     (rect (layer sky130:li1) 0 -18065 18730 -17645)
     (rect (layer sky130:met1) -500 -18565 20500 -17645)
+    (rect (layer sky130:mcon) 80 415 250 585)
+    (rect (layer sky130:mcon) 80 -17940 250 -17770)
+    (rect (layer sky130:mcon) 760 415 930 585)
+    (rect (layer sky130:mcon) 760 -17940 930 -17770)
+    (rect (layer sky130:mcon) 1440 415 1610 585)
+    (rect (layer sky130:mcon) 1440 -17940 1610 -17770)
+    (rect (layer sky130:mcon) 2120 415 2290 585)
+    (rect (layer sky130:mcon) 2120 -17940 2290 -17770)
+    (rect (layer sky130:mcon) 2800 415 2970 585)
+    (rect (layer sky130:mcon) 2800 -17940 2970 -17770)
+    (rect (layer sky130:mcon) 3480 415 3650 585)
+    (rect (layer sky130:mcon) 3480 -17940 3650 -17770)
+    (rect (layer sky130:mcon) 4160 415 4330 585)
+    (rect (layer sky130:mcon) 4160 -17940 4330 -17770)
+    (rect (layer sky130:mcon) 4840 415 5010 585)
+    (rect (layer sky130:mcon) 4840 -17940 5010 -17770)
+    (rect (layer sky130:mcon) 5520 415 5690 585)
+    (rect (layer sky130:mcon) 5520 -17940 5690 -17770)
+    (rect (layer sky130:mcon) 6200 415 6370 585)
+    (rect (layer sky130:mcon) 6200 -17940 6370 -17770)
+    (rect (layer sky130:mcon) 6880 415 7050 585)
+    (rect (layer sky130:mcon) 6880 -17940 7050 -17770)
+    (rect (layer sky130:mcon) 7560 415 7730 585)
+    (rect (layer sky130:mcon) 7560 -17940 7730 -17770)
+    (rect (layer sky130:mcon) 8240 415 8410 585)
+    (rect (layer sky130:mcon) 8240 -17940 8410 -17770)
+    (rect (layer sky130:mcon) 8920 415 9090 585)
+    (rect (layer sky130:mcon) 8920 -17940 9090 -17770)
+    (rect (layer sky130:mcon) 9600 415 9770 585)
+    (rect (layer sky130:mcon) 9600 -17940 9770 -17770)
+    (rect (layer sky130:mcon) 10280 415 10450 585)
+    (rect (layer sky130:mcon) 10280 -17940 10450 -17770)
+    (rect (layer sky130:mcon) 10960 415 11130 585)
+    (rect (layer sky130:mcon) 10960 -17940 11130 -17770)
+    (rect (layer sky130:mcon) 11640 415 11810 585)
+    (rect (layer sky130:mcon) 11640 -17940 11810 -17770)
+    (rect (layer sky130:mcon) 12320 415 12490 585)
+    (rect (layer sky130:mcon) 12320 -17940 12490 -17770)
+    (rect (layer sky130:mcon) 13000 415 13170 585)
+    (rect (layer sky130:mcon) 13000 -17940 13170 -17770)
+    (rect (layer sky130:mcon) 13680 415 13850 585)
+    (rect (layer sky130:mcon) 13680 -17940 13850 -17770)
+    (rect (layer sky130:mcon) 14360 415 14530 585)
+    (rect (layer sky130:mcon) 14360 -17940 14530 -17770)
+    (rect (layer sky130:mcon) 15040 415 15210 585)
+    (rect (layer sky130:mcon) 15040 -17940 15210 -17770)
+    (rect (layer sky130:mcon) 15720 415 15890 585)
+    (rect (layer sky130:mcon) 15720 -17940 15890 -17770)
+    (rect (layer sky130:mcon) 16400 415 16570 585)
+    (rect (layer sky130:mcon) 16400 -17940 16570 -17770)
+    (rect (layer sky130:mcon) 17080 415 17250 585)
+    (rect (layer sky130:mcon) 17080 -17940 17250 -17770)
+    (rect (layer sky130:mcon) 17760 415 17930 585)
+    (rect (layer sky130:mcon) 17760 -17940 17930 -17770)
+    (rect (layer sky130:mcon) 18440 415 18610 585)
+    (rect (layer sky130:mcon) 18440 -17940 18610 -17770)
     (poly (layer sky130:nwell)
       (points (19310 898) (-490 898) (-490 -7910) (14310 -7910) (14310 -10810) (19310 -10810)))
     (label (layer sky130:met1_label) (text "VDD") (origin 10100 1010)
@@ -137,8 +193,6 @@
     (label (layer sky130:li1_label) (text "VBIAS_P") (origin 2683 -5910))
     (label (layer sky130:li1_label) (text "VDD") (origin 1113 -4765))
     (label (layer sky130:nwell_label) (text "VDD") (origin 927 -4172))
-    (label (layer sky130:li1_label) (text "net_ota_n") (origin 16590 -8945)
-      (internal #t))
     (label (layer sky130:li1_label) (text "net_ota_n") (origin 6505 -9100)
       (internal #t))
     (label (layer sky130:li1_label) (text "cc_n") (origin 95 -9100))
@@ -148,4 +202,62 @@
       (internal #t))
     (label (layer sky130:li1_label) (text "cc_p") (origin 7195 -8500))
     (label (layer sky130:li1_label) (text "cc_p") (origin 7195 -8500)
-      (kind port-name))))
+      (kind port-name))
+    (rect (layer sky130:li1) 9925 -16190 10540 -16020
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 10370 -17342 10540 -16020
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 10370 -17342 15250 -17172
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 15080 -17342 15250 -17061
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 10805 -16086 10975 -12415
+      (props (wire-id 2)))
+    (rect (layer sky130:li1) 10805 -13730 15250 -13560
+      (props (wire-id 3)))
+    (rect (layer sky130:li1) 11146 -11440 11316 -11159
+      (props (wire-id 4)))
+    (rect (layer sky130:li1) 11015 -11329 11316 -11159
+      (props (wire-id 4)))
+    (rect (layer sky130:li1) 11015 -11329 11185 -10525
+      (props (wire-id 4)))
+    (rect (layer sky130:li1) 1751 -12295 1921 -11160
+      (props (wire-id 5)))
+    (rect (layer sky130:li1) 6551 -12295 6721 -11161
+      (props (wire-id 6)))
+    (rect (layer sky130:li1) 425 -4317 2895 -4147
+      (props (wire-id 7)))
+    (rect (layer sky130:li1) 2598 -5995 3973 -5825
+      (props (wire-id 8)))
+    (rect (layer sky130:li1) 9123 -2415 9293 -1270
+      (props (wire-id 9)))
+    (rect (layer sky130:li1) 8123 -1440 8293 20
+      (props (wire-id 10)))
+    (rect (layer sky130:li1) 16120 -10417 16685 -10247
+      (props (wire-id 11)))
+    (rect (layer sky130:li1) 16515 -10417 16685 -4927
+      (props (wire-id 11)))
+    (rect (layer sky130:li1) 6551 -10041 6721 -9012
+      (props (wire-id 12)))
+    (rect (layer sky130:li1) 6373 -9182 6721 -9012
+      (props (wire-id 12)))
+    (rect (layer sky130:li1) -220 -4317 -50 -1827
+      (props (wire-id 13)))
+    (rect (layer sky130:li1) -220 -4317 595 -4147
+      (props (wire-id 13)))
+    (rect (layer sky130:li1) 14348 -10417 15500 -10247
+      (props (wire-id 14)))
+    (rect (layer sky130:li1) 14348 -10417 14518 -8974
+      (props (wire-id 14)))
+    (rect (layer sky130:li1) 6551 -9144 14518 -8974
+      (props (wire-id 14)))
+    (rect (layer sky130:li1) 6551 -10041 6721 -8974
+      (props (wire-id 14)))
+    (rect (layer sky130:met1) 10940 -10770 11260 -10450
+      (props (wire-id 15)))
+    (rect (layer sky130:met1) 9941 -10680 11170 -10540
+      (props (wire-id 15)))
+    (rect (layer sky130:met1) 9941 -14215 10081 -10540
+      (props (wire-id 15)))
+    (rect (layer sky130:mcon) 9926 -14230 10096 -14060
+      (props (wire-id 15)))))

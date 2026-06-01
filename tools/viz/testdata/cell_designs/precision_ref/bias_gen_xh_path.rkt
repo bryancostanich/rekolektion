@@ -1,0 +1,56 @@
+(layout (version 1)
+  (pdk sky130)
+  (units (dbu_nm 1) (uu_um 1))
+  (import "../primitives/res_xhigh_po_W1p41_L27p0_nx8_core.rkt")
+  (import "../primitives/nfet_01v8_W1p0_L2p0_core_topgate.rkt")
+  (top bias_gen_xh_path)
+  (cell bias_gen_xh_path
+    (rect (layer sky130:pwell) 1895 -19805 5105 -17015)
+    (sref (cell res_xhigh_po_W1p41_L27p0_nx8_core) (origin 0 -4500))
+    (sref (cell nfet_01v8_W1p0_L2p0_core_topgate) (origin 3500 -17990) (rot 180.0))
+    (rect (layer sky130:tap) 2075 -19525 4925 -19105)
+    (rect (layer sky130:psdm) 1950 -19650 5050 -18980)
+    (rect (layer sky130:licon1) 2135 -19400 2305 -19230)
+    (rect (layer sky130:licon1) 2475 -19400 2645 -19230)
+    (rect (layer sky130:licon1) 2815 -19400 2985 -19230)
+    (rect (layer sky130:licon1) 3155 -19400 3325 -19230)
+    (rect (layer sky130:licon1) 3495 -19400 3665 -19230)
+    (rect (layer sky130:licon1) 3835 -19400 4005 -19230)
+    (rect (layer sky130:licon1) 4175 -19400 4345 -19230)
+    (rect (layer sky130:licon1) 4515 -19400 4685 -19230)
+    (rect (layer sky130:li1) 2075 -19480 4925 -19150)
+    (rect (layer sky130:met1) 1895 -19680 5105 -18950)
+    (rect (layer sky130:mcon) 2105 -19450 2275 -19280)
+    (rect (layer sky130:mcon) 2465 -19450 2635 -19280)
+    (rect (layer sky130:mcon) 2825 -19450 2995 -19280)
+    (rect (layer sky130:mcon) 3185 -19450 3355 -19280)
+    (rect (layer sky130:mcon) 3545 -19450 3715 -19280)
+    (rect (layer sky130:mcon) 3905 -19450 4075 -19280)
+    (rect (layer sky130:mcon) 4265 -19450 4435 -19280)
+    (rect (layer sky130:mcon) 4625 -19450 4795 -19280)
+    (rect (layer sky130:li1) 2270 -18355 2440 -17750
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 2160 -18355 2440 -18185
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 2160 -19414 2330 -18185
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 2160 -19414 3585 -19244
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 3415 -19400 3585 -19244
+      (props (wire-id 1)))
+    (rect (layer sky130:met1) 3355 -19460 3645 -19170
+      (props (wire-id 1)))
+    (rect (layer sky130:mcon) 3415 -19400 3585 -19230
+      (props (wire-id 1)))
+    (rect (layer sky130:li1) 4560 -17920 6700 -17750
+      (props (wire-id 2)))
+    (rect (layer sky130:li1) 6530 -18345 6700 -17750
+      (props (wire-id 2)))
+    (label (layer sky130:li1_label) (text "cgm_a") (origin 3500 -18610)
+      (kind port-name))
+    (label (layer sky130:li1_label) (text "V_Vtref_xh") (origin 6615 -19165)
+      (kind port-name))
+    (label (layer sky130:li1_label) (text "VDD") (origin -6615 -19165)
+      (kind port-name))
+    (label (layer sky130:li1_label) (text "GND") (origin 2355 -17835)
+      (kind port-name))))

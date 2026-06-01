@@ -126,6 +126,17 @@ def _cmd_verify_grid(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_verify_drc_equivalency(args: argparse.Namespace) -> None:
+    """Run the Phase 4 equivalency harness on a corpus directory."""
+    from rekolektion.verify.drc_equivalency import run_corpus, render_report
+
+    results = run_corpus(args.corpus)
+    print(render_report(results))
+    # Non-zero exit if any gate is red — useful for CI.
+    if any(not r.all_gates_green for r in results):
+        sys.exit(1)
+
+
 def _cmd_verify_drc(args: argparse.Namespace) -> None:
     """Run DRC on a `.rkt` block against the chosen compat target."""
     from rekolektion.verify import verify_drc
@@ -241,6 +252,22 @@ def main(argv: list[str] | None = None) -> None:
         help="Escalate off-grid coords to errors (default: on)",
     )
     p_drc.set_defaults(func=_cmd_verify_drc)
+
+    # --- verify-drc-equivalency subcommand ---
+    p_eq = sub.add_parser(
+        "verify-drc-equivalency",
+        help="Run the Phase 4 corpus through all four DRC paths "
+        "(F# Klayout/Magic + external Klayout/Magic) and print "
+        "the 2x2 matrix + per-rule equivalency table.",
+    )
+    p_eq.add_argument(
+        "corpus",
+        nargs="?",
+        default="tests/drc_corpus",
+        help="Corpus directory of viol_/legal_ .rkt cells "
+        "(default: tests/drc_corpus)",
+    )
+    p_eq.set_defaults(func=_cmd_verify_drc_equivalency)
 
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):

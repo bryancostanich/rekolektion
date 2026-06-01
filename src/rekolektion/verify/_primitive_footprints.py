@@ -217,7 +217,7 @@ def compute_primitive_footprints(
     gds_path: Path,
     *,
     top_cell_name: str = "",
-    margin_um: float = 0.5,
+    margin_um: float = 0.0,
 ) -> list[tuple[str, float, float, float, float]]:
     """Compute waiver footprints (in micrometers) for every primitive
     SRef in `gds_path`'s top cell hierarchy. `rkt_path` is the source
@@ -227,28 +227,20 @@ def compute_primitive_footprints(
     Returns a list of `(cell_name, x1, y1, x2, y2)` tuples ready to
     pass as `run_drc(waiver_footprints=…)`.
 
-    Each primitive's bbox is expanded by `margin_um` on every side so
-    that spacing-rule tiles at the primitive boundary (between two
-    abutting primitives, e.g. diff/tap.22/.23 LV-vs-MV diffusion
-    spacing in stdcells) land inside a footprint and get classified as
-    waivers.
+    Default `margin_um=0.0` (changed from 0.5 in 2026-05-31). The
+    boundary-effect halo around each primitive is now handled inside
+    `run_drc`'s per-rule margin (see `_WAIVER_RULE_MARGIN_UM` in
+    `drc.py`) — width / area / overlap rules use 0 µm (tile must be
+    strictly inside the primitive bbox to be waived), spacing rules
+    use rule-specific small margins (0.25 µm typical), and the
+    cross-cell well / implant rules use the worst-case 1.5 µm. That
+    eliminates the previous trap where a flat 0.5 µm halo silently
+    waived sub-min met1 wires within 500 nm of any primitive edge.
 
-    The default 0.5 µm covers SKY130's widest single-rule cross-cell
-    spacing (diff/tap.24 = 0.43 µm) with a small safety margin. This
-    is a conservative middle ground:
-
-    - Smaller margins under-cover boundary violations between abutted
-      primitives → user sees noise.
-    - Larger margins (e.g. 1.0 µm) capture more boundary violations
-      but risk waiving REAL parent-paint vs primitive bugs in the
-      µm-scale gap region near each primitive's edge. The 2-tile
-      nwell.2a bug class that motivated this work fires exactly in
-      that gap — primitives 425 nm apart with a missing parent-paint
-      bridge. A 1 µm margin would hide it.
-
-    Pass a larger `margin_um` only when you trust the design's parent
-    paint to NOT touch the inter-primitive gap region (e.g. row-based
-    stdcell composition where parent paint stays at rail level).
+    Callers can still pass `margin_um > 0` if they need to widen ALL
+    rule footprints uniformly (e.g. when the design wraps a primitive
+    in additional parent-paint that should also be considered foundry-
+    waivable). Most callers should leave the default.
 
     If `top_cell_name` is empty, the GDS library's first cell is used
     (matches `run_drc`'s default).

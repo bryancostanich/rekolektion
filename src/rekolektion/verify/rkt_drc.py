@@ -78,7 +78,7 @@ def verify_drc(
     pdk_root: str | Path | None = None,
     output_dir: str | Path | None = None,
     waiver_footprints: list[tuple[str, float, float, float, float]] | None = None,
-    waiver_margin_um: float = 0.5,
+    waiver_margin_um: float = 0.0,
     allow_global_waivers: bool = False,
     keep_gds: bool = False,
 ) -> DRCResult:

@@ -14,189 +14,127 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# Known-waiver rule IDs. These are tight SRAM/bitcell rules the foundry
-# accepts in silicon via COREID waivers; every tiling of the foundry
-# sky130_fd_bd_sram__sram_sp_cell_opt1 cell trips them. See README.
-# The set is rule-ID based: rule text in Magic ends with "(rule-id)".
+# Known-waiver rule IDs + per-rule spatial margin (µm). These are tight
+# SRAM/bitcell rules the foundry accepts in silicon via COREID waivers;
+# every tiling of the foundry sky130_fd_bd_sram__sram_sp_cell_opt1 cell
+# trips them. The margin is how far past a primitive's bbox a tile
+# centre can sit and still count as a foundry waiver:
 #
-# CAVEAT — this is a global filter, not a spatial one. A met1.2 or met1.1
-# violation from a bug in our own routing (e.g. draw_wire emitting two
-# sub-spaced wires) will also be silently waived. The foundry-cell rules
-# must be classified spatially (errors INSIDE the bitcell footprint are
-# waivers, elsewhere they are real) for this to be fully safe. Tracked
-# as a TODO — see README "DRC — important caveats".
-_KNOWN_WAIVER_RULES: frozenset[str] = frozenset({
-    # Local interconnect
-    "li.1",     # LI width
-    "li.3",     # LI spacing
-    "li.c1",    # core LI width
-    "li.6",     # LI min area
-    # Diffusion / taps / transistors
-    "diff/tap.1",  # diffusion width
-    "diff/tap.2",  # transistor width
-    "diff/tap.3",  # diffusion spacing
-    "diff/tap.8",  # nwell overlap of p-diff
-    "diff/tap.9",  # n-diff to nwell
-    "diff/tap.15a", # MV diffusion spacing — trips at MV-vs-MV primitive
-                    # boundaries inside HV stdcells (e.g., lshift's MV
-                    # PFET pair sharing a tub). Foundry COREID-class.
-    "diff/tap.22", # LV-to-MV / MV-to-LV diffusion spacing < 0.36 µm —
-    "diff/tap.23", # the rule trips at any LV-vs-MV primitive boundary
-                    # (e.g., LV INV PFET adjacent to MV PD NMOS inside
-                    # lshift). Magic emits these as composite messages
-                    # like "diff/tap.23 + diff/tap.22"; both IDs must be
-                    # in the waiver set or the composite tile stays real.
-    "diff/tap.24", # N-diffusion spacing to N-well < 0.43 µm — same class
-                    # of primitive-boundary violation; trips at tap-band
-                    # / nwell interface between abutted primitives.
-    # Wells
-    "nwell.1",     # nwell width
-    "nwell.2a",    # nwell spacing (same-potential)
-    "nwell.7",    # dnwell to nwell
-    "dnwell.2",    # dnwell width
-    "dnwell.3",    # dnwell spacing
-    # Poly
-    "poly.2",      # poly spacing
-    "poly.4",      # poly to diffusion
-    "poly.5",      # poly to tap
-    "poly.7",      # ndiff overhang of nfet
-    "poly.8",      # poly overhang of transistor
-    # Angles (foundry uses non-Manhattan li1 in bitcells)
-    "x.2",         # 90-deg on local interconnect
-    # Psub/nsub contact rules tight in SRAM
-    "psd.5a",
-    "psd.5b",
-    "nsd.10b",
-    "licon.5b",
-    "licon.8a",
-    "licon.9",
-    "licon.14",
-    "hvtp.4",
-    # Foundry bitcell metal width/spacing waivers. The sky130_fd_bd_sram
-    # cells use <0.14 um met1/met2 features and tight spacings that
-    # aren't DRC-clean under stock rules but are accepted under COREID.
-    # WARNING: these rules are also meaningful outside the bitcell;
-    # blanket-waiving them will miss real bugs in user routing until
-    # spatial filtering lands.
-    "met1.1",      # Metal1 width
-    "met1.2",      # Metal1 spacing
-    "met1.6",      # Metal1 min area
-    "met2.1",      # Metal2 width
-    "met2.2",      # Metal2 spacing
-    "met2.6",      # Metal2 min area
-    # mcon / licon rules — foundry bitcell packs contacts at min width
-    # and min spacing; waived in COREID.
-    "mcon.1",      # mcon width
-    "mcon.2",      # mcon spacing
-    "licon.1",     # poly/diff contact width
-    "licon.2",     # diffusion contact spacing
-    "licon.5a",    # p-diff overlap of p-diff contact (foundry bitcell —
-                   # 3 tiles in activation_bank, all confirmed inside
-                   # foundry cell footprint via tile-provenance audit)
-    "licon.5c",    # n-diff overlap of n-diff contact in one direction.
-                   # Source: drain bridge cell (sky130_cim_drain_bridge_v1)
-                   # LICON1 at cell-local (0.260, 0.200), DIFF spans
-                   # y=[0.000, 0.300].  LICON1 north edge y=0.285;
-                   # DIFF north edge y=0.300 → enclosure 0.015 µm
-                   # < 0.06 (rule).  Tile-provenance audit on SRAM-D:
-                   # 4096 tiles all cluster at cell-local y=0.20 (mod
-                   # supercell pitch 3.23), matching bridge LICON1
-                   # position; Q-tap LICON1 (y=1.42 / 1.96) and Phase 2
-                   # BR LICON1 (y=1.68) do NOT fire this rule because
-                   # their DIFF is wide enough on Y. SRAM-COREID rule
-                   # relaxation justifies the waiver — same class as
-                   # licon.5a (foundry density-pattern relaxation).
-    "licon.8",     # poly overlap of poly contact
-    "licon.11",    # diffusion contact to gate (multiple variants)
-    "poly.11",     # no bends in transistors
-    "psdm.5a",     # (appears in composite with licon.9)
-    # P-tap / core LI rules tight in SRAM
-    "psd.10b",     # P-tap min area
-    "li.c2",       # Core local interconnect spacing
-    # Poly width floor hit exactly by foundry bitcell
-    "poly.1a",     # poly width
-    # CIM-macro-specific waivers
-    # ----------------------------------------------------------------
-    # Magic interprets the cap_mim_m3_1 layout (SKY130 MIM cap) as a
-    # varactor because both share the CAPM/MIMCAP layer; the var.x
-    # rules then fire on the cap_mim cell.  The fab tool (Calibre)
-    # uses cap-specific rules and does NOT report var.x on these.
-    "var.1",       # varactor length < 0.18um (false positive on MIM cap)
-    "var.2",       # varactor width < 1um (false positive on MIM cap)
-    "var.4",       # n-tap overhang of varactor (false positive on MIM cap)
-    "licon.10",    # diffusion contact to varactor gate (false positive
-                   # — Magic flags MIM cap diff contacts as if they were
-                   # adjacent to a varactor gate)
-    # P-tap / N-tap contact overlap rules — the foundry sky130_fd_bd_sram
-    # tap structure packs the licon at min overlap (0.06um one direction);
-    # accepted under COREID like the other bitcell rules.
-    "licon.7",
-    # Bitcell tiling artifacts: SRAM-A's 5.155 µm cell_pitch_y combined
-    # with mirror tiling brings via1s and poly stripes from adjacent
-    # mirrored rows close enough at the row boundary to trip via.2 (via1
-    # spacing) and poly.2 (poly spacing).  These violations cluster at
-    # the regular pair-pitch (every 2 × cell_pitch_x), confirming a
-    # cell-internal density pattern rather than a routing bug.  Accepted
-    # under COREID alongside the other foundry-tile waivers.
-    "via.2",       # via1 spacing
-    "via.4a",      # via1 directional surround relaxation (composite
-                   # rule "via.2 - 2*via.4a" only waives if BOTH parts
-                   # are listed)
-    "via.5a",      # met1/met2 overlap of via1 < 0.06 in one direction.
-                   # Composite rule "via.5a - via.4a" requires BOTH ids
-                   # in the waiver list.  Source on production macros:
-                   # column_mux._via1_stack_narrow uses an asymmetric
-                   # 0.23×0.29 µm met1/met2 pad (instead of 0.30×0.30)
-                   # to avoid overlap with adjacent BL/BR vertical stubs
-                   # at muxed_BL/BR exit points.  X-direction enclosure
-                   # 0.04 µm < 0.06 minimum; intentional design tradeoff
-                   # — overlap with bitline stubs would short the muxed
-                   # output to BL/BR.  See column_mux.py:149-158.
-                   # Tile count on activation_bank/weight_bank: ~5500-
-                   # 6400 each, all clustered in mux_m2_*x* sub-cell
-                   # at narrow-stack via1 positions.
-    "met1.5",      # met1 overlap of LICON1 < 0.06 in one direction.
-                   # Composite rule "(met1.5)" fires from the same
-                   # column_mux narrow-stack pattern (mcon component of
-                   # the contact stack uses the same asymmetric met1
-                   # pad).  ~2600 tiles per macro, same source as
-                   # via.5a.  Foundry-COREID-class relaxation since the
-                   # whole col_mux row sits inside the SRAM areaid.
-    "met2.5",      # met2 overlap of via1 < 0.06 in one direction.
-                   # Composite rule "met2.5 - met2.4".  Same source as
-                   # via.5a: column_mux _via1_stack_narrow uses an
-                   # asymmetric met2 pad (0.23×0.29) symmetric with
-                   # its met1 pad to keep the via stack manufacturable
-                   # without overlapping adjacent BL/BR stubs.
-    "met2.4",      # via1 directional surround (met2 side); composite
-                   # partner of met2.5 in the same narrow-stack pattern.
-    # Met4 spacing — appears on SRAM-A's larger MIM cap layout where the
-    # cap_mim_m3_1's CAPM/MET4 enclosure of adjacent cap shapes packs
-    # below 0.30 µm at column boundaries.  Cap-cell pattern, not user
-    # routing.
-    "met4.2",
-    # ReRAM internal-macro rules.  Added 2026-05-26 (khalkulo ReRAM_IRL
-    # T09 consumer-triggered intake of T01-deferred work).
+#   * 0.0 — width / area / min-area / contact / overlap rules. The
+#     violation is fully contained in a polygon; a tile OUTSIDE the
+#     primitive bbox is always a real bug, even if the rule ID matches
+#     a foundry waiver. Sub-min met1 / li1 width in the user's parent
+#     paint must NOT be silently classified as a foundry tile.
+#
+#   * >0 — spacing rules. A tile centre can sit slightly past the
+#     primitive's bbox because the spacing violation straddles two
+#     polygons, one of which lives at the cell edge. The margin is
+#     scaled by the rule's minimum spacing: small for met / li / poly
+#     spacing rules (≈ rule_min × 2), large for well / dnwell spacing
+#     rules (≈ 1.5 µm to cover the nwell.2a 1.27 µm worst case).
+#
+# This replaces the original flat `_KNOWN_WAIVER_RULES` set + global
+# `margin_um` knob on `compute_primitive_footprints`. The previous
+# 0.5 µm flat halo around every primitive silently waived sub-min met1
+# wires in the routing channel within 500 nm of any primitive edge.
+# Confirmed via a compose probe — a 100 nm met1 wire 200 nm above an
+# nfet's bbox had its met1.1 tile silently classified as a waiver.
+_WAIVER_RULE_MARGIN_UM: dict[str, float] = {
+    # --- WIDTH / AREA / OVERLAP / ENCLOSURE rules (margin 0.0) ---
+    # The violation is contained in a single polygon or in an
+    # intra-cell overlap; if a tile lands outside the primitive bbox
+    # it is a real user-routing bug, not a foundry waiver.
+    "li.1":     0.0,   # LI width
+    "li.c1":    0.0,   # core LI width
+    "li.6":     0.0,   # LI min area
+    "met1.1":   0.0,   # Metal1 width
+    "met1.6":   0.0,   # Metal1 min area
+    "met2.1":   0.0,   # Metal2 width
+    "met2.6":   0.0,   # Metal2 min area
+    "mcon.1":   0.0,   # mcon width
+    "licon.1":  0.0,   # poly/diff contact width
+    "poly.1a":  0.0,   # poly width
+    # Diffusion/transistor widths & intra-cell enclosures
+    "diff/tap.1": 0.0, # diffusion width
+    "diff/tap.2": 0.0, # transistor width
+    "diff/tap.8": 0.0, # nwell overlap of p-diff (intra-cell)
+    "diff/tap.9": 0.0, # n-diff to nwell (intra-cell)
+    "nwell.1":  0.0,   # nwell width
+    "dnwell.2": 0.0,   # dnwell width
+    # Poly relations to diff / tap / transistor (all intra-cell)
+    "poly.4":   0.0,   # poly to diffusion
+    "poly.5":   0.0,   # poly to tap
+    "poly.7":   0.0,   # ndiff overhang of nfet
+    "poly.8":   0.0,   # poly overhang of transistor
+    "poly.11":  0.0,   # no bends in transistors
+    # Contacts (overlap / enclosure inside primitive)
+    "licon.5a": 0.0,   # p-diff overlap of p-diff contact
+    "licon.5b": 0.0,   # similar
+    "licon.5c": 0.0,   # n-diff overlap of n-diff contact (one direction)
+    "licon.7":  0.0,   # tap contact overlap
+    "licon.8":  0.0,   # poly overlap of poly contact
+    "licon.8a": 0.0,
+    "licon.9":  0.0,
+    "licon.10": 0.0,   # diff contact to varactor gate (MIM-cap fp)
+    "licon.11": 0.0,   # diff contact to gate
+    "licon.14": 0.0,
+    "psd.5a":   0.0,
+    "psd.5b":   0.0,
+    "psd.10b":  0.0,   # P-tap min area
+    "nsd.10b":  0.0,
+    "psdm.5a":  0.0,
+    "hvtp.4":   0.0,
+    # MIM cap false positives (Magic sees CAPM as varactor)
+    "var.1":    0.0,
+    "var.2":    0.0,
+    "var.4":    0.0,
+    # Non-Manhattan li in foundry bitcells
+    "x.2":      0.0,
+    # Via overlap / enclosure (intra-cell column_mux narrow-stack pattern)
+    "met1.5":   0.0,   # met1 overlap of LICON1 < 0.06 in one direction
+    "met2.4":   0.0,   # via1 directional surround (met2 side)
+    "met2.5":   0.0,   # met2 overlap of via1
+    "via.4a":   0.0,   # via1 directional surround relaxation
+    "via.5a":   0.0,   # met1/met2 overlap of via1 < 0.06 one direction
+    # MIM cap layer spacing (cap-cell, not user routing)
+    "met4.2":   0.0,
+    # ReRAM internal-macro (RERAM layer only appears inside foundry IP)
+    "rr1.1":    0.0,   # ReRAM width
+    "rr1.2":    0.0,   # ReRAM-to-ReRAM spacing
     #
-    # `rr1.*` rules apply to the RERAM drawn layer (GDS 201/20, sky130B
-    # only).  We never draw the RERAM layer in user routing — the layer
-    # only appears inside foundry `sky130_fd_pr_reram__reram_cell`
-    # instances.  Adding these to the global waiver set carries no risk
-    # of false-waiving user-routing bugs (the underlying layer can't be
-    # touched without an explicit foundry-IP instantiation), so the
-    # spatial-footprint check is not required to make these safe.
+    # --- SPACING rules — small per-rule margin (≈ rule_min × 1.5) ---
+    # A spacing violation tile straddles two polygons; the centre can
+    # sit just past the cell edge when one participant is at the
+    # boundary. The margin allows that overhang to still count as a
+    # foundry waiver inside the cell while user-routing violations a
+    # few hundred nm farther out still escalate to real errors.
+    "li.3":     0.25,  # LI spacing (rule 0.17 µm)
+    "li.c2":    0.25,  # Core LI spacing
+    "met1.2":   0.25,  # Metal1 spacing (rule 0.14 µm)
+    "met2.2":   0.25,  # Metal2 spacing (rule 0.14 µm)
+    "mcon.2":   0.25,  # mcon spacing
+    "licon.2":  0.25,  # licon spacing
+    "poly.2":   0.30,  # poly spacing (rule 0.21 µm)
+    "via.2":    0.25,  # via1 spacing
+    "diff/tap.3": 0.30, # diffusion spacing (rule 0.27 µm)
     #
-    # The met1/met2 surround-over-RERAM clauses (foundry COREID-class
-    # waivers, 172 + 64 tiles observed in the 2×2 reference tile per
-    # khalkulo conductor T09 plan) need spatial waivers because the same
-    # rules can fire on user routing far from any RERAM macro.  Their
-    # exact rule IDs are not yet enumerated; add them here when the
-    # first 2×2 DRC run surfaces them, together with passing the
-    # `sky130_fd_pr_reram__reram_cell` instance bboxes via
-    # `run_drc(waiver_footprints=...)` from the consumer's sidecar.
-    "rr1.1",       # ReRAM width ≥ 0.260 µm (sky130B.tech ~line 4498).
-    "rr1.2",       # ReRAM-to-ReRAM spacing ≥ 0.055 µm; touching illegal.
-})
+    # --- CROSS-CELL WELL / IMPLANT / SPECIAL-DIFF SPACING (large margin) ---
+    # These rules can legitimately fire at primitive boundaries inside
+    # stdcells (LV-vs-MV, abutted nwell, etc.). The margin must cover
+    # the worst-case nwell.2a spacing of 1.27 µm.
+    "nwell.2a":  1.50, # nwell spacing (same-potential, 1.27 µm)
+    "nwell.7":   1.50, # dnwell to nwell
+    "dnwell.3":  1.50, # dnwell spacing
+    "diff/tap.15a": 0.50, # MV-vs-MV diffusion spacing at primitive
+                          # boundary inside HV stdcells.
+    "diff/tap.22": 0.50, # LV-vs-MV diffusion spacing
+    "diff/tap.23": 0.50, # — same boundary class
+    "diff/tap.24": 0.50, # N-diff to N-well across primitive boundary
+}
+
+
+# Backward-compat: existing callers reference `_KNOWN_WAIVER_RULES`.
+_KNOWN_WAIVER_RULES: frozenset[str] = frozenset(_WAIVER_RULE_MARGIN_UM.keys())
 
 
 # Rule messages that don't carry a "(id)" suffix but are still foundry
@@ -516,11 +454,25 @@ quit -noprompt
                 )
                 continue
             # Spatial check: only tiles inside a footprint are waivers.
+            # The footprint bbox is expanded by a PER-RULE margin —
+            # width / area / overlap rules use 0 (a violation outside
+            # the primitive bbox is always a real bug), while spacing
+            # rules use a small margin (the violation tile straddles two
+            # polygons, one of which can be at the cell edge).
+            # Composite messages take the MAX margin across components.
+            ids = _extract_rule_ids(msg)
+            if ids:
+                rule_margin = max(
+                    _WAIVER_RULE_MARGIN_UM.get(rid, 0.0) for rid in ids
+                )
+            else:
+                rule_margin = 0.0
             inside_n = 0
             for cx, cy in tiles:
                 hit = False
                 for _name, fx0, fy0, fx1, fy1 in waiver_footprints:
-                    if fx0 <= cx <= fx1 and fy0 <= cy <= fy1:
+                    if (fx0 - rule_margin) <= cx <= (fx1 + rule_margin) and \
+                       (fy0 - rule_margin) <= cy <= (fy1 + rule_margin):
                         hit = True
                         break
                 if hit:

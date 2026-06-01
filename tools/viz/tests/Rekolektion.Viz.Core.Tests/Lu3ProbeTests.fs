@@ -177,6 +177,49 @@ type Lu3Probe(out: ITestOutputHelper) =
                     a1 b1 a2 b2 hasNsdm inNwell)
 
     [<Fact>]
+    member _.``tap_mux_row difftap3 fire at (11420,-365)`` () =
+        // PROBE: 175 nm gap between diff and tap. viz fires
+        // difftap.3 (CrossSpacing diff↔tap, limit 0.27 µm).
+        // Magic doesn't. Find the actual diff and tap polygons
+        // that bound the gap.
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "wl_tap_mux", "tap_mux_row.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        // Widen the target bbox by 600 nm (>> limit 270) to catch
+        // any contributing diff/tap polygon.
+        let target = 10800L, -1000L, 12200L, 500L
+        let (tx1, ty1, tx2, ty2) = target
+        let overlaps (b: int64*int64*int64*int64) =
+            let (x1, y1, x2, y2) = b
+            tx1 < x2 && x1 < tx2 && ty1 < y2 && y1 < ty2
+        let dump label num dt =
+            let polys =
+                flat
+                |> Array.filter (fun p ->
+                    p.Layer = num && p.DataType = dt
+                    && overlaps (bboxOf p))
+                |> Array.sortBy bboxOf
+            out.WriteLine (sprintf "%s (%d/%d): %d" label num dt polys.Length)
+            for p in polys do
+                let (x1, y1, x2, y2) = bboxOf p
+                out.WriteLine (sprintf
+                    "  bbox=(%d,%d,%d,%d) %dx%d src=%s"
+                    x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
+        dump "diff" 65 20
+        dump "tap"  65 44
+        dump "nsdm" 93 44
+        dump "psdm" 94 20
+        dump "nwell" 64 20
+
+    [<Fact>]
     member _.``tap_mux_row psdm vs diff vs nwell at nwell5 fire`` () =
         // PROBE for the F# nwell.5 over-fire on tap_mux_row.
         // Hypothesis: the Enclosure rule checks bbox(psdm) vs

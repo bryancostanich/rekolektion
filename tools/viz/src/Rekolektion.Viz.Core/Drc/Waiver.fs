@@ -248,6 +248,25 @@ let private foundryWaiverMarginNm : Map<string, int64> =
         "diff/tap.22",   500L
         "diff/tap.23",   500L
         "diff/tap.24",   500L
+        // --- F# rule-name aliases ----------------------------------
+        // The F# Rules.allRules table uses Magic-incompatible
+        // slash-less names ("difftap.X") that don't match the
+        // Magic deck's "diff/tap.X" emission. The waiver lookup
+        // is keyed on the F# rule's emitted name, so we need
+        // aliases here for the viz side; Magic-side waiver
+        // (Waiver.waiveByMessage) already operates on the
+        // slash-spelled names extracted from Magic's free-form
+        // message text. PROBE-confirmed on tap_mux_row: 4
+        // n-diff↔p-tap abutments fired viz-only because the
+        // foundry-waiver lookup missed on "difftap.3" while
+        // the corresponding Magic fires were correctly waived
+        // by "diff/tap.3".
+        "difftap.1",    0L     // ≡ diff/tap.1
+        "difftap.2",    0L     // ≡ diff/tap.2
+        "difftap.3",    300L   // ≡ diff/tap.3
+        "difftap.3a",   300L   // viz-only tap-to-tap variant of diff/tap.3
+        "difftap.8a",   0L     // ≡ diff/tap.8 (nwell encloses p-diff)
+        "difftap.9",    0L     // ≡ diff/tap.9
     ]
 
 /// Is this cell name a foundry primitive by our heuristic? Used

@@ -189,6 +189,15 @@ type ViaSegment = {
 /// isn't a known routing layer, or when no PDK rules are
 /// available to size the rectangles.
 ///
+/// **Invariant — full ladder.** The auto-stitcher MUST emit a
+/// metal enclosure pad at EVERY intermediate metal layer in the
+/// stack (not just at the wire's own endpoints). A met3 wire
+/// descending to an li1 pin gets met1, met2 enclosure pads as
+/// well as the via cuts. Downstream consumers (interactive
+/// editor commit, ratlines DRC, magic GDS export) all assume
+/// the ladder is complete; emitting a partial stack silently
+/// fails via.4b / via.5b in magic.
+///
 /// The list includes:
 ///   - One via-cut shape per intermediate via layer (sized from
 ///     the via's `Width` rule).
@@ -202,6 +211,13 @@ type ViaSegment = {
 ///
 /// The wire layer's own pad is NOT emitted here — `Routing.Draft.endpointPads`
 /// already does that at both endpoints.
+///
+/// Filters that run AFTER `emitAt` (e.g. `Pads.dropPadsContainedByForeignPolys`,
+/// `viaCovered` in `Model.Update`) MAY drop individual segments
+/// only when the foreign poly on the corresponding layer already
+/// provides the enclosure-rule-required margins around the via
+/// cut. A filter that drops a pad without an enclosure-rule
+/// check is a bug — it breaks the full-ladder invariant.
 let emitAt
         (view : RulesetView)
         (units : Units)

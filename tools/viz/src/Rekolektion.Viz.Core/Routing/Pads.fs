@@ -141,6 +141,18 @@ let private enclosureRequirementsDbu
 /// adjacent via cut with the DRC-required enclosure) is already
 /// filled by an existing foreign polygon on the SAME layer.
 ///
+/// **Respects `ViaStack.emitAt`'s "full ladder" invariant.** The
+/// auto-stitcher MUST land a metal pad at every intermediate
+/// metal layer in a via stack; a partial ladder silently fails
+/// magic's via.4b / via.5b. This filter is the ONLY mechanism
+/// allowed to remove a pad post-emit, and only when the
+/// enclosure-rule margins are explicitly verified. Adding
+/// containment-only shortcuts here re-opens the b1_5_stage2
+/// silicon-killer (2026-05-31): a primitive met1 strap that
+/// barely contained via1 but failed asym via.4b suppressed the
+/// synthetic enlargement pad and silicon went out with metal
+/// 15 nm shy of the strict-axis enclosure.
+///
 /// Two cases:
 ///
 ///   1. **Pad with a co-centred via cut** (the common case —

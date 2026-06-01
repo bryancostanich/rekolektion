@@ -719,6 +719,10 @@ module Klayout =
         Width   ("m3.1", met3, 0.30)
         Spacing ("m3.2", met3, 0.30)
         MinArea ("m3.6", met3, 0.240)   // 0.240 µm² min area
+        // --- Local interconnect (li1) ---
+        Width   ("li.1", li1,  0.17)
+        Spacing ("li.3", li1,  0.17)
+        MinArea ("li.6", li1,  0.0561)  // 0.17 × 0.33 effective min
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

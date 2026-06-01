@@ -41,19 +41,22 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 9 rules promotable on the KLayout
-diagonal.** Width / Spacing / MinArea on met1, met2, met3.
+**Coverage as of 2026-06-01: 12 rules promotable on the KLayout
+diagonal.** Width / Spacing / MinArea on li1, met1, met2, met3.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
+| `li.1` | OK | FAIL | Width 0.17 µm. ext-Magic fires `li.c1` (core variant) alongside `li.1` on non-COREID geometry → 2 tiles vs F# Magic's 1. Magic-only delta. |
+| `li.3` | OK | FAIL | Spacing 0.17 µm. Same Magic core-vs-peri delta. |
+| `li.6` | OK | FAIL | Min area 0.0561 µm². Same Magic core-vs-peri delta. |
 | `met1.1` | OK | OK | Width 0.14 µm. |
-| `met1.2` | OK | FAIL | Spacing 0.14 µm. F# Magic vs ext-Magic spacing delta — see below. |
+| `met1.2` | OK | FAIL | Spacing 0.14 µm. Magic-side spacing-tile delta — see below. |
 | `met1.6` | OK | OK | Min area 0.083 µm². |
 | `met2.1` | OK | OK | Width 0.14 µm. |
-| `met2.2` | OK | FAIL | Spacing 0.14 µm. Same Magic spacing delta. |
+| `met2.2` | OK | FAIL | Spacing 0.14 µm. Same. |
 | `met2.6` | OK | OK | Min area 0.0676 µm². |
 | `met3.1` | OK | OK | Width 0.30 µm. |
-| `met3.2` | OK | FAIL | Spacing 0.30 µm. Same Magic spacing delta. |
+| `met3.2` | OK | FAIL | Spacing 0.30 µm. Same. |
 | `met3.6` | OK | OK | Min area 0.240 µm². |
 
 **F# Magic spacing delta (informational).** On every Width / Spacing

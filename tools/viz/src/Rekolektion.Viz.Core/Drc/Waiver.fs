@@ -154,45 +154,95 @@ let private foundryPrefixes : string array = [|
     "sky130_fd_"   // SKY130 PDK std cells
 |]
 
-/// Rules that Magic implicitly waives when the violation is
-/// fully internal to a foundry-primitive cell. This is a SUBSET
-/// of `waiverRuleIds` — foundry cells get the contact-packing /
-/// spacing relaxations because the foundry pre-validated those
-/// dimensions, but FUNDAMENTAL rules (min-area, well-spacing,
-/// implant-vs-well interactions) are still checked everywhere.
+/// Rules that Magic implicitly waives when the violation centre
+/// lies inside a foundry-primitive cell footprint, paired with a
+/// per-rule expansion margin (in nm = DBU on SKY130). MUST stay
+/// in sync with `src/rekolektion/verify/drc.py:_WAIVER_RULE_MARGIN_UM`
+/// — `verify_drc` and the viz are two implementations of the
+/// same policy, and divergence is what produces the "the F#
+/// editor reports 200 fires but `verify_drc(full=True)` is clean"
+/// confusion.
 ///
-/// Empirically derived from running Magic on cim_reram and
-/// comparing against viz output. Magic fires met1.6, nwell.2a,
-/// difftap.9 even when the geometry is inside foundry FET
-/// footprints — those rules are NOT in this list. Magic
-/// silently waives mcon.2, licon.2, nsdm.2, psdm.2, poly.7/8,
-/// li.3 in foundry footprints — those ARE.
-let private foundryWaivedRules : Set<string> = Set.ofList [
-    // Contact / via packing — foundry cells pack at the foundry
-    // process minimum, which is below Magic's stock spec.
-    "mcon.1"; "mcon.2"
-    "licon.1"; "licon.2"
-    "via.2"
-    // Implant spacing — foundry cells often abut implants tighter
-    // than user-routing rules require.
-    "nsdm.2"; "psdm.2"
-    // Local interconnect — foundry cells pack li1 tighter than
-    // user routing.
-    "li.1"; "li.3"
-    // Poly endcaps — foundry cell layout uses precise foundry-
-    // measured endcap values, sometimes below stock spec.
-    "poly.7"; "poly.8"
-    // Enclosure rules — foundry contacts/vias use asymmetric
-    // enclosures that the rule deck's "one direction" handling
-    // gets right but our simpler model may not.
-    "licon.5a"; "licon.5c"; "licon.8"
-    "li.5"; "met1.5"; "met2.5"
-    "via.4a"; "via.5a"
-    // Well-overlap-of-implant — foundry cells have
-    // implant patterns that overlap nwell edges in ways the
-    // simpler stock rule mis-reads.
-    "nwell.5"
-]
+/// Width / area / overlap / enclosure rules use a 0 margin —
+/// the violation is contained inside a single polygon, so a
+/// centre point outside the cell footprint is always a real
+/// user-routing bug. Spacing rules use a small margin (≈ rule
+/// minimum × 1.5) because a spacing tile straddles two polygons
+/// and its centre can sit just past the cell edge when one
+/// polygon is at the boundary. Cross-cell well / implant rules
+/// use a large margin so abutted-nwell, LV-vs-MV diffusion, etc.
+/// boundary tiles still classify as waivers.
+let private foundryWaiverMarginNm : Map<string, int64> =
+    Map.ofList [
+        // --- WIDTH / AREA / OVERLAP / ENCLOSURE (margin 0) -----------
+        "li.1",       0L
+        "li.c1",      0L
+        "li.6",       0L
+        "met1.1",     0L
+        "met1.6",     0L
+        "met2.1",     0L
+        "met2.6",     0L
+        "mcon.1",     0L
+        "licon.1",    0L
+        "poly.1a",    0L
+        "diff/tap.1", 0L
+        "diff/tap.2", 0L
+        "diff/tap.8", 0L
+        "diff/tap.9", 0L
+        "nwell.1",    0L
+        "dnwell.2",   0L
+        "poly.4",     0L
+        "poly.5",     0L
+        "poly.7",     0L
+        "poly.8",     0L
+        "poly.11",    0L
+        "licon.5a",   0L
+        "licon.5b",   0L
+        "licon.5c",   0L
+        "licon.7",    0L
+        "licon.8",    0L
+        "licon.8a",   0L
+        "licon.9",    0L
+        "licon.10",   0L
+        "licon.11",   0L
+        "licon.14",   0L
+        "psd.5a",     0L
+        "psd.5b",     0L
+        "psd.10b",    0L
+        "nsd.10b",    0L
+        "psdm.5a",    0L
+        "hvtp.4",     0L
+        "var.1",      0L
+        "var.2",      0L
+        "var.4",      0L
+        "x.2",        0L
+        "met1.5",     0L
+        "met2.4",     0L
+        "met2.5",     0L
+        "via.4a",     0L
+        "via.5a",     0L
+        "met4.2",     0L
+        "rr1.1",      0L
+        "rr1.2",      0L
+        // --- SPACING rules (small per-rule margin) --------------------
+        "li.3",       250L
+        "li.c2",      250L
+        "met1.2",     250L
+        "met2.2",     250L
+        "mcon.2",     250L
+        "licon.2",    250L
+        "poly.2",     300L
+        "via.2",      250L
+        "diff/tap.3", 300L
+        // --- CROSS-CELL WELL / IMPLANT / SPECIAL-DIFF (large margin) -
+        "nwell.2a",     1500L
+        "nwell.7",      1500L
+        "dnwell.3",     1500L
+        "diff/tap.15a",  500L
+        "diff/tap.22",   500L
+        "diff/tap.23",   500L
+        "diff/tap.24",   500L
+    ]
 
 /// Is this cell name a foundry primitive by our heuristic? Used
 /// to decide whether to waive internal DRC violations.
@@ -234,34 +284,41 @@ let collectFoundryFootprints
                 groups.[key] <- bb
     groups.Values |> Array.ofSeq
 
-/// True iff the violation bbox is fully inside at least one
-/// foundry-cell-instance footprint AND every polygon
-/// contributing to the violation is itself authored in a
-/// foundry cell. The dual test avoids the over-suppression bug
-/// where a user-cell polygon (e.g. a met1 fragment in
-/// `lshift_1v8_to_3v3`) coincidentally falls inside a foundry
-/// FET footprint and would be wrongly waived by bbox alone.
+/// True iff the violation tile centre lies inside at least one
+/// foundry-cell-instance footprint, optionally expanded by the
+/// rule's per-rule margin. Matches Magic's cell-scope DRC
+/// semantics at instantiation: the foundry cell's internal
+/// geometry is pre-validated once when the cell was designed
+/// and not re-checked at every instantiation site.
 ///
-/// `contributingPolys` is the list of input polygons whose
-/// bbox overlaps the violation bbox. The caller assembles it
-/// from the same flat array the check ran on.
+/// Algorithm matches `src/rekolektion/verify/drc.py` line 466-489
+/// EXACTLY:
+///   1. Look up the rule name in `foundryWaiverMarginNm`. Rule
+///      not in the table → never waive (real error).
+///   2. Compute the violation's centre `(cx, cy)`.
+///   3. For each footprint `(fx0, fy0, fx1, fy1)`, check if
+///      `(fx0 - margin) ≤ cx ≤ (fx1 + margin)` and likewise on Y.
+///      Any hit → waive.
+///
+/// `contributingPolys` is retained in the signature for callers
+/// that already assemble it but is no longer consulted — the
+/// margin-expanded centre-point test is sufficient for the
+/// foundry-cell scope semantics and matches `verify_drc`'s
+/// production tape-out path.
 let isFoundryWaived
         (foundryFootprints: (int64 * int64 * int64 * int64) array)
         (ruleName: string)
-        (violationBbox: int64 * int64 * int64 * int64)
-        (contributingPolys: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
+        ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
+        (_contributingPolys: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
         : bool =
-    if not (foundryWaivedRules.Contains ruleName) then false
-    elif foundryFootprints.Length = 0 then false
-    elif not (bboxFullyInside violationBbox foundryFootprints) then false
-    elif contributingPolys.Length = 0 then
-        // No identifiable contributing polys (e.g. a Region-
-        // morphology violation where the input geometry isn't
-        // tracked back to specific polys). Fall back to the
-        // bbox-only check — the violation falls inside a
-        // foundry footprint AND the rule is in the foundry-
-        // waiver list, so most likely waive-worthy.
-        true
-    else
-        contributingPolys
-        |> Array.forall (fun p -> isFoundryCell p.SourceStructure)
+    match Map.tryFind ruleName foundryWaiverMarginNm with
+    | None -> false
+    | Some margin ->
+        if foundryFootprints.Length = 0 then false
+        else
+            let cx = (bx1 + bx2) / 2L
+            let cy = (by1 + by2) / 2L
+            foundryFootprints
+            |> Array.exists (fun (fx0, fy0, fx1, fy1) ->
+                (fx0 - margin) <= cx && cx <= (fx1 + margin)
+                && (fy0 - margin) <= cy && cy <= (fy1 + margin))

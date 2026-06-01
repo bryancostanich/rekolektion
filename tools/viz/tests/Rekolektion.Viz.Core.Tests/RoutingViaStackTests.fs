@@ -82,3 +82,31 @@ let ``padSideForVia met1 via1 returns 320 nm (via.4b)`` () =
 let ``padSideForVia met2 via1 returns 320 nm (via.5b)`` () =
     ViaStack.padSideForVia Rules.defaultView testUnits met2 via1
     |> should equal (Some 320L)
+
+[<Fact>]
+let ``emitAt same layer (li1 -> li1) returns empty`` () =
+    // Sanity guard: a li1 wire snapping onto a li1 pin has no via
+    // stack to emit. `between li1 li1` is empty, so the whole stack
+    // collapses — including any candidate snap pad.
+    ViaStack.emitAt Rules.defaultView testUnits li1 li1 0L 0L
+    |> should be Empty
+
+[<Fact>]
+let ``emitAt li1 wire -> met1 snap emits one snap-pad on met1 and one mcon cut`` () =
+    // Document the current (knuckle-emitting) behavior so the dropPads
+    // filter that follows can be tested against a realistic input. wire
+    // is on li1, snap target is on met1 — same direction as the
+    // tap_mux_input_inv bottom VSS route the user flagged
+    // (2026-05-31).
+    let segs =
+        ViaStack.emitAt Rules.defaultView testUnits met1 li1 397L -1130L
+    // mcon cut on (67, 44).
+    segs
+    |> List.exists (fun s -> s.Layer = mcon)
+    |> should equal true
+    // Synthetic met1 snap-pad on (68, 20) — this is the "knuckle"
+    // the foreign-poly filter is meant to suppress when the rail
+    // itself already encloses the mcon.
+    segs
+    |> List.exists (fun s -> s.Layer = met1)
+    |> should equal true

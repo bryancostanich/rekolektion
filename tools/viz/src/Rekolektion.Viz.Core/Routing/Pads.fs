@@ -2,6 +2,7 @@ module Rekolektion.Viz.Core.Routing.Pads
 
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Drc.Rules
+open Rekolektion.Viz.Core.Layout.Flatten
 
 /// Compute the side length (in DBU) of a square endpoint pad for
 /// the given routing layer, driven by the view's DRC rules.
@@ -94,6 +95,109 @@ let wireWidthFor
         | Width (_, l, m) when l.Number = layerNum && l.DataType = layerDt ->
             Some (int64 (m / umPerDbu))
         | _ -> None)
+
+/// Drop synthetic metal-pad segments whose role (enclosing an
+/// adjacent via cut for DRC) is already filled by an existing
+/// foreign polygon on the SAME layer.
+///
+/// A synthetic pad (emitted by `ViaStack.emitAt` for the snap-layer
+/// or intermediate metal layers) exists ONLY to give a co-located
+/// via cut the metal enclosure DRC demands. When the caller is
+/// snapping onto an EXISTING foreign polygon that already fully
+/// contains the via cut's bbox, the pad is redundant geometry —
+/// a "knuckle" stacked on top of the foreign poly.
+///
+/// The semantic is "foreign poly encloses the via cut," not
+/// "foreign poly encloses the pad." The pad itself is sized for
+/// the strictest enclosure rule and may stick a few nm past a
+/// foreign poly that nonetheless encloses the via cut cleanly
+/// (concrete: tap_mux_input_inv.rkt VSS rail is 260 nm tall, the
+/// synthetic met1 pad is 290 nm tall — pad sticks 15 nm proud, but
+/// the underlying 170 nm mcon fits 45 nm inside the rail on each
+/// Y side).
+///
+/// Via cuts (mcon, via, via2…) are NEVER dropped: they are the
+/// physical layer transition, not enclosure. Removing the cut
+/// would electrically break the route even if the foreign poly
+/// visually covers it.
+///
+/// Pad ↔ via-cut pairing is by COINCIDENT CENTRE: `emitAt` builds
+/// both the pad and the via cut around the same `(cx, cy)`.
+///
+/// Containment uses the foreign poly's bounding rectangle (not
+/// arbitrary-polygon containment). False-negatives keep the pad,
+/// which is the safe direction; all current foreign polys that
+/// matter (parent-painted rails, primitive pin straps) are
+/// rectangular.
+///
+/// User report: tap_mux_input_inv.rkt bottom VSS route (2026-05-31).
+let dropPadsContainedByForeignPolys
+        (foreignPolys : FlatPolygon array)
+        (segments : Draft.DraftSegment list)
+        : Draft.DraftSegment list =
+    if Array.isEmpty foreignPolys then segments
+    else
+    let polyBbox (p : FlatPolygon) : int64 * int64 * int64 * int64 =
+        let mutable xMin = System.Int64.MaxValue
+        let mutable yMin = System.Int64.MaxValue
+        let mutable xMax = System.Int64.MinValue
+        let mutable yMax = System.Int64.MinValue
+        for pt in p.Points do
+            if pt.X < xMin then xMin <- pt.X
+            if pt.X > xMax then xMax <- pt.X
+            if pt.Y < yMin then yMin <- pt.Y
+            if pt.Y > yMax then yMax <- pt.Y
+        (xMin, yMin, xMax, yMax)
+    let centreOf (s : Draft.DraftSegment) : int64 * int64 =
+        ((s.X1 + s.X2) / 2L, (s.Y1 + s.Y2) / 2L)
+    let segBboxContained (sx1 : int64) (sy1 : int64)
+                         (sx2 : int64) (sy2 : int64)
+                         (layer : int * int) : bool =
+        let (sn, sd) = layer
+        foreignPolys
+        |> Array.exists (fun p ->
+            if p.Layer <> sn || p.DataType <> sd then false
+            elif p.Points.Length = 0 then false
+            else
+                let (xMin, yMin, xMax, yMax) = polyBbox p
+                sx1 >= xMin && sx2 <= xMax
+                && sy1 >= yMin && sy2 <= yMax)
+    // Index via cuts by their centre so each metal pad can find
+    // its paired cut in O(N) per pad.  Same-centre = paired by
+    // construction (emitAt builds both around (cx, cy)).
+    let viaCutsByCentre : Map<int64 * int64, Draft.DraftSegment list> =
+        segments
+        |> List.filter (fun s -> ViaStack.isViaOrContactLayer s.Layer)
+        |> List.groupBy centreOf
+        |> Map.ofList
+    let segDropped (s : Draft.DraftSegment) : bool =
+        if ViaStack.isViaOrContactLayer s.Layer then false
+        else
+            // Strict bbox-subset case (kept for parent-paint pads
+            // and any pad whose own bbox is already a subset of a
+            // foreign poly — handles the same-bbox edge case and
+            // intermediate-metal pads minted alongside an existing
+            // foreign poly without needing a via cut pairing).
+            let sx1 = min s.X1 s.X2
+            let sy1 = min s.Y1 s.Y2
+            let sx2 = max s.X1 s.X2
+            let sy2 = max s.Y1 s.Y2
+            let padContained = segBboxContained sx1 sy1 sx2 sy2 s.Layer
+            if padContained then true
+            else
+                // Looser case: a foreign poly fully encloses the
+                // via cut this pad was sized for.  Pair by
+                // coincident centre.
+                match Map.tryFind (centreOf s) viaCutsByCentre with
+                | None -> false
+                | Some cuts ->
+                    cuts |> List.exists (fun v ->
+                        let vx1 = min v.X1 v.X2
+                        let vy1 = min v.Y1 v.Y2
+                        let vx2 = max v.X1 v.X2
+                        let vy2 = max v.Y1 v.Y2
+                        segBboxContained vx1 vy1 vx2 vy2 s.Layer)
+    segments |> List.filter (not << segDropped)
 
 /// Min same-layer spacing (DBU) for a routing layer from its
 /// `Spacing` rule. The walk-around adds this to half-wire-width to

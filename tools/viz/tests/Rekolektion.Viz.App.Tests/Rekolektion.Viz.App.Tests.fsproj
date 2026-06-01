@@ -21,6 +21,7 @@
     <Compile Include="SessionStateTests.fs" />
     <Compile Include="TabSwitchRatlinesTests.fs" />
     <Compile Include="UpdateTests.fs" />
+    <Compile Include="RoutingForeignPolyFilterTests.fs" />
     <Compile Include="RoutedSaveTests.fs" />
     <Compile Include="RecentsTests.fs" />
     <Compile Include="RekolektionCliTests.fs" />

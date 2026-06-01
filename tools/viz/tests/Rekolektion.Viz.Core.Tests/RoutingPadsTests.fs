@@ -145,3 +145,158 @@ let ``endpointPads emits nothing when padSide is zero or negative`` () =
     let r = Draft.start met1Key 320L (0L, 0L)
     Draft.endpointPads 0L r |> should be Empty
     Draft.endpointPads -1L r |> should be Empty
+
+// --- dropPadsContainedByForeignPolys ----------------------------------
+//
+// Synthetic enclosure pads (the snap-layer pad from `ViaStack.emitAt`,
+// plus any future snap-side pad on the wire's own layer) exist only to
+// give an adjacent via the metal enclosure DRC demands. When the
+// caller is snapping onto an EXISTING foreign polygon that is itself
+// big enough to enclose the via cut by the DRC rule, the synthetic
+// pad is redundant geometry — a "knuckle" stacked on top of the
+// foreign poly.
+//
+// User report (tap_mux_input_inv.rkt, 2026-05-31): the bottom VSS
+// route is a li1 wire dropping into the parent VSS rail on met1. The
+// rail covers 1995 × 260 µm; the mcon cut is 170 × 170 nm centered
+// inside it. The synthetic met1 snap-pad emitted by `ViaStack.emitAt`
+// stacks a 290 × 290 nm square on top of the rail — visible as the
+// "knuckle".
+//
+// The filter is restricted to pad-shaped segments (metal layers); via
+// cuts (mcon, via, via2…) are NEVER dropped because the via is the
+// physical layer transition. Removing the cut would leave the
+// connection electrically broken even if the foreign poly is wide
+// enough to LOOK like enclosure.
+
+let private li1Key  : int * int = (67, 20)
+let private mconKey : int * int = (67, 44)
+
+let private foreignPoly (layer : int * int) (x1 : int64) (y1 : int64) (x2 : int64) (y2 : int64)
+        : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon =
+    {
+        Layer = fst layer
+        DataType = snd layer
+        Points = [|
+            { X = x1; Y = y1 }
+            { X = x2; Y = y1 }
+            { X = x2; Y = y2 }
+            { X = x1; Y = y2 }
+            { X = x1; Y = y1 }
+        |]
+        SourceStructure = "test"
+        SourceIndex = 0
+        TopInstanceIndex = None
+    }
+
+let private padSeg (layer : int * int) (x1 : int64) (y1 : int64) (x2 : int64) (y2 : int64)
+        : Draft.DraftSegment =
+    { Layer = layer; X1 = x1; Y1 = y1; X2 = x2; Y2 = y2 }
+
+[<Fact>]
+let ``dropPadsContainedByForeignPolys with no foreign polys returns input unchanged`` () =
+    let segs = [ padSeg met1Key -145L -145L 145L 145L ]
+    Pads.dropPadsContainedByForeignPolys [||] segs
+    |> should equal segs
+
+[<Fact>]
+let ``met1 pad fully inside a met1 foreign poly is dropped`` () =
+    // Mirrors the tap_mux_input_inv VSS case: huge met1 rail covers
+    // the entire mcon footprint, so the synthetic 290-nm met1
+    // snap-pad is redundant.
+    let rail = foreignPoly met1Key -600L -1260L 1395L -1000L
+    let pad  = padSeg met1Key 252L -1275L 542L -985L
+    // Pad's Y extends past rail's Y on both ends (-1275 < -1260, -985 > -1000)
+    // — NOT fully contained. Use a pad inside rail:
+    let pad' = padSeg met1Key 252L -1255L 542L -1005L
+    Pads.dropPadsContainedByForeignPolys [| rail |] [ pad' ]
+    |> should be Empty
+
+[<Fact>]
+let ``met1 pad sticking past the rail with NO paired via cut is kept`` () =
+    // Pad sticks past the rail and there's no co-centered via cut
+    // in the batch to test against. The filter can't prove the
+    // pad's role is redundant → keep.
+    let rail = foreignPoly met1Key -600L -1260L 1395L -1000L
+    let pad  = padSeg met1Key 252L -1275L 542L -985L
+    Pads.dropPadsContainedByForeignPolys [| rail |] [ pad ]
+    |> should equal [ pad ]
+
+[<Fact>]
+let ``met1 pad sticking past the rail IS dropped when its paired mcon fits inside the rail`` () =
+    // The actual user case (tap_mux_input_inv): the rail is narrow
+    // (260 nm Y) so the 290 nm synthetic pad sticks 15 nm proud on
+    // each Y side. But the 170 nm mcon at the same centre fits
+    // cleanly inside the rail — so the rail provides legal
+    // enclosure on its own and the pad is redundant.
+    let rail = foreignPoly met1Key -600L -1260L 1395L -1000L
+    let pad  = padSeg met1Key 252L -1275L 542L -985L    // sticks past
+    let mcon = padSeg mconKey 312L -1215L 482L -1045L   // inside rail
+    let result = Pads.dropPadsContainedByForeignPolys [| rail |] [ pad; mcon ]
+    // Pad dropped, mcon kept.
+    result |> List.exists (fun s -> s.Layer = met1Key) |> should equal false
+    result |> List.exists (fun s -> s.Layer = mconKey) |> should equal true
+
+[<Fact>]
+let ``met1 pad is kept when paired mcon also sticks past the foreign poly`` () =
+    // Negative control: rail too narrow to enclose the mcon. The
+    // pad is genuinely needed to top up the enclosure on the
+    // exposed sides.
+    let narrowRail = foreignPoly met1Key -600L -1180L 1395L -1080L
+    let pad  = padSeg met1Key 252L -1275L 542L -985L
+    let mcon = padSeg mconKey 312L -1215L 482L -1045L   // sticks past narrowRail
+    let result = Pads.dropPadsContainedByForeignPolys [| narrowRail |] [ pad; mcon ]
+    result |> List.exists (fun s -> s.Layer = met1Key) |> should equal true
+    result |> List.exists (fun s -> s.Layer = mconKey) |> should equal true
+
+[<Fact>]
+let ``mcon CUT is never dropped, even when fully inside a met1 foreign poly`` () =
+    // The mcon is the layer transition itself — dropping it would
+    // electrically break the route. Only pad-shaped (metal-layer)
+    // segments are eligible for suppression.
+    let rail = foreignPoly met1Key -600L -1260L 1395L -1000L
+    let mcon = padSeg mconKey 312L -1215L 482L -1045L
+    Pads.dropPadsContainedByForeignPolys [| rail |] [ mcon ]
+    |> should equal [ mcon ]
+
+[<Fact>]
+let ``met1 pad inside a met2 foreign poly is kept (layer mismatch)`` () =
+    // Cross-layer containment is irrelevant — a met2 poly above
+    // cannot provide met1's enclosure of via1.
+    let met2Poly = foreignPoly met2Key -600L -1260L 1395L -1000L
+    let pad      = padSeg met1Key 252L -1255L 542L -1005L
+    Pads.dropPadsContainedByForeignPolys [| met2Poly |] [ pad ]
+    |> should equal [ pad ]
+
+[<Fact>]
+let ``li1 pad inside a li1 foreign poly is dropped`` () =
+    // Same principle for li1 — a fat parent-painted li1 strap
+    // already encloses the mcon, so the synthetic li1 snap-pad
+    // is redundant (mirrors the noPadLayers logic for the wire
+    // endpoint, but covers the cross-layer snap-pad emission path).
+    let strap = foreignPoly li1Key 0L 0L 1000L 1000L
+    let pad   = padSeg li1Key 100L 100L 400L 400L
+    Pads.dropPadsContainedByForeignPolys [| strap |] [ pad ]
+    |> should be Empty
+
+[<Fact>]
+let ``mixed segments — strict-contained pad AND pad-paired-with-contained-cut both drop`` () =
+    let rail = foreignPoly met1Key -600L -1260L 1395L -1000L
+    let containedPad   = padSeg met1Key 252L -1255L 542L -1005L  // drop (strict bbox)
+    let exposedPad     = padSeg met1Key 252L -1275L 542L -985L   // drop (paired mcon inside)
+    let mcon           = padSeg mconKey 312L -1215L 482L -1045L  // keep (via cut)
+    let otherLayerPad  = padSeg li1Key  100L 100L 400L 400L      // keep (no matching foreign)
+    let input = [ containedPad; exposedPad; mcon; otherLayerPad ]
+    Pads.dropPadsContainedByForeignPolys [| rail |] input
+    |> should equal [ mcon; otherLayerPad ]
+
+[<Fact>]
+let ``identical bbox (foreign equals pad) counts as contained → pad dropped`` () =
+    // Edge case: foreign poly's bbox is exactly the pad's bbox. The
+    // pad adds no metal beyond what the foreign already provides
+    // (and is a byte-identical duplicate that dedupCoincidentRects
+    // would also collapse).
+    let rail = foreignPoly met1Key 0L 0L 290L 290L
+    let pad  = padSeg met1Key 0L 0L 290L 290L
+    Pads.dropPadsContainedByForeignPolys [| rail |] [ pad ]
+    |> should be Empty

@@ -164,6 +164,58 @@ let private appendRectsToTop
                         { c with Elements = c.Elements @ newEls })
             { doc with Cells = cells' }
 
+/// True when the draft's straight-line tentative path crosses a
+/// foreign obstacle. The validation gate in `commitRouteWith` calls
+/// this only when `d.Cursor.IsSome && List.isEmpty d.Auto` — i.e.,
+/// the walk-around hasn't loaded a detour yet, so `finishSegments`
+/// will emit a straight line from last-fixed-point to cursor.
+///
+/// When true, `commitRouteWith` aborts and keeps the draft alive so
+/// the BG walkaround retry can produce a valid path. The user sees
+/// the straight-line preview and waits for the detour to appear.
+let private commitBlockedByObstacles
+        (model: Model.Model)
+        (d: Routing.Draft.DraftRoute)
+        : bool =
+    match model.ActiveMacroPath |> Option.bind (fun p ->
+        model.OpenMacros |> List.tryFind (fun m -> m.Path = p)) with
+    | None -> false
+    | Some mc ->
+        let layerKey =
+            { Routing.Obstacles.Number = fst d.Layer
+              Routing.Obstacles.DataType = snd d.Layer }
+        let netIdx = Routing.Obstacles.buildNetIndex mc.Nets
+        let obsSet =
+            Routing.Obstacles.obstacleSet layerKey d.StartNet netIdx mc.FlatPolygons
+        let obsPolys = Routing.Obstacles.polygonsOf obsSet
+        let spacing =
+            Routing.Pads.spacingFor model.DrcView mc.Document.Units d.Layer
+            |> Option.defaultValue 0L
+        let clearance = max 0L (d.Width / 2L + spacing)
+        let expanded =
+            obsPolys
+            |> Array.map (fun fp ->
+                let mutable xMin = System.Int64.MaxValue
+                let mutable yMin = System.Int64.MaxValue
+                let mutable xMax = System.Int64.MinValue
+                let mutable yMax = System.Int64.MinValue
+                for pt in fp.Points do
+                    if pt.X < xMin then xMin <- pt.X
+                    if pt.X > xMax then xMax <- pt.X
+                    if pt.Y < yMin then yMin <- pt.Y
+                    if pt.Y > yMax then yMax <- pt.Y
+                { Routing.VisibilityGraph.XMin = xMin - clearance
+                  Routing.VisibilityGraph.YMin = yMin - clearance
+                  Routing.VisibilityGraph.XMax = xMax + clearance
+                  Routing.VisibilityGraph.YMax = yMax + clearance })
+        let ptPath =
+            (d.Points @ d.Auto @ [d.Cursor.Value])
+            |> List.map (fun (x, y) ->
+                { Routing.VisibilityGraph.X = x
+                  Routing.VisibilityGraph.Y = y })
+        let crossings = Routing.PathCheck.crossings ptPath expanded
+        not (List.isEmpty crossings)
+
 /// Shared commit machinery for RouteFinish and RouteStop. Picks
 /// the segment set via `getSegs` (`Draft.finishSegments` for the
 /// commit-tentative path, `Draft.fixedSegments` for the stop-at-
@@ -182,6 +234,23 @@ let private commitRouteWith
         if List.isEmpty segs then
             { model with DraftRoute = None }, Cmd.none
         else
+            // ---- Validation gate (silicon-killer guard) ----
+            // When `r.Auto` is empty and a cursor exists, the
+            // tentative path is a straight line from the last fixed
+            // point to the cursor.  If a foreign obstacle lies in
+            // between, the walk-around router hasn't had time to
+            // compute a detour, and `finishSegments` would emit a
+            // rect crossing that obstacle — a physical short.
+            //
+            // See `HANDOFF_routing_silicon_killer.md` for the
+            // complete root-cause analysis.
+            let blocked =
+                match d.Cursor with
+                | Some _ when List.isEmpty d.Auto ->
+                    commitBlockedByObstacles model d
+                | _ -> false
+            if blocked then model, Cmd.none
+            else
             match model.ActiveMacroPath with
             | None -> { model with DraftRoute = None }, Cmd.none
             | Some path ->
@@ -279,13 +348,39 @@ let private commitRouteWith
                                         cx >= xMin && cx <= xMax
                                         && cy >= yMin && cy <= yMax)
                             let viaCovered (v: Routing.Draft.DraftSegment) : bool =
-                                let cx = (v.X1 + v.X2) / 2L
-                                let cy = (v.Y1 + v.Y2) / 2L
-                                centreCoveredAt v.Layer cx cy
+                                // Only suppress via/contact CUT layers (66/44, 67/44,
+                                // 68/44, 69/44, etc.) — NOT intermediate metal pads
+                                // (68/20, 69/20, etc.).  The metal pads provide DRC-
+                                // required enclosure for the via (met1 pad around
+                                // via1 cut = via.4 / via.5 enclosure).  Suppressing
+                                // the metal pad because its center falls inside an
+                                // existing pin poly leaves the via cut with no
+                                // enclosure → DRC via.4a/via.5a violation.
+                                if not (Routing.ViaStack.isViaOrContactLayer v.Layer) then false
+                                else
+                                    let cx = (v.X1 + v.X2) / 2L
+                                    let cy = (v.Y1 + v.Y2) / 2L
+                                    centreCoveredAt v.Layer cx cy
                             let startVias = startVias |> List.filter (not << viaCovered)
                             let endVias   = endVias   |> List.filter (not << viaCovered)
                             let pads      = pads      |> List.filter (not << viaCovered)
-                            let allSegs = pads @ segs @ startVias @ endVias
+                            // Drop synthetic metal pads whose role
+                            // (enclosing the co-centred via cut) is
+                            // already filled by an existing foreign
+                            // poly on the same layer. Targets the
+                            // ViaStack snap-pad knuckle (user report
+                            // tap_mux_input_inv.rkt 2026-05-31): a
+                            // li1 wire dropping into a wide met1
+                            // VSS rail emits a 290 nm met1 pad on
+                            // top of the rail even though the rail
+                            // already encloses the 170 nm mcon.
+                            // Filter runs on the full batch so pads
+                            // can pair with their via cuts by
+                            // coincident centre.
+                            let allSegs =
+                                pads @ segs @ startVias @ endVias
+                                |> Routing.Pads.dropPadsContainedByForeignPolys
+                                    mc.FlatPolygons
                             // Stamp every rect in this commit with
                             // the same WireId — the wire and its
                             // endpoint pads are one editable unit.

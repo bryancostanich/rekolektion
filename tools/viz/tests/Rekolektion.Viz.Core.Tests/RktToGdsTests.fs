@@ -30,7 +30,7 @@ let ``Poly becomes Boundary with point list preserved`` () =
         Comments = []
         SubFormComments = Map.empty
     }
-    let b = ToGds.polyToBoundary p
+    let b = ToGds.polyToBoundary 5L p
     b.Layer |> should equal 68
     b.DataType |> should equal 20
     b.Points |> List.length |> should equal 5
@@ -47,7 +47,7 @@ let ``Path width and points preserved`` () =
         Comments = []
         SubFormComments = Map.empty
     }
-    let g = ToGds.pathToGds p
+    let g = ToGds.pathToGds 5L p
     g.Width |> should equal 170
     g.Layer |> should equal 67
 
@@ -63,7 +63,7 @@ let ``SRef preserves origin and orientation`` () =
         Comments = []
         SubFormComments = Map.empty
     }
-    let g = ToGds.srefToGds s
+    let g = ToGds.srefToGds 5L s
     g.StructureName |> should equal "bitcell"
     g.Origin |> should equal { Gds.Types.X = 100L; Gds.Types.Y = 200L }
     g.Angle |> should equal 90.0
@@ -85,7 +85,7 @@ let ``ARef preserves rows cols pitches`` () =
         Comments = []
         SubFormComments = Map.empty
     }
-    let g = ToGds.arefToGds a
+    let g = ToGds.arefToGds 5L a
     g.Cols |> should equal 64
     g.Rows |> should equal 1
     g.ColPitch |> should equal { Gds.Types.X = 10L; Gds.Types.Y = 0L }
@@ -103,7 +103,7 @@ let ``Port emits one geometry element and one text label`` () =
         Comments = []
         SubFormComments = Map.empty
     }
-    let elements = ToGds.portToGds p
+    let elements = ToGds.portToGds 5L p
     elements |> List.length |> should equal 2
     let hasBoundary = elements |> List.exists (function Gds.Types.Boundary _ -> true | _ -> false)
     let hasText = elements |> List.exists (function Gds.Types.Text _ -> true | _ -> false)
@@ -115,7 +115,7 @@ let ``PropsEl drops from output`` () =
     let p : Props =
         { Items = [ { Key = "k"; Value = PvAtom "v" } ]
           Comments = []; SubFormComments = Map.empty }
-    ToGds.elementToGds (PropsEl p) |> should be Empty
+    ToGds.elementToGds 5L (PropsEl p) |> should be Empty
 
 // ─── Round-trip via OfGds ───────────────────────────────────────────────
 
@@ -249,3 +249,113 @@ let ``unknown layer passes through to GDS and back intact`` () =
     match cell.Elements with
     | [ PolyEl p ] -> p.Layer |> should equal (Unknown (1234, 56))
     | _ -> failwith "expected one poly"
+
+// ─── Grid snap (Track 01) ────────────────────────────────────────────────
+
+[<Fact>]
+let ``off-grid rect corners snap on to-gds`` () =
+    let doc : Document = {
+        emptyDocument with
+            Cells = [
+                { Name = "c"
+                  Meta = None
+                  Comments = []
+                  SubFormComments = Map.empty
+                  Elements = [
+                      RectEl {
+                          Layer = Named ("sky130", "met1")
+                          X1 = 173L; Y1 = 0L
+                          X2 = 1000L; Y2 = 500L
+                          Net = None
+                          Props = []
+                          Comments = []
+                          SubFormComments = Map.empty
+                      }
+                  ] }
+            ]
+    }
+    let lib = ToGds.toLibrary doc
+    let struct1 = lib.Structures |> List.head
+    match struct1.Elements |> List.head with
+    | Gds.Types.Boundary b ->
+        // 173 → 175; other corners stay put because they're already
+        // on the 5-nm grid.
+        let xs = b.Points |> List.map (fun p -> p.X) |> Set.ofList
+        let ys = b.Points |> List.map (fun p -> p.Y) |> Set.ofList
+        xs |> should equal (Set.ofList [ 175L; 1000L ])
+        ys |> should equal (Set.ofList [ 0L; 500L ])
+    | _ -> failwith "expected Boundary"
+
+[<Fact>]
+let ``off-grid sref origin snaps`` () =
+    let doc : Document = {
+        emptyDocument with
+            Cells = [
+                { Name = "c"
+                  Meta = None
+                  Comments = []
+                  SubFormComments = Map.empty
+                  Elements = [
+                      SRefEl {
+                          Cell = "leaf"
+                          Origin = { X = 173L; Y = -2917L }
+                          Rot = 0.0; Mag = 1.0; Reflect = false
+                          Props = []; Comments = []
+                          SubFormComments = Map.empty
+                      }
+                  ] }
+            ]
+    }
+    let lib = ToGds.toLibrary doc
+    let struct1 = lib.Structures |> List.head
+    match struct1.Elements |> List.head with
+    | Gds.Types.SRef s ->
+        // 173 → 175; -2917 → -2915 (half-away-from-zero, symmetric).
+        s.Origin.X |> should equal 175L
+        s.Origin.Y |> should equal -2915L
+    | _ -> failwith "expected SRef"
+
+[<Fact>]
+let ``off-grid label origin snaps`` () =
+    let doc : Document = {
+        emptyDocument with
+            Cells = [
+                { Name = "c"
+                  Meta = None
+                  Comments = []
+                  SubFormComments = Map.empty
+                  Elements = [
+                      LabelEl {
+                          Layer = Named ("sky130", "met1_label")
+                          Text = "VSS"
+                          Origin = { X = 173L; Y = 7L }
+                          Class = None
+                          Props = []; Comments = []
+                          SubFormComments = Map.empty
+                          IsInternal = false
+                          Kind = NetName
+                      }
+                  ] }
+            ]
+    }
+    let lib = ToGds.toLibrary doc
+    let struct1 = lib.Structures |> List.head
+    match struct1.Elements |> List.head with
+    | Gds.Types.Text t ->
+        t.Origin.X |> should equal 175L
+        t.Origin.Y |> should equal 5L
+    | _ -> failwith "expected Text"
+
+[<Fact>]
+let ``unknown PDK fails loudly on toLibrary`` () =
+    let doc : Document = {
+        emptyDocument with
+            Pdk = "not_a_real_pdk"
+            Cells = [
+                { Name = "c"; Meta = None
+                  Comments = []; SubFormComments = Map.empty
+                  Elements = [] }
+            ]
+    }
+    (fun () -> ToGds.toLibrary doc |> ignore)
+    |> should throw typeof<System.Exception>

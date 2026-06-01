@@ -9,6 +9,7 @@
     <PackageReference Include="YamlDotNet" Version="16.2.0" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Tech.fs" />
     <Compile Include="Gds/Types.fs" />
     <Compile Include="Mag/Types.fs" />
     <Compile Include="Mag/LayerMap.fs" />

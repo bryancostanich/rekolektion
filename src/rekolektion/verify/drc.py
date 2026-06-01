@@ -232,6 +232,7 @@ def run_drc(
     output_dir: str | Path | None = None,
     waiver_footprints: list[tuple[str, float, float, float, float]] | None = None,
     allow_global_waivers: bool = False,
+    full: bool = False,
 ) -> DRCResult:
     """Run Magic DRC on a GDS file.
 
@@ -265,6 +266,14 @@ def run_drc(
             footprints would equal the macro bbox.  When False
             (default), `waiver_footprints=None` means NO waivers
             at all (every known-waiver-rule tile counts as real).
+        full: when True, run `drc style drc(full)` before
+            `drc catchup` — switches Magic to the sign-off rule set
+            (latch-up LU.2/LU.3, implant-aware diff/tap.9 + licon.9,
+            nwell.4 connectivity, etc.). Default False uses
+            whatever style the magicrc loads (fast geometry-only
+            check), which is enough for most iteration but misses
+            sign-off rules. Slower — typically 2-5× on opamp-sized
+            cells, more on full macros — so opt in per call.
 
     Returns:
         DRCResult with error count and details.
@@ -315,6 +324,7 @@ box grow n 2000
 box grow s 2000
 box grow e 2000
 box grow w 2000
+{"drc style drc(full)" if full else ""}
 drc catchup
 set why_list [drc listall why]
 

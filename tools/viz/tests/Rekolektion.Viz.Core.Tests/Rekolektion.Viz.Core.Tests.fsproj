@@ -62,6 +62,7 @@
     <Compile Include="MagicVsVizDrcTests.fs" />
     <Compile Include="BiasGenLi3ProbeTests.fs" />
     <Compile Include="OpampDiffTap3ProbeTests.fs" />
+    <Compile Include="BiasGenPsdm2ProbeTests.fs" />
     <Compile Include="RoutingPathCheckTests.fs" />
     <Compile Include="RoutingWalkAroundTests.fs" />
     <Compile Include="RoutingCommitGateTests.fs" />

@@ -177,6 +177,126 @@ type Lu3Probe(out: ITestOutputHelper) =
                     a1 b1 a2 b2 hasNsdm inNwell)
 
     [<Fact>]
+    member _.``b1_5_stage1 waiver decision for mcon.2 gap bbox`` () =
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "column_readout_chain", "b1_5_stage1.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path); ()
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let footprints = Rekolektion.Viz.Core.Drc.Waiver.collectFoundryFootprints flat
+        // The viz-side rule would emit BboxA = gap region between
+        // mcons (1470,-1440,1640,-1270) and (1740,-1386,1910,-1216),
+        // which is (1640, -1386, 1740, -1270) (X gap, Y overlap).
+        let gapBb = 1640L, -1386L, 1740L, -1270L
+        let waived =
+            Rekolektion.Viz.Core.Drc.Waiver.isFoundryWaived
+                footprints "mcon.2" gapBb [||]
+        let (cx, cy) = (1640L+1740L)/2L, (-1386L + -1270L)/2L
+        out.WriteLine (sprintf
+            "gap bbox=(1640,-1386,1740,-1270), center=(%d,%d)" cx cy)
+        out.WriteLine (sprintf "isFoundryWaived(mcon.2)=%b" waived)
+        // Dump nearby foundry footprints (anything within 1500 nm of
+        // the center) to see what's bounding the waiver decision.
+        out.WriteLine "footprints within 1500 nm of center:"
+        for (fx0, fy0, fx1, fy1) in footprints do
+            let dx =
+                if cx < fx0 then fx0 - cx
+                elif cx > fx1 then cx - fx1
+                else 0L
+            let dy =
+                if cy < fy0 then fy0 - cy
+                elif cy > fy1 then cy - fy1
+                else 0L
+            if dx*dx + dy*dy < 1500L*1500L then
+                out.WriteLine (sprintf
+                    "  footprint=(%d,%d,%d,%d) dx=%d dy=%d"
+                    fx0 fy0 fx1 fy1 dx dy)
+
+    [<Fact>]
+    member _.``b1_5_stage1 viz Drc.Check raw fires by rule`` () =
+        // What does Drc.Check actually return BEFORE the waiver
+        // post-pass on b1_5_stage1? If mcon.2 doesn't appear here,
+        // the rule itself is not firing; if it does, the waiver is
+        // hiding it. Distinguishes "rule never fired" from "fired
+        // then waived".
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "column_readout_chain", "b1_5_stage1.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let view = Rekolektion.Viz.Core.Drc.RulesYaml.loadEffectiveOrDefault "sky130" None
+        let violations = Rekolektion.Viz.Core.Drc.Check.check view doc.Units flat
+        // Count by rule.
+        let byRule =
+            violations
+            |> Array.groupBy (fun v -> v.Rule)
+            |> Array.map (fun (rule, vs) -> rule, vs.Length)
+        out.WriteLine (sprintf "post-waiver viz fires: %d" violations.Length)
+        for (rule, count) in byRule do
+            out.WriteLine (sprintf "  viz[%s] = %d" rule count)
+        // Now also list any mcon.2 violations regardless of source
+        // (in case they came back with different rule names).
+        let mcon2s =
+            violations
+            |> Array.filter (fun v -> v.Rule = "mcon.2")
+        out.WriteLine (sprintf "mcon.2 post-waiver: %d" mcon2s.Length)
+        for v in mcon2s |> Array.truncate 10 do
+            let (x1, y1, x2, y2) = v.BboxA
+            out.WriteLine (sprintf
+                "  mcon.2 bbox=(%d,%d,%d,%d) measured=%d limit=%d"
+                x1 y1 x2 y2 v.MeasuredDbu v.LimitDbu)
+
+    [<Fact>]
+    member _.``b1_5_stage1 mcon2 fire at (1550,-1440)`` () =
+        // PROBE: Magic fires mcon.2 (mcon spacing < 38 nm) at
+        // bbox (1550,-1440,1640,-1270) and (1550,-1440,1640,-1385).
+        // viz fires no mcon.2. Find the actual mcons near this
+        // location and measure the gap.
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "column_readout_chain", "b1_5_stage1.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        // Look at mcons in a WIDER window around the fire bbox to
+        // catch any third mcon that might bridge the gap.
+        let target = 500L, -2200L, 2500L, -500L
+        let (tx1, ty1, tx2, ty2) = target
+        let overlaps (b: int64*int64*int64*int64) =
+            let (x1, y1, x2, y2) = b
+            tx1 < x2 && x1 < tx2 && ty1 < y2 && y1 < ty2
+        let mcons =
+            flat
+            |> Array.filter (fun p ->
+                p.Layer = 67 && p.DataType = 44
+                && overlaps (bboxOf p))
+            |> Array.sortBy bboxOf
+        out.WriteLine (sprintf
+            "mcons (67/44) near fire bbox: %d" mcons.Length)
+        for p in mcons do
+            let (x1, y1, x2, y2) = bboxOf p
+            out.WriteLine (sprintf
+                "  bbox=(%d,%d,%d,%d) %dx%d src=%s"
+                x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
+
+    [<Fact>]
     member _.``b1_5_stage1 difftap.9 fire at (30,-80,1370,125)`` () =
         // PROBE: Magic fires diff/tap.9 (n-diff to nwell spacing
         // < 0.34 µm) at this bbox. viz's F# rule

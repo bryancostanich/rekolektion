@@ -336,6 +336,22 @@ let isFoundryWaived
         ((bx1, by1, bx2, by2): int64 * int64 * int64 * int64)
         (_contributingPolys: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
         : bool =
+    // Known limitation: this bbox-only test waives some
+    // user-vs-user violations that happen to bbox-inside a foundry
+    // footprint expanded by the per-rule margin. Concrete case
+    // probed on b1_5_stage1: 2 mcon.2 fires between two parent-
+    // routed mcons land 2 nm above an NFET footprint's
+    // expanded-bottom edge → get waived even though both
+    // contributors are user-routing (Magic correctly fires).
+    //
+    // A contributor-aware variant (require at least one foundry
+    // poly among contributingPolys) tested with a 208-fire
+    // regression on tap_mux_row: foundry-internal via.4a/via.4b
+    // /via.5a/via.5b violation regions land at thin slab strips
+    // that contributingPolys' same-layer-bbox-overlap test
+    // doesn't always classify as foundry-sourced. Reverted; the
+    // 2 magic-only mcon.2 fires on b1_5_stage1 are an accepted
+    // residual.
     match Map.tryFind ruleName foundryWaiverMarginNm with
     | None -> false
     | Some margin ->

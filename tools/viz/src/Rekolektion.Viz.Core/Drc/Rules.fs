@@ -372,6 +372,15 @@ let allRules : Rule list = [
     AsymEnclosure("licon.5a", diff, licon1, 0.06, 0.04, OverlapsDiff)
     // licon.8 — poly overlap of licon (0.05 one dir, 0.08 other)
     AsymEnclosure("licon.8",  poly, licon1, 0.08, 0.05, OverlapsPoly)
+    // licon.9 (+ psdm.5a) — poly-contact licon must be ≥ 0.235 µm
+    // from any P-diffusion edge. Magic's deck composes this with
+    // psdm.5a (psdm encloses p-diff) so the violation message reads
+    // "licon.9 + psdm.5a". Both endpoints are implant-tagged:
+    //   source licon = OverlapsPoly (poly-contact, NOT diff-contact)
+    //   reference diff = PsdmOverlaps (p-diff)
+    // viz emits as a CrossSpacing — the bbox-pairing in MagicVsViz
+    // matches Magic's composite tile by location, not message text.
+    CrossSpacing("licon.9", licon1, diff, 0.235, OverlapsPoly, PsdmOverlaps)
     // li.5 — li1 encloses every licon. li1 straps are typically
     // licon-width on one axis (0 enclosure there), so the rule
     // is properly asymmetric: 0 in one direction, 0.08 in the

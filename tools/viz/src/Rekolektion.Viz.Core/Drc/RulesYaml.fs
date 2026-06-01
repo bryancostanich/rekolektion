@@ -62,6 +62,11 @@ type YamlRule() =
     member val Implant : YamlLayer = null with get, set
     member val Active : YamlLayer = null with get, set
     member val Well : YamlLayer = null with get, set
+    /// Used by `enclosure-of-intersection`: the "with" layer the
+    /// inner is intersected with before the enclosure check.
+    /// e.g. nwell.5: inner=psdm, with=diff → check (psdm ∩ diff)
+    /// against nwell.
+    member val With : YamlLayer = null with get, set
 
     // Numeric thresholds.
     member val MinUm : Nullable<float> = Nullable() with get, set
@@ -115,6 +120,7 @@ let private kindOf (r: Rule) : string =
     | AsymEnclosure _ -> "asym-enclosure"
     | BoundaryCrossing _ -> "boundary-crossing"
     | ImplantOutsideWellSpacing _ -> "implant-outside-well-spacing"
+    | EnclosureOfIntersection _ -> "enclosure-of-intersection"
 
 // --- LayerKey conversion -----------------------------------------------
 
@@ -182,6 +188,11 @@ let toYamlRule (r: Rule) : YamlRule =
         y.Implant <- layerOf implant
         y.Active <- layerOf active
         y.Well <- layerOf well
+        y.MinUm <- Nullable m
+    | EnclosureOfIntersection (_, outer, inner, withL, m) ->
+        y.Outer <- layerOf outer
+        y.Inner <- layerOf inner
+        y.With <- layerOf withL
         y.MinUm <- Nullable m
     y
 
@@ -258,6 +269,12 @@ let fromYamlRule (yr: YamlRule) : Result<Rule, string> =
                 match layerKeyOf yr.Well with
                 | Ok w -> Ok (ImplantOutsideWellSpacing (yr.Name, i, a, w, m))
                 | Error _ -> Error (sprintf "rule '%s': 'well' layer block is required" yr.Name))
+    | "enclosure-of-intersection" ->
+        bind3 (getLayer "outer" yr.Outer) (getLayer "inner" yr.Inner) (getMin ())
+            (fun o i m ->
+                match layerKeyOf yr.With with
+                | Ok w -> Ok (EnclosureOfIntersection (yr.Name, o, i, w, m))
+                | Error _ -> Error (sprintf "rule '%s': 'with' layer block is required" yr.Name))
     | other ->
         Error (sprintf "rule '%s': unknown kind '%s'" yr.Name other)
 

@@ -177,6 +177,81 @@ type Lu3Probe(out: ITestOutputHelper) =
                     a1 b1 a2 b2 hasNsdm inNwell)
 
     [<Fact>]
+    member _.``tap_mux_row psdm vs diff vs nwell at nwell5 fire`` () =
+        // PROBE for the F# nwell.5 over-fire on tap_mux_row.
+        // Hypothesis: the Enclosure rule checks bbox(psdm) vs
+        // nwell, but Magic checks *pdiff = diff ∩ psdm. The pfet
+        // primitive's psdm has a 125 nm halo on every side past
+        // the diff. The halo eats into the nwell-enclosure
+        // margin (180 → 55 by halo) while the actual p-diff is
+        // enclosed by exactly 180 (Magic clean).
+        //
+        // Confirm by reading the flattened polygons and showing:
+        //   * psdm bbox at the fire location
+        //   * diff bbox at the same X range
+        //   * parent nwell bbox
+        // Predict: psdm.top = 1835, diff.top = 1710 (= 1835 - 125
+        // halo), nwell.top = 1890. So nwell - diff.top = 180
+        // (clean), nwell - psdm.top = 55 (fires by 125).
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "wl_tap_mux", "tap_mux_row.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let target = 1565L, 1710L, 2545L, 1835L
+        let (tx1, ty1, tx2, ty2) = target
+        let bboxOverlaps (b: int64*int64*int64*int64) =
+            let (x1, y1, x2, y2) = b
+            tx1 < x2 && x1 < tx2 && ty1 < y2 && y1 < ty2
+        let dump (label: string) (layer: int) (dt: int) =
+            let polys =
+                flat
+                |> Array.filter (fun p ->
+                    p.Layer = layer && p.DataType = dt
+                    && bboxOverlaps (bboxOf p))
+                |> Array.sortBy bboxOf
+            out.WriteLine (sprintf
+                "%s (%d/%d) overlapping fire bbox: %d" label layer dt polys.Length)
+            for p in polys do
+                let (x1, y1, x2, y2) = bboxOf p
+                out.WriteLine (sprintf
+                    "  bbox=(%d,%d,%d,%d) %dx%d src=%s"
+                    x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
+        // 65/20 = diff, 65/44 = tap, 94/20 = psdm, 64/20 = nwell.
+        dump "psdm" 94 20
+        dump "diff" 65 20
+        dump "tap"  65 44
+        dump "nwell" 64 20
+        // Also list ALL psdm/diff at the FULL X column (1565-2545),
+        // ignoring the Y filter, so we can see the FULL extent of
+        // the psdm and diff in that column.
+        let columnOverlaps (b: int64*int64*int64*int64) =
+            let (x1, _, x2, _) = b
+            tx1 < x2 && x1 < tx2
+        let dumpColumn (label: string) (layer: int) (dt: int) =
+            let polys =
+                flat
+                |> Array.filter (fun p ->
+                    p.Layer = layer && p.DataType = dt
+                    && columnOverlaps (bboxOf p))
+                |> Array.sortBy bboxOf
+            out.WriteLine (sprintf
+                "FULL COLUMN %s (%d/%d): %d" label layer dt polys.Length)
+            for p in polys do
+                let (x1, y1, x2, y2) = bboxOf p
+                out.WriteLine (sprintf
+                    "  bbox=(%d,%d,%d,%d) src=%s" x1 y1 x2 y2 p.SourceStructure)
+        dumpColumn "psdm" 94 20
+        dumpColumn "diff" 65 20
+        dumpColumn "nwell" 64 20
+
+    [<Fact>]
     member _.``opamp mcons near magic-only mcon2 bbox`` () =
         let path =
             System.Reflection.Assembly.GetExecutingAssembly().Location

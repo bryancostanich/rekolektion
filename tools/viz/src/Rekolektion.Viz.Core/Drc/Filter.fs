@@ -49,6 +49,8 @@ let layersOfRule (rule: Rules.Rule) : Set<Visibility.LayerKey> =
         Set.ofList [toTuple implant; toTuple active; toTuple well]
     | Rules.AsymEnclosure (_, outer, inner, _, _, _) ->
         Set.ofList [toTuple outer; toTuple inner]
+    | Rules.EnclosureOfIntersection (_, outer, inner, withL, _) ->
+        Set.ofList [toTuple outer; toTuple inner; toTuple withL]
 
 /// Lookup table: rule name → set of participating layers. Built once
 /// from `Rules.allRules` and used by `layersOfViolation` to resolve a

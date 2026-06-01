@@ -558,6 +558,49 @@ let checkWithToggles
                                 MeasuredDbu = m
                                 BboxA = (iv.X1, slab.Y, iv.X2, slab.Y + slab.Height)
                                 BboxB = None }
+        | Rules.EnclosureOfIntersection (name, outer, inner, withL, minUm) ->
+            // Like Enclosure, but the "inner" being checked is the
+            // intersection (inner ∩ withL). Matches Magic's
+            //   surround *pdiff allnwell N
+            // pattern where *pdiff = diff ∩ psdm. The implant
+            // marker (psdm/nsdm) carries a foundry-mandated halo
+            // past the active layer; checking enclosure on the
+            // bare implant would false-fire whenever the outer
+            // (nwell) meets the *halo* margin but not the implant
+            // margin. The intersection crops the implant back to
+            // the silicon-active region the rule actually cares
+            // about. See `EnclosureOfIntersection` Rule case for
+            // the full hypothesis + probe history.
+            let limit = umToDbu umPerDbu minUm
+            if limit > 0L then
+                let outerPolys =
+                    polysOnLayer idx outer |> Array.map (fun (p, _, _) -> p)
+                let innerPolys =
+                    polysOnLayer idx inner |> Array.map (fun (p, _, _) -> p)
+                let withPolys =
+                    polysOnLayer idx withL |> Array.map (fun (p, _, _) -> p)
+                if outerPolys.Length > 0
+                   && innerPolys.Length > 0
+                   && withPolys.Length > 0 then
+                    let outerR = Region.ofPolygons outerPolys
+                    let innerR = Region.ofPolygons innerPolys
+                    let withR  = Region.ofPolygons withPolys
+                    let activeInner = Boolean.intersect innerR withR
+                    if not (Region.isEmpty activeInner) then
+                        let outerCore = Size.shrink limit outerR
+                        let violations =
+                            Boolean.subtract activeInner outerCore
+                        for slab in violations.Slabs do
+                            for iv in slab.Intervals do
+                                let m = min (iv.X2 - iv.X1) slab.Height
+                                result.Add {
+                                    Rule = name
+                                    LayerNumber = inner.Number
+                                    LayerType   = inner.DataType
+                                    LimitDbu    = limit
+                                    MeasuredDbu = m
+                                    BboxA = (iv.X1, slab.Y, iv.X2, slab.Y + slab.Height)
+                                    BboxB = None }
         | Rules.Endcap (name, source, reference, minUm) ->
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then

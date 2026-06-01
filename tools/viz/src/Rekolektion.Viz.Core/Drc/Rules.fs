@@ -225,6 +225,25 @@ type Rule =
         * oneDirUm: float
         * otherDirUm: float
         * cond: InnerCondition
+    /// Enclosure check where the "inner" is actually the
+    /// intersection `(inner ∩ withL)`. Magic's diff/tap.8 is the
+    /// canonical case: nwell must enclose `*pdiff = diff ∩ psdm`
+    /// by 0.18 µm, NOT the bare psdm. The bare psdm has a
+    /// foundry-mandated implant halo extending past the diff (in
+    /// SKY130 a 125 nm halo on every side), which would eat the
+    /// enclosure margin and produce false positives if the rule
+    /// were applied to the implant marker alone. The intersection
+    /// crops the implant back to the actual silicon region.
+    ///
+    /// Implemented via `inner ∩ withL` Region followed by
+    /// `\ shrink(outer, N)` — same pattern as `Enclosure` but
+    /// with the intersection step in front.
+    | EnclosureOfIntersection of
+        name: string
+        * outer: LayerKey
+        * inner: LayerKey
+        * withL: LayerKey
+        * minUm: float
 
 /// Magic-compatible name of a rule. Used by the renderer (label
 /// next to the violation marker) and by toggle filters keyed on
@@ -240,6 +259,7 @@ let nameOf (rule: Rule) : string =
     | AsymEnclosure (n, _, _, _, _, _) -> n
     | BoundaryCrossing (n, _, _, _) -> n
     | ImplantOutsideWellSpacing (n, _, _, _, _) -> n
+    | EnclosureOfIntersection (n, _, _, _, _) -> n
 
 // --- Rule table ---------------------------------------------------------
 // Ordering follows `sky130.py` top-to-bottom for ease of diffing,
@@ -285,12 +305,17 @@ let allRules : Rule list = [
     Spacing  ("nwell.2a",   nwell, 1.27)
     // NWELL_TO_NWELL_SAME (0.60) — same-net relaxation, can't model
     // without net awareness; the stricter 1.27 is the safe default.
-    // nwell.5 — nwell encloses psdm BY 0.18 µm. Only fires
-    // when the psdm is over diff (i.e. it's the p-diff
-    // source/drain implant). Psdm that doesn't cover diff is
-    // a psub-tap marker and doesn't need nwell coverage —
-    // firing the rule there would falsely flag every p-tap.
-    Enclosure("nwell.5",    nwell, psdm, 0.18, OverlapsDiff)
+    // nwell.5 — nwell encloses the actual p-diffusion region
+    // `*pdiff = diff ∩ psdm` by 0.18 µm. Matches Magic's
+    //   surround *pdiff allnwell 180 absence_illegal
+    // (diff/tap.8 in the sky130 deck). The pfet primitive's
+    // psdm has a 125 nm halo on every side past the diff (a
+    // foundry implant rule); checking the bare psdm against
+    // nwell would eat the enclosure margin and false-fire one
+    // per pfet (probed on tap_mux_row, where the bare-psdm
+    // check fired 16x while Magic was clean). The intersection
+    // crops back to the actual silicon p-diff.
+    EnclosureOfIntersection("nwell.5", nwell, psdm, diff, 0.18)
 
     // --- Implants ---
     Width    ("nsdm.1",     nsdm,  0.38)
@@ -568,6 +593,7 @@ let isLiveEligible (rule: Rule) : bool =
     | MinArea _ -> false
     | BoundaryCrossing _ -> false
     | ImplantOutsideWellSpacing _ -> false
+    | EnclosureOfIntersection _ -> false
 
 let liveRules : Rule list =
     allRules |> List.filter isLiveEligible

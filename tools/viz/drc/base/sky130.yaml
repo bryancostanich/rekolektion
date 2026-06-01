@@ -69,7 +69,7 @@ rules:
     name: nwell
   min-um: 1.27
 - name: nwell.5
-  kind: enclosure
+  kind: enclosure-of-intersection
   outer:
     number: 64
     datatype: 20
@@ -78,8 +78,11 @@ rules:
     number: 94
     datatype: 20
     name: psdm
+  with:
+    number: 65
+    datatype: 20
+    name: diff
   min-um: 0.18
-  cond: overlaps-diff
 - name: nsdm.1
   kind: width
   layer:
@@ -190,7 +193,8 @@ rules:
   # Until we add a block-layer subtraction term to the Width rule
   # schema, leaving this enabled yields false positives on every
   # SKY130 poly resistor instance. Magic-based verify_drc still
-  # enforces rpm.1 correctly.
+  # enforces rpm.1 correctly. (Re-disabled after the May 2026 regen
+  # cycle that clobbered commit 66c34cc.)
   disabled: true
   kind: width
   layer:

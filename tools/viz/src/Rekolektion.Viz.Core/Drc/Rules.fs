@@ -745,6 +745,24 @@ module Klayout =
         Width   ("nsdm.2", nsdm, 0.38)  // min nsdm width
         Spacing ("psdm.1", psdm, 0.38)
         Width   ("psdm.2", psdm, 0.38)
+        // --- Enclosure family: deferred ---
+        //
+        // KLayout deck counts edge-pairs (4 per symmetric square
+        // under-enclosure); F#'s `Enclosure` check counts inner
+        // polygons (1 per square).  Same logical violation,
+        // different per-rule counts — the harness's exact-match
+        // gate would always read FAIL.  Need to either
+        // (a) tighten F# Enclosure to emit one violation per
+        // failing edge, or (b) relax the harness comparison to
+        // accept "both > 0" on edge-vs-polygon counting rules.
+        // Tracked in `docs/internals/drc_rule_equivalency.md`.
+        //
+        // KLayout's "must be covered" sibling rules (`ct.4`,
+        // `via.4a_a`, `m1.4`, `m2.4_a`) need a NEW rule kind
+        // (`MustBeInside`) since BoundaryCrossing's semantics
+        // require some destination to be near; KLayout's
+        // rule fires on ANY uncovered source regardless of
+        // whether the destination layer exists at all.
     ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same

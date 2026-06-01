@@ -74,22 +74,82 @@ lets the KLayout side bypass the F# Magic grow-shrink).
 | `psdm.1` | OK | FAIL | Same as `nsdm.1`. |
 | `psdm.2` | OK | FAIL | Same label-swap as `nsdm.2`. |
 
-### Backlog (rules ext-KLayout fires that F# Klayout doesn't yet implement)
+### Backlog: enclosure family
 
-Surfaced by the mcon and via1 corpus cells; these are next on the
-Phase 4 work list:
+Surfaced by the mcon, via1, and via.4a_underenclosed corpus cells.
+Splits into two structural problems that have to land before any
+of these rules can flip green on the KLayout diagonal:
+
+**Problem 1 — edge-pair counting vs polygon counting.** KLayout's
+deck output counts edge-pairs: a symmetric under-enclosure on a
+square inner counts 4× (one per failing edge). F#'s `Enclosure`
+check emits one violation per failing inner polygon. Probed on
+`viol_via.4a_underenclosed`: F# reports `via.4a=1` per via,
+ext-KLayout reports 4. Same logical violation, different counts.
+The harness's exact-match gate would always read FAIL on
+symmetric enclosure rules even though F#'s check is functionally
+correct.
+
+Two ways out:
+
+- (a) Tighten F# Enclosure to emit one violation per failing
+  edge, matching KLayout's edge-pair convention.  Engine
+  internals change inside `Drc/Check.fs`.
+- (b) Relax the harness to accept "both > 0" on edge-vs-polygon
+  counting rules.  Soft signal, easier landing.
+
+(a) is the right answer long-term — Phase 5 F#-primary needs
+KLayout-equivalent counts, not just KLayout-equivalent rule
+firing.  Pre-Phase-5 batch.
+
+**Problem 2 — "must be inside" rule kind.** KLayout's `via.not(m1)`
+fires on any via that isn't covered by m1, even when m1 doesn't
+exist anywhere near.  F#'s `BoundaryCrossing` (the closest
+existing kind) only fires when the destination layer is present
+and the source partially crosses or is too near.  It doesn't fire
+when the destination is absent entirely.
+
+KLayout deck rules in this family:
 
 - `ct.4` — mcon must be covered by li1
-- `via.4a` / `via.4a_a` / `via.4b` — via1 met1 enclosure family
-- `via.5a` / `via.5b` — via1 met2 enclosure family
-- `met1.4` / `met1.5` — met1 mcon enclosure family
-- `met2.4` / `met2.4_a` / `met2.5` — met2 via1 enclosure family
+- `via.4a_a` — via1 must be enclosed by met1
+- `m1.4` — mcon must be enclosed by met1
+- `m2.4_a` — via1 must be enclosed by met2
 
-These are all *cross-layer* rules (one layer must enclose / cover
-another). Implementing them requires the Enclosure / AsymEnclosure
-rule kinds, not just the simpler Width / Spacing / MinArea kinds
-used so far. F# Magic has these rule shapes — they just need to be
-mirrored onto the Klayout side with the right deck names.
+These need a new `MustBeInside (name, source, destination)` rule
+kind on the F# side — fires once per source polygon that isn't
+fully contained inside any destination polygon.  Both in
+`Drc/Rules.fs` (the type + nameOf entry) and `Drc/Check.fs` (the
+matching pattern in `checkWithToggles`).  Pre-Phase-5 batch.
+
+### Backlog: enclosure rules (queued for after the structural fixes)
+
+Once Problem 1 + Problem 2 are resolved, these rules can land in
+`Rules.Klayout.allRules` and flip their per-rule rows green:
+
+- `via.4a` — met1 enclosure of via1, 0.055 µm (symmetric)
+- `via.5a` — met1 enclosure of via1, 0.085 µm (asymmetric / 2 adj)
+- `via.4a_a` — via1 must be enclosed by m1
+- `m2.4` — met2 enclosure of via1, 0.055 µm (symmetric)
+- `m2.5` — met2 enclosure of via1, 0.085 µm (asymmetric)
+- `m2.4_a` — via1 must be enclosed by m2
+- `ct.4` — mcon must be covered by li1
+- `m1.4` — mcon must be enclosed by m1
+- `791_m1.4` — met1 enclosure of mcon, 0.03 µm
+- `m1.5` — met1 enclosure of mcon, 0.06 µm (asymmetric)
+
+The corpus cell `viol_via.4a_underenclosed.rkt` is ready to drive
+the per-rule promotion once the engine work lands.
+
+### Backlog: difftap family
+
+KLayout's diff/tap rules are area-gated by `areaid:ce` (sram core
+marker). Periphery / core / across-core each get their own rule
+name (`difftap.1`, `difftap.1_a`, `difftap.1_b`, `difftap.1_c`,
+`difftap.2`). F# Magic collapses these into one rule per layer.
+Promoting needs either (a) a corpus cell per area variant, or
+(b) bucketing several KLayout deck names to one Magic name via
+the normalizer. Lower priority than the enclosure family.
 
 ### Compat-aware implant-close (landed)
 

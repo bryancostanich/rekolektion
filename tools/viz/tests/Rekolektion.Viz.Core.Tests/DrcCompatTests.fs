@@ -64,11 +64,20 @@ let ``Rules.Klayout.allRules has the proven met1 rules`` () =
 
 [<Fact>]
 let ``Rules.Klayout derived helpers reflect the populated rule list`` () =
-    // m1.1 is a Width rule, m1.2 is Spacing — both live-eligible.
-    // m1.6 is MinArea — NOT live-eligible (only fires at commit).
-    Rules.Klayout.liveRules.Length |> should equal 2
-    Rules.Klayout.liveEligibleNames
-        |> should equal (Set.ofList ["m1.1"; "m1.2"])
+    // Live-eligible = Width / Spacing / CrossSpacing / Enclosure
+    // / Endcap / AsymEnclosure. MinArea / BoundaryCrossing /
+    // ImplantOutsideWellSpacing / EnclosureOfIntersection are
+    // commit-only. As Phase 4 populates rules, both counts grow
+    // — keep the assertion structural rather than fixing exact
+    // numbers (which would force a test update every commit).
+    Rules.Klayout.liveRules |> should not' (be Empty)
+    Rules.Klayout.liveEligibleNames |> should contain "m1.1"
+    Rules.Klayout.liveEligibleNames |> should contain "m1.2"
+    // MinArea is not live-eligible.
+    Rules.Klayout.liveEligibleNames |> should not' (contain "m1.6")
+    // liveRules should be a SUBSET of allRules (sanity).
+    (List.length Rules.Klayout.liveRules)
+        |> should be (lessThanOrEqualTo (List.length Rules.Klayout.allRules))
 
 [<Fact>]
 let ``Rules.Klayout.defaultView mirrors the rule list, empty provenance`` () =
@@ -76,14 +85,24 @@ let ``Rules.Klayout.defaultView mirrors the rule list, empty provenance`` () =
     Rules.Klayout.defaultView.Provenance |> should equal Map.empty<string, string>
 
 [<Fact>]
-let ``Rules.Klayout.tryFind resolves met1 (proven), None for unimplemented layers`` () =
+let ``Rules.Klayout.tryFind resolves implemented layers`` () =
+    // met1 (68/20) — the canonical proven layer; assertion stays
+    // fixed because the values are foundry-spec.
     let m1 = Rules.Klayout.tryFind 68 20
     m1.IsSome |> should equal true
     m1.Value.MinWidthUm |> should equal 0.14
     m1.Value.MinSpacingUm |> should equal 0.14
-    // Phase 4 hasn't implemented met2 / li1 yet — None expected.
-    Rules.Klayout.tryFind 69 20 |> should equal (None: Rules.LayerRule option)
-    Rules.Klayout.tryFind 67 20 |> should equal (None: Rules.LayerRule option)
+    // Other implemented layers should also resolve as Phase 4
+    // populates them. Don't assert specific values here — those
+    // change as more rules land; the Phase 4 corpus harness +
+    // status doc are the canonical record of which rules are
+    // implemented and what their numbers are.
+    Rules.Klayout.tryFind 67 20 |> Option.isSome |> should equal true  // li1
+    Rules.Klayout.tryFind 69 20 |> Option.isSome |> should equal true  // met2
+    Rules.Klayout.tryFind 70 20 |> Option.isSome |> should equal true  // met3
+    // Layers truly without any width/spacing rule (e.g. text-only
+    // marker layers) should still return None.
+    Rules.Klayout.tryFind 999 999 |> should equal (None: Rules.LayerRule option)
 
 // --- viewFor dispatcher ---------------------------------------------------
 

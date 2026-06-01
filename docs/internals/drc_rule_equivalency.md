@@ -41,10 +41,11 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 22 rules promotable on the KLayout
+**Coverage as of 2026-06-01: 24 rules promotable on the KLayout
 diagonal.** Width / Spacing / MinArea families on li1, met1, met2,
 met3 plus mcon + via1 size rules plus poly / nwell width+spacing
-plus nsdm + psdm width.
+plus nsdm / psdm width AND spacing (compat-aware implant-close
+lets the KLayout side bypass the F# Magic grow-shrink).
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
@@ -68,9 +69,9 @@ plus nsdm + psdm width.
 | `poly.2` | OK | OK | Min poly spacing 0.21 µm. Spacing delta seen on metal layers does NOT recur here. |
 | `nwell.1` | OK | OK | Min nwell width 0.84 µm. |
 | `nwell.2a` | OK | OK | Min nwell spacing 1.27 µm — the canonical abut-or-tub rule (workflow Hard Rule #7). |
-| `nsdm.1` | FAIL | FAIL | KLayout deck = SPACING 0.38 µm. **F# implant-close blocks the check** — `applyImplantClose` grows nsdm by 190 nm then shrinks, merging any two rects within 380 nm into one component before the spacing check runs. KLayout external doesn't do this. Needs a compat-aware bypass before the diagonal can flip green. |
-| `nsdm.2` | OK | FAIL | KLayout deck = WIDTH 0.38 µm. Magic-side fails because F# Magic's labels are swapped vs the deck (pre-existing). |
-| `psdm.1` | FAIL | FAIL | Same implant-close issue as `nsdm.1`. |
+| `nsdm.1` | OK | FAIL | KLayout deck = SPACING 0.38 µm. `applyImplantClose` is now compat-aware — bypassed under `Compat.Klayout` so F# Klayout matches the deck's literal-gap semantics. Magic-side still fails because F# Magic's labels are swapped vs the deck (pre-existing). |
+| `nsdm.2` | OK | FAIL | KLayout deck = WIDTH 0.38 µm. Same label-swap. |
+| `psdm.1` | OK | FAIL | Same as `nsdm.1`. |
 | `psdm.2` | OK | FAIL | Same label-swap as `nsdm.2`. |
 
 ### Backlog (rules ext-KLayout fires that F# Klayout doesn't yet implement)
@@ -90,20 +91,21 @@ rule kinds, not just the simpler Width / Spacing / MinArea kinds
 used so far. F# Magic has these rule shapes — they just need to be
 mirrored onto the Klayout side with the right deck names.
 
-### Compat-aware implant-close (separate Phase 4 task)
+### Compat-aware implant-close (landed)
 
-The F# engine's `applyImplantClose` (Drc/Check.fs) does a 190 nm
-grow-shrink on nsdm/psdm before spacing checks so that adjacent-
-but-merging implant fingers don't false-fire. KLayout external
-doesn't apply this preprocessing — it fires `nsdm.1` / `psdm.1`
-spacing on any sub-0.38 µm gap regardless of grow-merge behavior.
+`Drc/Check.fs` ships two engine entry points now:
 
-To get `nsdm.1` and `psdm.1` to flip green on the KLayout
-diagonal, `applyImplantClose` needs a `compat: Compat` argument
-that skips the closure under `Compat.Klayout`. Magic-compat keeps
-the existing grow-shrink. Small wiring change in
-`Drc/Check.fs:check` + `checkWithToggles`; deferred to its own
-batch.
+- `check view units flat` — implicitly Magic-compat. Calls
+  `applyImplantClose Compat.Magic flat`, preserving the
+  pre-Track-02 behavior so the App canvas / routing / model /
+  scripts callers continue working unchanged.
+- `checkWithCompat compat view units flat` — Phase 4 / Phase 5
+  entry point. Threads compat through `applyImplantClose`, which
+  bypasses the grow-shrink under `Compat.Klayout` so F# Klayout
+  matches the deck's literal-gap semantics for nsdm/psdm spacing.
+
+The viz CLI's `drc` verb uses `checkWithCompat` so the
+equivalency harness gets the right behavior under either flag.
 
 **F# Magic spacing delta (informational).** On every Width / Spacing
 metal-layer corpus cell that tests two parallel rects with a

@@ -1267,7 +1267,17 @@ let checkWithToggles
 /// replaced by their post-close polygons. Other layers pass
 /// through unchanged.
 let private applyImplantClose
+        (compat: Compat.Compat)
         (flat: FlatPolygon array) : FlatPolygon array =
+    // KLayout external doesn't apply this preprocessing — `nsdm.1` /
+    // `psdm.1` spacing fires on the literal gap regardless of any
+    // grow-merge intuition. Under `Compat.Klayout` we bypass the
+    // closure so F# Klayout matches that semantics. Magic-compat
+    // keeps the grow-shrink to match Magic external's view of an
+    // implant region as one merged feature.
+    match compat with
+    | Compat.Klayout -> flat
+    | Compat.Magic   ->
     let nsdmKey = (93, 44)
     let psdmKey = (94, 20)
     let bridgeRadius = 190L   // close at 190 nm bridges any gap ≤380 nm
@@ -1309,12 +1319,32 @@ let private applyImplantClose
 /// Tests + callers without a tag pipeline call this; the canvas
 /// uses `checkWithToggles` directly so the tag computation is
 /// shared with other consumers.
+///
+/// Implicitly Magic-compat — preserves the pre-Track-02 behavior
+/// so the dozen existing callers (App canvas, routing helpers,
+/// model, scripts) continue working unchanged. New callers that
+/// want compat-aware semantics should use `checkWithCompat`.
 let check
         (view: Rules.RulesetView)
         (units: Units)
         (flat: FlatPolygon array)
         : Violation array =
-    let flat = applyImplantClose flat
+    let flat = applyImplantClose Compat.Magic flat
+    let tags = Implant.tagAll flat
+    checkWithToggles view units flat tags Set.empty
+
+/// Compat-aware entry point (Track 02 Phase 4). Same as `check`
+/// but threads `compat` through `applyImplantClose` so KLayout
+/// compat bypasses the implant grow-shrink (which KLayout external
+/// doesn't apply).  Equivalency-harness path and any new caller
+/// targeting Phase 5 F#-primary go through here.
+let checkWithCompat
+        (compat: Compat.Compat)
+        (view: Rules.RulesetView)
+        (units: Units)
+        (flat: FlatPolygon array)
+        : Violation array =
+    let flat = applyImplantClose compat flat
     let tags = Implant.tagAll flat
     checkWithToggles view units flat tags Set.empty
 

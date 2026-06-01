@@ -50,6 +50,17 @@ type State = {
     /// Persisted as a top-level `drcOther` field so it survives
     /// app restart alongside the per-layer entries.
     DrcOther : bool
+    /// User-facing display toggles persisted across restarts.
+    /// Defaults mirror `Model.empty` so a missing field on disk
+    /// (legacy session file) parses to the same value the app
+    /// starts with on first launch.
+    SnapEnabled    : bool   // S key — default false
+    ShowRuler      : bool   // default true
+    ShowGrid       : bool   // G key — default true
+    ShowLabels     : bool   // default true
+    RatlinesArmed  : bool   // U / TopBar — default false
+    ShowDrc        : bool   // R key — default false
+    ShowDimensions : bool   // D key — default false
 }
 
 let empty : State = {
@@ -58,6 +69,13 @@ let empty : State = {
     ActivePath = None
     Window = None
     DrcOther = true
+    SnapEnabled    = false
+    ShowRuler      = true
+    ShowGrid       = true
+    ShowLabels     = true
+    RatlinesArmed  = false
+    ShowDrc        = false
+    ShowDimensions = false
 }
 
 let private homeDir =
@@ -131,11 +149,28 @@ let parse (json: string) : State =
                    || v.ValueKind = System.Text.Json.JsonValueKind.False)
             then v.GetBoolean()
             else true   // legacy files default to "Other on"
+        // Display-toggle fields. Legacy files (pre-toggle persistence)
+        // lack each key; default to the same value `Model.empty` uses
+        // so a missing field reads as a fresh-install default.
+        let boolField (key: string) (fallback: bool) : bool =
+            let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if root.TryGetProperty(key, &v)
+               && (v.ValueKind = System.Text.Json.JsonValueKind.True
+                   || v.ValueKind = System.Text.Json.JsonValueKind.False)
+            then v.GetBoolean()
+            else fallback
         { Layers = layers
           OpenPaths = openPaths
           ActivePath = activePath
           Window = window
-          DrcOther = drcOther }
+          DrcOther = drcOther
+          SnapEnabled    = boolField "snapEnabled"    false
+          ShowRuler      = boolField "showRuler"      true
+          ShowGrid       = boolField "showGrid"       true
+          ShowLabels     = boolField "showLabels"     true
+          RatlinesArmed  = boolField "ratlinesArmed"  false
+          ShowDrc        = boolField "showDrc"        false
+          ShowDimensions = boolField "showDimensions" false }
     with _ -> empty
 
 /// Read the persisted session state. Missing or malformed file
@@ -185,6 +220,15 @@ let serialize (state: State) : string =
     sb.AppendFormat(
         ",\"drcOther\":{0}",
         (if state.DrcOther then "true" else "false")) |> ignore
+    let appendBool (key: string) (v: bool) =
+        sb.AppendFormat(",\"{0}\":{1}", key, (if v then "true" else "false")) |> ignore
+    appendBool "snapEnabled"    state.SnapEnabled
+    appendBool "showRuler"      state.ShowRuler
+    appendBool "showGrid"       state.ShowGrid
+    appendBool "showLabels"     state.ShowLabels
+    appendBool "ratlinesArmed"  state.RatlinesArmed
+    appendBool "showDrc"        state.ShowDrc
+    appendBool "showDimensions" state.ShowDimensions
     sb.Append "}" |> ignore
     sb.ToString()
 
@@ -250,6 +294,13 @@ let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
         ActivePath = model.ActiveMacroPath
         Window = current.Window
         DrcOther = Visibility.isDrcVisibleOther model.Toggle
+        SnapEnabled    = model.SnapEnabled
+        ShowRuler      = model.ShowRuler
+        ShowGrid       = model.ShowGrid
+        ShowLabels     = model.ShowLabels
+        RatlinesArmed  = model.RatlinesArmed
+        ShowDrc        = model.ShowDrc
+        ShowDimensions = model.ShowDimensions
     }
 
 /// Persist only the window bounds, preserving every other field

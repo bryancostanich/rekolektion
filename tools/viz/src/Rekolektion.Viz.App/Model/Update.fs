@@ -807,9 +807,13 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             SelectedRatlines = ratlines' }, Cmd.none
     | Msg.ClearSelection -> { model with Selection = Set.empty }, Cmd.none
     | Msg.ToggleDimensions ->
-        { model with ShowDimensions = not model.ShowDimensions }, Cmd.none
+        let model' = { model with ShowDimensions = not model.ShowDimensions }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleDrc ->
-        { model with ShowDrc = not model.ShowDrc }, Cmd.none
+        let model' = { model with ShowDrc = not model.ShowDrc }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleDebugOverlay ->
         { model with DebugOverlay = not model.DebugOverlay }, Cmd.none
     | Msg.ScrubDispersedWires ->
@@ -845,13 +849,21 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 OpenMacros = openMacros'
                 ActiveMacroPath = Some activePath' }, Cmd.none
     | Msg.ToggleGrid ->
-        { model with ShowGrid = not model.ShowGrid }, Cmd.none
+        let model' = { model with ShowGrid = not model.ShowGrid }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleRuler ->
-        { model with ShowRuler = not model.ShowRuler }, Cmd.none
+        let model' = { model with ShowRuler = not model.ShowRuler }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleLabels ->
-        { model with ShowLabels = not model.ShowLabels }, Cmd.none
+        let model' = { model with ShowLabels = not model.ShowLabels }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleSnap ->
-        { model with SnapEnabled = not model.SnapEnabled }, Cmd.none
+        let model' = { model with SnapEnabled = not model.SnapEnabled }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.ToggleRatlines ->
         // Master toggle. The derive is heavy on production macros
         // (10+ s for full SRAMs) — the U key MUST NOT do it on the
@@ -872,31 +884,34 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             Model.activeMacro model
             |> Option.map (fun m -> m.Nets.Count)
             |> Option.defaultValue 0
-        if not model.Toggle.VisibleRatlines.IsEmpty then
-            Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
-                {| branch = "clear"
-                   path = activePath
-                   visibleBefore = model.Toggle.VisibleRatlines.Count |}
-            { model with
-                Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle
-                RatlinesArmed = false }, Cmd.none
-        else
-            match Model.activeMacro model with
-            | Some m when not m.Nets.IsEmpty ->
+        let model' =
+            if not model.Toggle.VisibleRatlines.IsEmpty then
                 Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
-                    {| branch = "paint-immediately"
+                    {| branch = "clear"
                        path = activePath
-                       nets = m.Nets.Count |}
-                let names = m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                       visibleBefore = model.Toggle.VisibleRatlines.Count |}
                 { model with
-                    Toggle = Visibility.setVisibleRatlines names model.Toggle
-                    RatlinesArmed = true }, Cmd.none
-            | _ ->
-                Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
-                    {| branch = "arm-waiting-for-derive"
-                       path = activePath
-                       activeNetsCount = activeNetsCount |}
-                { model with RatlinesArmed = true }, Cmd.none
+                    Toggle = Visibility.setVisibleRatlines Set.empty model.Toggle
+                    RatlinesArmed = false }
+            else
+                match Model.activeMacro model with
+                | Some m when not m.Nets.IsEmpty ->
+                    Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
+                        {| branch = "paint-immediately"
+                           path = activePath
+                           nets = m.Nets.Count |}
+                    let names = m.Nets |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+                    { model with
+                        Toggle = Visibility.setVisibleRatlines names model.Toggle
+                        RatlinesArmed = true }
+                | _ ->
+                    Rekolektion.Viz.App.Services.Logger.log "ratlines.toggle"
+                        {| branch = "arm-waiting-for-derive"
+                           path = activePath
+                           activeNetsCount = activeNetsCount |}
+                    { model with RatlinesArmed = true }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.RouteSlideCommit (cell, dxDbu, dyDbu, adjusts, extensions) ->
         if (dxDbu = 0L && dyDbu = 0L)
            || (List.isEmpty adjusts && List.isEmpty extensions) then

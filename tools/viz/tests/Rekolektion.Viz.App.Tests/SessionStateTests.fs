@@ -10,6 +10,10 @@ open Rekolektion.Viz.App.Services
 // Touches only the pure JSON path — never `~/.rekolektion`. Real
 // disk I/O is a thin wrapper around `serialize` + `parse` and not
 // worth integration-testing here.
+//
+// All record literals use `{ SessionState.empty with ... }` so a
+// new field added to `State` doesn't force a test edit — the
+// default flows from `empty`.
 // ─────────────────────────────────────────────────────────────────
 
 let private roundTrip (state: SessionState.State) : SessionState.State =
@@ -23,86 +27,67 @@ let ``empty state round-trips`` () =
 
 [<Fact>]
 let ``layers + openPaths + activePath round-trip`` () =
-    let state : SessionState.State = {
-        Layers = [ (68, 20, true, true); (69, 20, false, true) ]
-        OpenPaths = [ "/tmp/a.rkt"; "/tmp/b.rkt" ]
-        ActivePath = Some "/tmp/a.rkt"
-        Window = None
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            Layers = [ (68, 20, true, true); (69, 20, false, true) ]
+            OpenPaths = [ "/tmp/a.rkt"; "/tmp/b.rkt" ]
+            ActivePath = Some "/tmp/a.rkt" }
     roundTrip state |> should equal state
 
 [<Fact>]
 let ``window bounds round-trip`` () =
-    let state : SessionState.State = {
-        Layers = []
-        OpenPaths = []
-        ActivePath = None
-        Window = Some {
-            Width  = 1600.0
-            Height = 1000.0
-            X      = 120
-            Y      = 80
-        }
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            Window = Some {
+                Width  = 1600.0
+                Height = 1000.0
+                X      = 120
+                Y      = 80
+            } }
     let result = roundTrip state
     result.Window |> should equal state.Window
 
 [<Fact>]
 let ``window absent stays absent`` () =
-    let state : SessionState.State = {
-        Layers = [ (68, 20, true, true) ]
-        OpenPaths = []
-        ActivePath = None
-        Window = None
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            Layers = [ (68, 20, true, true) ] }
     let result = roundTrip state
     result.Window |> should equal (None : SessionState.WindowBounds option)
 
 [<Fact>]
 let ``window with negative position round-trips (off-primary monitor)`` () =
-    let state : SessionState.State = {
-        Layers = []
-        OpenPaths = []
-        ActivePath = None
-        Window = Some {
-            Width  = 1920.0
-            Height = 1080.0
-            X      = -1920
-            Y      = -100
-        }
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            Window = Some {
+                Width  = 1920.0
+                Height = 1080.0
+                X      = -1920
+                Y      = -100
+            } }
     roundTrip state |> should equal state
 
 [<Fact>]
 let ``window with fractional dimensions round-trips`` () =
     // Avalonia layout often produces non-integer Width/Height.
-    let state : SessionState.State = {
-        Layers = []
-        OpenPaths = []
-        ActivePath = None
-        Window = Some {
-            Width  = 1423.5
-            Height = 901.25
-            X      = 50
-            Y      = 60
-        }
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            Window = Some {
+                Width  = 1423.5
+                Height = 901.25
+                X      = 50
+                Y      = 60
+            } }
     roundTrip state |> should equal state
 
 [<Fact>]
 let ``mixed full payload round-trips`` () =
-    let state : SessionState.State = {
-        Layers = [ (68, 20, true, true); (94, 20, false, true); (255, 1, false, false) ]
-        OpenPaths = [ "/a/b/c.rkt"; "/x/y/z.gds" ]
-        ActivePath = Some "/a/b/c.rkt"
-        Window = Some { Width = 1500.0; Height = 950.0; X = 10; Y = 20 }
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            Layers = [ (68, 20, true, true); (94, 20, false, true); (255, 1, false, false) ]
+            OpenPaths = [ "/a/b/c.rkt"; "/x/y/z.gds" ]
+            ActivePath = Some "/a/b/c.rkt"
+            Window = Some { Width = 1500.0; Height = 950.0; X = 10; Y = 20 } }
     roundTrip state |> should equal state
 
 [<Fact>]
@@ -133,12 +118,9 @@ let ``json with malformed window object falls back to None`` () =
 
 [<Fact>]
 let ``serialize includes the drc field per layer entry`` () =
-    let state : SessionState.State =
-        { Layers = [ (68, 20, true, false) ]
-          OpenPaths = []
-          ActivePath = None
-          Window = None
-          DrcOther = true }
+    let state =
+        { SessionState.empty with
+            Layers = [ (68, 20, true, false) ] }
     let json = SessionState.serialize state
     json |> should haveSubstring "\"drc\":false"
     json |> should haveSubstring "\"v\":true"
@@ -166,24 +148,14 @@ let ``parse handles a mix of legacy and drc-enriched entries in one file`` () =
 
 [<Fact>]
 let ``drcOther round-trips at the top level`` () =
-    let onState : SessionState.State =
-        { Layers = []
-          OpenPaths = []
-          ActivePath = None
-          Window = None
-          DrcOther = true }
+    let onState = { SessionState.empty with DrcOther = true }
     let offState = { onState with DrcOther = false }
     roundTrip onState  |> should equal onState
     roundTrip offState |> should equal offState
 
 [<Fact>]
 let ``serialize includes the drcOther field`` () =
-    let state : SessionState.State =
-        { Layers = []
-          OpenPaths = []
-          ActivePath = None
-          Window = None
-          DrcOther = false }
+    let state = { SessionState.empty with DrcOther = false }
     let json = SessionState.serialize state
     json |> should haveSubstring "\"drcOther\":false"
 
@@ -201,27 +173,82 @@ let ``parse honors drcOther=false from disk`` () =
 
 [<Fact>]
 let ``drc=false then drc=true round-trips per layer`` () =
-    let state : SessionState.State =
-        { Layers =
-              [ (68, 20, true, true)
-                (69, 20, true, false)
-                (70, 20, false, true)
-                (71, 20, false, false) ]
-          OpenPaths = []
-          ActivePath = None
-          Window = None
-          DrcOther = true }
+    let state =
+        { SessionState.empty with
+            Layers =
+                [ (68, 20, true, true)
+                  (69, 20, true, false)
+                  (70, 20, false, true)
+                  (71, 20, false, false) ] }
     roundTrip state |> should equal state
 
 [<Fact>]
 let ``ActivePath with escape characters round-trips`` () =
     // Paths with quotes / backslashes / unicode must survive
     // JSON escaping (sky130 paths sometimes hit ~ expansion etc).
-    let state : SessionState.State = {
-        Layers = []
-        OpenPaths = [ "/path/with\"quote.rkt"; "/path/with\\backslash.rkt" ]
-        ActivePath = Some "/path/with\"quote.rkt"
-        Window = None
-        DrcOther = true
-    }
+    let state =
+        { SessionState.empty with
+            OpenPaths = [ "/path/with\"quote.rkt"; "/path/with\\backslash.rkt" ]
+            ActivePath = Some "/path/with\"quote.rkt" }
     roundTrip state |> should equal state
+
+// ─────────────────────────────────────────────────────────────────
+// User-facing display toggles (snap, ruler, grid, labels,
+// ratlines-armed, DRC, dimensions) — persisted across restarts.
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``empty defaults match Model.empty defaults`` () =
+    let e = SessionState.empty
+    e.SnapEnabled    |> should equal false
+    e.ShowRuler      |> should equal true
+    e.ShowGrid       |> should equal true
+    e.ShowLabels     |> should equal true
+    e.RatlinesArmed  |> should equal false
+    e.ShowDrc        |> should equal false
+    e.ShowDimensions |> should equal false
+
+[<Fact>]
+let ``each display toggle round-trips through the flipped state`` () =
+    let flipped =
+        { SessionState.empty with
+            SnapEnabled    = true
+            ShowRuler      = false
+            ShowGrid       = false
+            ShowLabels     = false
+            RatlinesArmed  = true
+            ShowDrc        = true
+            ShowDimensions = true }
+    roundTrip flipped |> should equal flipped
+
+[<Fact>]
+let ``parse defaults each display toggle on legacy files missing the fields`` () =
+    let legacy = """{"layers":[],"openPaths":[]}"""
+    let restored = SessionState.parse legacy
+    restored.SnapEnabled    |> should equal false
+    restored.ShowRuler      |> should equal true
+    restored.ShowGrid       |> should equal true
+    restored.ShowLabels     |> should equal true
+    restored.RatlinesArmed  |> should equal false
+    restored.ShowDrc        |> should equal false
+    restored.ShowDimensions |> should equal false
+
+[<Fact>]
+let ``serialize emits each display-toggle key`` () =
+    let json = SessionState.serialize SessionState.empty
+    for key in [ "snapEnabled"; "showRuler"; "showGrid"; "showLabels"
+                 "ratlinesArmed"; "showDrc"; "showDimensions" ] do
+        json |> should haveSubstring (sprintf "\"%s\":" key)
+
+[<Fact>]
+let ``parse honours each display-toggle value from disk`` () =
+    let json =
+        """{"layers":[],"openPaths":[],"snapEnabled":true,"showRuler":false,"showGrid":false,"showLabels":false,"ratlinesArmed":true,"showDrc":true,"showDimensions":true}"""
+    let s = SessionState.parse json
+    s.SnapEnabled    |> should equal true
+    s.ShowRuler      |> should equal false
+    s.ShowGrid       |> should equal false
+    s.ShowLabels     |> should equal false
+    s.RatlinesArmed  |> should equal true
+    s.ShowDrc        |> should equal true
+    s.ShowDimensions |> should equal true

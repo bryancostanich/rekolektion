@@ -310,7 +310,19 @@ type MainWindow() as this =
             { Model.empty with
                 RecentFiles = Services.Recents.load ()
                 Toggle = toggle
-                DrcView = drcView },
+                DrcView = drcView
+                // 7 user-facing display toggles persisted across
+                // restarts (snap, ruler, grid, labels, ratlines-armed,
+                // DRC, dimensions). Defaults come from the SessionState
+                // record so a legacy session file (pre-toggle field)
+                // reads as the same default Model.empty uses.
+                SnapEnabled    = sess.SnapEnabled
+                ShowRuler      = sess.ShowRuler
+                ShowGrid       = sess.ShowGrid
+                ShowLabels     = sess.ShowLabels
+                RatlinesArmed  = sess.RatlinesArmed
+                ShowDrc        = sess.ShowDrc
+                ShowDimensions = sess.ShowDimensions },
             Cmd.batch (reopenCmds @ activateCmd)
         let update = Update.update backend
         let view = AppView.view

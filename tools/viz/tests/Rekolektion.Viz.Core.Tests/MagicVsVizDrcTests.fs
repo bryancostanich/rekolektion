@@ -390,6 +390,15 @@ type MagicVsVizDrc(out : ITestOutputHelper) =
         Assert.True (vizOnly = 0 && magicOnly = 0, summary)
 
     [<Fact>]
+    member _.``viz DRC matches Magic DRC on b1_5_stage2`` () =
+        let vizOnly, magicOnly =
+            compareDrc out "testdata/cell_designs/column_readout_chain/b1_5_stage2.rkt"
+        let summary =
+            sprintf "viz-only=%d, magic-only=%d (see test output for per-violation details)"
+                vizOnly magicOnly
+        Assert.True (vizOnly = 0 && magicOnly = 0, summary)
+
+    [<Fact>]
     member _.``viz DRC matches Magic DRC on bias_gen_output_legs`` () =
         let vizOnly, magicOnly =
             compareDrc out "testdata/cell_designs/precision_ref/bias_gen_output_legs.rkt"

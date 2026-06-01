@@ -220,7 +220,13 @@ let private foundryWaiverMarginNm : Map<string, int64> =
         "met2.4",     0L
         "met2.5",     0L
         "via.4a",     0L
+        "via.4b",     0L   // viz-only rule (asymmetric 0.085/0.055); Magic
+                           // deck uses the simpler via.4a composite. Foundry
+                           // FET cells pass the simpler check; the stricter
+                           // asymmetric check that catches sub-min-width
+                           // pads is still useful in user routing.
         "via.5a",     0L
+        "via.5b",     0L   // same story for met2 (via.5b mirrors via.4b).
         "met4.2",     0L
         "rr1.1",      0L
         "rr1.2",      0L

@@ -322,6 +322,11 @@ let allRules : Rule list = [
     // The 525 nm rule is keyed on n-diff (NSDM ∩ DIFF outside
     // NWELL), modelled with the NsdmNotInNwell condition on
     // the layerB filter — same machinery diff/tap.9 uses.
+    // rpm.1 — minimum RPM/URPM width. The polyres layer (xhrpoly /
+    // uhrpoly derived) is the precision-resistor body. Foundry
+    // cells emit narrow polyres bodies for tight resistance values;
+    // Magic flags any narrow side < 1.27 µm.
+    Width    ("rpm.1",      polyres, 1.27)
     CrossSpacing("rpm.3-6-nsd.5a", polyres, diff, 0.525,
                  Always, NsdmNotInNwell)
     CrossSpacing("rpm.3-7",        polyres, poly, 0.400,

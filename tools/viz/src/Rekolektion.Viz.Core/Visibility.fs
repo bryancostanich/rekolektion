@@ -4,6 +4,21 @@ type LayerKey = int * int       // (number, datatype)
 
 type ToggleState = {
     Layers          : Map<LayerKey, bool>
+    /// Per-layer DRC overlay visibility. Independent of `Layers` —
+    /// turning a layer's polygons off does not hide its DRC tiles
+    /// and vice versa. Lookup defaults to true via
+    /// `defaultValue true` in `isDrcVisibleForLayer`, so the map
+    /// only carries entries the user has actively touched (matches
+    /// the `Layers` convention).
+    DrcVisibleLayers: Map<LayerKey, bool>
+    /// "Other" bucket for DRC violations whose touched layers
+    /// don't intersect any layer shown in the Layers panel
+    /// (e.g. rules on label-only layers, or custom rules from a
+    /// YAML override on layers the panel doesn't surface). Default
+    /// true — the user can hide this bucket via the "Other" row
+    /// at the bottom of the Layers list. Per-layer toggles do not
+    /// affect this; only `setDrcVisibleOther` flips it.
+    DrcVisibleOther : bool
     Nets            : Map<string, bool>
     Blocks          : Map<string, bool>
     /// Set of nets currently polygon-highlighted. Polys whose net
@@ -26,6 +41,8 @@ type ToggleState = {
 
 let empty : ToggleState = {
     Layers = Map.empty
+    DrcVisibleLayers = Map.empty
+    DrcVisibleOther = true
     Nets = Map.empty
     Blocks = Map.empty
     HighlightedNets = Set.empty
@@ -64,6 +81,31 @@ let setAllLayers (keys: LayerKey seq) (visible: bool) (s: ToggleState) : ToggleS
     let layers =
         keys |> Seq.fold (fun acc k -> Map.add k visible acc) s.Layers
     { s with Layers = layers }
+
+let isDrcVisibleForLayer (s: ToggleState) (key: LayerKey) : bool =
+    Map.tryFind key s.DrcVisibleLayers |> Option.defaultValue true
+
+let setDrcVisibleLayer (key: LayerKey) (visible: bool) (s: ToggleState) : ToggleState =
+    { s with DrcVisibleLayers = Map.add key visible s.DrcVisibleLayers }
+
+let setAllDrcVisible (keys: LayerKey seq) (visible: bool) (s: ToggleState) : ToggleState =
+    let next =
+        keys |> Seq.fold (fun acc k -> Map.add k visible acc) s.DrcVisibleLayers
+    { s with DrcVisibleLayers = next }
+
+let isDrcVisibleOther (s: ToggleState) : bool =
+    s.DrcVisibleOther
+
+let setDrcVisibleOther (visible: bool) (s: ToggleState) : ToggleState =
+    { s with DrcVisibleOther = visible }
+
+/// Master "all DRC on/off" affordance. Sets every per-layer DRC
+/// entry in `keys` to `visible` AND the layerless-bucket toggle to
+/// the same value. The Layers panel's tri-state master uses this
+/// so one click hides every DRC tile regardless of bucket.
+let setAllDrcIncludingOther
+        (keys: LayerKey seq) (visible: bool) (s: ToggleState) : ToggleState =
+    s |> setAllDrcVisible keys visible |> setDrcVisibleOther visible
 
 let toggleNet (name: string) (visible: bool) (s: ToggleState) : ToggleState =
     { s with Nets = Map.add name visible s.Nets }

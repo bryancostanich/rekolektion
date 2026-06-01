@@ -2,6 +2,7 @@ module Rekolektion.Viz.App.Services.SessionState
 
 open System
 open System.IO
+open Rekolektion.Viz.Core
 
 /// Persistent per-user UI state that should survive app relaunches
 /// but isn't a "setting" the user explicitly edits — layer
@@ -22,10 +23,14 @@ type WindowBounds = {
 }
 
 type State = {
-    /// Layer visibility — only stores EXPLICITLY-toggled keys.
-    /// Layers not in the list inherit their default (visible).
-    /// Each entry: (layer number, datatype, visible).
-    Layers : (int * int * bool) list
+    /// Layer visibility + per-layer DRC-overlay visibility. Only
+    /// stores EXPLICITLY-toggled keys; layers not in the list
+    /// inherit their defaults (visible = true, drc = true).
+    /// Each entry: (layer number, datatype, visible, drc).
+    /// On parse, a legacy entry without `drc` reads as `true` to
+    /// preserve the "default DRC-on" behaviour for session files
+    /// written before the column was added.
+    Layers : (int * int * bool * bool) list
     /// Paths of the tabs that were open at last save, in display
     /// order.  On launch the App re-opens each path so the user
     /// lands back where they left off.  Missing files are skipped
@@ -39,6 +44,12 @@ type State = {
     /// hard-coded default in `MainWindow`).  Multi-monitor clamp
     /// happens at the `MainWindow` consumer, not here.
     Window : WindowBounds option
+    /// "Other" DRC bucket visibility — true means render
+    /// violations whose layers don't appear in the Layers panel.
+    /// Default true (matches `Visibility.empty.DrcVisibleOther`).
+    /// Persisted as a top-level `drcOther` field so it survives
+    /// app restart alongside the per-layer entries.
+    DrcOther : bool
 }
 
 let empty : State = {
@@ -46,6 +57,7 @@ let empty : State = {
     OpenPaths = []
     ActivePath = None
     Window = None
+    DrcOther = true
 }
 
 let private homeDir =
@@ -74,7 +86,18 @@ let parse (json: string) : State =
                     let n = entry.GetProperty("n").GetInt32()
                     let d = entry.GetProperty("d").GetInt32()
                     let v = entry.GetProperty("v").GetBoolean()
-                    (n, d, v) ]
+                    // Legacy entries (pre-DRC-column) lack a "drc"
+                    // field — default true to preserve the existing
+                    // "all DRC tiles visible" behaviour.
+                    let drc =
+                        let mutable r =
+                            Unchecked.defaultof<System.Text.Json.JsonElement>
+                        if entry.TryGetProperty("drc", &r)
+                           && r.ValueKind = System.Text.Json.JsonValueKind.True
+                                || r.ValueKind = System.Text.Json.JsonValueKind.False
+                        then r.GetBoolean()
+                        else true
+                    (n, d, v, drc) ]
             else []
         let openPaths =
             let mutable arr = Unchecked.defaultof<System.Text.Json.JsonElement>
@@ -101,10 +124,18 @@ let parse (json: string) : State =
                     }
                 with _ -> None
             else None
+        let drcOther =
+            let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if root.TryGetProperty("drcOther", &v)
+               && (v.ValueKind = System.Text.Json.JsonValueKind.True
+                   || v.ValueKind = System.Text.Json.JsonValueKind.False)
+            then v.GetBoolean()
+            else true   // legacy files default to "Other on"
         { Layers = layers
           OpenPaths = openPaths
           ActivePath = activePath
-          Window = window }
+          Window = window
+          DrcOther = drcOther }
     with _ -> empty
 
 /// Read the persisted session state. Missing or malformed file
@@ -126,11 +157,13 @@ let serialize (state: State) : string =
     let sb = System.Text.StringBuilder()
     sb.Append "{\"layers\":[" |> ignore
     state.Layers
-    |> List.iteri (fun i (n, d, v) ->
+    |> List.iteri (fun i (n, d, v, drc) ->
         if i > 0 then sb.Append "," |> ignore
         sb.AppendFormat(
-            "{{\"n\":{0},\"d\":{1},\"v\":{2}}}",
-            n, d, (if v then "true" else "false")) |> ignore)
+            "{{\"n\":{0},\"d\":{1},\"v\":{2},\"drc\":{3}}}",
+            n, d,
+            (if v then "true" else "false"),
+            (if drc then "true" else "false")) |> ignore)
     sb.Append "],\"openPaths\":[" |> ignore
     state.OpenPaths
     |> List.iteri (fun i p ->
@@ -149,6 +182,9 @@ let serialize (state: State) : string =
             w.Height.ToString(System.Globalization.CultureInfo.InvariantCulture),
             w.X, w.Y) |> ignore
     | None -> ()
+    sb.AppendFormat(
+        ",\"drcOther\":{0}",
+        (if state.DrcOther then "true" else "false")) |> ignore
     sb.Append "}" |> ignore
     sb.ToString()
 
@@ -166,8 +202,8 @@ let save (state: State) : unit =
                activePath = state.ActivePath
                layers =
                    state.Layers
-                   |> List.map (fun (n, d, v) ->
-                       sprintf "%d/%d=%b" n d v)
+                   |> List.map (fun (n, d, v, drc) ->
+                       sprintf "%d/%d=v%b/drc%b" n d v drc)
                    |> String.concat " " |}
     with ex ->
         try
@@ -186,16 +222,34 @@ let save (state: State) : unit =
 /// so model-driven saves must NOT overwrite it.
 let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
     let current = load ()
+    // Union of layer keys that the user has explicitly toggled in
+    // EITHER column. Persisting only `Layers.keys` would lose any
+    // entry where the user toggled DRC but left polygon visibility
+    // at the default. (Same the other way around: a layer with
+    // DRC at the default but a non-default polygon visibility
+    // would lose its DRC=true marker on reload — innocuous today
+    // because true is the default, but the union keeps the
+    // serialization symmetric and future-proof.)
+    let allKeys =
+        Set.union
+            (model.Toggle.Layers |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+            (model.Toggle.DrcVisibleLayers |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
     save {
         Layers =
-            model.Toggle.Layers
-            |> Map.toList
-            |> List.map (fun ((n, d), v) -> (n, d, v))
+            allKeys
+            |> Set.toList
+            |> List.map (fun (n, d) ->
+                let v =
+                    Visibility.isLayerVisible model.Toggle (n, d)
+                let drc =
+                    Visibility.isDrcVisibleForLayer model.Toggle (n, d)
+                (n, d, v, drc))
         OpenPaths =
             model.OpenMacros
             |> List.map (fun m -> m.OriginalPath)
         ActivePath = model.ActiveMacroPath
         Window = current.Window
+        DrcOther = Visibility.isDrcVisibleOther model.Toggle
     }
 
 /// Persist only the window bounds, preserving every other field

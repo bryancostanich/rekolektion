@@ -425,9 +425,25 @@ type private SkiaDraw(bounds: Rect,
                         | _ -> ()
 
                 if overlay.Violations.Length > 0 then
-                    DrcOverlay.render canvas vb
-                        (float lib.Units.DbuNm * 1.0e-3)
-                        drcProvenance overlay.Violations
+                    // Filter the violation array by per-layer DRC
+                    // toggles and the layerless "Other" bucket.
+                    //   * In-panel layers: visible iff at least one
+                    //     touched layer has D on (OR across the per-
+                    //     layer column).
+                    //   * Out-of-panel layers: visible iff
+                    //     `DrcVisibleOther` is on.
+                    // See `Drc.Filter.keepViolation`.
+                    let panelLayers =
+                        Layer.allDrawing
+                        |> List.map (fun l -> (l.Number, l.DataType))
+                        |> Set.ofList
+                    let visibleViolations =
+                        Drc.Filter.filterArray panelLayers toggle
+                            overlay.Violations
+                    if visibleViolations.Length > 0 then
+                        DrcOverlay.render canvas vb
+                            (float lib.Units.DbuNm * 1.0e-3)
+                            drcProvenance visibleViolations
 
                 if overlay.Routes.Length > 0 then
                     RatlineOverlay.render canvas vb
@@ -775,7 +791,20 @@ type private SkiaDraw(bounds: Rect,
                 // everything else so they read at a glance against
                 // the draft route + cell geometry. Empty array on
                 // the fast path (no draft, or draft is clean).
-                if routeLiveViolations.Length > 0 then
+                // Same per-layer + Other filter the main DRC overlay
+                // uses. Without this the live-DRC red outlines kept
+                // rendering even when every D toggle (and Other) was
+                // off — a second render path the toggle missed.
+                let visibleRouteLiveViolations =
+                    if routeLiveViolations.Length = 0 then routeLiveViolations
+                    else
+                        let panelLayers =
+                            Layer.allDrawing
+                            |> List.map (fun l -> (l.Number, l.DataType))
+                            |> Set.ofList
+                        Drc.Filter.filterArray panelLayers toggle
+                            routeLiveViolations
+                if visibleRouteLiveViolations.Length > 0 then
                     let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
                     let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
                     let pxPerDbuX = float vb.PixelW / dxWorld
@@ -802,7 +831,7 @@ type private SkiaDraw(bounds: Rect,
                         let t = min sy1 sy2
                         let b' = max sy1 sy2
                         canvas.DrawRect(SKRect(l, t, r', b'), vOutline)
-                    for v in routeLiveViolations do
+                    for v in visibleRouteLiveViolations do
                         paintBbox v.BboxA
                         match v.BboxB with
                         | Some b -> paintBbox b

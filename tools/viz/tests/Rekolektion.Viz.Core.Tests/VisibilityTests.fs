@@ -10,6 +10,57 @@ let ``empty ToggleState shows everything`` () =
     Visibility.isLayerVisible s (68, 20) |> should equal true
     Visibility.isNetVisible s "BL" |> should equal true
     Visibility.isBlockVisible s "sram_array" |> should equal true
+    // DRC-viz also defaults to visible per layer.
+    Visibility.isDrcVisibleForLayer s (68, 20) |> should equal true
+
+[<Fact>]
+let ``setDrcVisibleLayer flips one layer's DRC viz without touching others`` () =
+    let s = Visibility.empty |> Visibility.setDrcVisibleLayer (68, 20) false
+    Visibility.isDrcVisibleForLayer s (68, 20) |> should equal false
+    Visibility.isDrcVisibleForLayer s (69, 20) |> should equal true
+    // Polygon visibility is NOT touched.
+    Visibility.isLayerVisible s (68, 20) |> should equal true
+
+[<Fact>]
+let ``setDrcVisibleLayer is independent from toggleLayer`` () =
+    let s =
+        Visibility.empty
+        |> Visibility.toggleLayer (68, 20) false       // hide polygons
+        |> Visibility.setDrcVisibleLayer (68, 20) true // keep DRC viz on
+    Visibility.isLayerVisible s (68, 20) |> should equal false
+    Visibility.isDrcVisibleForLayer s (68, 20) |> should equal true
+    // And the converse: polygons on, DRC off.
+    let s2 =
+        Visibility.empty
+        |> Visibility.toggleLayer (69, 20) true
+        |> Visibility.setDrcVisibleLayer (69, 20) false
+    Visibility.isLayerVisible s2 (69, 20) |> should equal true
+    Visibility.isDrcVisibleForLayer s2 (69, 20) |> should equal false
+
+[<Fact>]
+let ``setAllDrcVisible accumulates over the seed map`` () =
+    let keys : Visibility.LayerKey list = [(68, 20); (69, 20); (70, 20)]
+    let s =
+        Visibility.empty
+        |> Visibility.setDrcVisibleLayer (66, 20) true // pre-existing entry
+        |> Visibility.setAllDrcVisible keys false
+    Visibility.isDrcVisibleForLayer s (68, 20) |> should equal false
+    Visibility.isDrcVisibleForLayer s (69, 20) |> should equal false
+    Visibility.isDrcVisibleForLayer s (70, 20) |> should equal false
+    // Pre-existing entry is preserved (not in `keys`).
+    Visibility.isDrcVisibleForLayer s (66, 20) |> should equal true
+    // Layer not in either map keeps the default-true behavior.
+    Visibility.isDrcVisibleForLayer s (71, 20) |> should equal true
+
+[<Fact>]
+let ``setAllDrcVisible true after false re-enables every key`` () =
+    let keys : Visibility.LayerKey list = [(68, 20); (69, 20)]
+    let s =
+        Visibility.empty
+        |> Visibility.setAllDrcVisible keys false
+        |> Visibility.setAllDrcVisible keys true
+    Visibility.isDrcVisibleForLayer s (68, 20) |> should equal true
+    Visibility.isDrcVisibleForLayer s (69, 20) |> should equal true
 
 [<Fact>]
 let ``toggling layer off hides it`` () =

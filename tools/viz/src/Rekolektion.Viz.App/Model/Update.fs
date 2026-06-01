@@ -723,6 +723,34 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let model' = { model with Toggle = toggle' }
         backend.PersistSession model'
         model', Cmd.none
+    | Msg.ToggleDrcLayer (key, vis) ->
+        // Turning a D checkbox ON implies "I want to see DRCs".
+        // Without flipping the master `ShowDrc`, the compute path
+        // stays asleep and no violations get computed — the user
+        // clicks D but sees nothing change. Auto-enable ShowDrc on
+        // any D=true click; D=false leaves ShowDrc alone (the user
+        // is narrowing what's shown, not opting out of DRC).
+        let toggle' = Visibility.setDrcVisibleLayer key vis model.Toggle
+        let showDrc' = if vis then true else model.ShowDrc
+        let model' = { model with Toggle = toggle'; ShowDrc = showDrc' }
+        backend.PersistSession model'
+        model', Cmd.none
+    | Msg.SetAllDrcVisible vis ->
+        let keys =
+            Layout.Layer.allDrawing
+            |> List.map (fun l -> (l.Number, l.DataType))
+        let toggle' =
+            Visibility.setAllDrcIncludingOther keys vis model.Toggle
+        let showDrc' = if vis then true else model.ShowDrc
+        let model' = { model with Toggle = toggle'; ShowDrc = showDrc' }
+        backend.PersistSession model'
+        model', Cmd.none
+    | Msg.ToggleDrcOther vis ->
+        let toggle' = Visibility.setDrcVisibleOther vis model.Toggle
+        let showDrc' = if vis then true else model.ShowDrc
+        let model' = { model with Toggle = toggle'; ShowDrc = showDrc' }
+        backend.PersistSession model'
+        model', Cmd.none
     | Msg.SetActiveLayer layer ->
         let toggle' = Visibility.setActiveLayer layer model.Toggle
         let model' = { model with Toggle = toggle' }

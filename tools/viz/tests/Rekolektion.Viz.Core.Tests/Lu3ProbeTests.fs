@@ -71,6 +71,112 @@ type Lu3Probe(out: ITestOutputHelper) =
                 p.Layer p.DataType x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
 
     [<Fact>]
+    member _.``bias_gen_output_legs region check on the tap`` () =
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "precision_ref", "bias_gen_output_legs.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let nwellPolys =
+            flat |> Array.filter (fun p -> p.Layer = 64 && p.DataType = 20)
+        out.WriteLine (sprintf "nwell polys (flattened): %d" nwellPolys.Length)
+        for p in nwellPolys do
+            out.WriteLine (sprintf "  nwell points=%d" p.Points.Length)
+            for q in p.Points do
+                out.WriteLine (sprintf "    (%d,%d)" q.X q.Y)
+        let nwellRegion = Region.ofPolygons nwellPolys
+        out.WriteLine (sprintf "nwell region slabs: %d" nwellRegion.Slabs.Length)
+        // Check the tap region intersection.
+        let tapRegion = Region.ofRect 4862L -13152L 11011L -12732L
+        let intersect = Boolean.intersect tapRegion nwellRegion
+        out.WriteLine (sprintf
+            "tap region: 1 slab; nwell intersection: empty=%b slabs=%d"
+            (Region.isEmpty intersect) intersect.Slabs.Length)
+        for slab in intersect.Slabs do
+            out.WriteLine (sprintf
+                "  slab y=[%d,%d) intervals=%d" slab.Y (slab.Y + slab.Height) slab.Intervals.Length)
+            for iv in slab.Intervals do
+                out.WriteLine (sprintf "    x=[%d,%d)" iv.X1 iv.X2)
+        // Check the n-tap at top.
+        let ntapRegion = Region.ofRect -154L -1026L 20196L -606L
+        let ntapInt = Boolean.intersect ntapRegion nwellRegion
+        out.WriteLine (sprintf
+            "n-tap intersection: empty=%b" (Region.isEmpty ntapInt))
+
+    [<Fact>]
+    member _.``bias_gen_output_legs p-tap detection`` () =
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "precision_ref", "bias_gen_output_legs.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        let byKey k =
+            flat |> Array.filter (fun p -> p.Layer = fst k && p.DataType = snd k)
+        let taps  = byKey (65, 44) |> Array.map bboxOf
+        let licon = byKey (66, 44) |> Array.map bboxOf
+        let psdm  = byKey (94, 20) |> Array.map bboxOf
+        let nsdm  = byKey (93, 44) |> Array.map bboxOf
+        let nwell = byKey (64, 20) |> Array.map bboxOf
+        let diffs = byKey (65, 20) |> Array.map bboxOf
+        out.WriteLine (sprintf
+            "diff=%d tap=%d licon=%d psdm=%d nsdm=%d nwell=%d"
+            diffs.Length taps.Length licon.Length psdm.Length nsdm.Length nwell.Length)
+        // Show all taps with their psdm/nwell/licon classifications.
+        for t in taps do
+            let (tx1,ty1,tx2,ty2) = t
+            let hasPsdm = psdm |> Array.exists (fun p -> tx1 < (let (_,_,a,_)=p in a) && (let (a,_,_,_)=p in a) < tx2 && ty1 < (let (_,_,_,b)=p in b) && (let (_,b,_,_)=p in b) < ty2)
+            let hasNsdm = nsdm |> Array.exists (fun p -> tx1 < (let (_,_,a,_)=p in a) && (let (a,_,_,_)=p in a) < tx2 && ty1 < (let (_,_,_,b)=p in b) && (let (_,b,_,_)=p in b) < ty2)
+            let inNwell = nwell |> Array.exists (fun w -> tx1 < (let (_,_,a,_)=w in a) && (let (a,_,_,_)=w in a) < tx2 && ty1 < (let (_,_,_,b)=w in b) && (let (_,b,_,_)=w in b) < ty2)
+            let liconsOn =
+                licon |> Array.filter (fun l ->
+                    tx1 < (let (_,_,a,_)=l in a) && (let (a,_,_,_)=l in a) < tx2
+                    && ty1 < (let (_,_,_,b)=l in b) && (let (_,b,_,_)=l in b) < ty2)
+            let kind =
+                if hasPsdm && not inNwell && liconsOn.Length > 0 then "VALID-P-TAP"
+                elif hasNsdm && inNwell && liconsOn.Length > 0 then "VALID-N-TAP"
+                else "uncontacted/ambiguous"
+            out.WriteLine (sprintf
+                "  tap=(%d,%d,%d,%d) psdm=%b nsdm=%b inNwell=%b licons=%d -> %s"
+                tx1 ty1 tx2 ty2 hasPsdm hasNsdm inNwell liconsOn.Length kind)
+            // Which nwell is this tap supposedly inside?
+            let containingNwells =
+                nwell |> Array.filter (fun (w1,x1,w2,x2) ->
+                    tx1 < w2 && w1 < tx2 && ty1 < x2 && x1 < ty2)
+            for (w1,x1,w2,x2) in containingNwells do
+                out.WriteLine (sprintf
+                    "    overlapping nwell=(%d,%d,%d,%d)" w1 x1 w2 x2)
+        // Also show the n-diff bboxes my viz fires on (LU.2 viz-only):
+        let viz1 = 8931L, -12297L, 10931L, -10717L
+        let viz2 = 4132L, -12296L, 8132L, -10716L
+        out.WriteLine "viz-only LU.2 bboxes:"
+        for (vx1,vy1,vx2,vy2) as v in [|viz1; viz2|] do
+            out.WriteLine (sprintf "  viz=(%d,%d,%d,%d)" vx1 vy1 vx2 vy2)
+            // What is the underlying diff?
+            let cover =
+                diffs |> Array.filter (fun (a1,b1,a2,b2) ->
+                    a1 < vx2 && vx1 < a2 && b1 < vy2 && vy1 < b2)
+            for (a1,b1,a2,b2) as d in cover do
+                let hasNsdm = nsdm |> Array.exists (fun (p1,q1,p2,q2) ->
+                    a1 < p2 && p1 < a2 && b1 < q2 && q1 < b2)
+                let inNwell = nwell |> Array.exists (fun (w1,x1,w2,x2) ->
+                    a1 < w2 && w1 < a2 && b1 < x2 && x1 < b2)
+                out.WriteLine (sprintf
+                    "    underlying diff=(%d,%d,%d,%d) nsdm=%b inNwell=%b"
+                    a1 b1 a2 b2 hasNsdm inNwell)
+
+    [<Fact>]
     member _.``opamp URPM (79/20) polygons`` () =
         let path =
             System.Reflection.Assembly.GetExecutingAssembly().Location

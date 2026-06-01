@@ -910,43 +910,81 @@ let checkWithToggles
     let nsdmBb = layerBboxes nsdmKey
     let nwellPolys = layerPolys nwellKey
     let overlapsAnyBb b arr = Array.exists (bbOverlaps b) arr
-    // Merged nwell components.
+    // Shape-aware "is this bbox center inside any nwell polygon?"
+    // Nwell polygons are often L- or U-shaped with substrate
+    // pockets cut out (e.g. bias_gen_output_legs has a 10-vertex
+    // nwell wrapping a substrate cavity for the p-tap). bbox-
+    // overlap incorrectly treats a tap/diff sitting in the cavity
+    // as "in nwell"; using a point-in-polygon test on the bbox
+    // center distinguishes correctly. (Region.ofPolygons collapses
+    // each polygon to its bbox, so it's not shape-aware here.)
+    let pointInPolygon
+            (px: int64) (py: int64)
+            (poly: FlatPolygon) : bool =
+        let pts = poly.Points
+        let mutable inside = false
+        let n = pts.Length
+        let mutable j = n - 1
+        for i in 0 .. n - 1 do
+            let xi = pts.[i].X
+            let yi = pts.[i].Y
+            let xj = pts.[j].X
+            let yj = pts.[j].Y
+            if ((yi > py) <> (yj > py))
+               && (px < (xj - xi) * (py - yi) / (max 1L (yj - yi)) + xi) then
+                inside <- not inside
+            j <- i
+        inside
+    let inAnyNwell ((x1, y1, x2, y2): int64 * int64 * int64 * int64) : bool =
+        if nwellPolys.Length = 0 then false
+        else
+            // Fast bbox reject first; then sample the center.
+            // Center is sufficient for the tap-classification use
+            // case here (taps are small rectangles; a cutout that
+            // engulfs the center reliably distinguishes substrate
+            // pockets from real well containment).
+            let cx = (x1 + x2) / 2L
+            let cy = (y1 + y2) / 2L
+            nwellPolys
+            |> Array.exists (fun p ->
+                let (px1, py1, px2, py2) = bbOf p
+                px1 <= cx && cx <= px2 && py1 <= cy && cy <= py2
+                && pointInPolygon cx cy p)
+    // Merged nwell components (still useful for grouping p-diffs
+    // by well). Region.ofPolygons collapses each polygon to its
+    // bbox here, so an L-shape nwell becomes its bounding rect
+    // for grouping purposes — fine for the LU.3 use of associating
+    // p-diffs with a well, since the bbox covers the actual well
+    // and the cutout is empty space inside it.
     let nwellComponents =
         if nwellPolys.Length = 0 then [||]
         else
-            let region = Geometry.Region.ofPolygons nwellPolys
-            Geometry.Components.componentBboxes region
-    // p-diff bboxes (diff ∩ psdm, overlapping any nwell).
+            Geometry.Components.componentBboxes
+                (Geometry.Region.ofPolygons nwellPolys)
+    // p-diff bboxes (diff ∩ psdm, INSIDE the actual nwell region).
     let pdiffs =
         diffBb
         |> Array.filter (fun b ->
-            overlapsAnyBb b psdmBb && overlapsAnyBb b (Array.map id nwellComponents))
-    // n-diff bboxes: diff ∩ nsdm AND not-fully-covered-by a licon.
-    // A diff in nsdm covered by licon (with the LICON inside an
-    // nwell) is the n-tap structure. Without licon contact it's
-    // n-diff — same logic as Magic's `ntap = nsd∩licon`. We
-    // approximate: a diff is n-diff unless it's fully wrapped by
-    // a licon-bearing nwell-internal region. Easier proxy: a diff
-    // counts as n-diff if it has no licon-overlap (uncontacted
-    // nsdm diff is n-diff regardless of nwell).
+            overlapsAnyBb b psdmBb && inAnyNwell b)
+    // n-diff bboxes: diff ∩ nsdm.
     let ndiffs =
         diffBb
         |> Array.filter (fun b -> overlapsAnyBb b nsdmBb)
-    // Valid n-tap = tap ∩ nsdm ∩ nwell, with at least one licon
-    // contacting it.
+    // Valid n-tap = tap ∩ nsdm INSIDE nwell (region-checked), with
+    // at least one licon contacting it.
     let ntaps =
         tapBb
         |> Array.filter (fun b ->
             overlapsAnyBb b nsdmBb
-            && overlapsAnyBb b (Array.map id nwellComponents)
+            && inAnyNwell b
             && overlapsAnyBb b liconBb)
-    // Valid p-tap = tap ∩ psdm OUTSIDE nwell, with at least one
-    // licon contacting it.
+    // Valid p-tap = tap ∩ psdm OUTSIDE nwell (region-checked),
+    // with at least one licon contacting it.
     let ptaps =
         tapBb
         |> Array.filter (fun b ->
             overlapsAnyBb b psdmBb
-            && not (overlapsAnyBb b (Array.map id nwellComponents))
+            && not (inAnyNwell b)
             && overlapsAnyBb b liconBb)
     // LU.3: per merged-nwell-component, fire on each p-diff in a
     // component that has no licon-contacted n-tap inside.

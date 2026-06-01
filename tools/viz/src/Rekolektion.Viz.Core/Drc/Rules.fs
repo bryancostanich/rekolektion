@@ -701,9 +701,17 @@ module Magic =
 /// of the existing `Rules` module. We can re-evaluate the split in
 /// Phase 4 if this module grows large enough to warrant it.
 module Klayout =
-    /// KLayout-flavored rule list. Empty until Phase 4 promotes
-    /// rules one at a time via the corpus harness.
-    let allRules : Rule list = []
+    /// KLayout-flavored rule list. Populated rule-by-rule via the
+    /// Phase 4 corpus harness — each entry below traces back to a
+    /// `viol_<rule>_<variant>.rkt` cell that proves F#-Klayout ≡
+    /// ext-KLayout for the rule.  See
+    /// `docs/internals/drc_rule_equivalency.md`.
+    let allRules : Rule list = [
+        // --- Metal 1 (proved against tests/drc_corpus/) ---
+        Width   ("m1.1", met1, 0.14)    // min m1 width 0.14 µm
+        Spacing ("m1.2", met1, 0.14)    // min m1 spacing 0.14 µm
+        MinArea ("m1.6", met1, 0.083)   // min m1 area 0.083 µm²
+    ]
 
     /// Cross-layer spacing entries derived from `allRules`. Same
     /// shape as `Rules.allCrossSpacings` but scoped to the KLayout-
@@ -736,20 +744,29 @@ module Klayout =
         Provenance = Map.empty
     }
 
-    /// Layer → (width, spacing) lookup. Phase 4 builds this
-    /// incrementally as Width/Spacing rules land in `allRules`;
-    /// for now the empty list produces an empty Map so callers
-    /// fall through cleanly to `None`.
+    /// Layer → (width, spacing) lookup. Width and Spacing rules for
+    /// the same layer MUST merge into one entry; Map.ofList would
+    /// otherwise keep only the last inserted half and drop the other
+    /// (returning MinWidthUm=0 for layers that have only a Spacing
+    /// rule entered after the Width rule, or vice-versa).
     let private byKey =
+        let merge (k: int * int) (w: float option) (s: float option)
+                  (acc: Map<int * int, float option * float option>) =
+            let prev =
+                match Map.tryFind k acc with
+                | Some (pw, ps) -> (pw, ps)
+                | None -> (None, None)
+            let pw, ps = prev
+            let merged = (Option.orElse pw w, Option.orElse ps s)
+            Map.add k merged acc
         allRules
-        |> List.choose (fun r ->
+        |> List.fold (fun acc r ->
             match r with
             | Width (_, l, w) ->
-                Some ((l.Number, l.DataType), (Some w, None))
+                merge (l.Number, l.DataType) (Some w) None acc
             | Spacing (_, l, s) ->
-                Some ((l.Number, l.DataType), (None, Some s))
-            | _ -> None)
-        |> Map.ofList
+                merge (l.Number, l.DataType) None (Some s) acc
+            | _ -> acc) Map.empty
 
     /// LayerRule lookup — Magic's `Rules.tryFind` analog. Returns
     /// `None` for any layer until Phase 4 populates Width/Spacing

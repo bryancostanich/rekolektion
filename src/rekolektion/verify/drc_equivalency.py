@@ -308,7 +308,7 @@ def render_report(results: list[CellResult]) -> str:
                 for r in results
             )
             lines.append(
-                f"| `{rule}` | {'✅' if k_ok else '🔴'} | {'✅' if m_ok else '🔴'} |"
+                f"| `{rule}` | {'OK' if k_ok else 'FAIL'} | {'OK' if m_ok else 'FAIL'} |"
             )
         lines.append("")
 

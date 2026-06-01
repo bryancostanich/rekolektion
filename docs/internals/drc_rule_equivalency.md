@@ -41,18 +41,17 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage baseline as of Phase 4 init: 0 rules promotable.**
-The F# Klayout ruleset (`Rules.Klayout.allRules`) is empty — Phase
-3 landed the dispatcher; Phase 4 populates it.  The F# Magic
-ruleset is the pre-existing implementation, mostly green.
+**Coverage as of 2026-06-01: 3 rules promotable on the KLayout
+diagonal (met1.1, met1.2, met1.6).** All three Magic-side and
+KLayout-side rules now have matching F# implementations.
 
 | Rule | F# Klayout ≡ ext-KLayout | F# Magic ≡ ext-Magic | Notes |
 |---|:---:|:---:|---|
-| `met1.1` | FAIL | OK | Klayout-side empty; Magic-side green on `viol_met1.1_subwidth` (1 tile each side). |
-| `met1.2` | FAIL | FAIL | Magic external reports 2 tiles where KLayout / F#-Magic report 1 — engine interpretation delta on the same geometry (`viol_met1.2_subspacing`). Investigate before promoting either side. |
-| `met1.6` | FAIL | OK | Klayout-side empty; Magic-side green on `viol_met1.6_minarea` (1 tile each side). |
+| `met1.1` | OK | OK | Width 0.14 µm. Proves green on `viol_met1.1_subwidth` (1 tile each side, all four paths). |
+| `met1.2` | OK | FAIL | Spacing 0.14 µm. F# Klayout matches ext-KLayout (1 tile). **F# Magic vs ext-Magic delta:** Magic external reports 2 tiles on `viol_met1.2_subspacing` where F# Magic / ext-KLayout / F# Klayout all report 1. Pre-existing F#-vs-Magic edge-detection difference, not blocking KLayout-side promotion. |
+| `met1.6` | OK | OK | Min area 0.083 µm². Proves green on `viol_met1.6_minarea`. |
 
-(More rules land as Phase 4 populates the corpus.)
+(More rules land as the corpus grows.)
 
 ## What "OK" means
 

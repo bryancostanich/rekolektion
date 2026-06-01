@@ -49,29 +49,39 @@ let ``Rules.Magic has the populated Magic-flavored ruleset`` () =
     // this lower bound.
     (List.length Rules.Magic.allRules) |> should be (greaterThan 20)
 
-// --- Klayout skeleton submodule -------------------------------------------
+// --- Klayout populated submodule ------------------------------------------
+//
+// As Phase 4 populates Rules.Klayout.allRules rule-by-rule, these
+// assertions tighten.  Today's bar: the three seed met1 rules
+// (m1.1 / m1.2 / m1.6) are present, proven green on the corpus.
 
 [<Fact>]
-let ``Rules.Klayout.allRules is empty in Phase 3`` () =
-    // Phase 4 populates this list one rule at a time via the corpus
-    // harness.  Once that work lands, this test will need to flip
-    // to a "≥ N" assertion against the equivalency table.
-    Rules.Klayout.allRules |> should equal ([]: Rules.Rule list)
+let ``Rules.Klayout.allRules has the proven met1 rules`` () =
+    let names = Rules.Klayout.allRules |> List.map Rules.nameOf |> Set.ofList
+    names |> should contain "m1.1"
+    names |> should contain "m1.2"
+    names |> should contain "m1.6"
 
 [<Fact>]
-let ``Rules.Klayout derived helpers match the empty allRules`` () =
-    Rules.Klayout.allCrossSpacings |> should equal ([]: Rules.CrossSpacingRule list)
-    Rules.Klayout.liveRules        |> should equal ([]: Rules.Rule list)
-    Rules.Klayout.liveEligibleNames |> should equal (Set.empty: Set<string>)
+let ``Rules.Klayout derived helpers reflect the populated rule list`` () =
+    // m1.1 is a Width rule, m1.2 is Spacing — both live-eligible.
+    // m1.6 is MinArea — NOT live-eligible (only fires at commit).
+    Rules.Klayout.liveRules.Length |> should equal 2
+    Rules.Klayout.liveEligibleNames
+        |> should equal (Set.ofList ["m1.1"; "m1.2"])
 
 [<Fact>]
-let ``Rules.Klayout.defaultView has empty rule list, empty provenance`` () =
-    Rules.Klayout.defaultView.Rules |> should equal ([]: Rules.Rule list)
+let ``Rules.Klayout.defaultView mirrors the rule list, empty provenance`` () =
+    Rules.Klayout.defaultView.Rules |> should equal Rules.Klayout.allRules
     Rules.Klayout.defaultView.Provenance |> should equal Map.empty<string, string>
 
 [<Fact>]
-let ``Rules.Klayout.tryFind returns None for any layer`` () =
-    Rules.Klayout.tryFind 68 20 |> should equal (None: Rules.LayerRule option)
+let ``Rules.Klayout.tryFind resolves met1 (proven), None for unimplemented layers`` () =
+    let m1 = Rules.Klayout.tryFind 68 20
+    m1.IsSome |> should equal true
+    m1.Value.MinWidthUm |> should equal 0.14
+    m1.Value.MinSpacingUm |> should equal 0.14
+    // Phase 4 hasn't implemented met2 / li1 yet — None expected.
     Rules.Klayout.tryFind 69 20 |> should equal (None: Rules.LayerRule option)
     Rules.Klayout.tryFind 67 20 |> should equal (None: Rules.LayerRule option)
 
@@ -89,8 +99,12 @@ let ``viewFor Klayout returns the KLayout-flavored view`` () =
 let ``viewFor distinguishes Magic from Klayout`` () =
     let magic = Rules.viewFor Compat.Magic
     let klayout = Rules.viewFor Compat.Klayout
-    // Cannot be the same view as long as Magic has rules and Klayout
-    // doesn't.  Phase 4 work that populates Klayout will keep them
-    // distinct in their RULE CONTENT.
-    magic.Rules |> should not' (be Empty)
-    klayout.Rules |> should equal ([]: Rules.Rule list)
+    // Both lists are non-empty as Phase 4 populates KLayout.  They
+    // stay DISTINCT because they reference different ruleset
+    // bodies — same rules under different deck names, plus rules
+    // that exist in one engine but not the other.  The size delta
+    // (Magic has the full Magic-tuned list; Klayout grows
+    // incrementally) is the load-bearing signal.
+    magic.Rules   |> should not' (be Empty)
+    klayout.Rules |> should not' (be Empty)
+    (List.length magic.Rules) |> should be (greaterThan (List.length klayout.Rules))

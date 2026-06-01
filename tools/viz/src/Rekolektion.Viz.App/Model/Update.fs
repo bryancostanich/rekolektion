@@ -380,6 +380,7 @@ let private commitRouteWith
                             let allSegs =
                                 pads @ segs @ startVias @ endVias
                                 |> Routing.Pads.dropPadsContainedByForeignPolys
+                                    model.DrcView mc.Document.Units
                                     mc.FlatPolygons
                             // Stamp every rect in this commit with
                             // the same WireId — the wire and its

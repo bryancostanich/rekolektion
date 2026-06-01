@@ -810,10 +810,20 @@ let checkWithToggles
             //   nDiff       = implant ∩ active
             //   nDiffOut    = nDiff \ well
             //   if nDiffOut is empty → no possible violation
-            //   wellGrown   = grow well by limit
-            //   violations  = nDiffOut ∩ wellGrown
-            // Where nDiffOut and wellGrown overlap, an n-diff
-            // region is within `limit` of well — a violation.
+            //   nDiffOutGrown = grow nDiffOut by limit
+            //   violations  = well ∩ nDiffOutGrown
+            //
+            // Emit the violation on the WELL side rather than
+            // the n-diff side (probed on b1_5_stage1: Magic puts
+            // its diff/tap.9 bbox at y∈[-80,125] — the parent
+            // nwell-bottom strip — while the older n-diff-side
+            // emission landed inside the foundry NFET footprint
+            // and got swallowed by the cell-scope waiver). The
+            // pair (well-side vs n-diff-side) is mathematically
+            // equivalent for whether-a-violation-exists; the
+            // bbox location matters for waiver semantics
+            // because the well in this rule is by definition
+            // the parent's geometry, not the cell's.
             let limit = umToDbu umPerDbu minUm
             if limit > 0L then
                 let implantPolys =
@@ -834,8 +844,9 @@ let checkWithToggles
                     let nDiff = Boolean.intersect implantR activeR
                     let nDiffOut = Boolean.subtract nDiff wellR
                     if not (Region.isEmpty nDiffOut) then
-                        let wellGrown = Size.grow limit wellR
-                        let violations = Boolean.intersect nDiffOut wellGrown
+                        let nDiffOutGrown = Size.grow limit nDiffOut
+                        let violations =
+                            Boolean.intersect wellR nDiffOutGrown
                         for slab in violations.Slabs do
                             for iv in slab.Intervals do
                                 let m = min (iv.X2 - iv.X1) slab.Height

@@ -177,6 +177,51 @@ type Lu3Probe(out: ITestOutputHelper) =
                     a1 b1 a2 b2 hasNsdm inNwell)
 
     [<Fact>]
+    member _.``b1_5_stage1 difftap.9 fire at (30,-80,1370,125)`` () =
+        // PROBE: Magic fires diff/tap.9 (n-diff to nwell spacing
+        // < 0.34 µm) at this bbox. viz's F# rule
+        //   ImplantOutsideWellSpacing("diff/tap.9", nsdm, diff,
+        //                              nwell, 0.34)
+        // doesn't fire. Find the actual nsdm / diff / nwell
+        // polygons that bound the gap.
+        let path =
+            System.Reflection.Assembly.GetExecutingAssembly().Location
+            |> System.IO.Path.GetDirectoryName
+            |> fun d -> System.IO.Path.Combine(
+                            d, "testdata", "cell_designs",
+                            "column_readout_chain", "b1_5_stage1.rkt")
+        if not (System.IO.File.Exists path) then
+            out.WriteLine (sprintf "SKIP: %s" path)
+        else
+        let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
+        let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
+        // Widen the target bbox by 500 nm on every side (>> limit 340)
+        // to catch any contributing polygon.
+        let target = -470L, -580L, 1870L, 625L
+        let (tx1, ty1, tx2, ty2) = target
+        let overlaps (b: int64*int64*int64*int64) =
+            let (x1, y1, x2, y2) = b
+            tx1 < x2 && x1 < tx2 && ty1 < y2 && y1 < ty2
+        let dump label num dt =
+            let polys =
+                flat
+                |> Array.filter (fun p ->
+                    p.Layer = num && p.DataType = dt
+                    && overlaps (bboxOf p))
+                |> Array.sortBy bboxOf
+            out.WriteLine (sprintf "%s (%d/%d): %d" label num dt polys.Length)
+            for p in polys do
+                let (x1, y1, x2, y2) = bboxOf p
+                out.WriteLine (sprintf
+                    "  bbox=(%d,%d,%d,%d) %dx%d src=%s"
+                    x1 y1 x2 y2 (x2-x1) (y2-y1) p.SourceStructure)
+        dump "diff"  65 20
+        dump "tap"   65 44
+        dump "nsdm"  93 44
+        dump "psdm"  94 20
+        dump "nwell" 64 20
+
+    [<Fact>]
     member _.``tap_mux_row difftap3 fire at (11420,-365)`` () =
         // PROBE: 175 nm gap between diff and tap. viz fires
         // difftap.3 (CrossSpacing diff↔tap, limit 0.27 µm).

@@ -82,3 +82,6 @@ openlane_test_v1activation/macros/sram_activation_bank.lib
 # Brainstorming session content (visual companion)
 .superpowers/
 scratch/
+
+# Git worktrees (for isolated workspaces)
+.worktrees/

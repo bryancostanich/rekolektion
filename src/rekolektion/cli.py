@@ -108,6 +108,24 @@ def _cmd_array(args: argparse.Namespace) -> None:
     print(f"Written to {output}")
 
 
+def _cmd_verify_grid(args: argparse.Namespace) -> None:
+    """Walk a `.rkt` and report any off-grid coords."""
+    from rekolektion.verify import verify_grid
+
+    result = verify_grid(args.rkt, grid=args.grid)
+    print(result.summary())
+    if not result.clean:
+        # Group by cell so the report scans top-down.
+        by_cell: dict[str, list] = {}
+        for v in result.off_grid:
+            by_cell.setdefault(v.cell, []).append(v)
+        for cell in sorted(by_cell):
+            print(f"  cell {cell!r}:")
+            for v in by_cell[cell]:
+                print(f"    {v.element_kind:8s} {v.coord}")
+        sys.exit(1)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="rekolektion",
@@ -156,6 +174,21 @@ def main(argv: list[str] | None = None) -> None:
         help="Insert WL strap every N columns (0 = none, default: 16)",
     )
     p_array.set_defaults(func=_cmd_array)
+
+    # --- verify-grid subcommand ---
+    p_grid = sub.add_parser(
+        "verify-grid",
+        help="Check that every coord in a .rkt lands on the PDK grid",
+    )
+    p_grid.add_argument("rkt", help="Path to the .rkt to verify")
+    p_grid.add_argument(
+        "--grid",
+        type=int,
+        default=None,
+        help="Override grid (nm). Default: PDK grid from the .rkt's "
+        "(pdk …) line (sky130 = 5 nm).",
+    )
+    p_grid.set_defaults(func=_cmd_verify_grid)
 
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):

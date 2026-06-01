@@ -30,6 +30,7 @@ from pathlib import Path
 
 from rekolektion.verify._primitive_footprints import compute_primitive_footprints
 from rekolektion.verify.drc import DRCResult, run_drc
+from rekolektion.verify.grid import verify_grid
 
 
 def _repo_root() -> Path:
@@ -82,6 +83,7 @@ def verify_drc(
     allow_global_waivers: bool = False,
     keep_gds: bool = False,
     full: bool = False,
+    strict_grid: bool = True,
 ) -> DRCResult:
     """Run Magic DRC on a `.rkt` block.
 
@@ -107,6 +109,17 @@ def verify_drc(
             Default False uses the fast geometry-only style. Slower
             on larger cells; opt in when you want sign-off-grade
             results.
+        strict_grid: When True (default), runs `verify_grid` before
+            Magic and escalates any off-grid coords into the
+            returned `DRCResult` (clean=False, violations folded
+            into `real_errors`). Set to False to observe off-grid
+            without escalating — the grid count still appears in
+            the summary but doesn't gate `clean`. Off-grid coords
+            are a foundry sign-off failure in their own right; the
+            strict default catches them before they reach Magic
+            (where they manifest as phantom 14-nm-sliver poly.2
+            violations under rotated SRefs and are hard to
+            attribute).
 
     Returns:
         `DRCResult` with `.clean`, `.real_error_count`, `.real_errors`,
@@ -122,6 +135,11 @@ def verify_drc(
     rkt = Path(rkt_path).resolve()
     if not rkt.is_file():
         raise FileNotFoundError(rkt)
+
+    # Phase 0: grid check.  Runs before the Magic conversion so
+    # off-grid drift surfaces with a clear cell+coord report rather
+    # than as phantom poly.2 tiles deep inside the DRC log.
+    grid_result = verify_grid(rkt)
 
     # Materialize the GDS. Either to a stable location (when output_dir
     # supplied AND keep_gds=True) or to a tempfile.
@@ -154,7 +172,7 @@ def verify_drc(
             )
         else:
             auto_footprints = waiver_footprints
-        return run_drc(
+        drc_result = run_drc(
             gds,
             cell_name=cell_name,
             pdk_root=pdk_root,
@@ -163,6 +181,30 @@ def verify_drc(
             allow_global_waivers=allow_global_waivers,
             full=full,
         )
+        # Fold grid violations into the DRCResult so callers see one
+        # combined verdict.  Grid is reported as a single synthesized
+        # error line per cell to keep the report scannable; details
+        # live on `grid_result` (which we attach as an attribute
+        # since DRCResult doesn't carry that field natively).
+        if grid_result.off_grid:
+            by_cell: dict[str, int] = {}
+            for v in grid_result.off_grid:
+                by_cell[v.cell] = by_cell.get(v.cell, 0) + 1
+            for cell, count in sorted(by_cell.items()):
+                msg = (
+                    f"({count}) grid: off-grid coords in cell "
+                    f"{cell!r} (grid={grid_result.grid} nm)"
+                )
+                drc_result.errors.append(msg)
+                if strict_grid:
+                    drc_result.real_errors.append(msg)
+            drc_result.error_count += len(grid_result.off_grid)
+            if strict_grid:
+                drc_result.real_error_count += len(grid_result.off_grid)
+                drc_result.clean = False
+        # Expose the detailed grid report for callers that want it.
+        drc_result.grid = grid_result  # type: ignore[attr-defined]
+        return drc_result
     finally:
         if cleanup and gds.exists():
             try:

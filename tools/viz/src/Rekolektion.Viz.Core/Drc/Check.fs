@@ -1222,10 +1222,24 @@ let checkWithToggles
           SourceStructure = "drc-cluster"
           SourceIndex = idx
           TopInstanceIndex = None }
+    // Track 02 Phase 4 — rules whose emit style is "one violation
+    // per failing edge" or "one per uncovered source" don't want
+    // the spatial-clustering post-pass to merge their independent
+    // emits.  Derived from view.Rules by kind; under Compat.Klayout
+    // the Enclosure / AsymEnclosure family will also land here once
+    // edge-counting is wired up.  See Fork #2 of
+    // docs/decisions/autonomous_2026-06-01.md.
+    let nonClusterableRules : Set<string> =
+        view.Rules
+        |> List.choose (fun r ->
+            match r with
+            | Rules.MustBeInside (n, _, _) -> Some n
+            | _ -> None)
+        |> Set.ofList
     waivedViolations
     |> Array.groupBy (fun v -> v.Rule, v.LayerNumber, v.LayerType)
     |> Array.collect (fun ((ruleName, ln, lt), vs) ->
-        if vs.Length <= 1 then vs
+        if vs.Length <= 1 || nonClusterableRules.Contains ruleName then vs
         else
             // Cluster via connected components. Spacing/Cross-
             // Spacing use gap-region bboxes (small strips

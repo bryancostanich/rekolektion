@@ -1,14 +1,81 @@
 # Autonomous run — 2026-06-01 — silicon_correct Track 02
 
-**Objective:** Finish Track 02. Done = track closed out — KLayout
-default + Magic permanent alternate AND the per-rule equivalency
-table covers every rule the corpus surfaces with both diagonals
-green where the engine can support it.
+## End-of-run status (2026-06-01, regenerated last)
 
-**Status:** Active. 14 commits landed before autonomous handoff
-(43e31a0 → fd99748). 27 rules green on the KLayout diagonal.
+**Status: TRACK CLOSED OUT.** All six phases of
+`silicon_correct/tracks/02_drc_klayout_primary/plan.md` landed.
 
-Top-of-log status block (regenerated at end of run): see bottom.
+**Decisions made (4 forks logged below):**
+
+1. Fork #1 — Thread `Compat` directly through every F# engine
+   entry point (Option A). Removed the parallel-path `4136d29`
+   wrapper.
+2. Fork #2 — Derive `nonClusterableRules` from `view.Rules` by
+   kind, skip in post-pass (Option B). Avoids per-violation field
+   churn.
+3. Fork #3 — Python ↔ F# bridge via CLI subprocess to
+   `viz drc --compat` (Option A). Bit-identical to harness path;
+   no new dependencies.
+4. Fork #4 — Default `external` is compat-conditional
+   (Option B). Klayout-target callers get F# primary (validated,
+   31/31 corpus rules green). Magic-target callers stay on
+   ext-Magic until F# Magic gets its own parity work.
+
+**Blocked / deferred:** None at track scope. The Magic-side F#
+parity work (spacing-tile delta on metal layers, nsdm/psdm
+label-swap) is recorded in `docs/internals/drc_rule_equivalency.md`
+as informational off-diagonal deltas; it's its own track, not a
+Track 02 blocker.
+
+**Commits (post-autonomous-handoff, 7 new):**
+
+| Commit | Resolves |
+|---|---|
+| `cdf436b` | Fork #1 — thread Compat through every engine entry point |
+| `3f38157` | Fork #2 — nonClusterableRules in post-pass |
+| `7eccbc6` | Edge-counting Enclosure under Compat.Klayout; promotes via.4a, m2.4 |
+| `aa50df3` | AsymEnclosure nearby-outer guard; promotes via.5a, m2.5, m1.5 |
+| `7683138` | MustBeInsideEdgewise rule kind; promotes via.4a_a — corpus close-out (31/31) |
+| `79896e6` | Forks #3+#4 — F# primary path + compat-conditional external default |
+| (this) | Phase 6 — workflow doc, memory entry, CLAUDE.md, plan + project README marked complete |
+
+**Total Track 02 commits (pre + post handoff):** 21
+(`43e31a0` → this).
+
+**What to review first.** In suggested priority:
+
+1. `docs/decisions/autonomous_2026-06-01.md` — this file. Read
+   the forks first.
+2. `docs/internals/drc_rule_equivalency.md` — per-rule status
+   table (31 green, all rules the corpus exercises).
+3. `tools/viz/src/Rekolektion.Viz.Core/Drc/Check.fs` — engine
+   internals (~1500 lines touched; new MustBeInside / MustBeInside-
+   Edgewise handlers; compat-aware Enclosure / AsymEnclosure;
+   nonClusterableRules; threaded compat).
+4. `tools/viz/src/Rekolektion.Viz.Core/Drc/Rules.fs` — see the
+   `Klayout` submodule for the populated rules; also `MustBeInside`
+   + `MustBeInsideEdgewise` type defs.
+5. `src/rekolektion/verify/rkt_drc.py` + `src/rekolektion/verify/
+   drc_klayout.py` — Python orchestration, `run_drc_fsharp`,
+   compat-conditional default-flip.
+6. `docs/workflows/rkt_primitive_workflow.md` — construction
+   notice closed, Step 2 DRC section reflects new defaults.
+
+**Test posture at close:**
+
+- Python: 43/43 DRC tests pass (`test_drc_klayout.py`,
+  `test_drc_equivalency.py`, `test_verify_drc_compat.py`,
+  `test_drc_box_grow.py`).
+- F# viz solution builds clean across Core / App / Cli / Mcp +
+  all test projects.
+- F# Drc tests: 90/91 pass. The 1 failure is
+  `MagicVsVizDrcTests.b1_5_stage1` — pre-existing on `main`
+  before the handoff, unchanged. Unrelated to Track 02.
+
+**No git push.** Per the user's standing rule + autonomous-mode
+"don't push" directive.
+
+---
 
 ---
 

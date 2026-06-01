@@ -27,17 +27,25 @@ almost always a better answer here.
 > | Track | What it changes | When to trust this doc again |
 > |---|---|---|
 > | **01 grid-snap conclusive fix** | Every coord emitted by rekolektion lands on the PDK manufacturing grid (5 nm SKY130). New `verify_grid` validator; `place_*` helpers snap their output; F# `to-gds` enforces grid on emit. The 2111-line `Drc/Check.fs` and the build-script ROUTES tables both need a sweep. | When `verify_grid` is referenced as a Step in the DRC/LVS section below and all cells in `source/cell_designs/` pass it. |
-> | **02 DRC: KLayout primary, Magic permanent alternate** | `verify_drc` default flips to KLayout-compat. `Rules.Magic.fs` (renamed from `Rules.fs`) frozen as a permanent supported alternate; `Rules.Klayout.fs` built alongside and becomes the default. F# `Drc.Check.run` accepts `?compat:Compat = Klayout|Magic`. F# in-viz checker becomes the **primary** engine for Python `verify_drc` too — external tool invocation moves to opt-in `external=True`. Magic stays available for LVS extraction. The `full=True` parameter becomes Magic-compat-only (ignored under KLayout). | When this doc's "Step 2 — DRC" section references KLayout as the default compat target, the F# checker as the primary engine, and Magic-compat as a permanent alternate. |
+> | **02 DRC: KLayout primary, Magic permanent alternate (LANDED 2026-06-01)** | `verify_drc` defaults to KLayout-compat via the F# in-process checker (Python ↔ F# bridge through the `viz drc --compat` CLI verb). 31 corpus-proven rules green on the KLayout diagonal — every rule the seed corpus exercises. Magic-compat preserved as the permanent supported alternate via `compat="magic"` (defaults to external Magic until F# Magic gets its own parity work). The `full=True` parameter is Magic-only; warns + ignored under KLayout. See `docs/internals/drc_rule_equivalency.md` for the per-rule status table. | NOW. |
 > | **03 GDS round-trip equivalency with KLayout** | rekolektion's GDS reader (`OfGds.fs`) and writer (`ToGds.fs`) become KLayout-spec-conformant. Round-trip tests exist. STRANS / ANGLE / PROPATTR / AREF edge cases reconciled. | When the spec-conformance doc at `rekolektion/docs/internals/gds_spec_conformance.md` exists and tests pass. |
 > | **04 P&R density + antenna via KLayout** | OpenLane flow uses KLayout decks for density + antenna instead of Magic. Lower priority; not blocking. Lives in the `moroder` repo. | When `moroder/` configs reference KLayout for these stages. |
 >
 > ### What to do in the meantime (during the construction)
 >
-> 1. **Magic DRC has known bugs on rotated SRefs.** Specifically: `cgm_core` rot=90 in the bias_gen reproducer produces 114 phantom 14-nm poly.2 slivers (default style) or 22 (sign-off style); KLayout finds the real 70 violations. Cross-check anything suspicious with KLayout DRC.
-> 2. **Use `verify_drc(full=True)` for any DRC during this period.** The default fast style adds more phantom-on-rotation noise. `full=True` still has rotation-specific phantoms for some compositions (ctat at 180/270, output_legs at 90) but is closer to KLayout-equivalent.
-> 3. **Off-grid coordinates are a real foundry-blocking bug.** Don't write `(x1 + x2) // 2` or `tap.x + 200` without ensuring the result lands on a 5-nm boundary. Use `snap_dbu` if the helper exists in your branch; otherwise round explicitly. `verify_grid` (Track 01) will eventually fail these automatically.
-> 4. **Hand-routed wires (`ROUTES = [...]` tables in build scripts) are likely off-grid.** They were captured from viz drag-routes which don't grid-align. After Track 01 lands, these will be flagged and need a sweep. Don't add new ones without snap-on-emit in your script's `route_rects` construction.
-> 5. **LVS stays on Magic.** The DRC migration doesn't touch LVS. `verify_lvs` is the same as today.
+> 1. **DRC just works under Track 02's defaults.** `verify_drc(rkt)`
+>    routes through the F# in-process checker with KLayout-compat
+>    rules — 31 rules corpus-proven against the external KLayout
+>    binary. No special flags needed.
+> 2. **For Magic-side checking pass `compat="magic"`.** Defaults to
+>    external Magic; F# Magic has known deltas (spacing-tile,
+>    nsdm/psdm label-swap) until its own parity work lands.
+> 3. **For sign-off-grade external verification pass `external=True`**
+>    under either compat. Same `DRCResult` shape; bit-identical
+>    semantics to the F# primary path on the 31 green rules.
+> 4. **Off-grid coordinates are a real foundry-blocking bug.** Don't write `(x1 + x2) // 2` or `tap.x + 200` without ensuring the result lands on a 5-nm boundary. Use `snap_dbu` if the helper exists in your branch; otherwise round explicitly. `verify_grid` (Track 01) will eventually fail these automatically.
+> 5. **Hand-routed wires (`ROUTES = [...]` tables in build scripts) are likely off-grid.** They were captured from viz drag-routes which don't grid-align. After Track 01 lands, these will be flagged and need a sweep. Don't add new ones without snap-on-emit in your script's `route_rects` construction.
+> 6. **LVS stays on Magic.** The DRC migration doesn't touch LVS. `verify_lvs` is the same as today.
 >
 > The session notes that produced this notice are deep in the
 > `silicon_correct` track plans. Read those for the full context
@@ -1822,52 +1830,70 @@ if not result.clean:
         print(" ", err)
 ```
 
-By default `verify_drc` uses Magic's fast geometry-only style —
-fine for iteration. For sign-off-grade results pass `full=True`:
+By default `verify_drc` routes through the **F# in-process
+checker** with **KLayout-compat rules** — 31 corpus-proven rules
+green against the external KLayout binary (see
+`docs/internals/drc_rule_equivalency.md`). Fast — no GDS export,
+no external-tool startup.
+
+Two orthogonal knobs:
 
 ```python
-result = verify_drc(
-    "cell_designs/my_group/my_block.rkt",
-    full=True,   # drc style drc(full): LU.2/LU.3, licon.9, nwell.4, …
-)
+# Default everywhere on KLayout side:
+verify_drc(rkt)                         # compat="klayout", F# checker
+
+# Force external KLayout binary (sign-off cross-check, parity debug):
+verify_drc(rkt, external=True)          # compat="klayout", ext-KLayout binary
+
+# Magic-compat — defaults to ext-Magic until F# Magic parity work lands:
+verify_drc(rkt, compat="magic")         # ext-Magic binary
+
+# Magic-compat via F# (callers who explicitly opt in):
+verify_drc(rkt, compat="magic", external=False)   # F# Magic-tuned rules
 ```
 
-`full=True` switches Magic to `drc style drc(full)` before
-`drc catchup`, surfacing the sign-off rule set:
+The `full=True` parameter is **Magic-only**. It selects Magic's
+sign-off rule set (`drc style drc(full)`: latch-up LU.2/LU.3,
+implant-aware `diff/tap.9 + licon.9`, well-connectivity
+`nwell.4`).  Under `compat="klayout"` it's ignored with a
+DeprecationWarning — KLayout's deck has no fast/full split.
 
-- **Latch-up** (`LU.2`, `LU.3`) — every n-diff must be within
-  15 µm of a licon-contacted p-tap; every p-diff within 15 µm of
-  a licon-contacted n-tap inside the same merged nwell.
-- **Implant-aware diffusion-tap spacing** (`diff/tap.9`,
-  `licon.9 + psdm.5a`) — derived from `(diff ∩ implant) - nwell`.
-- **Well connectivity** (`nwell.4`) — every nwell must contain a
-  metal-connected n-tap.
+```python
+# Sign-off-grade Magic-side check:
+verify_drc(rkt, compat="magic", full=True)
+```
 
-It's slower — typically 2–5× on opamp-sized cells, more on full
-macros (the latch-up grow-and-subtract loop walks the whole
-well/substrate area). Keep iteration on the fast default; flip to
-`full=True` once you're close to sign-off.
+> **Hard Rule: any Magic-compat DRC on a parent that SRefs a
+> sub-cell at `rot=90` or `rot=270` MUST use `full=True`.**
+> Magic's fast default style produces phantom violations on
+> 90°/270°-rotated composed cells — typically a long 14-nm
+> vertical strip of `poly.2` errors in empty space outside the
+> cell's bbox, plus spurious `li.3` / `mcon.2` / `met1.2`. The
+> sign-off rule set (`drc style drc(full)`) does not have this
+> bug — it returns the same orientation-invariant tile count at
+> rot=0/90/180/270 for any given composition. If you see 50+
+> unexplained tiles concentrated in a sliver after rotating, you
+> are almost certainly hitting this bug; re-run with `full=True`
+> before chasing any layout fix. Documented and reproduced
+> 2026-06-01 on SKY130 `bias_gen_cgm_core`: fast-style at rot=90
+> reported 114 errors (96 phantom poly.2 + 18 baseline);
+> `full=True` at the same rotation reported the same 22 errors
+> as at rot=0.
+>
+> The hard rule applies ONLY to `compat="magic"` — Track 02 made
+> KLayout the default compat target, and KLayout has no
+> rotation-dependent phantom-violation bug. Under the default
+> (F# in-process checker + KLayout-tuned rules), rotated SRefs
+> work correctly with no extra knob.
 
-> **Hard Rule: any DRC on a parent that SRefs a sub-cell at
-> `rot=90` or `rot=270` MUST use `full=True`.** Magic's fast
-> default style produces phantom violations on 90°/270°-rotated
-> composed cells — typically a long 14-nm vertical strip of
-> `poly.2` errors in empty space outside the cell's bbox, plus
-> spurious `li.3` / `mcon.2` / `met1.2`. The sign-off rule set
-> (`drc style drc(full)`) does not have this bug — it returns the
-> same orientation-invariant tile count at rot=0/90/180/270 for
-> any given composition. If you see 50+ unexplained tiles
-> concentrated in a sliver after rotating, you are almost
-> certainly hitting this bug; re-run with `full=True` before
-> chasing any layout fix. Documented and reproduced 2026-06-01 on
-> SKY130 `bias_gen_cgm_core`: fast-style at rot=90 reported 114
-> errors (96 phantom poly.2 + 18 baseline); `full=True` at the
-> same rotation reported the same 22 errors as at rot=0.
-
-`verify_drc` converts the block to GDS via the viz CLI's `to-gds`
-verb, loads it into Magic, runs `drc check` against the
-`sky130B.tech` deck, parses the violation report, and returns a
-`DRCResult`. **A block that `viz read` accepts but `verify_drc`
+`verify_drc` walks the .rkt directly through the F# LayoutLoader
+pipeline (no GDS export, no external-tool startup) under the
+default Klayout path. Under `external=True` it goes through the
+viz CLI's `to-gds` verb, loads the result into the external tool
+(KLayout binary under `compat="klayout"`, Magic under
+`compat="magic"`), runs DRC against the relevant deck, parses the
+report, and returns a `DRCResult`. **A block that `viz read`
+accepts but `verify_drc`
 fails is NOT done.** Common failure modes that `viz read` never
 sees but DRC catches:
 

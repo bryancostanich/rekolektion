@@ -79,23 +79,21 @@ dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- app
 dotnet run --project tools/viz/src/Rekolektion.Viz.Cli -- viz-render \
     --gds output/sky130_6t_lr.gds --output output/renders/lr_smoke.png
 
-# 4. DRC check via Magic
+# 4. DRC check — Track 02 default (F# in-process, KLayout-compat rules)
 cd ~/Git_Repos/bryan_costanich/rekolektion
-export PATH="$HOME/.local/bin:$PATH"
-export PDK_ROOT="$HOME/.volare"
-magic -dnull -noconsole -rcfile "$PDK_ROOT/sky130B/libs.tech/magic/sky130B.magicrc" <<'EOF'
-gds read output/sky130_6t_lr.gds
-load sky130_sram_6t_bitcell_lr
-select top cell
-drc catchup
-drc check
-set result [drc listall why]
-set total 0
-foreach {msg boxes} $result { set n [llength $boxes]; incr total $n; puts "($n) $msg" }
-if {$total == 0} { puts "*** DRC CLEAN ***" }
-puts "=== TOTAL: $total ==="
-quit -noprompt
-EOF
+.venv/bin/python -c "from rekolektion.verify import verify_drc; \
+  r = verify_drc('src/rekolektion/bitcell/sky130_6t_lr.py'); \
+  print(r.summary())"
+
+# 4b. For sign-off-grade external cross-check (KLayout binary):
+.venv/bin/python -c "from rekolektion.verify import verify_drc; \
+  r = verify_drc('src/rekolektion/bitcell/sky130_6t_lr.py', external=True); \
+  print(r.summary())"
+
+# 4c. For Magic-compat (sign-off path; uses external Magic by default):
+.venv/bin/python -c "from rekolektion.verify import verify_drc; \
+  r = verify_drc('src/rekolektion/bitcell/sky130_6t_lr.py', compat='magic', full=True); \
+  print(r.summary())"
 ```
 
 ## Chip Visualization (F# tool at `khalkulo/tools/viz/`)
@@ -134,20 +132,10 @@ python3 -c "from rekolektion.bitcell.sky130_6t_lr_cim import generate_cim_varian
 # Assemble all 4 CIM macros (GDS + LEF + Liberty + blackbox Verilog)
 python3 -c "from rekolektion.macro.cim_assembler import generate_all_cim_macros; generate_all_cim_macros()"
 
-# DRC a CIM cell variant
-magic -dnull -noconsole -rcfile "$PDK_ROOT/sky130B/libs.tech/magic/sky130B.magicrc" <<'EOF'
-gds read output/cim_variants/sky130_6t_cim_lr_sram_a.gds
-load sky130_sram_6t_cim_lr
-select top cell
-drc catchup
-drc check
-set result [drc listall why]
-set total 0
-foreach {msg boxes} $result { set n [llength $boxes]; incr total $n; puts "($n) $msg" }
-if {$total == 0} { puts "*** DRC CLEAN ***" }
-puts "=== TOTAL: $total ==="
-quit -noprompt
-EOF
+# DRC a CIM cell variant (Track 02 default: F# + KLayout-tuned rules)
+.venv/bin/python -c "from rekolektion.verify import verify_drc; \
+  r = verify_drc('cell_designs/sram/sky130_6t_cim_lr_sram_a.rkt'); \
+  print(r.summary())"
 ```
 
 ## Key Files

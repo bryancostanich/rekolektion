@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Literal
 
 from rekolektion.io import rkt
+from rekolektion.layout.snap import snap_rect
 from rekolektion.tech.sky130 import SKY130Rules
 
 
@@ -380,6 +381,7 @@ def place_taps_around(
     dbu_nm: int = 1,
     inside_srefs: list[rkt.SRef] | None = None,
     primitives_dir: Path | None = None,
+    pdk: str = "sky130",
 ) -> TapBandResult:
     """Place DRC-clean tap bands around an active region.
 
@@ -496,6 +498,14 @@ def place_taps_around(
                 "docs/workflows/rkt_primitive_workflow.md.\n  "
                 + lines
             )
+
+    # Snap the active-region bbox to the PDK grid up front. All
+    # downstream band-builder math (y_center/x_center, tap edges,
+    # implant enclosure, licon array, li1 strap) derives from these
+    # corners; the SKY130 constants (half_w=210, encl=125, licon_size=170,
+    # licon_pitch=340, li1_encl=80) are all 5-nm aligned, so once the
+    # bbox is snapped every emitted rect stays on-grid by construction.
+    inner_bbox = snap_rect(inner_bbox, pdk=pdk)
 
     rules = SKY130Rules()
     x_min, y_min, x_max, y_max = inner_bbox

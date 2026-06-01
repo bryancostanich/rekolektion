@@ -27,6 +27,7 @@ import warnings
 from typing import Literal
 
 from rekolektion.io import rkt
+from rekolektion.layout.snap import snap_point, snap_rect
 from rekolektion.tech.sky130 import SKY130Rules
 
 
@@ -106,6 +107,7 @@ def place_rail_from_strap(
     extend_um: float = 0.5,
     side: Literal["away", "covering"] = "covering",
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> list[rkt.Element]:
     """Convenience factory: build a rail bbox from a tap strap's li1
     rect, then call `place_rail` with the strap auto-stitched.
@@ -153,6 +155,7 @@ def place_rail_from_strap(
         label=label,
         stitch_li1_straps=[strap],
         dbu_nm=dbu_nm,
+        pdk=pdk,
     )
 
 
@@ -165,6 +168,7 @@ def place_rail(
     stitch_li1_straps: list[rkt.Rect] | None = None,
     port: bool = False,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> list[rkt.Element]:
     """Paint a rail rectangle on `layer`, label it, and stitch any
     li1 straps that overlap it with mcon arrays.
@@ -204,6 +208,12 @@ def place_rail(
             f"rail_bbox is empty or inverted: {rail_bbox}"
         )
 
+    # Snap every input bbox / strap to the PDK grid before any
+    # arithmetic. Off-grid inputs leak through centroid math and the
+    # mcon-stitch loop, producing off-grid output even when the helper
+    # itself never introduces drift.
+    rail_bbox = snap_rect(rail_bbox, pdk=pdk)
+
     rules = SKY130Rules()
     elements: list[rkt.Element] = []
 
@@ -224,6 +234,7 @@ def place_rail(
             (rail_bbox[0] + rail_bbox[2]) // 2,
             (rail_bbox[1] + rail_bbox[3]) // 2,
         )
+        origin = snap_point(origin, pdk=pdk)
         make_label = rkt.port_label if port else rkt.Label
         elements.append(
             make_label(
@@ -236,7 +247,9 @@ def place_rail(
     # Stitches: one mcon array per overlapping strap.
     if stitch_li1_straps:
         for strap in stitch_li1_straps:
-            strap_bbox = (strap.x1, strap.y1, strap.x2, strap.y2)
+            strap_bbox = snap_rect(
+                (strap.x1, strap.y1, strap.x2, strap.y2), pdk=pdk
+            )
             overlap = _overlap(strap_bbox, rail_bbox)
             if overlap is None:
                 warnings.warn(

@@ -584,3 +584,65 @@ def test_poly_bridge_refuses_pin_y_outside_strap(
         poly_bridge(
             pfet, nfet, pin_y=200, primitives_dir=primitives_dir,
         )
+
+
+# ─── Grid snap (Track 01) ────────────────────────────────────────────
+
+
+GRID_NM = 5
+
+
+def _assert_rects_on_grid(elements, grid=GRID_NM):
+    for el in elements:
+        if isinstance(el, rkt.Rect):
+            for axis, v in (
+                ("x1", el.x1), ("y1", el.y1), ("x2", el.x2), ("y2", el.y2)
+            ):
+                assert v % grid == 0, (
+                    f"Rect {el.layer.name} {axis}={v} off grid {grid}"
+                )
+
+
+def test_place_via_snaps_offgrid_point() -> None:
+    elements = place_via((173, -2917), "met1", "met2")
+    _assert_rects_on_grid(elements)
+
+
+def test_place_wire_snaps_chain_points() -> None:
+    # Both endpoints off-grid; resulting rect corners must be on grid.
+    elements = place_wire((173, 1001), (2173, 1001), layer="met1")
+    _assert_rects_on_grid(elements)
+
+
+def test_place_wire_with_via_to_snaps_endpoint() -> None:
+    elements = place_wire(
+        (173, 1001), (2173, 1001), layer="met1", via_to="met2"
+    )
+    _assert_rects_on_grid(elements)
+
+
+def test_pin_patch_snaps_offgrid_sref(primitives_dir: Path) -> None:
+    """An SRef origin set off-grid by a hand-edit still produces on-grid
+    pin_patch geometry."""
+    nfet = gen_nfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    bad_sref = rkt.SRef(cell=nfet, origin=(173, -2917))
+    p = pin_patch(bad_sref, "D", primitives_dir=primitives_dir, mcon=False)
+    _assert_rects_on_grid(p.elements)
+    assert p.center[0] % GRID_NM == 0
+    assert p.center[1] % GRID_NM == 0
+
+
+def test_pin_to_rail_snaps_offgrid_dest(primitives_dir: Path) -> None:
+    """An off-grid rail bbox shouldn't poison the li1 strap output."""
+    nfet = gen_nfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    sref = rkt.SRef(cell=nfet, origin=(0, 0))
+    bad_dest = (-2000, -3917, 2000, -1701)   # all 4 corners off-grid
+    elements = pin_to_rail(
+        sref, "S", bad_dest, primitives_dir=primitives_dir,
+    )
+    _assert_rects_on_grid(elements)
+
+
+def test_unknown_pdk_raises_on_place_wire() -> None:
+    with pytest.raises(ValueError, match="Unknown PDK"):
+        place_wire((0, 0), (1000, 0), layer="met1", pdk="not_a_real_pdk")

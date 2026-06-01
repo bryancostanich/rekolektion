@@ -174,3 +174,59 @@ def test_li1_straps_by_side_separates_by_side() -> None:
     # Each side's strap matches an entry in the flat .li1_straps list.
     assert by_side["top"][0] in result.li1_straps
     assert by_side["bottom"][0] in result.li1_straps
+
+
+# ─── Grid snap (Track 01) ────────────────────────────────────────────
+
+
+GRID_NM = 5
+
+
+def _assert_all_on_grid(elements, grid=GRID_NM):
+    for el in elements:
+        if isinstance(el, rkt.Rect):
+            for axis, v in (
+                ("x1", el.x1), ("y1", el.y1), ("x2", el.x2), ("y2", el.y2)
+            ):
+                assert v % grid == 0, (
+                    f"Rect {el.layer.name} {axis}={v} off grid {grid}"
+                )
+        elif isinstance(el, rkt.Label):
+            x, y = el.origin
+            assert x % grid == 0 and y % grid == 0, (
+                f"Label {el.text!r} origin ({x},{y}) off grid {grid}"
+            )
+
+
+def test_offgrid_inner_bbox_snaps_at_entry() -> None:
+    # Every corner off-grid by 1-4 nm in a different direction.
+    bad = (173, -2917, 5174, 3001)
+    result = place_taps_around(bad, "pwell", sides=("top", "bottom"))
+    _assert_all_on_grid(result.elements)
+
+
+def test_offgrid_left_right_bands_stay_on_grid() -> None:
+    bad = (173, -2917, 5174, 3001)
+    result = place_taps_around(
+        bad, "nwell", sides=("left", "right")
+    )
+    _assert_all_on_grid(result.elements)
+
+
+def test_offgrid_li1_straps_recoverable_by_side() -> None:
+    """The straps returned in by_side dict are also on-grid."""
+    bad = (173, -2917, 5174, 3001)
+    result = place_taps_around(bad, "nwell", sides=("top", "bottom"))
+    for side_straps in result.li1_straps_by_side.values():
+        for s in side_straps:
+            for axis, v in (
+                ("x1", s.x1), ("y1", s.y1), ("x2", s.x2), ("y2", s.y2)
+            ):
+                assert v % GRID_NM == 0, (
+                    f"li1 strap on {axis}={v} off grid"
+                )
+
+
+def test_unknown_pdk_raises() -> None:
+    with pytest.raises(ValueError, match="Unknown PDK"):
+        place_taps_around(SMALL_BBOX, "pwell", pdk="not_a_real_pdk")

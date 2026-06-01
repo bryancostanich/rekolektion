@@ -190,3 +190,68 @@ def test_place_rail_from_strap_rejects_invalid_side() -> None:
     strap = tap.li1_straps[0]
     with pytest.raises(ValueError, match="side must be"):
         place_rail_from_strap(strap, label="VSS", side="sideways")  # type: ignore[arg-type]
+
+
+# ─── Grid snap (Track 01) ────────────────────────────────────────────
+
+
+GRID_NM = 5
+
+
+def _assert_all_on_grid(elements, grid=GRID_NM):
+    """Every Rect corner and Label origin sits on the manufacturing grid."""
+    for el in elements:
+        if isinstance(el, rkt.Rect):
+            for axis, v in (
+                ("x1", el.x1), ("y1", el.y1), ("x2", el.x2), ("y2", el.y2)
+            ):
+                assert v % grid == 0, (
+                    f"Rect {el.layer.name} {axis}={v} off grid {grid}"
+                )
+        elif isinstance(el, rkt.Label):
+            x, y = el.origin
+            assert x % grid == 0 and y % grid == 0, (
+                f"Label {el.text!r} origin ({x},{y}) off grid {grid}"
+            )
+
+
+def test_offgrid_rail_bbox_snaps_corners() -> None:
+    """An off-grid rail_bbox is silently snapped at the entry."""
+    bbox = (173, -2917, 12444, -1701)   # all four corners off by 1-4 nm
+    elements = place_rail(bbox, label="VSS")
+    _assert_all_on_grid(elements)
+    rail = _layer_rects(elements, "met1")[0]
+    # 173 → 175, -2917 → -2915, 12444 → 12445, -1701 → -1700
+    assert (rail.x1, rail.y1, rail.x2, rail.y2) == (175, -2915, 12445, -1700)
+
+
+def test_offgrid_label_centroid_snaps() -> None:
+    """Default centroid (x1+x2)//2 can land off-grid; helper snaps it."""
+    # x1=0, x2=15990 → centroid 7995 = on-grid (multiple of 5).
+    # Pick a width where (x1+x2)//2 is off-grid: x1=0, x2=15994 → 7997.
+    elements = place_rail((0, -2200, 15994, -1700), label="VSS")
+    _assert_all_on_grid(elements)
+
+
+def test_offgrid_strap_snaps_before_overlap() -> None:
+    """An off-grid li1 strap input still produces on-grid mcons."""
+    bad_strap = rkt.Rect(
+        layer=rkt.named("sky130", "li1"),
+        x1=173, y1=-2917, x2=2173, y2=-1917,
+    )
+    rail = (0, -2200, 4000, -1700)
+    elements = place_rail(rail, label="VSS", stitch_li1_straps=[bad_strap])
+    mcons = _layer_rects(elements, "mcon")
+    assert len(mcons) > 0
+    _assert_all_on_grid(elements)
+
+
+def test_pdk_kwarg_threads_through() -> None:
+    """An explicit pdk= kwarg routes via tech.grid_nm; sky130=5."""
+    elements = place_rail((173, -2917, 12444, -1701), label="VSS", pdk="sky130")
+    _assert_all_on_grid(elements, grid=5)
+
+
+def test_unknown_pdk_raises() -> None:
+    with pytest.raises(ValueError, match="Unknown PDK"):
+        place_rail(RAIL_BBOX, label="VSS", pdk="not_a_real_pdk")

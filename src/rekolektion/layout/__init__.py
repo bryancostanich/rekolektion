@@ -14,6 +14,7 @@ the caller assembles them into a `Cell`. No new persistence format,
 no parallel data model.
 """
 
+from rekolektion.layout import snap
 from rekolektion.layout.placement import (
     PrimitiveInfo,
     TubResult,
@@ -60,4 +61,5 @@ __all__ = [
     "placed_pin",
     "poly_bridge",
     "route_net_on_track",
+    "snap",
 ]

@@ -273,3 +273,37 @@ def test_place_tub_row_rejects_mixed_well_types(
     pfet = gen_pfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
     with pytest.raises(ValueError, match="nmos and pmos"):
         place_tub_row([nfet, pfet], primitives_dir=primitives_dir)
+
+
+# ─── Grid snap (Track 01) ────────────────────────────────────────────
+
+
+GRID_NM = 5
+
+
+def test_place_row_snaps_offgrid_origin(primitives_dir: Path) -> None:
+    """An off-grid row origin still produces SRefs on grid (primitive
+    bboxes are foundry-clean; only the caller origin needs snapping)."""
+    nfet = gen_nfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    srefs = place_row(
+        [nfet, nfet], origin=(173, -2917), primitives_dir=primitives_dir
+    )
+    for s in srefs:
+        assert s.origin[0] % GRID_NM == 0, f"SRef x={s.origin[0]} off grid"
+        assert s.origin[1] % GRID_NM == 0, f"SRef y={s.origin[1]} off grid"
+
+
+def test_place_tub_snaps_offgrid_origins(primitives_dir: Path) -> None:
+    """Per-primitive origin tuples passed off-grid still produce on-grid
+    SRefs and an on-grid tub well rect."""
+    pfet = gen_pfet_hv(w_um=1.0, l_um=0.5, primitives_dir=primitives_dir)
+    tub = place_tub(
+        [(pfet, (173, 1001)), (pfet, (3174, 1001))],
+        primitives_dir=primitives_dir,
+    )
+    for s in tub.srefs:
+        assert s.origin[0] % GRID_NM == 0
+        assert s.origin[1] % GRID_NM == 0
+    for r in tub.well_rects:
+        for v in (r.x1, r.y1, r.x2, r.y2):
+            assert v % GRID_NM == 0, f"well rect coord {v} off grid"

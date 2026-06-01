@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 from rekolektion.io import rkt
 from rekolektion.layout.placement import inspect_primitive
+from rekolektion.layout.snap import snap_dbu, snap_point, snap_rect
 from rekolektion.tech.sky130 import Axis, ROUTING_DIRECTION, SKY130Rules
 
 
@@ -78,7 +79,9 @@ def _um_to_dbu(value: float, dbu_nm: int = 1) -> int:
 
 
 def placed_pin(sref: "rkt.SRef",
-               native_offset: tuple[int, int]) -> tuple[int, int]:
+               native_offset: tuple[int, int],
+               *,
+               pdk: str = "sky130") -> tuple[int, int]:
     """Translate a primitive-local pin offset to parent coords,
     applying the SRef's `rot` and `reflect` transforms.
 
@@ -114,7 +117,11 @@ def placed_pin(sref: "rkt.SRef",
             f"placed_pin: unsupported SRef rotation {sref.rot}°; "
             "only multiples of 90° are supported."
         )
-    return (sref.origin[0] + rx, sref.origin[1] + ry)
+    # Snap the rotated parent coord. With on-grid inputs and a 90°-
+    # multiple rotation the linear map preserves alignment, but an
+    # SRef origin set off-grid by a build-script hand-edit would leak
+    # through every pin_patch / pin_to_rail / gate_extension caller.
+    return snap_point((sref.origin[0] + rx, sref.origin[1] + ry), pdk=pdk)
 
 
 # ─── PinPatch ────────────────────────────────────────────────────────
@@ -160,6 +167,7 @@ def place_via(
     cuts: tuple[int, int] = (1, 1),
     up_encl_um: float | tuple[float, float] | None = None,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> list[rkt.Element]:
     """Paint a single via stack centered on `point` between two
     metal layers. `cuts` is the (columns, rows) of contact cuts —
@@ -200,7 +208,7 @@ def place_via(
     else:
         raise AssertionError(f"unhandled cut layer {cut_name}")
 
-    cx, cy = point
+    cx, cy = snap_point(point, pdk=pdk)
     cols, rows = cuts
 
     # Total array span (DBU).
@@ -251,6 +259,7 @@ def pin_to_rail(
     primitives_dir=None,
     li1_width_um: float | None = None,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> list[rkt.Element]:
     """Tie a cell pin to a power destination — either an existing
     li1 tap strap (preferred path, no new mcons) or a met1 rail
@@ -302,9 +311,13 @@ def pin_to_rail(
             f"'{terminal}'. Available labels: {available}."
         )
 
-    # Pin position in parent coords.
-    px = sref.origin[0] + pin.origin[0]
-    py = sref.origin[1] + pin.origin[1]
+    # Pin position in parent coords. Snap defensively — an off-grid
+    # SRef origin or off-grid pin label coord would otherwise leak
+    # into every downstream rect.
+    px, py = snap_point(
+        (sref.origin[0] + pin.origin[0], sref.origin[1] + pin.origin[1]),
+        pdk=pdk,
+    )
 
     # Detect destination mode: li1 strap (no mcon) vs met1 rail
     # (add mcon array). Layer name drives the decision; bbox-tuple
@@ -316,6 +329,7 @@ def pin_to_rail(
             direct_to_met1 = dest.layer.name == "met1"
     else:
         dest_bbox = dest
+    dest_bbox = snap_rect(dest_bbox, pdk=pdk)
     rx1, ry1, rx2, ry2 = dest_bbox
 
     # Validate: pin must sit within the destination's x-extent or
@@ -405,6 +419,7 @@ def pin_patch(
     patch_half_um: float = 0.16,
     mcon: bool = True,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> PinPatch:
     """Paint a met1 contact patch over an SRef'd cell's named pin.
 
@@ -457,7 +472,7 @@ def pin_patch(
     # Translate pin from primitive-local to parent coords, applying
     # the SRef's rotation/reflect so the result is the actual placed
     # pin location.
-    px, py = placed_pin(sref, pin.origin)
+    px, py = placed_pin(sref, pin.origin, pdk=pdk)
 
     half = _um_to_dbu(patch_half_um, dbu_nm)
     met1_rect = rkt.Rect(
@@ -522,6 +537,7 @@ def gate_extension(
     primitives_dir=None,
     patch_half_um: float = 0.16,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> GateExtension:
     """Extend a topgate/botgate FET primitive's gate poly out of the
     cell to a parent-chosen Y, with a fresh polycont + li1 + mcon +
@@ -613,9 +629,14 @@ def gate_extension(
             f"existing in-cell contact via pin_patch / pin_to_rail."
         )
 
+    # Snap the caller-provided contact_y; the geometry constants
+    # below are all 5-grid aligned, so once contact_y is on-grid every
+    # painted rect derives on-grid by construction.
+    contact_y = snap_dbu(contact_y, pdk=pdk)
+
     # Gate pin in parent coords. The X is the gate poly column
     # (centered on x=0 in primitive); Y is the in-cell contact.
-    gx_parent = sref.origin[0] + g.origin[0]
+    gx_parent = snap_dbu(sref.origin[0] + g.origin[0], pdk=pdk)
 
     # Geometry constants (sky130 sky130B, all in nm):
     LICON_HALF = 85     # 170 nm licon → ±85
@@ -797,6 +818,7 @@ def poly_bridge(
     primitives_dir=None,
     patch_half_um: float = 0.16,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> PolyBridge:
     """Bridge two FETs' gate poly across the inter-row channel.
 
@@ -864,9 +886,14 @@ def poly_bridge(
     if top_g is None or bot_g is None:
         raise ValueError("both primitives must expose a 'G' pin label.")
 
+    # Snap caller's optional pin_y; primitive gate pin coords are
+    # snapped via the gx_parent computation below.
+    if pin_y is not None:
+        pin_y = snap_dbu(pin_y, pdk=pdk)
+
     # Gate X in parent coords, must match (same poly column).
-    top_gx_parent = top_sref.origin[0] + top_g.origin[0]
-    bot_gx_parent = bot_sref.origin[0] + bot_g.origin[0]
+    top_gx_parent = snap_dbu(top_sref.origin[0] + top_g.origin[0], pdk=pdk)
+    bot_gx_parent = snap_dbu(bot_sref.origin[0] + bot_g.origin[0], pdk=pdk)
     if top_gx_parent != bot_gx_parent:
         raise ValueError(
             f"poly_bridge requires aligned gate columns; got "
@@ -1141,6 +1168,7 @@ def place_wire(
     width_um: float | None = None,
     via_to: str | None = None,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> list[rkt.Element]:
     """Paint a Manhattan wire on `layer`. Two call shapes:
 
@@ -1188,6 +1216,10 @@ def place_wire(
     if len(points) < 2:
         return []
 
+    # Snap every chain point so segment rects and the optional via at
+    # the end stay on grid even when callers feed raw coords.
+    points = [snap_point(p, pdk=pdk) for p in points]
+
     width = (
         _um_to_dbu(width_um, dbu_nm)
         if width_um is not None
@@ -1207,7 +1239,7 @@ def place_wire(
 
     if via_to is not None:
         elements.extend(
-            place_via(points[-1], layer, via_to, dbu_nm=dbu_nm)
+            place_via(points[-1], layer, via_to, dbu_nm=dbu_nm, pdk=pdk)
         )
 
     return elements
@@ -1222,6 +1254,7 @@ def route_net_on_track(
     branch_layer: str = "met2",
     track_extend: int = 0,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> list[rkt.Element]:
     """Route a multi-pin net on a single dedicated track + per-pin
     branches.
@@ -1276,6 +1309,14 @@ def route_net_on_track(
     if axis not in ("x", "y"):
         raise ValueError(f"axis must be 'x' or 'y', got {axis!r}")
 
+    # Snap caller-supplied pin coords and the track position up
+    # front; downstream place_wire / place_via calls thread the same
+    # pdk and would re-snap anyway, but doing it here keeps the
+    # min/max bounds and the axis comparisons (`py == track_pos`)
+    # working against on-grid values.
+    pins = [snap_point(p, pdk=pdk) for p in pins]
+    track_pos = snap_dbu(track_pos, pdk=pdk)
+
     elements: list[rkt.Element] = []
 
     if axis == "x":
@@ -1290,6 +1331,7 @@ def route_net_on_track(
                     (x_max, track_pos),
                     layer=track_layer,
                     dbu_nm=dbu_nm,
+                    pdk=pdk,
                 )
             )
         # Vertical branches per pin not on the track Y.
@@ -1302,6 +1344,7 @@ def route_net_on_track(
                     (px, py),
                     layer=branch_layer,
                     dbu_nm=dbu_nm,
+                    pdk=pdk,
                 )
             )
             if track_layer != branch_layer:
@@ -1332,6 +1375,7 @@ def route_net_on_track(
                     (track_pos, y_max),
                     layer=track_layer,
                     dbu_nm=dbu_nm,
+                    pdk=pdk,
                 )
             )
         for px, py in pins:
@@ -1343,6 +1387,7 @@ def route_net_on_track(
                     (px, py),
                     layer=branch_layer,
                     dbu_nm=dbu_nm,
+                    pdk=pdk,
                 )
             )
             if track_layer != branch_layer:

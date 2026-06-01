@@ -37,6 +37,7 @@ from rekolektion.layout._rkt_bbox import (
     RktPrimitiveSummary,
     read_primitive,
 )
+from rekolektion.layout.snap import snap_point, snap_rect
 
 
 # ─── Inspection ──────────────────────────────────────────────────────
@@ -180,6 +181,7 @@ def place_row(
     axis: str = "x",
     origin: tuple[int, int] = (0, 0),
     primitives_dir: Path | None = None,
+    pdk: str = "sky130",
 ) -> list[rkt.SRef]:
     """Abut primitives end-to-end (Pattern A). Returns SRefs ready to
     drop into a Cell's elements.
@@ -228,7 +230,9 @@ def place_row(
         )
 
     srefs: list[rkt.SRef] = []
-    cursor_x, cursor_y = origin
+    # Snap row origin to grid so each SRef origin (cursor + on-grid
+    # primitive bbox offsets) stays aligned.
+    cursor_x, cursor_y = snap_point(origin, pdk=pdk)
     for info in infos:
         # SRef origin places the primitive's local (0, 0) at (X, Y) in
         # parent coords. We want the primitive's left edge (smallest x
@@ -288,6 +292,7 @@ def place_tub_row(
     margin_um: float | dict[str, float] = 0.4,
     primitives_dir: Path | None = None,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> TubResult:
     """Compose `place_row` + `place_tub` in one call: primitives are
     abutted (Pattern A pitch) AND wrapped in a parent-painted well
@@ -308,6 +313,7 @@ def place_tub_row(
         axis=axis,
         origin=origin,
         primitives_dir=primitives_dir,
+        pdk=pdk,
     )
     placed = [(s.cell, s.origin) for s in srefs]
     return place_tub(
@@ -317,6 +323,7 @@ def place_tub_row(
         margin_um=margin_um,
         primitives_dir=primitives_dir,
         dbu_nm=dbu_nm,
+        pdk=pdk,
     )
 
 
@@ -328,6 +335,7 @@ def place_tub(
     margin_um: float | dict[str, float] = 0.4,
     primitives_dir: Path | None = None,
     dbu_nm: int = 1,
+    pdk: str = "sky130",
 ) -> TubResult:
     """Paint a parent well rectangle covering every primitive + margin,
     plus any extra implants/markers (e.g. `hvi`), and place the
@@ -373,8 +381,11 @@ def place_tub(
         raise ValueError("place_tub needs at least one primitive")
     extra_layers = list(extra_layers or [])
 
+    # Snap caller-supplied origins so the union bbox and tub rect end
+    # up on-grid. Primitive bboxes are foundry-clean; the only drift
+    # source here is the caller's per-instance origin choice.
     pairs = [
-        (inspect_primitive(name, primitives_dir), origin)
+        (inspect_primitive(name, primitives_dir), snap_point(origin, pdk=pdk))
         for name, origin in primitives
     ]
     infos = [info for info, _ in pairs]
@@ -416,11 +427,14 @@ def place_tub(
     def _to_dbu(v: float) -> int:
         return int(round(v * 1000 / dbu_nm))
 
-    tub = (
-        min_x - _to_dbu(m_left),
-        min_y - _to_dbu(m_bottom),
-        max_x + _to_dbu(m_right),
-        max_y + _to_dbu(m_top),
+    tub = snap_rect(
+        (
+            min_x - _to_dbu(m_left),
+            min_y - _to_dbu(m_bottom),
+            max_x + _to_dbu(m_right),
+            max_y + _to_dbu(m_top),
+        ),
+        pdk=pdk,
     )
 
     well_rects = [

@@ -113,7 +113,13 @@ def verify_drc(
         etc. Same surface as `run_drc`.
     """
 
-    rkt = Path(rkt_path)
+    # Resolve to an absolute path BEFORE handing the rkt off to any
+    # subprocess. `_convert_rkt_to_gds` runs `dotnet -- to-gds` with
+    # `cwd=repo` (the rekolektion repo root) — a relative `rkt_path`
+    # would then resolve against the repo root instead of the
+    # caller's cwd, breaking the loader with "Could not find a part
+    # of the path" + exit 134. Reported 2026-06-01.
+    rkt = Path(rkt_path).resolve()
     if not rkt.is_file():
         raise FileNotFoundError(rkt)
 

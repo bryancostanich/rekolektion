@@ -352,14 +352,20 @@ let allRules : Rule list = [
     EnclosureOfIntersection("nwell.5", nwell, psdm, diff, 0.18)
 
     // --- Implants ---
-    Width    ("nsdm.1",     nsdm,  0.38)
-    Spacing  ("nsdm.2",     nsdm,  0.38)
+    //
+    // Naming follows the SKY130 deck (both Magic .tech and KLayout
+    // .drc): `nsdm.1` is SPACING, `nsdm.2` is WIDTH. Same for
+    // psdm.1 / psdm.2.  An earlier F# Magic ruleset had these
+    // swapped (Width/Spacing reversed); corrected 2026-06-02 as
+    // part of Track 02 follow-up (autonomous_2026-06-01.md).
+    Spacing  ("nsdm.1",     nsdm,  0.38)
+    Width    ("nsdm.2",     nsdm,  0.38)
     // nsdm.5a — nsdm encloses n-diff. n-diff identified via
     // NSDM overlap (the inner must already overlap nsdm for nsdm
     // to be considered "the" implant for that diff).
     Enclosure("nsdm.5a",    nsdm,  diff, 0.125, NsdmOverlaps)
-    Width    ("psdm.1",     psdm,  0.38)
-    Spacing  ("psdm.2",     psdm,  0.38)
+    Spacing  ("psdm.1",     psdm,  0.38)
+    Width    ("psdm.2",     psdm,  0.38)
     // psdm.5a — psdm encloses p-diff. Same logic as nsdm.5a but
     // with PSDM as the type marker.
     Enclosure("psdm.5a",    psdm,  diff, 0.125, PsdmOverlaps)
@@ -465,6 +471,13 @@ let allRules : Rule list = [
 
     // --- LI1 (local interconnect) ---
     Width    ("li.1",       li1,   0.17)
+    // li.c1 is the COREID-core variant — 0.14 µm relaxation inside
+    // SRAM bitcell scope. Magic external fires BOTH li.1 (peri)
+    // and li.c1 (core) on geometry outside any COREID marker; the
+    // foundry-cell waiver pipeline drops li.c1 inside COREID where
+    // it's intentional. Added 2026-06-02 as part of Track 02
+    // follow-up.
+    Width    ("li.c1",      li1,   0.14)
     Spacing  ("li.3",       li1,   0.17)
     MinArea  ("li.6",       li1,   0.0561)        // 0.17 × 0.33 effective min
 

@@ -27,6 +27,20 @@ label-swap) is recorded in `docs/internals/drc_rule_equivalency.md`
 as informational off-diagonal deltas; it's its own track, not a
 Track 02 blocker.
 
+**Followup landed 2026-06-02** (commit `01d2977`): the
+"foundry waiver pipeline missing on F# primary" concern surfaced
+in the deferred discussion turned out to be narrower — the actual
+bug was that `LU.2` / `LU.3` (SKY130-Magic-only latch-up rules,
+hard-coded in `checkWithToggles` outside the rule-list dispatch)
+were firing unconditionally under both compats.  KLayout deck has
+no latch-up family.  Both emits now gated on
+`compat = Compat.Magic`; new corpus cell
+`probe_foundry_waiver.rkt` (single foundry primitive SRef) drives
+the regression.  Foundry-cell-instance waivers via
+`Waiver.collectFoundryFootprints` were already in place — they
+just weren't filtering the unconditional LU.* emits because LU.*
+isn't in `foundryWaiverMarginNm`.
+
 **Commits (post-autonomous-handoff, 7 new):**
 
 | Commit | Resolves |

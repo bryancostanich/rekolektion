@@ -201,7 +201,7 @@ let ``ActivePath with escape characters round-trips`` () =
 let ``empty defaults match Model.empty defaults`` () =
     let e = SessionState.empty
     e.SnapEnabled    |> should equal false
-    e.ShowRuler      |> should equal true
+    e.ShowAxes       |> should equal true
     e.ShowGrid       |> should equal true
     e.ShowLabels     |> should equal true
     e.RatlinesArmed  |> should equal false
@@ -214,7 +214,7 @@ let ``each display toggle round-trips through the flipped state`` () =
     let flipped =
         { SessionState.empty with
             SnapEnabled    = true
-            ShowRuler      = false
+            ShowAxes       = false
             ShowGrid       = false
             ShowLabels     = false
             RatlinesArmed  = true
@@ -228,7 +228,7 @@ let ``parse defaults each display toggle on legacy files missing the fields`` ()
     let legacy = """{"layers":[],"openPaths":[]}"""
     let restored = SessionState.parse legacy
     restored.SnapEnabled    |> should equal false
-    restored.ShowRuler      |> should equal true
+    restored.ShowAxes       |> should equal true
     restored.ShowGrid       |> should equal true
     restored.ShowLabels     |> should equal true
     restored.RatlinesArmed  |> should equal false
@@ -239,20 +239,39 @@ let ``parse defaults each display toggle on legacy files missing the fields`` ()
 [<Fact>]
 let ``serialize emits each display-toggle key`` () =
     let json = SessionState.serialize SessionState.empty
-    for key in [ "snapEnabled"; "showRuler"; "showGrid"; "showLabels"
+    for key in [ "snapEnabled"; "showAxes"; "showGrid"; "showLabels"
                  "ratlinesArmed"; "showDrc"; "showDrcLabels"; "showDimensions" ] do
         json |> should haveSubstring (sprintf "\"%s\":" key)
 
 [<Fact>]
 let ``parse honours each display-toggle value from disk`` () =
     let json =
-        """{"layers":[],"openPaths":[],"snapEnabled":true,"showRuler":false,"showGrid":false,"showLabels":false,"ratlinesArmed":true,"showDrc":true,"showDrcLabels":false,"showDimensions":true}"""
+        """{"layers":[],"openPaths":[],"snapEnabled":true,"showAxes":false,"showGrid":false,"showLabels":false,"ratlinesArmed":true,"showDrc":true,"showDrcLabels":false,"showDimensions":true}"""
     let s = SessionState.parse json
     s.SnapEnabled    |> should equal true
-    s.ShowRuler      |> should equal false
+    s.ShowAxes       |> should equal false
     s.ShowGrid       |> should equal false
     s.ShowLabels     |> should equal false
     s.RatlinesArmed  |> should equal true
     s.ShowDrc        |> should equal true
     s.ShowDrcLabels  |> should equal false
     s.ShowDimensions |> should equal true
+
+[<Fact>]
+let ``parse falls back to legacy showRuler key when showAxes is missing`` () =
+    // Sessions written before the rename (2026-06-02) used
+    // "showRuler" for the origin-axes overlay toggle. The new
+    // code writes "showAxes" but must still honour the legacy
+    // key so an existing user's preference survives upgrade.
+    let legacy = """{"layers":[],"openPaths":[],"showRuler":false}"""
+    let s = SessionState.parse legacy
+    s.ShowAxes |> should equal false
+
+[<Fact>]
+let ``parse prefers showAxes when both keys are present`` () =
+    // If both the new and legacy keys appear (e.g. a tool wrote
+    // both during transition), the new key wins.
+    let both =
+        """{"layers":[],"openPaths":[],"showAxes":true,"showRuler":false}"""
+    let s = SessionState.parse both
+    s.ShowAxes |> should equal true

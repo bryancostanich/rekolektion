@@ -84,9 +84,9 @@ let private gds2DShowGridAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
         GdsCanvasControl.ShowGridProperty, v, ValueNone)
 
-let private gds2DShowRulerAttr (v: bool) : IAttr<GdsCanvasControl> =
+let private gds2DShowAxesAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
-        GdsCanvasControl.ShowRulerProperty, v, ValueNone)
+        GdsCanvasControl.ShowAxesProperty, v, ValueNone)
 
 let private gds2DShowLabelsAttr (v: bool) : IAttr<GdsCanvasControl> =
     AttrBuilder<GdsCanvasControl>.CreateProperty<bool>(
@@ -319,7 +319,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DDebugOverlayAttr model.DebugOverlay
               gds2DDisabledDrcRulesAttr model.DisabledDrcRules
               gds2DShowGridAttr model.ShowGrid
-              gds2DShowRulerAttr model.ShowRuler
+              gds2DShowAxesAttr model.ShowAxes
               gds2DShowLabelsAttr model.ShowLabels
               gds2DSnapEnabledAttr model.SnapEnabled
               gds2DVisibleRatlinesAttr model.Toggle.VisibleRatlines

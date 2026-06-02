@@ -163,12 +163,13 @@ type Model = {
     DrcView : Drc.Rules.RulesetView
     /// Grid overlay: major + minor dots. Toggled by G. Per-µm
     /// spacing comes from Services.Config.current. Persists
-    /// across tab switches. Independent from ShowRuler.
+    /// across tab switches. Independent from ShowAxes.
     ShowGrid : bool
-    /// Origin-anchored ruler with tick marks and µm labels.
-    /// Toggled by U. Independent from ShowGrid so the user can
-    /// pick the visual they want.
-    ShowRuler : bool
+    /// Origin-anchored axes (X red, Y green) along the active
+    /// cell's bbox edges with tick marks and µm labels. Toggled
+    /// by L. Distinct from the viewport rulers (which are
+    /// screen-edge gutters and always on).
+    ShowAxes : bool
     /// Layout label text (net names, port markers — anything
     /// emitted as a `(label …)` form in the .rkt). When off, the
     /// 2D label painter is skipped so the canvas reads as pure
@@ -255,7 +256,7 @@ let empty : Model = {
     DisabledDrcRules = Set.empty
     DrcView = Drc.Rules.defaultView
     ShowGrid = true
-    ShowRuler = true
+    ShowAxes = true
     ShowLabels = true
     SnapEnabled = false
     TightenMode = false

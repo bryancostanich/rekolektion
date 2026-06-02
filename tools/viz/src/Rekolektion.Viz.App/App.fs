@@ -77,7 +77,7 @@ module KeyMap =
         | Key.O,     KeyModifiers.None -> Some Msg.ToggleDebugOverlay
         | Key.W,     KeyModifiers.None -> Some Msg.ToggleRoutingMode
         | Key.U,     KeyModifiers.None -> Some Msg.ToggleRatlines
-        | Key.L,     KeyModifiers.None -> Some Msg.ToggleRuler
+        | Key.L,     KeyModifiers.None -> Some Msg.ToggleAxes
         | Key.G,     KeyModifiers.None -> Some Msg.ToggleGrid
         | Key.S,     KeyModifiers.None -> Some Msg.ToggleSnap
         | Key.D,     KeyModifiers.Meta -> Some Msg.DuplicateSelection
@@ -318,7 +318,7 @@ type MainWindow() as this =
                 // record so a legacy session file (pre-toggle field)
                 // reads as the same default Model.empty uses.
                 SnapEnabled    = sess.SnapEnabled
-                ShowRuler      = sess.ShowRuler
+                ShowAxes       = sess.ShowAxes
                 ShowGrid       = sess.ShowGrid
                 ShowLabels     = sess.ShowLabels
                 RatlinesArmed  = sess.RatlinesArmed
@@ -708,9 +708,9 @@ type App() =
         addItem viewSub "Toggle ratlines"
             (Some (KeyGesture(Key.U, KeyModifiers.None)))
             Msg.ToggleRatlines |> ignore
-        addItem viewSub "Toggle ruler"
+        addItem viewSub "Toggle axes"
             (Some (KeyGesture(Key.L, KeyModifiers.None)))
-            Msg.ToggleRuler |> ignore
+            Msg.ToggleAxes |> ignore
         addItem viewSub "Toggle grid"
             (Some (KeyGesture(Key.G, KeyModifiers.None)))
             Msg.ToggleGrid |> ignore

@@ -81,9 +81,10 @@ type private SelectionOverlay = {
     /// major + minor dots at Config.GridMajorUm / GridMinorUm
     /// spacing, aligned to the doc's bbox bottom-left.
     ShowGrid : bool
-    /// Ruler overlay on/off. Independent from ShowGrid. Anchored
-    /// at the doc's bbox bottom-left; ticks point outward.
-    ShowRuler : bool
+    /// Origin-anchored axes overlay on/off. Independent from
+    /// ShowGrid. Anchored at the doc's bbox bottom-left; X red,
+    /// Y green, ticks point outward into µm labels.
+    ShowAxes : bool
     /// Layout label text rendering. When false, the LabelPainter
     /// pass is skipped — net names and port markers stay in the
     /// model but don't render. Default true.
@@ -598,7 +599,7 @@ type private SkiaDraw(bounds: Rect,
                 //   sub-tick : every 0.1 in 0..10  (shortest)
                 //   minor    : every 1   in 0..10  (medium)
                 //   major    : every 5   for the rest (longest)
-                if overlay.ShowRuler && hasFlat then
+                if overlay.ShowAxes && hasFlat then
                     let bxMin, byMin = bxMinFlat, byMinFlat
                     let bxMax, byMax = bxMaxFlat, byMaxFlat
                     do
@@ -1308,8 +1309,8 @@ type GdsCanvasControl() as this =
     static member val ShowGridProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowGrid", false)
         with get
-    static member val ShowRulerProperty : StyledProperty<bool> =
-        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowRuler", false)
+    static member val ShowAxesProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowAxes", false)
         with get
     static member val ShowLabelsProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ShowLabels", true)
@@ -1637,9 +1638,9 @@ type GdsCanvasControl() as this =
         with get() : bool = this.GetValue(GdsCanvasControl.ShowGridProperty)
         and set(v: bool) = this.SetValue(GdsCanvasControl.ShowGridProperty, v) |> ignore
 
-    member this.ShowRuler
-        with get() : bool = this.GetValue(GdsCanvasControl.ShowRulerProperty)
-        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowRulerProperty, v) |> ignore
+    member this.ShowAxes
+        with get() : bool = this.GetValue(GdsCanvasControl.ShowAxesProperty)
+        and set(v: bool) = this.SetValue(GdsCanvasControl.ShowAxesProperty, v) |> ignore
 
     member this.ShowLabels
         with get() : bool = this.GetValue(GdsCanvasControl.ShowLabelsProperty)
@@ -1949,7 +1950,7 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.TightenModeProperty
              || e.Property = GdsCanvasControl.SelectedPolygonsProperty
              || e.Property = GdsCanvasControl.ShowGridProperty
-             || e.Property = GdsCanvasControl.ShowRulerProperty
+             || e.Property = GdsCanvasControl.ShowAxesProperty
              || e.Property = GdsCanvasControl.ShowLabelsProperty
              || e.Property = GdsCanvasControl.SelectedRatlinesProperty
              || e.Property = GdsCanvasControl.SnapEnabledProperty
@@ -2077,6 +2078,7 @@ type GdsCanvasControl() as this =
                             let liveResult =
                                 Drc.Check.runLiveWithIndexTimed
                                     Drc.Compat.Magic
+                                    true      // full: canvas keeps LU.*-class checks visible
                                     snapshotView
                                     snapshotUnits snapshotFlat cellIndex
                                     draftFlat snapshotNets snapshotStartNet
@@ -4051,6 +4053,7 @@ type GdsCanvasControl() as this =
                         let vs =
                             Drc.Check.checkWithToggles
                                 Drc.Compat.Magic
+                                true      // full: canvas keeps LU.*-class checks visible
                                 this.DrcView
                                 lib.Units staticFlat tags disabled
                         cachedDrcFlat <- staticFlat
@@ -4104,6 +4107,7 @@ type GdsCanvasControl() as this =
                             let tags = Drc.Implant.tagAll renderFlat
                             Drc.Check.checkWithToggles
                                 Drc.Compat.Magic
+                                true      // full: canvas keeps LU.*-class checks visible
                                 this.DrcView
                                 renderLib.Units renderFlat tags disabled
                         else
@@ -4160,6 +4164,7 @@ type GdsCanvasControl() as this =
                             let fresh =
                                 Drc.Check.checkWithToggles
                                     Drc.Compat.Magic
+                                    true      // full: canvas keeps LU.*-class checks visible
                                     this.DrcView
                                     renderLib.Units smallFlat smallTags disabled
                             Array.append kept fresh
@@ -4289,7 +4294,7 @@ type GdsCanvasControl() as this =
                   SelectedPolygons = this.SelectedPolygons
                   ResizeBbox = resizeBbox
                   ShowGrid = this.ShowGrid
-                  ShowRuler = this.ShowRuler
+                  ShowAxes = this.ShowAxes
                   ShowLabels = this.ShowLabels }
             // Route-live overlay shows when EITHER the DRC button
             // is on OR a draft is in flight. While drawing, the

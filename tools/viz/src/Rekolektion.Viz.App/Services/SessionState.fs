@@ -55,7 +55,7 @@ type State = {
     /// (legacy session file) parses to the same value the app
     /// starts with on first launch.
     SnapEnabled    : bool   // S key — default false
-    ShowRuler      : bool   // default true
+    ShowAxes       : bool   // L key — default true (origin-anchored axes)
     ShowGrid       : bool   // G key — default true
     ShowLabels     : bool   // default true
     RatlinesArmed  : bool   // U / TopBar — default false
@@ -71,7 +71,7 @@ let empty : State = {
     Window = None
     DrcOther = true
     SnapEnabled    = false
-    ShowRuler      = true
+    ShowAxes       = true
     ShowGrid       = true
     ShowLabels     = true
     RatlinesArmed  = false
@@ -161,13 +161,25 @@ let parse (json: string) : State =
                    || v.ValueKind = System.Text.Json.JsonValueKind.False)
             then v.GetBoolean()
             else fallback
+        // Legacy session files (pre-rename, 2026-06-02) wrote the
+        // origin-axes toggle under "showRuler". Prefer the new
+        // "showAxes" key and fall back to the legacy one so an
+        // existing user's "I hid the axes" preference survives
+        // the upgrade.
+        let showAxes =
+            let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if root.TryGetProperty("showAxes", &v)
+               && (v.ValueKind = System.Text.Json.JsonValueKind.True
+                   || v.ValueKind = System.Text.Json.JsonValueKind.False)
+            then v.GetBoolean()
+            else boolField "showRuler" true
         { Layers = layers
           OpenPaths = openPaths
           ActivePath = activePath
           Window = window
           DrcOther = drcOther
           SnapEnabled    = boolField "snapEnabled"    false
-          ShowRuler      = boolField "showRuler"      true
+          ShowAxes       = showAxes
           ShowGrid       = boolField "showGrid"       true
           ShowLabels     = boolField "showLabels"     true
           RatlinesArmed  = boolField "ratlinesArmed"  false
@@ -226,7 +238,7 @@ let serialize (state: State) : string =
     let appendBool (key: string) (v: bool) =
         sb.AppendFormat(",\"{0}\":{1}", key, (if v then "true" else "false")) |> ignore
     appendBool "snapEnabled"    state.SnapEnabled
-    appendBool "showRuler"      state.ShowRuler
+    appendBool "showAxes"       state.ShowAxes
     appendBool "showGrid"       state.ShowGrid
     appendBool "showLabels"     state.ShowLabels
     appendBool "ratlinesArmed"  state.RatlinesArmed
@@ -299,7 +311,7 @@ let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
         Window = current.Window
         DrcOther = Visibility.isDrcVisibleOther model.Toggle
         SnapEnabled    = model.SnapEnabled
-        ShowRuler      = model.ShowRuler
+        ShowAxes       = model.ShowAxes
         ShowGrid       = model.ShowGrid
         ShowLabels     = model.ShowLabels
         RatlinesArmed  = model.RatlinesArmed

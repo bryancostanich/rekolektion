@@ -876,8 +876,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let model' = { model with ShowGrid = not model.ShowGrid }
         backend.PersistSession model'
         model', Cmd.none
-    | Msg.ToggleRuler ->
-        let model' = { model with ShowRuler = not model.ShowRuler }
+    | Msg.ToggleAxes ->
+        let model' = { model with ShowAxes = not model.ShowAxes }
         backend.PersistSession model'
         model', Cmd.none
     | Msg.ToggleLabels ->

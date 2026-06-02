@@ -102,7 +102,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.onClick (fun _ -> dispatch msg)
         ] :> IView
     let gridToggle    = mkToggle "Grid (G)"     model.ShowGrid    "#2c4b6f" Msg.ToggleGrid
-    let rulerToggle   = mkToggle "Ruler (L)"    model.ShowRuler   "#2c4b6f" Msg.ToggleRuler
+    let axesToggle    = mkToggle "Axes (L)"     model.ShowAxes    "#2c4b6f" Msg.ToggleAxes
     let labelsToggle  = mkToggle "Labels"       model.ShowLabels  "#2c4b6f" Msg.ToggleLabels
     let snapToggle    = mkToggle "Snap (S)"     model.SnapEnabled "#2c4b6f" Msg.ToggleSnap
     // Tighten mode lives next to the editor-action toggles so the
@@ -156,7 +156,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                 StackPanel.orientation Orientation.Horizontal
                                 StackPanel.children [
                                     snapToggle
-                                    rulerToggle
+                                    axesToggle
                                     gridToggle
                                     labelsToggle
                                     tightenToggle

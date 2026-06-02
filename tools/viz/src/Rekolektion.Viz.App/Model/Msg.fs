@@ -157,8 +157,9 @@ type Msg =
     | ClearDrcSelection
     /// Toggle the major/minor grid dot overlay (G key).
     | ToggleGrid
-    /// Toggle the origin-anchored ruler overlay (L key).
-    | ToggleRuler
+    /// Toggle the origin-anchored axes overlay (L key) — X/Y
+    /// spines along the active cell's bbox edges with µm ticks.
+    | ToggleAxes
     /// Toggle the interactive routing tool on/off (W key). When on,
     /// canvas clicks start/extend a draft route on the ActiveLayer;
     /// when off, clicks fall through to normal selection.

@@ -1,5 +1,6 @@
 module Rekolektion.Viz.Core.Layout.Instances
 
+open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Rkt.Types
 
 /// One movable instance at the top level. Hit-testing, selection,
@@ -1007,6 +1008,63 @@ let bboxOfFlat
             if pt.Y < yMin then yMin <- pt.Y
             if pt.Y > yMax then yMax <- pt.Y
     if any then Some (xMin, yMin, xMax, yMax) else None
+
+/// Snap every position-bearing element in every cell of `doc`
+/// to the active PDK's manufacturing grid (`Tech.gridFor doc.Pdk`).
+/// Used by the "norm" top-toolbar button — one click drags a
+/// doc that has drifted off-grid (build-script arithmetic
+/// outside `place_*`, mid-history hand edits, etc.) back onto
+/// the foundry grid so `verify-grid` reports CLEAN on save.
+///
+/// **Independent rounding.** Every coord snaps on its own —
+/// SRef.Origin doesn't carry its anchored labels with it,
+/// Rect corners snap independently, Poly / Path vertices snap
+/// independently, ARef Origin / ColPitch / RowPitch all snap
+/// on their own. Drift between an SRef and "its" label IS the
+/// bug the user wants surfaced, not preserved (preserving
+/// would just propagate the off-grid relationship).
+///
+/// Rounding is `Tech.snapDbu` (half-away-from-zero), which
+/// matches `rekolektion.layout.snap.snap_dbu` + the F# ToGds
+/// emitter byte-for-byte. Drift between the two registries is
+/// the foundational Track 01 bug; same helper means no drift
+/// between Python authoring and F# normalization.
+///
+/// PortEl + PropsEl pass through unchanged (no positions that
+/// reach the rendered layout in v1; extend here if pad / port
+/// shapes start drifting after a Norm).
+let normalizeToGrid (doc: Document) : Document =
+    let grid = Tech.gridFor doc.Pdk
+    if grid <= 1L then doc
+    else
+        let snap (v: int64) : int64 = Tech.snapDbu grid v
+        let snapPoint (p: Point) : Point = { X = snap p.X; Y = snap p.Y }
+        let snapPoints = List.map snapPoint
+        let snapElem (el: Element) : Element =
+            match el with
+            | PolyEl p -> PolyEl { p with Points = snapPoints p.Points }
+            | PathEl p -> PathEl { p with Points = snapPoints p.Points }
+            | RectEl r ->
+                RectEl
+                    { r with
+                        X1 = snap r.X1; Y1 = snap r.Y1
+                        X2 = snap r.X2; Y2 = snap r.Y2 }
+            | LabelEl l ->
+                LabelEl { l with Origin = snapPoint l.Origin }
+            | SRefEl s ->
+                SRefEl { s with Origin = snapPoint s.Origin }
+            | ARefEl a ->
+                ARefEl
+                    { a with
+                        Origin   = snapPoint a.Origin
+                        ColPitch = snapPoint a.ColPitch
+                        RowPitch = snapPoint a.RowPitch }
+            | PortEl _ | PropsEl _ -> el
+        let cells' =
+            doc.Cells
+            |> List.map (fun c ->
+                { c with Elements = c.Elements |> List.map snapElem })
+        { doc with Cells = cells' }
 
 // -- Rotate / mirror SRefs with label-following --------------------
 //

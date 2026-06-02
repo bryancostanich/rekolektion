@@ -169,6 +169,12 @@ type Msg =
     /// corner lands at world origin.  No-op when the corner is
     /// already at (0, 0).  Pushes one undo snapshot.
     | ZeroOrigin
+    /// "norm" — snap every coord in every cell of the active
+    /// macro to the PDK manufacturing grid (`Tech.gridFor doc.Pdk`).
+    /// Each coord rounds independently (no label-follows-SRef
+    /// drift carry).  Pushes one undo snapshot; no-op when the
+    /// doc is already grid-clean.
+    | NormalizeToGrid
     /// Toggle the interactive routing tool on/off (W key). When on,
     /// canvas clicks start/extend a draft route on the ActiveLayer;
     /// when off, clicks fall through to normal selection.

@@ -153,6 +153,23 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ZeroOrigin)
         ] :> IView
+    // Norm — snap every coord in every cell of the active macro
+    // to the PDK manufacturing grid (`Tech.gridFor doc.Pdk`).
+    // One-shot action; idempotent on an already-clean doc.
+    let normButton : IView =
+        Button.create [
+            Button.content "norm"
+            Button.background "#262626"
+            Button.foreground "#bbbbbb"
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            ToolTip.tip
+                "Snap every cell + geometry to the PDK manufacturing grid."
+            Button.onClick (fun _ -> dispatch Msg.NormalizeToGrid)
+        ] :> IView
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -179,6 +196,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     wireToggle
                                     scrubButton
                                     zeroOriginButton
+                                    normButton
                                     ratlinesToggle
                                     drcToggle
                                     drcLabelsToggle

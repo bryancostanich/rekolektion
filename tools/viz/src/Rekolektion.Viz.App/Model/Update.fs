@@ -1752,6 +1752,38 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         |> List.map (fun m ->
                             if m.Path = path then mc' else m)
                     { model with OpenMacros = openMacros' }, Cmd.none
+    | Msg.NormalizeToGrid ->
+        // "norm" button — snap every cell + element to the PDK
+        // manufacturing grid.  After-state contract: verify-grid
+        // reports CLEAN on save.  No-op when the snap doesn't
+        // change anything (idempotent) so the action is safe to
+        // mash.  One undo snapshot per non-trivial application.
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some path ->
+            let macroOpt =
+                model.OpenMacros |> List.tryFind (fun mc -> mc.Path = path)
+            match macroOpt with
+            | None -> model, Cmd.none
+            | Some mc ->
+                let lib' = Layout.Instances.normalizeToGrid mc.Document
+                if lib' = mc.Document then model, Cmd.none
+                else
+                    let flat' = Layout.Flatten.flatten lib'
+                    let inst' = Layout.Instances.enumerate lib'
+                    let mc' =
+                        EditSession.pushUndoSnapshot mc
+                        |> fun m ->
+                            { m with
+                                Document = lib'
+                                FlatPolygons = flat'
+                                TopInstances = inst' }
+                        |> EditSession.markDirty
+                    let openMacros' =
+                        model.OpenMacros
+                        |> List.map (fun m ->
+                            if m.Path = path then mc' else m)
+                    { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.TidyRoutingGeometry ->
         // One-shot cleanup: collapse same-bbox same-layer rects per
         // cell.  Cleans files authored before commit-time dedup

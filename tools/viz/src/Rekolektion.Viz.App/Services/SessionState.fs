@@ -82,7 +82,7 @@ let empty : State = {
     ShowDrc        = false
     ShowDrcLabels  = true
     ShowDimensions = false
-    DrcCompat      = "magic"
+    DrcCompat      = "klayout"
 }
 
 let private homeDir =
@@ -197,7 +197,7 @@ let parse (json: string) : State =
           ShowDrc        = boolField "showDrc"        false
           ShowDrcLabels  = boolField "showDrcLabels"  true
           ShowDimensions = boolField "showDimensions" false
-          DrcCompat      = stringField "drcCompat"    "magic" }
+          DrcCompat      = stringField "drcCompat"    "klayout" }
     with _ -> empty
 
 /// Read the persisted session state. Missing or malformed file

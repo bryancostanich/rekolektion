@@ -163,10 +163,10 @@ type Model = {
     DrcView : Drc.Rules.RulesetView
     /// Track 02 — which authority's rules the in-viz DRC overlay
     /// evaluates against (Magic or KLayout).  Selectable from the
-    /// File menu.  Default `Magic` preserves the canvas behavior
-    /// users had pre-Track-02.  `Klayout` matches the sign-off
-    /// target — same rules `verify_drc(rkt)` runs by default.
-    /// Persisted across restarts.
+    /// Mode menu.  Default `Klayout` matches the sign-off target —
+    /// same rules `verify_drc(rkt)` runs by default.  `Magic`
+    /// preserves the pre-Track-02 canvas behavior for users who
+    /// want it.  Persisted across restarts.
     DrcCompat : Drc.Compat.Compat
     /// Grid overlay: major + minor dots. Toggled by G. Per-µm
     /// spacing comes from Services.Config.current. Persists
@@ -262,7 +262,7 @@ let empty : Model = {
     SelectedDrcViolation = None
     DisabledDrcRules = Set.empty
     DrcView = Drc.Rules.defaultView
-    DrcCompat = Drc.Compat.Magic
+    DrcCompat = Drc.Compat.Klayout
     ShowGrid = true
     ShowAxes = true
     ShowLabels = true

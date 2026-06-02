@@ -1649,11 +1649,10 @@ type GdsCanvasControl() as this =
     /// Track 02 — which authority's rules the canvas evaluates the
     /// in-process DRC against (Compat.Magic | Compat.Klayout).
     /// Flows from Model.DrcCompat via AppView; user selects from
-    /// the File menu.  Default Magic preserves the pre-Track-02
-    /// canvas behavior.
+    /// the Mode menu.  Default Klayout matches the sign-off target.
     static member val DrcCompatProperty : StyledProperty<Drc.Compat.Compat> =
         AvaloniaProperty.Register<GdsCanvasControl, Drc.Compat.Compat>(
-            "DrcCompat", Drc.Compat.Magic)
+            "DrcCompat", Drc.Compat.Klayout)
         with get
 
     member this.Library

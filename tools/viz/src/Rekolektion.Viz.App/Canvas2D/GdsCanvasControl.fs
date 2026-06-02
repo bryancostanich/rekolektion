@@ -3966,8 +3966,29 @@ type GdsCanvasControl() as this =
         saveCurrentViewport "WheelZoom"
         this.InvalidateVisual()
 
+    /// Push the current camera + viewport size to the shared
+    /// `ViewportSync` bus so the surrounding ruler controls can
+    /// redraw their tick gutters at the new zoom/pan. The bus
+    /// no-ops when the snapshot equals the last one, so calling
+    /// this from every Render is cheap.
+    member private this.PushViewportSync () =
+        let dbuNm =
+            match this.Library with
+            | Some lib -> max 1 lib.Units.DbuNm
+            | None -> 1
+        let snapshot : Rekolektion.Viz.App.Services.ViewportSync.Snapshot = {
+            CenterDbuX   = centerX
+            CenterDbuY   = centerY
+            PixelsPerDbu = pixelsPerDbu
+            DbuNm        = dbuNm
+            PixelW       = this.Bounds.Width
+            PixelH       = this.Bounds.Height
+        }
+        Rekolektion.Viz.App.Services.ViewportSync.update snapshot
+
     override this.Render(context) =
         base.Render context
+        this.PushViewportSync ()
         let bounds = Rect(0.0, 0.0, this.Bounds.Width, this.Bounds.Height)
         // A transparent fill is required for Avalonia's hit-test to
         // treat this control's bounds as clickable. context.Custom

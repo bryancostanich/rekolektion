@@ -33,6 +33,7 @@
     <Compile Include="Layout/Marquee.fs" />
     <Compile Include="Layout/Flatten.fs" />
     <Compile Include="Layout/Snap.fs" />
+    <Compile Include="Layout/RulerTicks.fs" />
     <Compile Include="Layout/Instances.fs" />
     <Compile Include="Layout/MagToLayout.fs" />
     <Compile Include="Cif/Cif.fs" />

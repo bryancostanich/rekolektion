@@ -13,6 +13,7 @@ open Rekolektion.Viz.Core
 open Rekolektion.Viz.Core.Gds.Types
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.App.Canvas2D.GdsCanvasControl
+open Rekolektion.Viz.App.Canvas2D.RulerControls
 open Rekolektion.Viz.App.Canvas3D.StackCanvasControl
 open Rekolektion.Viz.App.Model
 
@@ -406,6 +407,40 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                   (System.Action<Set<Layout.Flatten.PolyKey>>(fun sel ->
                       dispatch (Msg.SetPolygonSelection sel))) ]
 
+    // Wrap the 2D canvas with viewport rulers along the top and
+    // left edges. Layout is a 2×2 grid:
+    //   (0,0) corner  (0,1) top ruler
+    //   (1,0) left    (1,1) canvas2D
+    // The corner cell carries the gutter background so the
+    // L-bend reads as a single piece of UI; the rulers fill the
+    // remaining gutter strips and the canvas takes the rest.
+    let canvas2DWithRulers : IView =
+        let gutter = string (int GutterPx)
+        Grid.create [
+            Grid.rowDefinitions    (gutter + ",*")
+            Grid.columnDefinitions (gutter + ",*")
+            Grid.children [
+                Border.create [
+                    Grid.row 0
+                    Grid.column 0
+                    Border.background "#1A1F28"
+                ]
+                ViewBuilder.Create<TopRulerControl> [
+                    Grid.row 0
+                    Grid.column 1
+                ]
+                ViewBuilder.Create<LeftRulerControl> [
+                    Grid.row 1
+                    Grid.column 0
+                ]
+                Border.create [
+                    Grid.row 1
+                    Grid.column 1
+                    Border.child canvas2D
+                ]
+            ]
+        ] :> IView
+
     let activeIndex =
         match model.ActiveTab with
         | Model.View2D -> 0
@@ -428,7 +463,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                 TabItem.foreground "#ffffff"
                 TabItem.fontSize 16.0
                 TabItem.fontWeight FontWeight.SemiBold
-                TabItem.content canvas2D
+                TabItem.content canvas2DWithRulers
             ]
             TabItem.create [
                 TabItem.header "3D"

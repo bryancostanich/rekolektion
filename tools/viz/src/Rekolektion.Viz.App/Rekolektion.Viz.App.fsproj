@@ -38,6 +38,7 @@
     <Compile Include="Services/CommandListener.fs" />
     <Compile Include="Services/ScreenshotListener.fs" />
     <Compile Include="Services/ViewportSync.fs" />
+    <Compile Include="Services/Guides.fs" />
     <Compile Include="Canvas2D/GdsCanvasControl.fs" />
     <Compile Include="Canvas2D/RulerControls.fs" />
     <Compile Include="Canvas3D/Matrix4x4Helpers.fs" />

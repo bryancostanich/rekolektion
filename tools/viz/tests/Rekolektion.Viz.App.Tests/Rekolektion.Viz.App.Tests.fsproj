@@ -30,6 +30,7 @@
     <Compile Include="TestSession.fs" />
     <Compile Include="HeadlessRenderTests.fs" />
     <Compile Include="CanvasWiringTests.fs" />
+    <Compile Include="GuidesTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

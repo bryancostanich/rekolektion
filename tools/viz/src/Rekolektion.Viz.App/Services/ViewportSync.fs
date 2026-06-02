@@ -17,6 +17,11 @@ module Rekolektion.Viz.App.Services.ViewportSync
 /// native unit); `PixelsPerDbu` is the on-screen zoom; `DbuNm`
 /// bridges DBU → µm for the ruler tick math; `PixelW` / `PixelH`
 /// are the canvas's current render-surface size in pixels.
+///
+/// `SnapEnabled` / `SnapStepDbu` ride along so the ruler controls
+/// can apply the same grid snap to guide creation that the canvas
+/// applies to SRef drags — without re-plumbing config or
+/// model state through to the ruler render path.
 type Snapshot = {
     CenterDbuX   : float
     CenterDbuY   : float
@@ -24,6 +29,8 @@ type Snapshot = {
     DbuNm        : int
     PixelW       : float
     PixelH       : float
+    SnapEnabled  : bool
+    SnapStepDbu  : int64
 }
 
 let empty : Snapshot = {
@@ -33,6 +40,8 @@ let empty : Snapshot = {
     DbuNm        = 1
     PixelW       = 0.0
     PixelH       = 0.0
+    SnapEnabled  = false
+    SnapStepDbu  = 0L
 }
 
 let private state = ref empty

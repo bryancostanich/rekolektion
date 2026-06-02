@@ -1027,6 +1027,82 @@ type private SkiaDraw(bounds: Rect,
 
                 canvas.RestoreToCount saved
 
+/// Draws the committed guidelines + any in-flight drag on top of
+/// the main geometry render. Lives in its own draw op so the
+/// canvas's `SkiaDraw` constructor doesn't grow further; guides
+/// are independent of the layer / DRC / ratlines passes and read
+/// cleaner as a separate concern.
+type private GuidesDraw(bounds: Rect,
+                        guides: Rekolektion.Viz.App.Services.Guides.Guide list,
+                        inFlight: Rekolektion.Viz.App.Services.Guides.Drag option,
+                        vb: LayerPainter.ViewBox) =
+    interface ICustomDrawOperation with
+        member _.Bounds = bounds
+        member _.Equals(_: ICustomDrawOperation) = false
+        member _.HitTest _ = false
+        member _.Dispose() = ()
+        member _.Render(context) =
+            let leaseFeature = context.TryGetFeature<ISkiaSharpApiLeaseFeature>()
+            if not (isNull leaseFeature) then
+                use lease = leaseFeature.Lease()
+                let canvas = lease.SkCanvas
+                let saved = canvas.Save()
+                let w = float32 bounds.Width
+                let h = float32 bounds.Height
+                let clip = SKRect(0.0f, 0.0f, w, h)
+                canvas.ClipRect(clip, SKClipOperation.Intersect)
+                // World→screen helpers mirror `SkiaDraw`'s math so
+                // guide lines align pixel-for-pixel with the grid
+                // dots and the bbox axes underneath.
+                let gsX =
+                    if vb.MaxX = vb.MinX then 1.0
+                    else float vb.PixelW / float (vb.MaxX - vb.MinX)
+                let gsY =
+                    if vb.MaxY = vb.MinY then 1.0
+                    else float vb.PixelH / float (vb.MaxY - vb.MinY)
+                let wxToScr (wx: int64) =
+                    (float wx - float vb.MinX) * gsX |> float32
+                let wyToScr (wy: int64) =
+                    float vb.PixelH - (float wy - float vb.MinY) * gsY |> float32
+                use dash = SKPathEffect.CreateDash([| 8.0f; 4.0f |], 0.0f)
+                use commitPaint =
+                    new SKPaint(Style = SKPaintStyle.Stroke,
+                                Color = SKColor(0x3Fuy, 0xA9uy, 0xD4uy, 0xFFuy),
+                                StrokeWidth = 1.0f,
+                                PathEffect = dash,
+                                IsAntialias = false)
+                use livePaint =
+                    // Brighter cyan so the in-flight guide reads
+                    // distinct from committed ones during a drag.
+                    new SKPaint(Style = SKPaintStyle.Stroke,
+                                Color = SKColor(0x9Cuy, 0xE0uy, 0xFFuy, 0xFFuy),
+                                StrokeWidth = 1.0f,
+                                PathEffect = dash,
+                                IsAntialias = false)
+                let drawGuide (paint: SKPaint) orientation coordDbu =
+                    match orientation with
+                    | Rekolektion.Viz.App.Services.Guides.Horizontal ->
+                        let y = wyToScr coordDbu
+                        canvas.DrawLine(0.0f, y, w, y, paint)
+                    | Rekolektion.Viz.App.Services.Guides.Vertical ->
+                        let x = wxToScr coordDbu
+                        canvas.DrawLine(x, 0.0f, x, h, paint)
+                // Skip the guide being moved from the committed
+                // pass — the in-flight overlay renders alone at
+                // the new position so the user doesn't see both
+                // old and new lines during the drag.
+                let movingId =
+                    match inFlight with
+                    | Some d -> d.MovingId
+                    | None -> None
+                for g in guides do
+                    if Some g.Id <> movingId then
+                        drawGuide commitPaint g.Orientation g.CoordDbu
+                match inFlight with
+                | Some d -> drawGuide livePaint d.Orientation d.CoordDbu
+                | None -> ()
+                canvas.RestoreToCount saved
+
 type private DragKind =
     | NoDrag
     | PanDrag
@@ -1034,6 +1110,11 @@ type private DragKind =
     | MarqueeDrag
     | PolygonDrag
     | ResizeDrag of handle: ResizeHandle * structure: string * index: int
+    /// Grab-and-move on an existing guideline (hit-tested inside
+    /// the canvas's pointer hit-test). Carries the guide's id +
+    /// orientation so the canvas can dispatch updates through the
+    /// `GuidesService` without re-hit-testing on every move.
+    | GuideMoveDrag of guideId: int * orientation: Rekolektion.Viz.App.Services.Guides.Orientation
 
 type GdsCanvasControl() as this =
     inherit Control()
@@ -1565,6 +1646,15 @@ type GdsCanvasControl() as this =
         AvaloniaProperty.Register<GdsCanvasControl, Drc.Rules.RulesetView>(
             "DrcView", Drc.Rules.defaultView)
         with get
+    /// Track 02 — which authority's rules the canvas evaluates the
+    /// in-process DRC against (Compat.Magic | Compat.Klayout).
+    /// Flows from Model.DrcCompat via AppView; user selects from
+    /// the File menu.  Default Magic preserves the pre-Track-02
+    /// canvas behavior.
+    static member val DrcCompatProperty : StyledProperty<Drc.Compat.Compat> =
+        AvaloniaProperty.Register<GdsCanvasControl, Drc.Compat.Compat>(
+            "DrcCompat", Drc.Compat.Magic)
+        with get
 
     member this.Library
         with get() : Document option = this.GetValue(GdsCanvasControl.LibraryProperty)
@@ -1818,6 +1908,12 @@ type GdsCanvasControl() as this =
         and set(v: Drc.Rules.RulesetView) =
             this.SetValue(GdsCanvasControl.DrcViewProperty, v) |> ignore
 
+    member this.DrcCompat
+        with get() : Drc.Compat.Compat =
+            this.GetValue(GdsCanvasControl.DrcCompatProperty)
+        and set(v: Drc.Compat.Compat) =
+            this.SetValue(GdsCanvasControl.DrcCompatProperty, v) |> ignore
+
     override _.MeasureOverride(constraint': Size) : Size =
         let w =
             if System.Double.IsInfinity constraint'.Width then 200.0
@@ -1958,7 +2054,8 @@ type GdsCanvasControl() as this =
              || e.Property = GdsCanvasControl.SegmentDragProperty
              || e.Property = GdsCanvasControl.RoutingModeProperty
              || e.Property = GdsCanvasControl.ActiveLayerProperty
-             || e.Property = GdsCanvasControl.DrcViewProperty then
+             || e.Property = GdsCanvasControl.DrcViewProperty
+             || e.Property = GdsCanvasControl.DrcCompatProperty then
             // Geometry / overlay state changed — re-render but
             // KEEP the existing pan/zoom so editing operations
             // (Tighten, drag, rotate, mirror) don't snap the
@@ -2077,7 +2174,7 @@ type GdsCanvasControl() as this =
                                 | None -> [||]
                             let liveResult =
                                 Drc.Check.runLiveWithIndexTimed
-                                    Drc.Compat.Magic
+                                    this.DrcCompat
                                     true      // full: canvas keeps LU.*-class checks visible
                                     snapshotView
                                     snapshotUnits snapshotFlat cellIndex
@@ -2481,6 +2578,43 @@ type GdsCanvasControl() as this =
         e.Pointer.Capture this
         this.Focus () |> ignore
 
+        // Guideline grab-to-move. Hit-test BEFORE every other
+        // pickup so a click that lands on a guide line snaps to
+        // grabbing the guide rather than the SRef edge / wire /
+        // pin underneath it. Tolerance is 3 px in DBU at the
+        // current zoom — matches the visual line weight so the
+        // user doesn't have to pixel-aim. Routing mode bypasses
+        // (drawing wires takes precedence over moving guides).
+        let guidesState = Rekolektion.Viz.App.Services.GuidesService.current()
+        if not guidesState.Guides.IsEmpty
+           && props.IsLeftButtonPressed
+           && not this.RoutingMode
+           && (this.SegmentDrag).IsNone
+           && (this.DraftRoute).IsNone then
+            let (wxG, wyG) = this.ScreenToWorld p
+            let tolDbu =
+                if pixelsPerDbu > 0.0 then 3.0 / pixelsPerDbu
+                else 1.0
+            let hit =
+                guidesState.Guides
+                |> List.tryFind (fun g ->
+                    match g.Orientation with
+                    | Rekolektion.Viz.App.Services.Guides.Horizontal ->
+                        abs (wyG - float g.CoordDbu) <= tolDbu
+                    | Rekolektion.Viz.App.Services.Guides.Vertical ->
+                        abs (wxG - float g.CoordDbu) <= tolDbu)
+            match hit with
+            | Some g ->
+                let coord =
+                    match g.Orientation with
+                    | Rekolektion.Viz.App.Services.Guides.Horizontal -> int64 wyG
+                    | Rekolektion.Viz.App.Services.Guides.Vertical   -> int64 wxG
+                Rekolektion.Viz.App.Services.GuidesService.startDrag
+                    g.Orientation coord (Some g.Id)
+                dragKind <- GuideMoveDrag(g.Id, g.Orientation)
+                e.Handled <- true
+            | None -> ()
+
         // route_editing_plan.md v1.1 — segment drag. Left-click that
         // lands on a wire-tagged rect on a ROUTING LAYER picks up
         // the segment for perpendicular drag (with stretch + bridge
@@ -2502,6 +2636,7 @@ type GdsCanvasControl() as this =
             && not this.RoutingMode
             && (this.DraftRoute).IsNone
             && (this.SegmentDrag).IsNone
+            && not e.Handled
         if inIdleClick then
             let (wxIdle, wyIdle) = this.ScreenToWorld p
             match this.Library with
@@ -3409,6 +3544,34 @@ type GdsCanvasControl() as this =
                     dragLiveFlat <- [||]
                 this.InvalidateVisual()
             lastPos <- p
+        | GuideMoveDrag (_, orientation) ->
+            // Track the cursor with snap applied. Delete-on-leave
+            // semantics are handled at Release time, not here —
+            // dragging past the canvas edge still updates the
+            // in-flight position so the user sees where the guide
+            // would land if they released back inside.
+            let p = pos
+            let wx, wy = this.ScreenToWorld p
+            let alt = modifiers.HasFlag KeyModifiers.Alt
+            let snap (v: float) : int64 =
+                let r = int64 (System.Math.Round v)
+                match this.Library with
+                | Some lib ->
+                    let step = this.SnapStepDbu lib alt
+                    if step <= 1L then r
+                    else
+                        let q =
+                            if r >= 0L then (r + step / 2L) / step
+                            else (r - step / 2L) / step
+                        q * step
+                | None -> r
+            let coord =
+                match orientation with
+                | Rekolektion.Viz.App.Services.Guides.Horizontal -> snap wy
+                | Rekolektion.Viz.App.Services.Guides.Vertical   -> snap wx
+            Rekolektion.Viz.App.Services.GuidesService.updateDrag coord
+            this.InvalidateVisual()
+            lastPos <- p
         | ResizeDrag (handle, sname, idx) ->
             let p = pos
             let wx, wy = this.ScreenToWorld p
@@ -3917,6 +4080,22 @@ type GdsCanvasControl() as this =
             marqueeWorldEnd <- 0L, 0L
             marqueeAdditive <- false
             this.InvalidateVisual()
+        | GuideMoveDrag _ ->
+            // Release-position decides commit vs delete: cursor
+            // inside the canvas bounds → commit at the dragged
+            // coord; cursor pushed past any edge (onto a ruler
+            // gutter or off the window) → delete the guide. The
+            // ruler-side drag path mirrors this for new guides;
+            // grab-to-move on an existing guide reuses the same
+            // exit logic.
+            let p = e.GetPosition this
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if p.X < 0.0 || p.Y < 0.0 || p.X > w || p.Y > h then
+                Rekolektion.Viz.App.Services.GuidesService.deleteByDrag()
+            else
+                Rekolektion.Viz.App.Services.GuidesService.commitDrag()
+            this.InvalidateVisual()
         | _ ->
             this.InvalidateVisual()
 
@@ -3976,6 +4155,10 @@ type GdsCanvasControl() as this =
             match this.Library with
             | Some lib -> max 1 lib.Units.DbuNm
             | None -> 1
+        let snapStep =
+            match this.Library with
+            | Some lib -> this.SnapStepDbu lib false
+            | None -> 0L
         let snapshot : Rekolektion.Viz.App.Services.ViewportSync.Snapshot = {
             CenterDbuX   = centerX
             CenterDbuY   = centerY
@@ -3983,8 +4166,29 @@ type GdsCanvasControl() as this =
             DbuNm        = dbuNm
             PixelW       = this.Bounds.Width
             PixelH       = this.Bounds.Height
+            SnapEnabled  = this.SnapEnabled
+            SnapStepDbu  = snapStep
         }
         Rekolektion.Viz.App.Services.ViewportSync.update snapshot
+
+    /// Redraw whenever the guides bus changes (commit, move,
+    /// delete, in-flight tick). Subscription lifetime is bound
+    /// to attach / detach so the canvas doesn't leak handlers
+    /// after the tab control disposes it.
+    member val private guidesSub : System.IDisposable = null with get, set
+
+    override this.OnAttachedToVisualTree(e) =
+        base.OnAttachedToVisualTree e
+        this.guidesSub <-
+            Rekolektion.Viz.App.Services.GuidesService.onChanged.Subscribe(fun _ ->
+                Avalonia.Threading.Dispatcher.UIThread.Post(fun () ->
+                    this.InvalidateVisual()))
+
+    override this.OnDetachedFromVisualTree(e) =
+        if not (isNull this.guidesSub) then
+            this.guidesSub.Dispose()
+            this.guidesSub <- null
+        base.OnDetachedFromVisualTree e
 
     override this.Render(context) =
         base.Render context
@@ -4073,7 +4277,7 @@ type GdsCanvasControl() as this =
                         let tags = Drc.Implant.tagAll staticFlat
                         let vs =
                             Drc.Check.checkWithToggles
-                                Drc.Compat.Magic
+                                this.DrcCompat
                                 true      // full: canvas keeps LU.*-class checks visible
                                 this.DrcView
                                 lib.Units staticFlat tags disabled
@@ -4127,7 +4331,7 @@ type GdsCanvasControl() as this =
                             // live state — slow but correct.
                             let tags = Drc.Implant.tagAll renderFlat
                             Drc.Check.checkWithToggles
-                                Drc.Compat.Magic
+                                this.DrcCompat
                                 true      // full: canvas keeps LU.*-class checks visible
                                 this.DrcView
                                 renderLib.Units renderFlat tags disabled
@@ -4184,7 +4388,7 @@ type GdsCanvasControl() as this =
                                 Drc.Implant.tagAll smallFlat
                             let fresh =
                                 Drc.Check.checkWithToggles
-                                    Drc.Compat.Magic
+                                    this.DrcCompat
                                     true      // full: canvas keeps LU.*-class checks visible
                                     this.DrcView
                                     renderLib.Units smallFlat smallTags disabled
@@ -4328,6 +4532,15 @@ type GdsCanvasControl() as this =
                 then cachedRouteLiveViolations
                 else [||]
             context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, drcHits, drcVisibleViolations, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons, this.ShowDrcLabels))
+            // Guideline overlay rides on top of geometry. Pulls
+            // the live guides + in-flight drag from the shared
+            // service so the canvas doesn't carry the state.
+            let guidesState =
+                Rekolektion.Viz.App.Services.GuidesService.current()
+            if not guidesState.Guides.IsEmpty || guidesState.Drag.IsSome then
+                context.Custom(
+                    new GuidesDraw(bounds, guidesState.Guides,
+                                   guidesState.Drag, vb))
         | None ->
             // Closing the active tab leaves None for Library; without
             // an explicit fill the prior frame's polygons stay

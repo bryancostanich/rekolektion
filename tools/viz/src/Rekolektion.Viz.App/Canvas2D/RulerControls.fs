@@ -11,6 +11,7 @@ module Rekolektion.Viz.App.Canvas2D.RulerControls
 open System
 open Avalonia
 open Avalonia.Controls
+open Avalonia.Input
 open Avalonia.Media
 open Avalonia.Platform
 open Avalonia.Rendering.SceneGraph
@@ -165,25 +166,53 @@ type private LeftRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepU
 // list, and hands off to its Skia draw op.
 // ─────────────────────────────────────────────────────────────
 
+/// Snap a world DBU coord to the active camera's grid step.
+/// No-op when snap is disabled or the step is sub-unit.
+let private snapCoord (cam: ViewportSync.Snapshot) (v: float) : float =
+    if not cam.SnapEnabled || cam.SnapStepDbu <= 1L then v
+    else
+        let step = float cam.SnapStepDbu
+        System.Math.Round(v / step) * step
+
+/// Convert a screen Y inside the canvas's local pixel space to
+/// a world DBU Y. Y is up in world but down on screen, hence the
+/// `(half - canvasY)` flip.
+let private canvasPxYToWorldDbu (cam: ViewportSync.Snapshot) (canvasY: float) : float =
+    if cam.PixelsPerDbu <= 0.0 then 0.0
+    else
+        let half = cam.PixelH / 2.0
+        cam.CenterDbuY + (half - canvasY) / cam.PixelsPerDbu
+
+/// Convert a screen X inside the canvas's local pixel space to
+/// a world DBU X. X is up-positive in both world and screen.
+let private canvasPxXToWorldDbu (cam: ViewportSync.Snapshot) (canvasX: float) : float =
+    if cam.PixelsPerDbu <= 0.0 then 0.0
+    else
+        let half = cam.PixelW / 2.0
+        cam.CenterDbuX + (canvasX - half) / cam.PixelsPerDbu
+
 /// Shared subscribe/unsubscribe helper so both controls have one
-/// place to manage their `ViewportSync` lifetime — easier to
-/// audit than two separate subscriptions and matches the symmetry
-/// in their render math.
+/// place to manage their `ViewportSync` + `GuidesService`
+/// lifetime — easier to audit than four separate subscriptions
+/// and matches the symmetry in the controls' render math.
 type RulerBase() =
     inherit Control()
-    let mutable sub : IDisposable option = None
-    /// Avalonia hands us a fresh `e` on every camera change; the
-    /// only side-effect we want is to schedule a redraw, since
-    /// the new state is read fresh inside `Render`.
-    member private this.OnCameraChanged (_snapshot: ViewportSync.Snapshot) =
+    let mutable camSub    : IDisposable option = None
+    let mutable guideSub  : IDisposable option = None
+    /// Schedule a redraw on every camera or guides change; the
+    /// fresh state is read inside `Render`.
+    member private this.OnExternalChanged () =
         Avalonia.Threading.Dispatcher.UIThread.Post (fun () ->
             this.InvalidateVisual())
     override this.OnAttachedToVisualTree(e) =
         base.OnAttachedToVisualTree e
-        sub <- Some (ViewportSync.onChanged.Subscribe this.OnCameraChanged)
+        camSub   <- Some (ViewportSync.onChanged.Subscribe   (fun _ -> this.OnExternalChanged()))
+        guideSub <- Some (GuidesService.onChanged.Subscribe  (fun _ -> this.OnExternalChanged()))
     override this.OnDetachedFromVisualTree(e) =
-        sub |> Option.iter (fun s -> s.Dispose())
-        sub <- None
+        camSub   |> Option.iter (fun s -> s.Dispose())
+        guideSub |> Option.iter (fun s -> s.Dispose())
+        camSub   <- None
+        guideSub <- None
         base.OnDetachedFromVisualTree e
 
 type TopRulerControl() =
@@ -193,9 +222,8 @@ type TopRulerControl() =
         let cam = ViewportSync.current()
         let bounds = Rect(0.0, 0.0, this.Bounds.Width, this.Bounds.Height)
         // Transparent fill so Avalonia's hit-test sees the
-        // bounds (and the gutter doesn't 'eat' clicks meant for
-        // future guideline-drag interactions). Background fill
-        // happens inside the Skia draw op.
+        // bounds and routes our PointerPressed correctly. Skia
+        // op below paints the actual gutter background.
         context.FillRectangle(Brushes.Transparent, bounds)
         if cam.PixelsPerDbu > 0.0 && bounds.Width > 0.0 then
             let startUm, endUm =
@@ -205,6 +233,49 @@ type TopRulerControl() =
             let majorStep = RulerTicks.pickMajorStepUm pxPerUm MinPxPerMajor
             let ticks = RulerTicks.ticks startUm endUm pxPerUm MinPxPerMajor
             context.Custom(new TopRulerDraw(bounds, ticks, majorStep))
+
+    /// Press anywhere on the top ruler starts a new HORIZONTAL
+    /// guide drag. The cursor's Y coord at press defines the
+    /// guide's initial world Y; PointerMoved updates it; Release
+    /// decides commit (cursor in canvas) vs discard (cursor still
+    /// on ruler).
+    override this.OnPointerPressed(e) =
+        base.OnPointerPressed e
+        if e.GetCurrentPoint(this).Properties.IsLeftButtonPressed then
+            e.Pointer.Capture this
+            let cam = ViewportSync.current()
+            let rulerY = e.GetPosition(this).Y
+            let canvasY = rulerY - GutterPx
+            let worldDbu = canvasPxYToWorldDbu cam canvasY |> snapCoord cam
+            GuidesService.startDrag Guides.Horizontal (int64 worldDbu) None
+            e.Handled <- true
+
+    override this.OnPointerMoved(e) =
+        base.OnPointerMoved e
+        match (GuidesService.current()).Drag with
+        | Some d when d.MovingId.IsNone
+                       && d.Orientation = Guides.Horizontal ->
+            let cam = ViewportSync.current()
+            let rulerY = e.GetPosition(this).Y
+            let canvasY = rulerY - GutterPx
+            let worldDbu = canvasPxYToWorldDbu cam canvasY |> snapCoord cam
+            GuidesService.updateDrag (int64 worldDbu)
+        | _ -> ()
+
+    override this.OnPointerReleased(e) =
+        base.OnPointerReleased e
+        match (GuidesService.current()).Drag with
+        | Some d when d.MovingId.IsNone
+                       && d.Orientation = Guides.Horizontal ->
+            e.Pointer.Capture null
+            let rulerY = e.GetPosition(this).Y
+            if rulerY >= GutterPx then
+                // Released inside the canvas area → commit.
+                GuidesService.commitDrag ()
+            else
+                // Released still on the ruler → discard.
+                GuidesService.cancelDrag ()
+        | _ -> ()
 
 type LeftRulerControl() =
     inherit RulerBase()
@@ -232,3 +303,40 @@ type LeftRulerControl() =
                 ticks
                 |> List.map (fun t -> { t with Um = -t.Um })
             context.Custom(new LeftRulerDraw(bounds, ticks, majorStep))
+
+    /// Press anywhere on the left ruler starts a new VERTICAL
+    /// guide drag. Mirror image of TopRulerControl — see comments
+    /// there for the press / move / release contract.
+    override this.OnPointerPressed(e) =
+        base.OnPointerPressed e
+        if e.GetCurrentPoint(this).Properties.IsLeftButtonPressed then
+            e.Pointer.Capture this
+            let cam = ViewportSync.current()
+            let rulerX = e.GetPosition(this).X
+            let canvasX = rulerX - GutterPx
+            let worldDbu = canvasPxXToWorldDbu cam canvasX |> snapCoord cam
+            GuidesService.startDrag Guides.Vertical (int64 worldDbu) None
+            e.Handled <- true
+
+    override this.OnPointerMoved(e) =
+        base.OnPointerMoved e
+        match (GuidesService.current()).Drag with
+        | Some d when d.MovingId.IsNone
+                       && d.Orientation = Guides.Vertical ->
+            let cam = ViewportSync.current()
+            let rulerX = e.GetPosition(this).X
+            let canvasX = rulerX - GutterPx
+            let worldDbu = canvasPxXToWorldDbu cam canvasX |> snapCoord cam
+            GuidesService.updateDrag (int64 worldDbu)
+        | _ -> ()
+
+    override this.OnPointerReleased(e) =
+        base.OnPointerReleased e
+        match (GuidesService.current()).Drag with
+        | Some d when d.MovingId.IsNone
+                       && d.Orientation = Guides.Vertical ->
+            e.Pointer.Capture null
+            let rulerX = e.GetPosition(this).X
+            if rulerX >= GutterPx then GuidesService.commitDrag ()
+            else GuidesService.cancelDrag ()
+        | _ -> ()

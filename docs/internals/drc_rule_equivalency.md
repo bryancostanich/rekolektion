@@ -184,10 +184,142 @@ verify_drc'd.  Surfaced by `tests/drc_corpus/probe_foundry_waiver.rkt`
 (single foundry-primitive SRef).
 
 Now: F# Klayout reports clean on the probe cell, matching
-ext-KLayout. F# Magic still fires LU.2 (correct — it's a Magic
-rule); however ext-Magic only fires LU.2 under `full=True`. The
-F# Magic-vs-ext-Magic LU.2 delta is its own F# Magic parity item,
-unrelated to Klayout-side correctness.
+ext-KLayout. F# Magic still fires LU.2 under `full=True`,
+matching ext-Magic full. Under the default `full=False`, F#
+Magic suppresses LU.2 (Track B.4), matching ext-Magic fast.
+
+### F# Magic parity follow-up (Track B, landed 2026-06-02)
+
+Three Track 02 follow-up items closed out the Magic-side
+delta backlog that was deferred at original-track close:
+
+- **B.2 — nsdm/psdm Width↔Spacing label swap** (commit
+  `7a891b2`).  The SKY130 deck (both Magic .tech and KLayout
+  .drc) names `nsdm.1` as SPACING and `nsdm.2` as WIDTH; F#
+  Magic had these reversed.  Same for psdm.  Corrected to match
+  the deck.
+
+- **B.3 — `li.c1` added** (commit `7a891b2`).  Magic external
+  fires both `li.1` (peri, 0.17 µm) AND `li.c1` (COREID-core
+  variant, 0.14 µm relaxation) on geometry outside any COREID
+  marker.  F# Magic was missing `li.c1` entirely.  Added
+  `Width("li.c1", li1, 0.14)` to the Magic-side ruleset.
+
+- **B.4 — `full` flag threaded through F# engine** (commit
+  `0b3b941`).  `Drc.Check.{check, checkWithToggles, runLive,
+  runLiveWithIndex, runLiveWithIndexTimed}` all take
+  `full: bool` as a required parameter after `compat`.  The
+  hard-coded LU.2 / LU.3 emits in `checkWithToggles` are now
+  gated on `compat = Compat.Magic && full` — matching
+  ext-Magic's `drc style drc(full)` vs default fast-style
+  distinction.  New `--full` flag on the viz CLI's `drc` verb;
+  `run_drc_fsharp` forwards `full` to the CLI.  Canvas passes
+  `full=true` (preserves pre-Track-02 in-viz behavior of
+  showing every Magic-side check).
+
+Harness movement after Track B: Magic gate climbs from 13/27
+to 15/27 cells.  KLayout gate steady at 27/27.
+
+### Track B.1 — F# emits-per-polygon vs Magic emits-per-tile (informational, deferred indefinitely)
+
+The remaining 12/27 Magic-side cell-gate FAILs all trace to a
+single fundamental semantic difference between F#'s polygon-
+oriented DRC engine and Magic's tile-oriented DRC engine.  Not a
+missing rule; not an incorrect rule.  A count convention.
+
+#### What it looks like
+
+| Cell | F# Magic | ext-Magic | Delta |
+|---|---:|---:|---|
+| `viol_met1.2_subspacing` | `met1.2: 1` | `met1.2: 2` | 2× per gap region |
+| `viol_met2.2_subspacing` | `met2.2: 1` | `met2.2: 2` | same |
+| `viol_met3.2_subspacing` | `met3.2: 1` | `met3.2: 2` | same |
+| `viol_li.3_subspacing` | `li.3: 1` | `li.3: 2` | same |
+| `viol_li.6_minarea` | `li.6: 1` | `li.6: 2` | 2× per single rect |
+
+ext-KLayout reports `1` everywhere in this table — KLayout's
+deck output matches F#'s polygon-count convention, not Magic's
+tile-count convention.  So this delta is **strictly an F# Magic
+vs ext-Magic** issue; KLayout-side diagonals are unaffected.
+
+#### Root cause
+
+Magic decomposes every polygon into a tile list (trapezoid tile
+representation) for the DRC tile counter.  Each Magic-internal
+tile that contributes to a violation region is reported as one
+"tile" in `drc count` output.  For a parallel-rect spacing gap,
+the gap region is bordered on two sides by tiles from the two
+rects — each side contributes one tile, hence the 2× count on
+symmetric square geometry.  For a single rectangle violating
+min-area, the rectangle decomposes into a single tile but Magic
+still emits two reports under some `drc(full)` modes (the
+second appears to be a per-edge report at the perimeter).
+
+F#'s `Spacing` handler emits one Violation per gap region
+between two polygons (or one per facing-edge in the
+edge-counting Klayout branch).  The `MinArea` handler emits one
+per failing polygon.  Both honor the rule semantically but the
+count convention is different.
+
+ext-KLayout's deck uses `space.output(...)` and `with_area
+.output(...)` patterns that ALSO emit one record per logical
+violation — same convention as F#.
+
+So:
+
+- F# polygon convention ≡ ext-KLayout deck convention
+- Magic external tile convention is unique to Magic
+
+#### Why we're leaving it where it is
+
+Fixing it cleanly would mean **emulating Magic's tile
+decomposition** in F#'s `Spacing` and `MinArea` handlers under
+`Compat.Magic` only.  This is ~150–250 lines of carefully-tuned
+Region geometry work (the trapezoid tile decomposition isn't
+trivially expressed in our existing Region API; would likely
+need a new module under `Drc/Geometry/Tiles.fs`).  And the
+return is narrow:
+
+- KLayout-side users see no benefit (they're already
+  bit-identical to ext-KLayout on the same rule).
+- Magic-side users see PASS/FAIL outcomes unchanged — only the
+  count goes from 1 to 2.  Layouts that were Magic-clean stay
+  clean; layouts that fired N rules still fire N rules.  Counts
+  appear in error messages and the canvas marker layer; both
+  scale 1:N with the underlying issue regardless of convention.
+- The corpus harness's `magic_gate` (which requires exact-count
+  match) reads FAIL on these cells.  But that's a strict
+  equivalency test; the cells in question fire the right rules,
+  just with the F# count rather than the Magic count.
+
+#### What this means for the default-flip
+
+Phase 5 Fork #4 chose `verify_drc(compat="magic")` to default to
+`external=True` until F# Magic gets parity.  Track B closed
+B.2/B.3/B.4 but B.1 is the remaining gap.  Recommend keeping
+the compat-conditional default as it is: ext-Magic is the
+default Magic path, F# Magic is opt-in via `external=False`
+(with the documented understanding that counts may differ by
+1:N tiles per logical violation).
+
+If a future caller specifically needs bit-identical-to-Magic
+counts (e.g. a regression suite comparing against pre-Track-02
+F# Magic output), they should pass `external=True` to get
+ext-Magic semantics directly.
+
+#### Reopening criteria
+
+Land B.1 if and when:
+
+- A specific workflow needs F# Magic bit-identical to ext-Magic
+  on per-rule tile counts.  None today.
+- Or someone independently wants to replace the polygon-based
+  Region engine with a tile-based one for performance reasons.
+  Unlikely; the polygon engine is fine for in-viz interactive
+  use.
+
+Until either condition, Track B.1 stays deferred.  No further
+action needed.
 
 ### Compat-aware implant-close (landed)
 

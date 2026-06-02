@@ -1712,6 +1712,46 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     ActiveMacroPath = Some activePath'
                     Selection = Set.empty
                     InstanceSelection = Set.empty }, Cmd.none
+    | Msg.ZeroOrigin ->
+        // "0,0" button — translate the active macro's top cell
+        // so its rendered bbox bottom-left corner lands at world
+        // origin.  Computes the delta from the live FlatPolygons
+        // (cheap — already kept current by every model edit) and
+        // applies it through `Instances.translateTopCell`.  No-op
+        // when the corner is already at (0, 0) so the button is
+        // safe to mash.  One undo snapshot per non-trivial
+        // application.
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some path ->
+            let macroOpt =
+                model.OpenMacros |> List.tryFind (fun mc -> mc.Path = path)
+            match macroOpt with
+            | None -> model, Cmd.none
+            | Some mc ->
+                match Layout.Instances.bboxOfFlat mc.FlatPolygons with
+                | None -> model, Cmd.none
+                | Some (xMin, yMin, _, _)
+                    when xMin = 0L && yMin = 0L -> model, Cmd.none
+                | Some (xMin, yMin, _, _) ->
+                    let dx, dy = -xMin, -yMin
+                    let lib' =
+                        Layout.Instances.translateTopCell mc.Document dx dy
+                    let flat' = Layout.Flatten.flatten lib'
+                    let inst' = Layout.Instances.enumerate lib'
+                    let mc' =
+                        EditSession.pushUndoSnapshot mc
+                        |> fun m ->
+                            { m with
+                                Document = lib'
+                                FlatPolygons = flat'
+                                TopInstances = inst' }
+                        |> EditSession.markDirty
+                    let openMacros' =
+                        model.OpenMacros
+                        |> List.map (fun m ->
+                            if m.Path = path then mc' else m)
+                    { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.TidyRoutingGeometry ->
         // One-shot cleanup: collapse same-bbox same-layer rects per
         // cell.  Cleans files authored before commit-time dedup

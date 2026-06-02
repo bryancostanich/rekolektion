@@ -78,6 +78,7 @@
     <Compile Include="DrcCompatTests.fs" />
     <Compile Include="LayoutSnapTests.fs" />
     <Compile Include="RulerTicksTests.fs" />
+    <Compile Include="ZeroOriginTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

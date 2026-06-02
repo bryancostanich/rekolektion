@@ -938,6 +938,76 @@ let translateSelectionsWithLabels
         |> fun d -> translateSelectionWithLabels d instSelection dxDbu dyDbu
         |> fun d -> translatePolygonsWithLabels d polySelection dxDbu dyDbu
 
+/// Translate every position-bearing element in the top cell by
+/// `(dx, dy)`. Used by the "0,0" / Zero Origin command which
+/// moves the design's bbox bottom-left corner to world origin
+/// without disturbing relative positions between elements.
+///
+/// Covers SRef.Origin, ARef.Origin / ColPitch / RowPitch (pitch
+/// fields are absolute GDS coords, not deltas, so they translate
+/// with origin to preserve the array's footprint), Poly.Points,
+/// Path.Points, Rect.X1/Y1/X2/Y2, Label.Origin. Port and Props
+/// are passed through unchanged — Port shape vertices live
+/// nested inside `Port.Shape`, which v1 doesn't surface; if
+/// pad / port reps drift after a Zero Origin, extend here.
+let translateTopCell
+        (doc: Document)
+        (dxDbu: int64) (dyDbu: int64)
+        : Document =
+    if dxDbu = 0L && dyDbu = 0L then doc
+    else
+        match findTop doc with
+        | None -> doc
+        | Some top ->
+            let shiftPoint (p: Point) : Point =
+                { X = p.X + dxDbu; Y = p.Y + dyDbu }
+            let shiftPoints = List.map shiftPoint
+            let elems' =
+                top.Elements
+                |> List.map (fun el ->
+                    match el with
+                    | PolyEl p -> PolyEl { p with Points = shiftPoints p.Points }
+                    | PathEl p -> PathEl { p with Points = shiftPoints p.Points }
+                    | RectEl r ->
+                        RectEl
+                            { r with
+                                X1 = r.X1 + dxDbu; Y1 = r.Y1 + dyDbu
+                                X2 = r.X2 + dxDbu; Y2 = r.Y2 + dyDbu }
+                    | LabelEl l ->
+                        LabelEl { l with Origin = shiftPoint l.Origin }
+                    | SRefEl s ->
+                        SRefEl { s with Origin = shiftPoint s.Origin }
+                    | ARefEl a ->
+                        ARefEl
+                            { a with
+                                Origin   = shiftPoint a.Origin
+                                ColPitch = shiftPoint a.ColPitch
+                                RowPitch = shiftPoint a.RowPitch }
+                    | PortEl _ | PropsEl _ -> el)
+            withTopElements doc top elems'
+
+/// `(xMin, yMin, xMax, yMax)` over every flat polygon point.
+/// Returns `None` when the input is empty (no doc loaded / no
+/// geometry yet). Pulled out so callers — Zero Origin, future
+/// auto-fit refresh, MCP geometry queries — don't reimplement
+/// the four-mutable-bound walk.
+let bboxOfFlat
+        (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon seq)
+        : (int64 * int64 * int64 * int64) option =
+    let mutable xMin = System.Int64.MaxValue
+    let mutable yMin = System.Int64.MaxValue
+    let mutable xMax = System.Int64.MinValue
+    let mutable yMax = System.Int64.MinValue
+    let mutable any = false
+    for poly in flat do
+        for pt in poly.Points do
+            any <- true
+            if pt.X < xMin then xMin <- pt.X
+            if pt.X > xMax then xMax <- pt.X
+            if pt.Y < yMin then yMin <- pt.Y
+            if pt.Y > yMax then yMax <- pt.Y
+    if any then Some (xMin, yMin, xMax, yMax) else None
+
 // -- Rotate / mirror SRefs with label-following --------------------
 //
 // Mirrors `translateSelectionWithLabels` for the rigid-transform

@@ -164,6 +164,11 @@ type Msg =
     /// Track 02 — switch the in-viz DRC overlay's compat target
     /// between Magic and KLayout.  Fired by the File menu items.
     | SetDrcCompat of Drc.Compat.Compat
+    /// "0,0" — translate every position-bearing element in the
+    /// active macro's top cell so the design's bbox bottom-left
+    /// corner lands at world origin.  No-op when the corner is
+    /// already at (0, 0).  Pushes one undo snapshot.
+    | ZeroOrigin
     /// Toggle the interactive routing tool on/off (W key). When on,
     /// canvas clicks start/extend a draft route on the ActiveLayer;
     /// when off, clicks fall through to normal selection.

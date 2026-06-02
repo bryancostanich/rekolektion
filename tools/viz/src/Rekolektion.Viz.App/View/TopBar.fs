@@ -138,6 +138,21 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
             Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
             Button.onClick (fun _ -> dispatch Msg.ScrubDispersedWires)
         ] :> IView
+    // Zero Origin — translate the active macro's top cell so its
+    // bbox bottom-left corner lands at world (0, 0). One-shot
+    // action (no active state); idempotent when already at origin.
+    let zeroOriginButton : IView =
+        Button.create [
+            Button.content "0,0"
+            Button.background "#262626"
+            Button.foreground "#bbbbbb"
+            Button.borderThickness (Thickness(0.0))
+            Button.padding (Thickness(10.0, 2.0))
+            Button.fontSize 12.0
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.margin (Thickness(0.0, 0.0, 6.0, 0.0))
+            Button.onClick (fun _ -> dispatch Msg.ZeroOrigin)
+        ] :> IView
     Border.create [
         Border.background "#1a1a1a"
         Border.child (
@@ -163,6 +178,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     editRoutingToggle
                                     wireToggle
                                     scrubButton
+                                    zeroOriginButton
                                     ratlinesToggle
                                     drcToggle
                                     drcLabelsToggle

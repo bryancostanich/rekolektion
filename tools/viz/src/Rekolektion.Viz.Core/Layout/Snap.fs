@@ -42,6 +42,33 @@ let snapPointDbu (units: Units) (gridNm: float) (p: Point) : Point =
     let step = gridDbu units gridNm
     { X = snapCoord step p.X; Y = snapCoord step p.Y }
 
+/// Origin-relative delta snap. Given an SRef's starting origin
+/// `(ox, oy)` and a raw drag delta `(dx, dy)`, returns the delta
+/// that lands the SRef's new origin on a grid point.
+///
+/// **Snap the origin, not the bbox centre.** The centroid-relative
+/// alternative (snap the bbox centre's drag delta) introduces
+/// off-grid SRef origins whenever the bbox has an odd total
+/// extent — `(xMin + xMax) / 2L` integer-divides down by 0.5 nm,
+/// and that residue propagates to every co-translated instance.
+/// Reported 2026-06-02 on blc_comparator.rkt where 41 SRef
+/// origins landed at `(multiple-of-5) - 2` after a drag. Snapping
+/// per-origin instead keeps every SRef on grid; the visual
+/// centroid may drift by ≤ step/2, which is acceptable for cells
+/// whose centroid offset is fractional.
+let snapDeltaForOriginDbu
+        (units: Units) (gridNm: float)
+        (ox: int64) (oy: int64)
+        (dx: int64) (dy: int64) : int64 * int64 =
+    if dx = 0L && dy = 0L then 0L, 0L
+    else
+        let step = gridDbu units gridNm
+        if step <= 1L then dx, dy
+        else
+            let snappedNewX = snapCoord step (ox + dx)
+            let snappedNewY = snapCoord step (oy + dy)
+            snappedNewX - ox, snappedNewY - oy
+
 /// Convenience helper for legacy callers that still hold a
 /// `Gds.Types.Library`. Derives the `Units` record from
 /// `DbUnitsInMeters` so they don't have to construct it inline.

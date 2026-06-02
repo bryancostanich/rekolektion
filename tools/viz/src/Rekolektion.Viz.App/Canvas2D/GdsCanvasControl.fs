@@ -1096,13 +1096,22 @@ type GdsCanvasControl() as this =
         t.Interval <- System.TimeSpan.FromMilliseconds(33.0)
         t
     do autoPanTimer.Tick.Add(fun _ -> this.OnAutoPanTick ())
-    // Resting centroid of the selection at the moment a drag
-    // armed. Used so move snaps the SELECTION'S CENTROID to the
-    // user grid — not the cursor delta. A user grabbing a cell
-    // by its corner expects the cell's center to land on grid
-    // intersections, not "wherever the cursor lands plus rounding."
-    let mutable dragStartCentroidX : int64 = 0L
-    let mutable dragStartCentroidY : int64 = 0L
+    // Snap anchor captured at drag-arm time: for SelectionDrag
+    // it's the first selected SRef's origin; for PolygonDrag it's
+    // the first selected polygon's first vertex (or rect's min
+    // corner). Each move snaps `anchor + delta` to the user grid,
+    // so the anchor lands on a grid point and every other selected
+    // shape — at multiples of the grid step away from it — rides
+    // along on grid too.
+    //
+    // NOT the bbox-union centroid. Many primitives have asymmetric
+    // bboxes (gate-strip extension on one side); the centroid-to-
+    // origin offset is fractional, so a centroid-snapped delta
+    // leaves SRef.origins off-grid by ≤ step/2. Reported 2026-06-02
+    // on blc_comparator.rkt: 41 SRef origins landed at
+    // (multiple-of-5) − 2 nm after a drag.
+    let mutable dragStartAnchorX : int64 = 0L
+    let mutable dragStartAnchorY : int64 = 0L
     let mutable dragStartWorldX : float = 0.0
     let mutable dragStartWorldY : float = 0.0
     let mutable dragLiveDeltaDbu : int64 * int64 = 0L, 0L
@@ -2918,17 +2927,20 @@ type GdsCanvasControl() as this =
                 dragStartWorldX <- wx
                 dragStartWorldY <- wy
                 dragLiveDeltaDbu <- 0L, 0L
-                // Resting centroid of the selection's bbox union;
-                // centroid-snap rebuilds the snapped delta against
-                // this on every move so the cell center lands on
-                // grid.
-                let bboxes =
+                // Snap anchor = first selected SRef's origin (a
+                // real file coord, not a derived centroid). Every
+                // move snaps `anchor + delta` to grid so the
+                // anchor SRef.origin lands on grid. Other selected
+                // SRefs preserve their relative offsets — if those
+                // are multiples of the snap step they ride along
+                // on grid; otherwise the user re-aligns by hand.
+                let ax, ay =
                     this.Instances
-                    |> Array.filter (fun i -> next.Contains i.Index)
-                    |> Array.map (fun i -> i.BBox)
-                let cx, cy = this.CentroidOfBboxes bboxes
-                dragStartCentroidX <- cx
-                dragStartCentroidY <- cy
+                    |> Array.tryFind (fun i -> next.Contains i.Index)
+                    |> Option.map (fun i -> i.Sref.Origin.X, i.Sref.Origin.Y)
+                    |> Option.defaultValue (0L, 0L)
+                dragStartAnchorX <- ax
+                dragStartAnchorY <- ay
                 dragKind <- if next.IsEmpty then PanDrag else SelectionDrag
             else
                 // No instance hit (or routing-layer preempt fired) →
@@ -2994,47 +3006,44 @@ type GdsCanvasControl() as this =
                     dragStartWorldX <- wx
                     dragStartWorldY <- wy
                     dragLiveDeltaDbu <- 0L, 0L
-                    // Capture the new selection's centroid for
-                    // centroid-snap. We compute against `next`
-                    // rather than the bound SelectedPolygons
-                    // because the dispatch above hasn't propagated
-                    // through the model yet.
-                    let cx, cy =
+                    // Snap anchor = first selected polygon's first
+                    // vertex (or rect's min corner). Real file
+                    // coords, so the snapped delta lands the anchor
+                    // shape's coords on grid — not a derived bbox
+                    // centroid that may sit at a fractional offset
+                    // from the underlying polygon vertices. We
+                    // compute against `next` rather than the bound
+                    // SelectedPolygons because the dispatch above
+                    // hasn't propagated through the model yet.
+                    let ax, ay =
                         match this.Library with
                         | Some lib ->
-                            // Inline computation against `next` so
-                            // the stale SelectedPolygons isn't
-                            // consulted.
-                            let bboxes = ResizeArray<int64 * int64 * int64 * int64>()
+                            let mutable found : (int64 * int64) option = None
                             for c in lib.Cells do
                                 c.Elements
                                 |> List.iteri (fun i el ->
-                                    let kk : Rekolektion.Viz.Core.Layout.Flatten.PolyKey =
-                                        { Cell = c.Name; Index = i; TopInstance = None }
-                                    if next.Contains kk then
-                                        match el with
-                                        | PolyEl pp when not pp.Points.IsEmpty ->
-                                            let mutable xMin = System.Int64.MaxValue
-                                            let mutable yMin = System.Int64.MaxValue
-                                            let mutable xMax = System.Int64.MinValue
-                                            let mutable yMax = System.Int64.MinValue
-                                            for pt in pp.Points do
-                                                if pt.X < xMin then xMin <- pt.X
-                                                if pt.X > xMax then xMax <- pt.X
-                                                if pt.Y < yMin then yMin <- pt.Y
-                                                if pt.Y > yMax then yMax <- pt.Y
-                                            bboxes.Add (xMin, yMin, xMax, yMax)
-                                        | RectEl r ->
-                                            let xMin, xMax =
-                                                if r.X1 <= r.X2 then r.X1, r.X2 else r.X2, r.X1
-                                            let yMin, yMax =
-                                                if r.Y1 <= r.Y2 then r.Y1, r.Y2 else r.Y2, r.Y1
-                                            bboxes.Add (xMin, yMin, xMax, yMax)
-                                        | _ -> ())
-                            this.CentroidOfBboxes (bboxes :> seq<_>)
+                                    if found.IsNone then
+                                        let kk : Rekolektion.Viz.Core.Layout.Flatten.PolyKey =
+                                            { Cell = c.Name; Index = i; TopInstance = None }
+                                        if next.Contains kk then
+                                            match el with
+                                            | PolyEl pp when not pp.Points.IsEmpty ->
+                                                let p = pp.Points.Head
+                                                found <- Some (p.X, p.Y)
+                                            | PathEl pp when not pp.Points.IsEmpty ->
+                                                let p = pp.Points.Head
+                                                found <- Some (p.X, p.Y)
+                                            | RectEl r ->
+                                                let x = min r.X1 r.X2
+                                                let y = min r.Y1 r.Y2
+                                                found <- Some (x, y)
+                                            | _ -> ())
+                            match found with
+                            | Some (x, y) -> x, y
+                            | None -> 0L, 0L
                         | None -> 0L, 0L
-                    dragStartCentroidX <- cx
-                    dragStartCentroidY <- cy
+                    dragStartAnchorX <- ax
+                    dragStartAnchorY <- ay
                     dragKind <- if next.IsEmpty then PanDrag else PolygonDrag
                 | None ->
                     // Empty space → start a marquee. Shift extends
@@ -3135,18 +3144,21 @@ type GdsCanvasControl() as this =
             : int64 * int64 =
         this.SnapDelta lib altHeld x y
 
-    /// Centroid-relative delta snap. The selection's start
-    /// centroid is `(cx0, cy0)`; the raw cursor delta is
-    /// `(dx, dy)`. We project the new centroid `(cx0+dx, cy0+dy)`
-    /// onto the grid, then back out the delta that gets us there.
-    /// Result: every commit lands the selection's centroid on a
-    /// grid intersection. No-op when SnapEnabled is off OR when
-    /// the raw delta is zero — without the zero guard, selecting
-    /// a cell whose centroid is off-grid would auto-snap on
-    /// release even when the user never dragged.
-    member private this.SnapDeltaCentroid
+    /// Anchor-relative delta snap. The selection's anchor coord at
+    /// drag-arm is `(ax, ay)` — a real file coord (SRef.origin for
+    /// SelectionDrag, first poly vertex for PolygonDrag). The raw
+    /// cursor delta is `(dx, dy)`. Project `(ax+dx, ay+dy)` onto
+    /// the grid, then back out the delta that gets us there.
+    /// Result: every commit lands the anchor's coord on a grid
+    /// intersection. Other selected shapes preserve their relative
+    /// offsets — if those are multiples of the snap step they ride
+    /// along on grid too; otherwise the user re-aligns by hand.
+    /// No-op when SnapEnabled is off OR when the raw delta is
+    /// zero (the zero guard stops a click on an off-grid cell
+    /// from auto-snapping it on release).
+    member private this.SnapDeltaForAnchor
             (lib: Document) (altHeld: bool)
-            (cx0: int64) (cy0: int64)
+            (ax: int64) (ay: int64)
             (dx: int64) (dy: int64) : int64 * int64 =
         if dx = 0L && dy = 0L then 0L, 0L
         else
@@ -3156,9 +3168,9 @@ type GdsCanvasControl() as this =
                 let snapCoord (v: int64) =
                     let q = if v >= 0L then (v + step / 2L) / step else (v - step / 2L) / step
                     q * step
-                let snappedCx = snapCoord (cx0 + dx)
-                let snappedCy = snapCoord (cy0 + dy)
-                snappedCx - cx0, snappedCy - cy0
+                let snappedCx = snapCoord (ax + dx)
+                let snappedCy = snapCoord (ay + dy)
+                snappedCx - ax, snappedCy - ay
 
     /// Bbox-center centroid of a set of `(int64*int64*int64*int64)`
     /// bboxes. Returns (0, 0) for an empty seq.
@@ -3299,7 +3311,7 @@ type GdsCanvasControl() as this =
             // default; Alt picks the finer step). Off → raw delta.
             let dxSnap, dySnap =
                 match this.Library with
-                | Some lib -> this.SnapDeltaCentroid lib alt dragStartCentroidX dragStartCentroidY dxRaw dyRaw
+                | Some lib -> this.SnapDeltaForAnchor lib alt dragStartAnchorX dragStartAnchorY dxRaw dyRaw
                 | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap
@@ -3345,7 +3357,7 @@ type GdsCanvasControl() as this =
                 else dxRaw, dyRaw
             let dxSnap, dySnap =
                 match this.Library with
-                | Some lib -> this.SnapDeltaCentroid lib alt dragStartCentroidX dragStartCentroidY dxRaw dyRaw
+                | Some lib -> this.SnapDeltaForAnchor lib alt dragStartAnchorX dragStartAnchorY dxRaw dyRaw
                 | None -> dxRaw, dyRaw
             if (dxSnap, dySnap) <> dragLiveDeltaDbu then
                 dragLiveDeltaDbu <- dxSnap, dySnap

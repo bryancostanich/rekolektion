@@ -295,22 +295,29 @@ let cmdDumpLayer (args: string list) : int =
 /// `--compat klayout` returns 0 violations until Phase 4 populates
 /// rules. Use `--compat magic` for the existing Magic-tuned ruleset.
 let cmdDrc (args: string list) : int =
-    let rec parse (acc: string option) (compat: Rekolektion.Viz.Core.Drc.Compat.Compat) (rest: string list) =
+    let rec parse
+            (acc: string option)
+            (compat: Rekolektion.Viz.Core.Drc.Compat.Compat)
+            (full: bool)
+            (rest: string list) =
         match rest with
         | "--compat" :: v :: tail ->
             match Rekolektion.Viz.Core.Drc.Compat.parse v with
-            | Some c -> parse acc c tail
+            | Some c -> parse acc c full tail
             | None ->
                 eprintfn "drc: unknown --compat value %s (expected klayout|magic)" v
                 Error 2
-        | x :: tail when acc.IsNone -> parse (Some x) compat tail
-        | [] when acc.IsSome -> Ok (acc.Value, compat)
+        | "--full" :: tail -> parse acc compat true tail
+        | x :: tail when acc.IsNone -> parse (Some x) compat full tail
+        | [] when acc.IsSome -> Ok (acc.Value, compat, full)
         | _ ->
-            eprintfn "usage: rekolektion-viz drc [--compat klayout|magic] <input.rkt|.gds|.mag>"
+            eprintfn
+                "usage: rekolektion-viz drc [--compat klayout|magic] [--full] \
+                 <input.rkt|.gds|.mag>"
             Error 1
-    match parse None Rekolektion.Viz.Core.Drc.Compat.defaultCompat args with
+    match parse None Rekolektion.Viz.Core.Drc.Compat.defaultCompat false args with
     | Error rc -> rc
-    | Ok (path, compat) ->
+    | Ok (path, compat, full) ->
         let doc, warnings =
             Rekolektion.Viz.Core.Layout.LayoutLoader.load path
         for w in warnings do eprintfn "[viz] %s" w
@@ -318,7 +325,7 @@ let cmdDrc (args: string list) : int =
         let view = Rekolektion.Viz.Core.Drc.Rules.viewFor compat
         let viols =
             Rekolektion.Viz.Core.Drc.Check.check
-                compat view doc.Units flat
+                compat full view doc.Units flat
         let layerName n d =
             match Rekolektion.Viz.Core.Layout.Layer.bySky130Number n d with
             | Some l -> l.Name

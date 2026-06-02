@@ -276,7 +276,7 @@ type Lu3Probe(out: ITestOutputHelper) =
         let doc, _w = Rekolektion.Viz.Core.Layout.LayoutLoader.load path
         let flat = Rekolektion.Viz.Core.Layout.Flatten.flatten doc
         let view = Rekolektion.Viz.Core.Drc.RulesYaml.loadEffectiveOrDefault "sky130" None
-        let violations = Rekolektion.Viz.Core.Drc.Check.check Drc.Compat.Magic view doc.Units flat
+        let violations = Rekolektion.Viz.Core.Drc.Check.check Drc.Compat.Magic true view doc.Units flat
         // Count by rule.
         let byRule =
             violations

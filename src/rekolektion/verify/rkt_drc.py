@@ -204,7 +204,8 @@ def verify_drc(
     # this path is deferred to Phase 6.
     if not external:
         drc_result = run_drc_fsharp(
-            rkt, cell_name=cell_name, compat=compat, output_dir=output_dir,
+            rkt, cell_name=cell_name, compat=compat, full=full,
+            output_dir=output_dir,
         )
         # Fold grid violations into the result so callers see one
         # unified verdict.  Same shape as the external paths below.

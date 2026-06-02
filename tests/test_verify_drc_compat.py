@@ -175,8 +175,10 @@ def test_full_true_under_klayout_warns_and_ignored(_patch_engines, tmp_path):
     assert len(deprecations) == 1
     assert "Magic-only" in str(deprecations[0].message)
     # Under the new default-flip (Fork #4), klayout/None routes to
-    # F#.  The fsharp stub never receives `full`.
-    assert "full" not in _patch_engines["fsharp"]
+    # F#.  `full` IS passed through, but the warning + coercion
+    # ensures the value reaching the engine is False (Klayout has no
+    # fast/full split; LU.* is compat-gated inside Check.fs).
+    assert _patch_engines["fsharp"].get("full") is False
 
 
 # ---------------------------------------------------------------------------

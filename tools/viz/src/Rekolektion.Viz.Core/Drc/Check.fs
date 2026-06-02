@@ -292,6 +292,7 @@ let private condMatches
 /// crosses ~10k polys.
 let checkWithToggles
         (compat: Compat.Compat)
+        (full: bool)
         (view: Rules.RulesetView)
         (units: Units)
         (flat: FlatPolygon array)
@@ -1221,7 +1222,7 @@ let checkWithToggles
             pdiffs |> Array.filter (fun b -> bbOverlaps b comp)
         let ntapsInComp =
             ntaps |> Array.filter (fun b -> bbOverlaps b comp)
-        if compat = Compat.Magic
+        if compat = Compat.Magic && full
            && pdiffsInComp.Length > 0 && ntapsInComp.Length = 0 then
             for d in pdiffsInComp do
                 result.Add {
@@ -1234,7 +1235,7 @@ let checkWithToggles
                     BboxB = None }
     // LU.2: if no licon-contacted p-tap exists anywhere, fire on
     // every n-diff. Substrate is treated as one connected region.
-    if compat = Compat.Magic && ptaps.Length = 0 then
+    if compat = Compat.Magic && full && ptaps.Length = 0 then
         for d in ndiffs do
             result.Add {
                 Rule = "LU.2"
@@ -1486,13 +1487,14 @@ let private applyImplantClose
 /// clustering (skipped for rules that emit one-per-edge).
 let check
         (compat: Compat.Compat)
+        (full: bool)
         (view: Rules.RulesetView)
         (units: Units)
         (flat: FlatPolygon array)
         : Violation array =
     let flat = applyImplantClose compat flat
     let tags = Implant.tagAll flat
-    checkWithToggles compat view units flat tags Set.empty
+    checkWithToggles compat full view units flat tags Set.empty
 
 /// ADR-0003 — precompute the cross-net overlap violations within
 /// the cell itself (no draft involved). O(N²) over `cellFlat` so
@@ -1617,6 +1619,7 @@ let newPhaseTimings () : LivePhaseTimings = {
 
 let runLiveWithIndexTimed
         (compat: Compat.Compat)
+        (full: bool)
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
@@ -1683,7 +1686,7 @@ let runLiveWithIndexTimed
         |> List.map Rules.nameOf
         |> Set.ofList
     let disabled' = Set.union disabledRules nonLiveDisabled
-    let standardViolations = checkWithToggles compat view units combined tags disabled'
+    let standardViolations = checkWithToggles compat full view units combined tags disabled'
     phaseSw.Stop()
     timings.StandardMs <- phaseSw.ElapsedMilliseconds
 
@@ -1771,6 +1774,7 @@ let runLiveWithIndexTimed
 /// uses the `Timed` variant + log.
 let runLiveWithIndex
         (compat: Compat.Compat)
+        (full: bool)
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
@@ -1781,7 +1785,7 @@ let runLiveWithIndex
         (disabledRules: Set<string>)
         : Violation array =
     runLiveWithIndexTimed
-        compat view units cellFlat cellIndex draftFlat nets draftStartNet
+        compat full view units cellFlat cellIndex draftFlat nets draftStartNet
         disabledRules (newPhaseTimings ())
 
 /// `runLive` convenience: builds the spatial index inline from
@@ -1792,6 +1796,7 @@ let runLiveWithIndex
 /// O(cell-size) so doing it per-frame defeats the point.
 let runLive
         (compat: Compat.Compat)
+        (full: bool)
         (view: Rules.RulesetView)
         (units: Units)
         (cellFlat: FlatPolygon array)
@@ -1805,7 +1810,7 @@ let runLive
     let cellIndex =
         Rekolektion.Viz.Core.Spatial.UniformGrid.build cellSize bboxes
     runLiveWithIndex
-        compat view units cellFlat cellIndex draftFlat nets draftStartNet disabledRules
+        compat full view units cellFlat cellIndex draftFlat nets draftStartNet disabledRules
 
 /// Compute how far the selection (a set of instance polygons in
 /// world coords) can move along `dirX, dirY` (one of {(+1,0),

@@ -84,14 +84,14 @@ rules:
     name: diff
   min-um: 0.18
 - name: nsdm.1
-  kind: width
+  kind: spacing
   layer:
     number: 93
     datatype: 44
     name: nsdm
   min-um: 0.38
 - name: nsdm.2
-  kind: spacing
+  kind: width
   layer:
     number: 93
     datatype: 44
@@ -110,14 +110,14 @@ rules:
   min-um: 0.125
   cond: nsdm-overlaps
 - name: psdm.1
-  kind: width
+  kind: spacing
   layer:
     number: 94
     datatype: 20
     name: psdm
   min-um: 0.38
 - name: psdm.2
-  kind: spacing
+  kind: width
   layer:
     number: 94
     datatype: 20
@@ -326,6 +326,13 @@ rules:
     datatype: 20
     name: li1
   min-um: 0.17
+- name: li.c1
+  kind: width
+  layer:
+    number: 67
+    datatype: 20
+    name: li1
+  min-um: 0.14
 - name: li.3
   kind: spacing
   layer:

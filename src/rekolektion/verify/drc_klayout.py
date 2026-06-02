@@ -285,15 +285,17 @@ def run_drc_fsharp(
     rkt_path: str | Path,
     cell_name: str = "",
     compat: str = "klayout",
+    full: bool = False,
     output_dir: str | Path | None = None,
 ) -> DRCResult:
     """Run the F# in-process DRC checker (`viz drc`) on a .rkt block.
 
     Track 02 Phase 5: this is the primary path for `verify_drc` when
     `external=False` (default under `compat="klayout"`).  Invokes the
-    same `dotnet run -- drc --compat <c> <rkt>` CLI verb the Phase 4
-    equivalency harness uses, parses the TSV output, and produces a
-    `DRCResult` shape compatible with the external-tool paths.
+    same `dotnet run -- drc --compat <c> [--full] <rkt>` CLI verb the
+    Phase 4 equivalency harness uses, parses the TSV output, and
+    produces a `DRCResult` shape compatible with the external-tool
+    paths.
 
     Note: takes `.rkt` directly — no GDS conversion needed, since the
     F# checker walks the LayoutLoader pipeline natively.
@@ -304,6 +306,10 @@ def run_drc_fsharp(
             walks the doc's top cell automatically).
         compat: 'klayout' or 'magic'.  Selects which Rules.* submodule
             the F# CLI evaluates against.
+        full: When True, the F# CLI runs sign-off-grade Magic checks
+            (currently LU.2 / LU.3 latch-up).  Mirrors ext-Magic's
+            `drc style drc(full)` distinction.  Ignored under
+            compat="klayout" (KLayout deck has no latch-up family).
         output_dir: Directory for the log file (stdout + stderr from
             dotnet).  Uses a tempdir if not provided.
 
@@ -338,8 +344,11 @@ def run_drc_fsharp(
 
     cmd = [
         "dotnet", "run", "--project", str(cli_proj), "--",
-        "drc", "--compat", compat, str(rkt_path),
+        "drc", "--compat", compat,
     ]
+    if full:
+        cmd.append("--full")
+    cmd.append(str(rkt_path))
     try:
         proc = subprocess.run(
             cmd,

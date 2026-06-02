@@ -121,10 +121,49 @@ module Guides =
                 { s with Drag = None }
 
     /// Remove every guide + cancel any in-flight drag. For the
-    /// "Clear Guides" command (not wired yet, but the operation
-    /// belongs in this module for symmetry).
+    /// "Clear Guides" command (and the MCP `clear_guides` tool).
     let clearAll (s: State) : State =
         { s with Guides = []; Drag = None }
+
+    // ─────────────────────────────────────────────────────────────
+    // Programmatic / MCP-side transitions. These bypass the drag
+    // flow entirely: an external caller (MCP, future scripting
+    // API, etc.) doesn't have a press / move / release rhythm to
+    // map onto, so they get direct create / move / remove that
+    // each fires the `Changed` event exactly once.
+    // ─────────────────────────────────────────────────────────────
+
+    /// Create a guide with the next autoassigned `Id`. Returns
+    /// the new state + the assigned id so the caller can refer
+    /// to the guide later (e.g. for `setGuideCoord` / `removeGuide`).
+    let addGuide
+            (orientation: Orientation) (coordDbu: int64)
+            (s: State) : State * int =
+        let id = s.NextId
+        let g = { Id = id; Orientation = orientation; CoordDbu = coordDbu }
+        { s with Guides = g :: s.Guides; NextId = s.NextId + 1 }, id
+
+    /// Move a guide by id. Returns the new state + whether the
+    /// id was found, so callers can surface "no such guide"
+    /// errors without re-scanning the list.
+    let setGuideCoord
+            (id: int) (coordDbu: int64) (s: State) : State * bool =
+        let mutable found = false
+        let guides' =
+            s.Guides
+            |> List.map (fun g ->
+                if g.Id = id then
+                    found <- true
+                    { g with CoordDbu = coordDbu }
+                else g)
+        { s with Guides = guides' }, found
+
+    /// Delete a guide by id. Returns the new state + whether
+    /// the id was found.
+    let removeGuide (id: int) (s: State) : State * bool =
+        let found = s.Guides |> List.exists (fun g -> g.Id = id)
+        let guides' = s.Guides |> List.filter (fun g -> g.Id <> id)
+        { s with Guides = guides' }, found
 
 
 /// Singleton service holding the live `Guides.State` and a
@@ -157,6 +196,35 @@ module GuidesService =
     let commitDrag ()    = updateWith Guides.commitDrag
     let deleteByDrag ()  = updateWith Guides.deleteByDrag
     let clearAll ()      = updateWith Guides.clearAll
+
+    // Programmatic / MCP-side wrappers — each returns the data
+    // the caller needs (assigned id, found-ness) so the HTTP
+    // command layer can shape an honest response without re-
+    // reading the singleton afterwards.
+
+    let addGuide (orientation: Guides.Orientation) (coordDbu: int64) : int =
+        let mutable assignedId = 0
+        updateWith (fun s ->
+            let s', id = Guides.addGuide orientation coordDbu s
+            assignedId <- id
+            s')
+        assignedId
+
+    let setGuideCoord (id: int) (coordDbu: int64) : bool =
+        let mutable foundFlag = false
+        updateWith (fun s ->
+            let s', f = Guides.setGuideCoord id coordDbu s
+            foundFlag <- f
+            s')
+        foundFlag
+
+    let removeGuide (id: int) : bool =
+        let mutable foundFlag = false
+        updateWith (fun s ->
+            let s', f = Guides.removeGuide id s
+            foundFlag <- f
+            s')
+        foundFlag
 
     /// Test-only: reset the singleton to `Guides.empty`. Pure
     /// modules don't have this need; the singleton does so tests

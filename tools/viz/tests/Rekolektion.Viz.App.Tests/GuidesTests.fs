@@ -200,3 +200,85 @@ let ``GuidesService skips the Changed fire when state is unchanged`` () =
     // (Guides.empty), so the service shouldn't fire.
     GuidesService.updateDrag 999L
     !fires |> should equal 0
+
+// ─────────────────────────────────────────────────────────────────
+// Programmatic API — direct add / setCoord / remove. Used by the
+// HTTP command layer (and through it by the MCP guides tools).
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``addGuide returns autoassigned id and pushes the guide`` () =
+    let s, id = Guides.empty |> Guides.addGuide Horizontal 1234L
+    id |> should equal 1
+    s.Guides |> List.length |> should equal 1
+    let g = s.Guides.[0]
+    g.Id          |> should equal 1
+    g.Orientation |> should equal Horizontal
+    g.CoordDbu    |> should equal 1234L
+    s.NextId |> should equal 2
+
+[<Fact>]
+let ``addGuide increments NextId monotonically`` () =
+    let s1, id1 = Guides.empty |> Guides.addGuide Horizontal 10L
+    let s2, id2 = s1            |> Guides.addGuide Vertical   20L
+    let s3, id3 = s2            |> Guides.addGuide Horizontal 30L
+    [ id1; id2; id3 ] |> should equal [ 1; 2; 3 ]
+    s3.NextId |> should equal 4
+
+[<Fact>]
+let ``setGuideCoord on an existing id updates the coord and returns true`` () =
+    let s0, id = Guides.empty |> Guides.addGuide Horizontal 100L
+    let s1, found = s0 |> Guides.setGuideCoord id 250L
+    found |> should be True
+    s1.Guides.[0].CoordDbu |> should equal 250L
+    s1.Guides.[0].Id |> should equal id
+
+[<Fact>]
+let ``setGuideCoord on an unknown id is a no-op and returns false`` () =
+    let s0, _id = Guides.empty |> Guides.addGuide Horizontal 100L
+    let s1, found = s0 |> Guides.setGuideCoord 9999 500L
+    found |> should be False
+    s1 |> should equal s0
+
+[<Fact>]
+let ``removeGuide on an existing id removes it and returns true`` () =
+    let s0, id1 = Guides.empty |> Guides.addGuide Horizontal 100L
+    let s1, _id2 = s0 |> Guides.addGuide Vertical 200L
+    let s2, found = s1 |> Guides.removeGuide id1
+    found |> should be True
+    s2.Guides |> List.length |> should equal 1
+    s2.Guides.[0].Orientation |> should equal Vertical
+
+[<Fact>]
+let ``removeGuide on an unknown id is a no-op and returns false`` () =
+    let s0, _id = Guides.empty |> Guides.addGuide Horizontal 100L
+    let s1, found = s0 |> Guides.removeGuide 9999
+    found |> should be False
+    s1 |> should equal s0
+
+[<Fact>]
+let ``GuidesService.addGuide fires Changed exactly once and returns the id`` () =
+    GuidesService.resetForTest()
+    let fires = ref 0
+    use _sub = GuidesService.onChanged.Subscribe (fun _ -> incr fires)
+    let id = GuidesService.addGuide Horizontal 500L
+    id |> should equal 1
+    !fires |> should equal 1
+    (GuidesService.current()).Guides |> List.length |> should equal 1
+
+[<Fact>]
+let ``GuidesService.setGuideCoord returns the found-ness flag`` () =
+    GuidesService.resetForTest()
+    let id = GuidesService.addGuide Vertical 100L
+    GuidesService.setGuideCoord id 250L |> should be True
+    GuidesService.setGuideCoord 9999 500L |> should be False
+    let s = GuidesService.current()
+    s.Guides.[0].CoordDbu |> should equal 250L
+
+[<Fact>]
+let ``GuidesService.removeGuide returns the found-ness flag`` () =
+    GuidesService.resetForTest()
+    let id = GuidesService.addGuide Horizontal 100L
+    GuidesService.removeGuide 9999 |> should be False
+    GuidesService.removeGuide id   |> should be True
+    (GuidesService.current()).Guides |> should be Empty

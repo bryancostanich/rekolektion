@@ -443,6 +443,90 @@ let private toolTidyRouting (_args: JsonElement) : ToolResult =
     with ex ->
         toolError (sprintf "tidy_routing failed: %s" ex.Message)
 
+// ---------------------------------------------------------------
+// Guideline tools — programmatic counterpart to the drag-out-from-
+// ruler UX. Guides are global to the viz session (not per-doc)
+// for v1; the singleton service is the same instance the canvas
+// + rulers consume, so anything the MCP creates / moves shows
+// up live in the GUI without an explicit refresh.
+// ---------------------------------------------------------------
+
+/// Tool: rekolektion_viz_list_guides — GET /guides.  No args.
+/// Returns `{ ok, guides: [{ id, orientation, coordDbu }, ...] }`.
+let private toolListGuides (_args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let resp = udsRequest "GET" "/guides" None
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "list_guides failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_create_guide { orientation, coordDbu } —
+/// POST /guides.  Orientation is "horizontal" (constant Y) or
+/// "vertical" (constant X); coordDbu is the world DBU position
+/// along the perpendicular axis.  Returns `{ ok, id }` with the
+/// autoassigned guide id.
+let private toolCreateGuide (args: JsonElement) : ToolResult =
+    try
+        let orient = args.GetProperty("orientation").GetString()
+        let coord  = args.GetProperty("coordDbu").GetInt64()
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body =
+                sprintf "{\"orientation\":\"%s\",\"coordDbu\":%d}"
+                    (jsonEscape orient) coord
+            let resp = udsRequest "POST" "/guides" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "create_guide failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_update_guide { id, coordDbu } — POST
+/// /guides/move.  Reassigns the guide's coord by id.  Errors
+/// `{ ok:false, error:"no such guide" }` when the id isn't
+/// found (use list_guides to enumerate live ids).
+let private toolUpdateGuide (args: JsonElement) : ToolResult =
+    try
+        let id    = args.GetProperty("id").GetInt32()
+        let coord = args.GetProperty("coordDbu").GetInt64()
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body = sprintf "{\"id\":%d,\"coordDbu\":%d}" id coord
+            let resp = udsRequest "POST" "/guides/move" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "update_guide failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_delete_guide { id } — POST /guides/delete.
+/// Removes the guide by id.  Errors when the id isn't found.
+let private toolDeleteGuide (args: JsonElement) : ToolResult =
+    try
+        let id = args.GetProperty("id").GetInt32()
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let body = sprintf "{\"id\":%d}" id
+            let resp = udsRequest "POST" "/guides/delete" (Some body)
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "delete_guide failed: %s" ex.Message)
+
+/// Tool: rekolektion_viz_clear_guides — POST /guides/clear. No
+/// args.  Removes every guide and cancels any in-flight drag.
+/// Idempotent.
+let private toolClearGuides (_args: JsonElement) : ToolResult =
+    try
+        match ensureAppRunning appBootTimeoutMs with
+        | Error msg -> toolError msg
+        | Ok () ->
+            let resp = udsRequest "POST" "/guides/clear" (Some "{}")
+            TextResult (Encoding.UTF8.GetString resp)
+    with ex ->
+        toolError (sprintf "clear_guides failed: %s" ex.Message)
+
 /// Tool: rekolektion_viz_tail_log { sinceLine?, limit? } — read a
 /// trailing slice of the viz JSONL log at `~/.rekolektion/viz.log`.
 /// Reads the file directly (no UDS round-trip) since the MCP server
@@ -781,6 +865,11 @@ let private toolHandlers
         "rekolektion_viz_run_macro",         toolRunMacro
         "rekolektion_viz_emit_lef",          toolEmitLef
         "rekolektion_viz_tidy_routing",      toolTidyRouting
+        "rekolektion_viz_list_guides",       toolListGuides
+        "rekolektion_viz_create_guide",      toolCreateGuide
+        "rekolektion_viz_update_guide",      toolUpdateGuide
+        "rekolektion_viz_delete_guide",      toolDeleteGuide
+        "rekolektion_viz_clear_guides",      toolClearGuides
     ]
 
 /// Static tool schema list for MCP's `tools/list` response. Each
@@ -1086,6 +1175,66 @@ let private toolList : obj =
                     re-run). Pushes one undo snapshot on the viz \
                     side. No arguments — the active macro is the \
                     implicit target. Returns `{ok: bool}`."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties = obj()
+                          additionalProperties = false |} |}
+        box {| name = "rekolektion_viz_list_guides"
+               description =
+                   "Enumerate every committed guideline in the live \
+                    viz session. Returns `{ ok, guides: [{id, \
+                    orientation, coordDbu}, ...] }`. `orientation` is \
+                    \"horizontal\" (constant Y) or \"vertical\" \
+                    (constant X); `coordDbu` is the world DBU \
+                    position along the perpendicular axis. Guides are \
+                    global to the viz session — independent of the \
+                    active document."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties = obj()
+                          additionalProperties = false |} |}
+        box {| name = "rekolektion_viz_create_guide"
+               description =
+                   "Create a new guideline at `coordDbu` along the \
+                    given `orientation`. Horizontal guides span the \
+                    viewport width at a constant Y; vertical span the \
+                    height at a constant X. Returns `{ ok, id }` with \
+                    the autoassigned id — pass it to update_guide or \
+                    delete_guide later."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| orientation =
+                                  box {| ``type`` = "string"
+                                         ``enum`` = [| "horizontal"; "vertical" |] |}
+                                 coordDbu = box {| ``type`` = "integer" |} |}
+                          required = [| "orientation"; "coordDbu" |] |} |}
+        box {| name = "rekolektion_viz_update_guide"
+               description =
+                   "Move an existing guideline to a new `coordDbu`. \
+                    Errors `{ok:false, error:\"no such guide\"}` when \
+                    the `id` doesn't match any live guide — call \
+                    list_guides to enumerate."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| id       = box {| ``type`` = "integer" |}
+                                 coordDbu = box {| ``type`` = "integer" |} |}
+                          required = [| "id"; "coordDbu" |] |} |}
+        box {| name = "rekolektion_viz_delete_guide"
+               description =
+                   "Remove a guideline by id. Errors when the id \
+                    isn't found."
+               inputSchema =
+                   box {| ``type`` = "object"
+                          properties =
+                              {| id = box {| ``type`` = "integer" |} |}
+                          required = [| "id" |] |} |}
+        box {| name = "rekolektion_viz_clear_guides"
+               description =
+                   "Remove every guideline and cancel any in-flight \
+                    drag. Idempotent — calling on an empty session is \
+                    a no-op."
                inputSchema =
                    box {| ``type`` = "object"
                           properties = obj()

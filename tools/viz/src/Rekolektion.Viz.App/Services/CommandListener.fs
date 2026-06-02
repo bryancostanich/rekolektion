@@ -206,6 +206,40 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
             // payload from the MCP wrapper is fine.
             Dispatcher.UIThread.Post(fun () -> dispatch Msg.TidyRoutingGeometry)
             "{\"ok\":true}"
+        // Guides — programmatic create / move / delete / clear
+        // for the MCP guides tools. The GuidesService singleton
+        // is thread-safe but the canvas / rulers subscribers
+        // re-render via Dispatcher.UIThread.Post on Changed; we
+        // Invoke (not Post) so the response carries the assigned
+        // id (or the found-ness flag) the caller asked for.
+        | "/guides" ->
+            let orient =
+                match root.GetProperty("orientation").GetString() with
+                | "vertical" | "Vertical" -> Guides.Vertical
+                | _ -> Guides.Horizontal
+            let coord = root.GetProperty("coordDbu").GetInt64()
+            let idRef = ref 0
+            Dispatcher.UIThread.Invoke(fun () ->
+                idRef.Value <- GuidesService.addGuide orient coord)
+            sprintf "{\"ok\":true,\"id\":%d}" idRef.Value
+        | "/guides/move" ->
+            let id = root.GetProperty("id").GetInt32()
+            let coord = root.GetProperty("coordDbu").GetInt64()
+            let foundRef = ref false
+            Dispatcher.UIThread.Invoke(fun () ->
+                foundRef.Value <- GuidesService.setGuideCoord id coord)
+            if foundRef.Value then "{\"ok\":true}"
+            else "{\"ok\":false,\"error\":\"no such guide\"}"
+        | "/guides/delete" ->
+            let id = root.GetProperty("id").GetInt32()
+            let foundRef = ref false
+            Dispatcher.UIThread.Invoke(fun () ->
+                foundRef.Value <- GuidesService.removeGuide id)
+            if foundRef.Value then "{\"ok\":true}"
+            else "{\"ok\":false,\"error\":\"no such guide\"}"
+        | "/guides/clear" ->
+            Dispatcher.UIThread.Post(fun () -> GuidesService.clearAll())
+            "{\"ok\":true}"
         | _ -> "{\"ok\":false,\"error\":\"unknown path\"}"
     with ex ->
         // Escape any embedded quotes so a thrown message containing
@@ -447,6 +481,24 @@ let handleQuery (path: string) (_dispatch: Msg.Msg -> unit) : string =
                     sprintf
                         "{\"ok\":true,\"activePath\":\"%s\",\"instances\":[%s],\"polygons\":[%s]}"
                         (esc mc.Path) instItems polyItems
+        | "/guides" ->
+            // Enumerate every committed guide. Singleton-only —
+            // no document context required, so it's safe to call
+            // before any file is loaded. Returns ids + world DBU
+            // coords so the MCP caller can move / delete them
+            // later by id.
+            let s = GuidesService.current()
+            let entries =
+                s.Guides
+                |> List.map (fun g ->
+                    let o =
+                        match g.Orientation with
+                        | Guides.Horizontal -> "horizontal"
+                        | Guides.Vertical   -> "vertical"
+                    sprintf "{\"id\":%d,\"orientation\":\"%s\",\"coordDbu\":%d}"
+                        g.Id o g.CoordDbu)
+                |> String.concat ","
+            sprintf "{\"ok\":true,\"guides\":[%s]}" entries
         | _ -> "{\"ok\":false,\"error\":\"unknown query path\"}"
     with ex ->
         sprintf "{\"ok\":false,\"error\":\"%s\"}" (esc ex.Message)

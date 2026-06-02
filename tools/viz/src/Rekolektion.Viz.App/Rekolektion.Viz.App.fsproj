@@ -35,10 +35,10 @@
     <Compile Include="HeadlessRenderArgs.fs" />
     <Compile Include="Services/RekolektionCli.fs" />
     <Compile Include="Services/GdsLoading.fs" />
-    <Compile Include="Services/CommandListener.fs" />
-    <Compile Include="Services/ScreenshotListener.fs" />
     <Compile Include="Services/ViewportSync.fs" />
     <Compile Include="Services/Guides.fs" />
+    <Compile Include="Services/CommandListener.fs" />
+    <Compile Include="Services/ScreenshotListener.fs" />
     <Compile Include="Canvas2D/GdsCanvasControl.fs" />
     <Compile Include="Canvas2D/RulerControls.fs" />
     <Compile Include="Canvas3D/Matrix4x4Helpers.fs" />

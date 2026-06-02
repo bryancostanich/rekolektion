@@ -41,8 +41,9 @@ print(render_report(run_corpus("tests/drc_corpus")))
 
 ## Status
 
-**Coverage as of 2026-06-01: 31 rules promotable on the KLayout
-diagonal. Every rule the corpus surfaces is now green.**
+**Coverage as of 2026-06-02: 31 rules promotable on the KLayout
+diagonal. Every rule the corpus surfaces is now green, including
+the foundry-primitive probe cell.**
 
 Includes Width / Spacing / MinArea families on li1, met1, met2,
 met3; mcon + via1 size rules; poly / nwell width+spacing; nsdm /
@@ -165,6 +166,28 @@ name (`difftap.1`, `difftap.1_a`, `difftap.1_b`, `difftap.1_c`,
 Promoting needs either (a) a corpus cell per area variant, or
 (b) bucketing several KLayout deck names to one Magic name via
 the normalizer. Lower priority than the enclosure family.
+
+### Compat-aware latch-up (LU.2 / LU.3) — landed 2026-06-02
+
+`Drc/Check.fs` hard-codes the `LU.2` (n-diff distance to p-tap)
+and `LU.3` (p-diff per merged nwell needs an n-tap) Magic
+deck rules outside the rule-list dispatch loop.  Under
+Compat.Klayout, both emits are now gated: no LU.* violations
+fire.  Matches the SKY130 KLayout deck (`sky130B_mr.drc`) which
+has no latch-up family at all.
+
+Was: F# Klayout over-fired LU.2 on any cell whose primitives
+don't include their own p-tap (foundry pre-validates latch-up
+at integration time, not the primitive level), creating spurious
+"errors" the moment a real cell with foundry SRefs got
+verify_drc'd.  Surfaced by `tests/drc_corpus/probe_foundry_waiver.rkt`
+(single foundry-primitive SRef).
+
+Now: F# Klayout reports clean on the probe cell, matching
+ext-KLayout. F# Magic still fires LU.2 (correct — it's a Magic
+rule); however ext-Magic only fires LU.2 under `full=True`. The
+F# Magic-vs-ext-Magic LU.2 delta is its own F# Magic parity item,
+unrelated to Klayout-side correctness.
 
 ### Compat-aware implant-close (landed)
 

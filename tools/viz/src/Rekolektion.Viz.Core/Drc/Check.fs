@@ -1075,6 +1075,15 @@ let checkWithToggles
     // component containing the n-tap (or the substrate complement
     // for the p-tap).
     //
+    // **Compat gate.** LU.2 / LU.3 are Magic deck rules; the SKY130
+    // KLayout deck has no latch-up family.  Under Compat.Klayout
+    // these emits get skipped entirely, matching ext-KLayout's
+    // silence on the same geometry.  Without this gate, F# Klayout
+    // over-reports vs ext-KLayout on every cell whose primitives
+    // don't carry their own p-tap (i.e. essentially every primitive
+    // standalone — the foundry pre-validates latch-up at integration
+    // time, not at the primitive level).
+    //
     // Implementation: per-merged-nwell-component, check whether the
     // component has a p-diff but no licon-contacted n-tap inside.
     // For LU.2, check whether any licon-contacted p-tap exists at
@@ -1212,7 +1221,8 @@ let checkWithToggles
             pdiffs |> Array.filter (fun b -> bbOverlaps b comp)
         let ntapsInComp =
             ntaps |> Array.filter (fun b -> bbOverlaps b comp)
-        if pdiffsInComp.Length > 0 && ntapsInComp.Length = 0 then
+        if compat = Compat.Magic
+           && pdiffsInComp.Length > 0 && ntapsInComp.Length = 0 then
             for d in pdiffsInComp do
                 result.Add {
                     Rule = "LU.3"
@@ -1224,7 +1234,7 @@ let checkWithToggles
                     BboxB = None }
     // LU.2: if no licon-contacted p-tap exists anywhere, fire on
     // every n-diff. Substrate is treated as one connected region.
-    if ptaps.Length = 0 then
+    if compat = Compat.Magic && ptaps.Length = 0 then
         for d in ndiffs do
             result.Add {
                 Rule = "LU.2"

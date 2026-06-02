@@ -56,36 +56,41 @@ let private MajorTickPx : float32 = 8.0f
 let private MinorTickPx : float32 = 4.0f
 
 // ─────────────────────────────────────────────────────────────
-// Cached Skia paints. Each `SKPaint` wraps a native handle; the
-// `new SKPaint(...)` constructor allocates on the unmanaged
-// heap and the GC dispose path frees it. At 60 Hz pan we were
-// churning 4 paints * 2 rulers = 8 native allocs per frame and
-// the Skia internals weren't loving it. Hoisting to module
-// scope means one alloc per paint per process — leak-of-a-kind
-// but bounded.
+// Cached Skia paints. Each `SKPaint` wraps a native handle;
+// `new SKPaint(...)` constructor + GC dispose round-trip the
+// unmanaged heap. At 60 Hz pan that was 4 paints * 2 rulers =
+// 8 native allocs per frame; hoisting to module scope drops
+// it to 4 one-time allocs per process — leak-of-a-kind but
+// bounded.
 //
-// SKPaint is NOT thread-safe; we only ever touch these from the
-// Avalonia render thread (Skia leases the canvas on it), so a
-// single shared instance is fine.
+// `lazy` (not direct `let`) because module-level eager init
+// fires before Avalonia / SkiaSharp bootstraps — `new SKPaint`
+// at that point crashes the app under runDesktop. Lazy
+// initialization defers each paint to first .Value access,
+// which only happens inside the draw op's `Render` (well after
+// Skia is up).
+//
+// SKPaint isn't thread-safe; the Avalonia render thread is the
+// only writer/reader, so the single shared instance is fine.
 // ─────────────────────────────────────────────────────────────
 
-let private bgPaint =
-    new SKPaint(Style = SKPaintStyle.Fill, Color = bg)
+let private bgPaint : Lazy<SKPaint> =
+    lazy (new SKPaint(Style = SKPaintStyle.Fill, Color = bg))
 
-let private majorPaint =
-    new SKPaint(Style = SKPaintStyle.Stroke,
-                Color = fg, StrokeWidth = 1.0f,
-                IsAntialias = false)
+let private majorPaint : Lazy<SKPaint> =
+    lazy (new SKPaint(Style = SKPaintStyle.Stroke,
+                      Color = fg, StrokeWidth = 1.0f,
+                      IsAntialias = false))
 
-let private minorPaint =
-    new SKPaint(Style = SKPaintStyle.Stroke,
-                Color = fgDim, StrokeWidth = 1.0f,
-                IsAntialias = false)
+let private minorPaint : Lazy<SKPaint> =
+    lazy (new SKPaint(Style = SKPaintStyle.Stroke,
+                      Color = fgDim, StrokeWidth = 1.0f,
+                      IsAntialias = false))
 
-let private labelPaint =
-    new SKPaint(Style = SKPaintStyle.Fill,
-                Color = fg, IsAntialias = true,
-                TextSize = LabelPx)
+let private labelPaint : Lazy<SKPaint> =
+    lazy (new SKPaint(Style = SKPaintStyle.Fill,
+                      Color = fg, IsAntialias = true,
+                      TextSize = LabelPx))
 
 // ─────────────────────────────────────────────────────────────
 // Skia draw ops — one per ruler axis. Each owns its bounds, the
@@ -110,14 +115,18 @@ type private TopRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepUm
                 let h = float32 bounds.Height
                 let clip = SKRect(0.0f, 0.0f, w, h)
                 canvas.ClipRect(clip, SKClipOperation.Intersect)
-                canvas.DrawRect(clip, bgPaint)
+                let bg' = bgPaint.Value
+                let major' = majorPaint.Value
+                let minor' = minorPaint.Value
+                let label' = labelPaint.Value
+                canvas.DrawRect(clip, bg')
                 // Baseline: ticks grow DOWN from the bottom edge
                 // so the labels sit above them inside the gutter.
                 let bottom = h
                 for t in ticks do
                     let x = float32 t.PxOffset + 0.5f
                     let len = if t.IsMajor then MajorTickPx else MinorTickPx
-                    let paint = if t.IsMajor then majorPaint else minorPaint
+                    let paint = if t.IsMajor then major' else minor'
                     canvas.DrawLine(x, bottom - len, x, bottom, paint)
                     if t.IsMajor then
                         let label = RulerTicks.formatLabel t.Um majorStepUm
@@ -125,7 +134,7 @@ type private TopRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepUm
                         // so it doesn't overlap the tick line. The
                         // 11 px font + 2 px baseline-from-top
                         // keeps the label inside the 18 px gutter.
-                        canvas.DrawText(label, x + 2.0f, 11.0f, labelPaint)
+                        canvas.DrawText(label, x + 2.0f, 11.0f, label')
                 canvas.RestoreToCount saved
 
 type private LeftRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepUm: float) =
@@ -144,12 +153,16 @@ type private LeftRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepU
                 let h = float32 bounds.Height
                 let clip = SKRect(0.0f, 0.0f, w, h)
                 canvas.ClipRect(clip, SKClipOperation.Intersect)
-                canvas.DrawRect(clip, bgPaint)
+                let bg' = bgPaint.Value
+                let major' = majorPaint.Value
+                let minor' = minorPaint.Value
+                let label' = labelPaint.Value
+                canvas.DrawRect(clip, bg')
                 let right = w
                 for t in ticks do
                     let y = float32 t.PxOffset + 0.5f
                     let len = if t.IsMajor then MajorTickPx else MinorTickPx
-                    let paint = if t.IsMajor then majorPaint else minorPaint
+                    let paint = if t.IsMajor then major' else minor'
                     canvas.DrawLine(right - len, y, right, y, paint)
                     if t.IsMajor then
                         let label = RulerTicks.formatLabel t.Um majorStepUm
@@ -161,7 +174,7 @@ type private LeftRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepU
                         let savedT = canvas.Save()
                         canvas.Translate(11.0f, y - 2.0f)
                         canvas.RotateDegrees(-90.0f)
-                        canvas.DrawText(label, 0.0f, 0.0f, labelPaint)
+                        canvas.DrawText(label, 0.0f, 0.0f, label')
                         canvas.RestoreToCount savedT
                 canvas.RestoreToCount saved
 
@@ -205,29 +218,22 @@ type RulerBase() =
     inherit Control()
     let mutable camSub    : IDisposable option = None
     let mutable guideSub  : IDisposable option = None
-    /// Schedule a redraw on every camera or guides change. Both
-    /// buses fire synchronously from the canvas's `Render` (which
-    /// itself runs on the UI thread), so `InvalidateVisual` is
-    /// safe to call directly — Avalonia coalesces the dirty rect
-    /// into the current frame so the ruler tracks the canvas in
-    /// lockstep instead of lagging by one tick.
+    /// Schedule a redraw on every camera or guides change.
     ///
-    /// `Dispatcher.UIThread.Post` (which we used to do here)
-    /// deferred the invalidation to the next message-loop
-    /// iteration, which during a 60 Hz pan meant the ruler always
-    /// painted "last frame's" camera position. Visible as ruler
-    /// labels dragging behind the geometry. Direct invalidation
-    /// fixes that.
+    /// **Must Post, not call directly.** `ViewportSync.update`
+    /// fires from `GdsCanvasControl.PushViewportSync`, which is
+    /// called from inside the canvas's `Render` pass. Avalonia
+    /// throws `InvalidOperationException: Visual was invalidated
+    /// during the render pass` if any control's
+    /// `InvalidateVisual` runs there. The Dispatcher.Post defers
+    /// the invalidation to the next message-loop iteration —
+    /// after the current render finishes — which is the only
+    /// safe time to mark a control dirty. (Tried a direct call
+    /// once; viz crashed instantly on startup. Saved future-self
+    /// the time.)
     member private this.OnExternalChanged () =
-        if Avalonia.Threading.Dispatcher.UIThread.CheckAccess() then
-            this.InvalidateVisual()
-        else
-            // Defensive: future callers might fire either bus
-            // from a background thread (e.g. an MCP guide-create
-            // off the UDS accept-loop). Marshal to UI thread when
-            // we're not on it.
-            Avalonia.Threading.Dispatcher.UIThread.Post
-                (fun () -> this.InvalidateVisual())
+        Avalonia.Threading.Dispatcher.UIThread.Post
+            (fun () -> this.InvalidateVisual())
     override this.OnAttachedToVisualTree(e) =
         base.OnAttachedToVisualTree e
         camSub   <- Some (ViewportSync.onChanged.Subscribe   (fun _ -> this.OnExternalChanged()))

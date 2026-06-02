@@ -56,6 +56,38 @@ let private MajorTickPx : float32 = 8.0f
 let private MinorTickPx : float32 = 4.0f
 
 // ─────────────────────────────────────────────────────────────
+// Cached Skia paints. Each `SKPaint` wraps a native handle; the
+// `new SKPaint(...)` constructor allocates on the unmanaged
+// heap and the GC dispose path frees it. At 60 Hz pan we were
+// churning 4 paints * 2 rulers = 8 native allocs per frame and
+// the Skia internals weren't loving it. Hoisting to module
+// scope means one alloc per paint per process — leak-of-a-kind
+// but bounded.
+//
+// SKPaint is NOT thread-safe; we only ever touch these from the
+// Avalonia render thread (Skia leases the canvas on it), so a
+// single shared instance is fine.
+// ─────────────────────────────────────────────────────────────
+
+let private bgPaint =
+    new SKPaint(Style = SKPaintStyle.Fill, Color = bg)
+
+let private majorPaint =
+    new SKPaint(Style = SKPaintStyle.Stroke,
+                Color = fg, StrokeWidth = 1.0f,
+                IsAntialias = false)
+
+let private minorPaint =
+    new SKPaint(Style = SKPaintStyle.Stroke,
+                Color = fgDim, StrokeWidth = 1.0f,
+                IsAntialias = false)
+
+let private labelPaint =
+    new SKPaint(Style = SKPaintStyle.Fill,
+                Color = fg, IsAntialias = true,
+                TextSize = LabelPx)
+
+// ─────────────────────────────────────────────────────────────
 // Skia draw ops — one per ruler axis. Each owns its bounds, the
 // tick list it should draw, and the major-step (for label
 // formatting). Stateless beyond the constructor args so Avalonia
@@ -78,20 +110,7 @@ type private TopRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepUm
                 let h = float32 bounds.Height
                 let clip = SKRect(0.0f, 0.0f, w, h)
                 canvas.ClipRect(clip, SKClipOperation.Intersect)
-                use bgPaint = new SKPaint(Style = SKPaintStyle.Fill, Color = bg)
                 canvas.DrawRect(clip, bgPaint)
-                use majorPaint =
-                    new SKPaint(Style = SKPaintStyle.Stroke,
-                                Color = fg, StrokeWidth = 1.0f,
-                                IsAntialias = false)
-                use minorPaint =
-                    new SKPaint(Style = SKPaintStyle.Stroke,
-                                Color = fgDim, StrokeWidth = 1.0f,
-                                IsAntialias = false)
-                use labelPaint =
-                    new SKPaint(Style = SKPaintStyle.Fill,
-                                Color = fg, IsAntialias = true,
-                                TextSize = LabelPx)
                 // Baseline: ticks grow DOWN from the bottom edge
                 // so the labels sit above them inside the gutter.
                 let bottom = h
@@ -125,20 +144,7 @@ type private LeftRulerDraw(bounds: Rect, ticks: RulerTicks.Tick list, majorStepU
                 let h = float32 bounds.Height
                 let clip = SKRect(0.0f, 0.0f, w, h)
                 canvas.ClipRect(clip, SKClipOperation.Intersect)
-                use bgPaint = new SKPaint(Style = SKPaintStyle.Fill, Color = bg)
                 canvas.DrawRect(clip, bgPaint)
-                use majorPaint =
-                    new SKPaint(Style = SKPaintStyle.Stroke,
-                                Color = fg, StrokeWidth = 1.0f,
-                                IsAntialias = false)
-                use minorPaint =
-                    new SKPaint(Style = SKPaintStyle.Stroke,
-                                Color = fgDim, StrokeWidth = 1.0f,
-                                IsAntialias = false)
-                use labelPaint =
-                    new SKPaint(Style = SKPaintStyle.Fill,
-                                Color = fg, IsAntialias = true,
-                                TextSize = LabelPx)
                 let right = w
                 for t in ticks do
                     let y = float32 t.PxOffset + 0.5f
@@ -199,11 +205,29 @@ type RulerBase() =
     inherit Control()
     let mutable camSub    : IDisposable option = None
     let mutable guideSub  : IDisposable option = None
-    /// Schedule a redraw on every camera or guides change; the
-    /// fresh state is read inside `Render`.
+    /// Schedule a redraw on every camera or guides change. Both
+    /// buses fire synchronously from the canvas's `Render` (which
+    /// itself runs on the UI thread), so `InvalidateVisual` is
+    /// safe to call directly — Avalonia coalesces the dirty rect
+    /// into the current frame so the ruler tracks the canvas in
+    /// lockstep instead of lagging by one tick.
+    ///
+    /// `Dispatcher.UIThread.Post` (which we used to do here)
+    /// deferred the invalidation to the next message-loop
+    /// iteration, which during a 60 Hz pan meant the ruler always
+    /// painted "last frame's" camera position. Visible as ruler
+    /// labels dragging behind the geometry. Direct invalidation
+    /// fixes that.
     member private this.OnExternalChanged () =
-        Avalonia.Threading.Dispatcher.UIThread.Post (fun () ->
-            this.InvalidateVisual())
+        if Avalonia.Threading.Dispatcher.UIThread.CheckAccess() then
+            this.InvalidateVisual()
+        else
+            // Defensive: future callers might fire either bus
+            // from a background thread (e.g. an MCP guide-create
+            // off the UDS accept-loop). Marshal to UI thread when
+            // we're not on it.
+            Avalonia.Threading.Dispatcher.UIThread.Post
+                (fun () -> this.InvalidateVisual())
     override this.OnAttachedToVisualTree(e) =
         base.OnAttachedToVisualTree e
         camSub   <- Some (ViewportSync.onChanged.Subscribe   (fun _ -> this.OnExternalChanged()))

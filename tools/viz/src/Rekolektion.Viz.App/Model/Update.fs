@@ -880,6 +880,15 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let model' = { model with ShowAxes = not model.ShowAxes }
         backend.PersistSession model'
         model', Cmd.none
+    | Msg.SetDrcCompat compat ->
+        // Switch the in-viz DRC overlay's compat target.  No-op
+        // when the user picks the value already active.  Persist
+        // so the choice survives restart.
+        if model.DrcCompat = compat then model, Cmd.none
+        else
+            let model' = { model with DrcCompat = compat }
+            backend.PersistSession model'
+            model', Cmd.none
     | Msg.ToggleLabels ->
         let model' = { model with ShowLabels = not model.ShowLabels }
         backend.PersistSession model'

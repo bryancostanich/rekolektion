@@ -240,6 +240,11 @@ let private gds2DDrcViewAttr
     AttrBuilder<GdsCanvasControl>.CreateProperty<Drc.Rules.RulesetView>(
         GdsCanvasControl.DrcViewProperty, v, ValueNone)
 
+let private gds2DDrcCompatAttr
+        (v: Drc.Compat.Compat) : IAttr<GdsCanvasControl> =
+    AttrBuilder<GdsCanvasControl>.CreateProperty<Drc.Compat.Compat>(
+        GdsCanvasControl.DrcCompatProperty, v, ValueNone)
+
 let private stack3DLibraryAttr (v: Document option) : IAttr<StackCanvasControl> =
     AttrBuilder<StackCanvasControl>.CreateProperty<Document option>(
         StackCanvasControl.LibraryProperty, v, ValueNone)
@@ -381,6 +386,7 @@ let private canvas (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
               gds2DSegmentDragCancelHandlerAttr
                   (System.Action(fun () -> dispatch Msg.SegmentDragCancel))
               gds2DDrcViewAttr model.DrcView
+              gds2DDrcCompatAttr model.DrcCompat
               // ADR-0006 walk-around router wiring
               gds2DNetMapAttr
                   (let nm = active |> Option.map (fun m -> m.Nets) |> Option.defaultValue Map.empty

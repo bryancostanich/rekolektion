@@ -324,7 +324,10 @@ type MainWindow() as this =
                 RatlinesArmed  = sess.RatlinesArmed
                 ShowDrc        = sess.ShowDrc
                 ShowDrcLabels  = sess.ShowDrcLabels
-                ShowDimensions = sess.ShowDimensions },
+                ShowDimensions = sess.ShowDimensions
+                DrcCompat =
+                    Rekolektion.Viz.Core.Drc.Compat.parse sess.DrcCompat
+                    |> Option.defaultValue Rekolektion.Viz.Core.Drc.Compat.Magic },
             Cmd.batch (reopenCmds @ activateCmd)
         let update = Update.update backend
         let view = AppView.view
@@ -634,6 +637,42 @@ type App() =
         closeItem.Click.Add(fun _ ->
             AppDispatch.send Msg.CloseActiveTab)
         fileSub.Items.Add(closeItem)
+
+        // Track 02 — DRC compat target selector.  Switches the
+        // in-viz overlay between Magic-tuned rules (pre-Track-02
+        // canvas behavior) and KLayout-tuned rules (matches what
+        // `verify_drc(rkt)` runs at sign-off).  Radio toggle —
+        // exactly one item checked at a time, sync'd from the
+        // click handlers.
+        fileSub.Items.Add(NativeMenuItemSeparator())
+        let drcCompatItem = NativeMenuItem("DRC compat")
+        let drcCompatSub = NativeMenu()
+        let magicItem = NativeMenuItem("Magic")
+        let klayoutItem = NativeMenuItem("KLayout")
+        magicItem.ToggleType <- NativeMenuItemToggleType.Radio
+        klayoutItem.ToggleType <- NativeMenuItemToggleType.Radio
+        let setDrcCompatChecks (active: Rekolektion.Viz.Core.Drc.Compat.Compat) =
+            magicItem.IsChecked <- (active = Rekolektion.Viz.Core.Drc.Compat.Magic)
+            klayoutItem.IsChecked <- (active = Rekolektion.Viz.Core.Drc.Compat.Klayout)
+        magicItem.Click.Add(fun _ ->
+            setDrcCompatChecks Rekolektion.Viz.Core.Drc.Compat.Magic
+            AppDispatch.send
+                (Msg.SetDrcCompat Rekolektion.Viz.Core.Drc.Compat.Magic))
+        klayoutItem.Click.Add(fun _ ->
+            setDrcCompatChecks Rekolektion.Viz.Core.Drc.Compat.Klayout
+            AppDispatch.send
+                (Msg.SetDrcCompat Rekolektion.Viz.Core.Drc.Compat.Klayout))
+        drcCompatSub.Items.Add(magicItem)
+        drcCompatSub.Items.Add(klayoutItem)
+        drcCompatItem.Menu <- drcCompatSub
+        fileSub.Items.Add(drcCompatItem)
+        // Initial check follows the persisted session state so the
+        // menu reads the on-disk choice on launch.
+        let bootCompat =
+            Services.SessionState.load () |> fun s ->
+                Rekolektion.Viz.Core.Drc.Compat.parse s.DrcCompat
+                |> Option.defaultValue Rekolektion.Viz.Core.Drc.Compat.Magic
+        setDrcCompatChecks bootCompat
 
         fileItem.Menu <- fileSub
         menu.Items.Add(fileItem)

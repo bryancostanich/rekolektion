@@ -62,6 +62,10 @@ type State = {
     ShowDrc        : bool   // R key — default false
     ShowDrcLabels  : bool   // Shift+R — default true (DRC tooltip labels)
     ShowDimensions : bool   // D key — default false
+    /// Track 02 — in-viz DRC compat target ("magic" | "klayout").
+    /// Default "magic" preserves the canvas behavior users had
+    /// pre-Track-02.  Selectable from the File menu.
+    DrcCompat      : string
 }
 
 let empty : State = {
@@ -78,6 +82,7 @@ let empty : State = {
     ShowDrc        = false
     ShowDrcLabels  = true
     ShowDimensions = false
+    DrcCompat      = "magic"
 }
 
 let private homeDir =
@@ -173,6 +178,12 @@ let parse (json: string) : State =
                    || v.ValueKind = System.Text.Json.JsonValueKind.False)
             then v.GetBoolean()
             else boolField "showRuler" true
+        let stringField (key: string) (fallback: string) : string =
+            let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+            if root.TryGetProperty(key, &v)
+               && v.ValueKind = System.Text.Json.JsonValueKind.String
+            then v.GetString()
+            else fallback
         { Layers = layers
           OpenPaths = openPaths
           ActivePath = activePath
@@ -185,7 +196,8 @@ let parse (json: string) : State =
           RatlinesArmed  = boolField "ratlinesArmed"  false
           ShowDrc        = boolField "showDrc"        false
           ShowDrcLabels  = boolField "showDrcLabels"  true
-          ShowDimensions = boolField "showDimensions" false }
+          ShowDimensions = boolField "showDimensions" false
+          DrcCompat      = stringField "drcCompat"    "magic" }
     with _ -> empty
 
 /// Read the persisted session state. Missing or malformed file
@@ -245,6 +257,7 @@ let serialize (state: State) : string =
     appendBool "showDrc"        state.ShowDrc
     appendBool "showDrcLabels"  state.ShowDrcLabels
     appendBool "showDimensions" state.ShowDimensions
+    sb.AppendFormat(",\"drcCompat\":\"{0}\"", escape state.DrcCompat) |> ignore
     sb.Append "}" |> ignore
     sb.ToString()
 
@@ -318,6 +331,7 @@ let persistFromModel (model: Rekolektion.Viz.App.Model.Model.Model) : unit =
         ShowDrc        = model.ShowDrc
         ShowDrcLabels  = model.ShowDrcLabels
         ShowDimensions = model.ShowDimensions
+        DrcCompat      = Drc.Compat.toString model.DrcCompat
     }
 
 /// Persist only the window bounds, preserving every other field

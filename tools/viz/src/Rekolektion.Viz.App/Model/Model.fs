@@ -161,6 +161,13 @@ type Model = {
     /// commit DRC; the provenance map lets the Inspector surface
     /// "this rule came from overrides/v1_tapeout.yaml" later.
     DrcView : Drc.Rules.RulesetView
+    /// Track 02 — which authority's rules the in-viz DRC overlay
+    /// evaluates against (Magic or KLayout).  Selectable from the
+    /// File menu.  Default `Magic` preserves the canvas behavior
+    /// users had pre-Track-02.  `Klayout` matches the sign-off
+    /// target — same rules `verify_drc(rkt)` runs by default.
+    /// Persisted across restarts.
+    DrcCompat : Drc.Compat.Compat
     /// Grid overlay: major + minor dots. Toggled by G. Per-µm
     /// spacing comes from Services.Config.current. Persists
     /// across tab switches. Independent from ShowAxes.
@@ -255,6 +262,7 @@ let empty : Model = {
     SelectedDrcViolation = None
     DisabledDrcRules = Set.empty
     DrcView = Drc.Rules.defaultView
+    DrcCompat = Drc.Compat.Magic
     ShowGrid = true
     ShowAxes = true
     ShowLabels = true

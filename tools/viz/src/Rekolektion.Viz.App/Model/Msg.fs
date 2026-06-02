@@ -2,6 +2,7 @@ module Rekolektion.Viz.App.Model.Msg
 
 open Rekolektion.Viz.Core.Visibility
 open Rekolektion.Viz.Core.Sidecar.Types
+open Rekolektion.Viz.Core
 
 type RunMacroParams = {
     Cell      : string         // foundry | lr
@@ -160,6 +161,9 @@ type Msg =
     /// Toggle the origin-anchored axes overlay (L key) — X/Y
     /// spines along the active cell's bbox edges with µm ticks.
     | ToggleAxes
+    /// Track 02 — switch the in-viz DRC overlay's compat target
+    /// between Magic and KLayout.  Fired by the File menu items.
+    | SetDrcCompat of Drc.Compat.Compat
     /// Toggle the interactive routing tool on/off (W key). When on,
     /// canvas clicks start/extend a draft route on the ActiveLayer;
     /// when off, clicks fall through to normal selection.

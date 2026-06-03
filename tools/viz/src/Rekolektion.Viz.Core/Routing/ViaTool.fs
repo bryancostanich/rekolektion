@@ -120,6 +120,8 @@ let emitStandaloneAt
 type SnapKind =
     | Pin
     | Knuckle
+    | WireEnd
+    | WireCenterline
 
 type Snap = {
     X        : int64
@@ -149,26 +151,40 @@ let private polyBbox (poly: FlatPolygon) : int64 * int64 * int64 * int64 =
         if pt.Y > yMax then yMax <- pt.Y
     xMin, yMin, xMax, yMax
 
-/// Find the topmost routing-layer poly whose bbox contains the
-/// cursor.  Returned `Snap` lands at the bbox centroid and tags
-/// the result `Knuckle`.
+/// Aspect-ratio threshold separating "knuckle" (roughly square
+/// pad) from "wire" (long thin rect).  1.5× chosen empirically:
+/// sky130 routing pads are usually within ~1.3× (different
+/// enclosure on each axis), real wires hit 5× or more.  A user
+/// clicking on a 1.4× rect almost certainly painted a pad, not a
+/// wire — snap to centroid.
+[<Literal>]
+let private wireAspectThreshold : float = 1.5
+
+let private isWireShape (xMin, yMin, xMax, yMax) : bool =
+    let w = xMax - xMin
+    let h = yMax - yMin
+    let lo = float (max 1L (min w h))
+    let hi = float (max w h)
+    hi / lo > wireAspectThreshold
+
+/// Find the topmost routing-layer rect under the cursor and
+/// classify it as a knuckle (square pad → centroid), a wire end
+/// (long rect, cursor near a tip → snap to tip), or a wire
+/// centerline (long rect, cursor along the body → project cursor
+/// onto the midline).
 ///
 /// "Topmost" = highest layer number (= higher metal in the
-/// sky130 stack).  Rationale: a met1 knuckle sitting on top of a
-/// li1 rail means the user is visibly on met1 and wants the via
-/// dropped FROM met1.  Picking li1 because it's also under the
-/// cursor would build a redundant li1→met1 via that dedup eats.
+/// sky130 stack).  A met1 knuckle sitting on a li1 rail wins
+/// over the rail because the user is visibly clicking on met1.
 ///
-/// `topLayerOpt = Some L` filters to knuckles strictly below L
-/// (so an active layer of met2 won't snap to a met2 knuckle —
-/// that'd give a same-layer via with no plumbing).  `None` lets
-/// every routing layer through.
+/// `topLayerOpt = Some L` filters to candidates strictly below L
+/// (so an active met2 won't snap to a met2 rect — same-layer
+/// via has no plumbing).  `None` lets every routing layer
+/// through and the caller picks a top from snap.Layer + 1.
 ///
-/// Net is left empty: a FlatPolygon doesn't always carry one
-/// (wire rects do via WireId, but a primitive's pin patch
-/// doesn't expose its label here).  Downstream callers can
-/// attribute net later if needed.
-let findKnuckleAt
+/// Net is left empty: a FlatPolygon doesn't carry one directly.
+/// Downstream attribution can be added if needed.
+let findRoutingSnapAt
         (topLayerOpt: (int * int) option)
         (flatPolys  : FlatPolygon array)
         (cursorX    : int64) (cursorY : int64) : Snap option =
@@ -186,16 +202,44 @@ let findKnuckleAt
     if Array.isEmpty candidates then None
     else
         let topmost = candidates |> Array.maxBy (fun p -> p.Layer)
-        let xMin, yMin, xMax, yMax = polyBbox topmost
-        let cx = (xMin + xMax) / 2L
-        let cy = (yMin + yMax) / 2L
-        Some {
-            X     = cx
-            Y     = cy
-            Layer = (topmost.Layer, topmost.DataType)
-            Net   = ""
-            Kind  = Knuckle
-        }
+        let bbox = polyBbox topmost
+        let xMin, yMin, xMax, yMax = bbox
+        let layer = (topmost.Layer, topmost.DataType)
+        if not (isWireShape bbox) then
+            // Knuckle / pad — snap to bbox centroid.
+            Some {
+                X     = (xMin + xMax) / 2L
+                Y     = (yMin + yMax) / 2L
+                Layer = layer
+                Net   = ""
+                Kind  = Knuckle
+            }
+        else
+            // Wire — project cursor onto the centerline.  When
+            // the projection lands within `2 × thin-axis` of an
+            // end, snap to the end instead of mid-wire (matches
+            // the user's "via at the corner where I stopped
+            // routing" gesture).
+            let w = xMax - xMin
+            let h = yMax - yMin
+            if w >= h then
+                // Horizontal wire.
+                let midY = (yMin + yMax) / 2L
+                let endTol = max 1L (h * 2L)
+                let snapX, kind =
+                    if cursorX - xMin < endTol      then xMin, WireEnd
+                    elif xMax - cursorX < endTol    then xMax, WireEnd
+                    else cursorX, WireCenterline
+                Some { X = snapX; Y = midY; Layer = layer; Net = ""; Kind = kind }
+            else
+                // Vertical wire.
+                let midX = (xMin + xMax) / 2L
+                let endTol = max 1L (w * 2L)
+                let snapY, kind =
+                    if cursorY - yMin < endTol      then yMin, WireEnd
+                    elif yMax - cursorY < endTol    then yMax, WireEnd
+                    else cursorY, WireCenterline
+                Some { X = midX; Y = snapY; Layer = layer; Net = ""; Kind = kind }
 
 /// Resolve the snap target under the cursor.  Priority:
 ///   1. Knuckle — a routing-layer poly whose bbox contains the
@@ -220,7 +264,7 @@ let resolveSnap
         (cursorX    : int64) (cursorY : int64)
         (radiusDbu  : int64)
         : Snap option =
-    match findKnuckleAt topLayerOpt flatPolys cursorX cursorY with
+    match findRoutingSnapAt topLayerOpt flatPolys cursorX cursorY with
     | Some k -> Some k
     | None ->
         let candidates =

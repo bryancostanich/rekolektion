@@ -3831,11 +3831,34 @@ type GdsCanvasControl() as this =
                 obj.ReferenceEquals(cachedSnapTargetsFor, this.FlatPolygons)
             swTargets.Stop()
             let swNearest = System.Diagnostics.Stopwatch.StartNew()
+            let radiusDbu =
+                int64 (20.0 / max pixelsPerDbu 0.0001)
+            // Via mode reuses the full `ViaTool.resolveSnap`
+            // priority — knuckle (routing-layer rect under
+            // cursor) wins over labeled pin centroid.  Without
+            // this, the hover circle lit up only on labels even
+            // though the click would actually land on a knuckle
+            // one or more layers above.  We synthesize a
+            // `Routing.Snap.SnapTarget` for the existing
+            // `hoveredSnapTarget` shape so the render path
+            // doesn't have to learn a second snap variant.
             let target =
-                if targets.Length = 0 then None
+                if this.ViaMode then
+                    let topLayerOpt = this.ActiveLayer
+                    Routing.ViaTool.resolveSnap
+                        topLayerOpt targets this.FlatPolygons
+                        (int64 wx) (int64 wy) radiusDbu
+                    |> Option.map (fun s ->
+                        let (ln, ld) = s.Layer
+                        ({ X        = s.X
+                           Y        = s.Y
+                           Net      = s.Net
+                           Layer    = ln
+                           DataType = ld
+                           Source   = ("via-tool-hover", 0) }
+                         : Routing.Snap.SnapTarget))
+                elif targets.Length = 0 then None
                 else
-                    let radiusDbu =
-                        int64 (20.0 / max pixelsPerDbu 0.0001)
                     Routing.Snap.nearest targets (int64 wx, int64 wy) radiusDbu
             swNearest.Stop()
             // Only invalidate the canvas when the hover state

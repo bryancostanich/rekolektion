@@ -1223,6 +1223,11 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         match topName with
                         | None -> model, Cmd.none
                         | Some n ->
+                            let topElementsBefore =
+                                mc.Document.Cells
+                                |> List.tryFind (fun c -> c.Name = n)
+                                |> Option.map (fun c -> List.length c.Elements)
+                                |> Option.defaultValue 0
                             let cells' =
                                 mc.Document.Cells
                                 |> List.map (fun c ->
@@ -1235,27 +1240,55 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             // via stack doesn't pile mcon over mcon
                             // (mcon.2 spacing-zero).
                             let doc' = Routing.Wire.dedupCoincidentRects doc'
-                            let flat' = Layout.Flatten.flatten doc'
-                            let inst' = Layout.Instances.enumerate doc'
-                            let mc' =
-                                EditSession.pushUndoSnapshot mc
-                                |> fun m ->
-                                    { m with
-                                        Document = doc'
-                                        FlatPolygons = flat'
-                                        TopInstances = inst' }
-                                |> EditSession.markDirty
-                            let openMacros' =
-                                model.OpenMacros
-                                |> List.map (fun m ->
-                                    if m.Path = path then mc' else m)
-                            Rekolektion.Viz.App.Services.Logger.log "via.tool"
-                                {| op = "commit"
-                                   net = snap.Net
-                                   topN = fst topLayer; topDt = snd topLayer
-                                   botN = fst bottomLayer; botDt = snd bottomLayer
-                                   rects = List.length rects |}
-                            { model with OpenMacros = openMacros' }, Cmd.none
+                            // Duplicate-via detection: if dedup
+                            // collapsed every new rect against an
+                            // existing same-bbox rect, the click
+                            // was a silent no-op against an
+                            // already-present via stack.  Refuse:
+                            // no dirty, no undo snapshot, no doc
+                            // mutation.  Log so the user can tell
+                            // "click was ignored" from "click
+                            // wasn't received".  Reported
+                            // 2026-06-03 after the user clicked
+                            // repeatedly on the same pin expecting
+                            // the second via to surface.
+                            let topElementsAfter =
+                                doc'.Cells
+                                |> List.tryFind (fun c -> c.Name = n)
+                                |> Option.map (fun c -> List.length c.Elements)
+                                |> Option.defaultValue 0
+                            if topElementsAfter <= topElementsBefore then
+                                Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                                    {| op = "duplicate-via"
+                                       net = snap.Net
+                                       topN = fst topLayer; topDt = snd topLayer
+                                       botN = fst bottomLayer; botDt = snd bottomLayer
+                                       attemptedRects = List.length rects |}
+                                model, Cmd.none
+                            else
+                                let flat' = Layout.Flatten.flatten doc'
+                                let inst' = Layout.Instances.enumerate doc'
+                                let mc' =
+                                    EditSession.pushUndoSnapshot mc
+                                    |> fun m ->
+                                        { m with
+                                            Document = doc'
+                                            FlatPolygons = flat'
+                                            TopInstances = inst' }
+                                    |> EditSession.markDirty
+                                let openMacros' =
+                                    model.OpenMacros
+                                    |> List.map (fun m ->
+                                        if m.Path = path then mc' else m)
+                                Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                                    {| op = "commit"
+                                       net = snap.Net
+                                       topN = fst topLayer; topDt = snd topLayer
+                                       botN = fst bottomLayer; botDt = snd bottomLayer
+                                       attemptedRects = List.length rects
+                                       netNewRects =
+                                           topElementsAfter - topElementsBefore |}
+                                { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.StartRoute (layer, width, startNet, x, y, startSnapLayer) ->
         match model.ActiveMacroPath with
         | None -> model, Cmd.none

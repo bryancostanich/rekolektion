@@ -362,6 +362,90 @@ let ``resolveSnap skips non-routing layers when searching for a knuckle`` () =
     |> should equal (None : ViaTool.Snap option)
 
 // ─────────────────────────────────────────────────────────────────
+// Wire snap — long rects branch into centerline + end snapping
+// instead of bbox-centroid.  Spec called out by the user during
+// the V tool design: "if wire is below, snap to centerline /
+// centerline end if at end of wire".
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``wire midbody snaps to centerline projection`` () =
+    // Horizontal met1 wire from x=0..1000, y=0..100 (10:1 aspect).
+    // Cursor at (500, 60) → centerline midY = 50, snapX = 500.
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let s = ViaTool.resolveSnap None [||] polys 500L 60L 0L
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.WireCenterline
+        snap.X    |> should equal 500L
+        snap.Y    |> should equal 50L
+        snap.Layer |> should equal met1
+    | None -> failwith "expected wire centerline snap"
+
+[<Fact>]
+let ``wire end (left tip) snaps to the wire endpoint`` () =
+    // Same horizontal wire; cursor at (100, 50).  endTol = h * 2
+    // = 200.  cursor.X - xMin = 100 < 200 → left end (xMin = 0).
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let s = ViaTool.resolveSnap None [||] polys 100L 50L 0L
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.WireEnd
+        snap.X    |> should equal 0L
+        snap.Y    |> should equal 50L
+    | None -> failwith "expected wire-end snap at the left tip"
+
+[<Fact>]
+let ``wire end (right tip) snaps to the far endpoint`` () =
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let s = ViaTool.resolveSnap None [||] polys 900L 50L 0L
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.WireEnd
+        snap.X    |> should equal 1000L
+        snap.Y    |> should equal 50L
+    | None -> failwith "expected wire-end snap at the right tip"
+
+[<Fact>]
+let ``vertical wire snaps along the X midline`` () =
+    // Vertical met2 wire 0..100 wide, 0..1000 tall (1:10).
+    // Cursor at (40, 500) → midX = 50, centerline snap.
+    let polys = [| mkKnuckle met2 0L 0L 100L 1000L |]
+    let s = ViaTool.resolveSnap None [||] polys 40L 500L 0L
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.WireCenterline
+        snap.X     |> should equal 50L
+        snap.Y     |> should equal 500L
+        snap.Layer |> should equal met2
+    | None -> failwith "expected vertical wire centerline snap"
+
+[<Fact>]
+let ``vertical wire bottom tip snaps to wire end`` () =
+    let polys = [| mkKnuckle met2 0L 0L 100L 1000L |]
+    let s = ViaTool.resolveSnap None [||] polys 50L 100L 0L
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.WireEnd
+        snap.X    |> should equal 50L
+        snap.Y    |> should equal 0L
+    | None -> failwith "expected wire-end snap at the bottom tip"
+
+[<Fact>]
+let ``square pad stays a knuckle (centroid), not a wire`` () =
+    // Aspect 1:1 — must be classified Knuckle, not WireCenterline.
+    // Guards the threshold against a sloppy refactor that lowers
+    // it under 1.0 and turns every pad into a wire.
+    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
+    let s = ViaTool.resolveSnap None [||] polys 0L 0L 0L
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.Knuckle
+        snap.X    |> should equal 0L
+        snap.Y    |> should equal 0L
+    | None -> failwith "expected knuckle classification"
+
+// ─────────────────────────────────────────────────────────────────
 // pickTopLayer — explicit-active vs default-to-snap+1.
 // ─────────────────────────────────────────────────────────────────
 

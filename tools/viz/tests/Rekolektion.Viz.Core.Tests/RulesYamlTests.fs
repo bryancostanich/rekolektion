@@ -327,15 +327,15 @@ let ``tryLocateBaseYaml returns None for an unknown PDK`` () =
 
 [<Fact>]
 let ``loadEffectiveOrDefault returns the bundled view, not defaultView`` () =
-    let view = RulesYaml.loadEffectiveOrDefault "sky130" None
+    let view = RulesYaml.loadEffectiveOrDefault "sky130" Compat.Magic None
     view.Rules.Length |> should equal Rules.allRules.Length
     // Bundled provenance points at the file the loader found.
     view.Provenance |> Map.isEmpty |> should equal false
 
 [<Fact>]
 let ``loadEffectiveOrDefault falls back to defaultView for an unknown PDK`` () =
-    let view = RulesYaml.loadEffectiveOrDefault "no-such-pdk-xyz" None
-    view.Rules |> should equal Rules.allRules
+    let view = RulesYaml.loadEffectiveOrDefault "no-such-pdk-xyz" Compat.Magic None
+    view.Rules |> should equal Rules.Magic.allRules
     view.Provenance |> should equal (Map.empty : Map<string, string>)
 
 [<Fact>]
@@ -343,7 +343,7 @@ let ``loadEffectiveOrDefault layers an override file on top of the bundled base`
     let met1Key : LayerKey = { Number = 68; DataType = 20 }
     let overPath = writeTempYaml [ Spacing ("met1.2", met1Key, 0.18) ]
     try
-        let view = RulesYaml.loadEffectiveOrDefault "sky130" (Some overPath)
+        let view = RulesYaml.loadEffectiveOrDefault "sky130" Compat.Magic (Some overPath)
         // The override entry replaces the base met1.2 (which is 0.14).
         view.Rules
         |> List.find (fun r -> nameOf r = "met1.2")

@@ -279,9 +279,17 @@ type MainWindow() as this =
             // `loadEffectiveOrDefault` falls back to the F#-coded
             // defaults if the bundled YAML can't be found or fails
             // to parse, so the editor stays usable in either case.
+            // Track 02 — the loader is compat-aware: under Magic
+            // the bundled `sky130.yaml` (Magic-aligned) is the
+            // base; under KLayout the F#-coded `Klayout` ruleset
+            // is the base.  Pick the boot compat from the same
+            // session field the Mode menu reads.
+            let bootCompat =
+                Rekolektion.Viz.Core.Drc.Compat.parse sess.DrcCompat
+                |> Option.defaultValue Rekolektion.Viz.Core.Drc.Compat.Klayout
             let drcView =
                 Rekolektion.Viz.Core.Drc.RulesYaml.loadEffectiveOrDefault
-                    "sky130" None
+                    "sky130" bootCompat None
             // Reopen the tabs the user had at last shutdown.
             // Missing files are skipped silently (best-effort — a
             // file moved between sessions shouldn't crash the

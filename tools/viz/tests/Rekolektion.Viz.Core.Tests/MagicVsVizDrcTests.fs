@@ -225,7 +225,7 @@ let private compareDrc
     // the viz Width-rule schema doesn't yet express). With the
     // YAML loader the GUI shows zero rpm.1 fires; with
     // `defaultView` the parity test would still see them.
-    let view = Drc.RulesYaml.loadEffectiveOrDefault "sky130" None
+    let view = Drc.RulesYaml.loadEffectiveOrDefault "sky130" Drc.Compat.Magic None
     let vizViolations = Drc.Check.check Drc.Compat.Magic true view units flat
     let vizByRule =
         vizViolations

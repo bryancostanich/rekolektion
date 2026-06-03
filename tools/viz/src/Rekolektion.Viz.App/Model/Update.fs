@@ -883,10 +883,21 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
     | Msg.SetDrcCompat compat ->
         // Switch the in-viz DRC overlay's compat target.  No-op
         // when the user picks the value already active.  Persist
-        // so the choice survives restart.
+        // so the choice survives restart.  Also reload DrcView so
+        // the canvas iterates the compat-correct ruleset — under
+        // Magic, the bundled `sky130.yaml`; under KLayout, the
+        // F#-coded `Klayout` table.  Without this swap the engine
+        // received compat-aware semantics but iterated the wrong
+        // rule list, so KLayout-tuned rules silently never fired.
         if model.DrcCompat = compat then model, Cmd.none
         else
-            let model' = { model with DrcCompat = compat }
+            let drcView =
+                Rekolektion.Viz.Core.Drc.RulesYaml.loadEffectiveOrDefault
+                    "sky130" compat None
+            let model' =
+                { model with
+                    DrcCompat = compat
+                    DrcView = drcView }
             backend.PersistSession model'
             model', Cmd.none
     | Msg.ToggleLabels ->

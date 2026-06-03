@@ -463,19 +463,51 @@ let toView (m: MergedRuleset) : RulesetView =
 /// App-boot entry: locate the base YAML for `pdk` (e.g. `"sky130"`)
 /// via `Rules.tryLocateBaseYaml`, layer the optional override on
 /// top, and return the resulting `RulesetView`. Falls back to
-/// `Rules.defaultView` (the F#-coded rule table) when no base
-/// YAML is on disk — keeps the app working in environments where
-/// the bundled file got stripped.
+/// `Rules.viewFor compat` (the F#-coded rule table for the
+/// requested compat target) when no base YAML is on disk — keeps
+/// the app working in environments where the bundled file got
+/// stripped.
+///
+/// Track 02 — `compat` selects which authority's rules are the
+/// base. Under `Compat.Magic` the bundled `drc/base/<pdk>.yaml`
+/// (Magic-aligned) acts as the base and overrides merge on top.
+/// Under `Compat.Klayout` no bundled YAML exists today, so the
+/// F#-coded `Klayout.defaultView` is the base; overrides still
+/// merge on top.  This routing keeps the in-viz overlay
+/// compat-correct and matches what `verify_drc(rkt)` runs.
 let loadEffectiveOrDefault
         (pdk: string)
+        (compat: Compat.Compat)
         (overridePath: string option)
         : RulesetView =
-    match tryLocateBaseYaml pdk with
-    | None -> defaultView
-    | Some basePath ->
-        try
-            loadEffective basePath overridePath |> toView
-        with _ ->
-            // Disk-load failure (corrupt YAML, IO error) must not
-            // break the editor — fall back to defaults.
-            defaultView
+    match compat with
+    | Compat.Magic ->
+        match tryLocateBaseYaml pdk with
+        | None -> Magic.defaultView
+        | Some basePath ->
+            try
+                loadEffective basePath overridePath |> toView
+            with _ ->
+                // Disk-load failure (corrupt YAML, IO error) must
+                // not break the editor — fall back to defaults.
+                Magic.defaultView
+    | Compat.Klayout ->
+        // F#-coded base; YAML-as-override layered on top via the
+        // existing `merge` semantics, synthesizing a ParsedRuleset
+        // from the F# rule list so the merge code is reused.
+        let baseView = Klayout.defaultView
+        match overridePath with
+        | None -> baseView
+        | Some path ->
+            try
+                match tryParseFile path with
+                | None -> baseView
+                | Some over ->
+                    let baseParsed : ParsedRuleset = {
+                        Pdk = pdk
+                        Rules = baseView.Rules
+                        DisabledNames = Set.empty
+                        Errors = Map.empty
+                    }
+                    merge baseParsed "f#-coded:klayout" over path |> toView
+            with _ -> baseView

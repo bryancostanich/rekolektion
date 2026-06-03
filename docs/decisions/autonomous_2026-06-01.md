@@ -41,6 +41,54 @@ the regression.  Foundry-cell-instance waivers via
 just weren't filtering the unconditional LU.* emits because LU.*
 isn't in `foundryWaiverMarginNm`.
 
+**Followup landed 2026-06-02** (commits `d6786d0`, `9f59f40`,
+`8ba6a93`): in-viz toggle (plan Phase 3.5) — the remaining
+unimplemented sub-bullet of Phase 3.  `Mode → DRC compat →
+KLayout | Magic` radio submenu in the Avalonia app, KLayout-first /
+KLayout-default.  Selection persists across restarts via
+`~/.rekolektion/session.json` (`drcCompat` field) and flows
+`Model.DrcCompat → AppView.gds2DDrcCompatAttr →
+GdsCanvasControl.DrcCompatProperty → checkWithToggles /
+runLiveWithIndexTimed` (4 canvas call sites).
+
+Initial live-validation surfaced a follow-up bug: under KLayout
+the canvas showed zero violations on real cells
+(`tap_mux_decoder_slot.rkt` — CLI `viz drc --compat klayout` found
+16, canvas showed 0).  Root cause: the canvas iterated
+`Model.DrcView` which `RulesYaml.loadEffectiveOrDefault` populated
+from the bundled `sky130.yaml` (a Magic-aligned 58-rule file)
+regardless of compat.  The engine threaded `compat` semantics but
+ran them against the Magic rule list, so KLayout-tuned rules
+silently never fired.
+
+Fixed in `8ba6a93`: `loadEffectiveOrDefault` now takes a `compat`
+parameter.  Under Magic the bundled `sky130.yaml` stays the base
+(zero behavior change).  Under KLayout the F#-coded
+`Klayout.defaultView` is the base; user override YAMLs still merge
+on top via the existing `ParsedRuleset` merge path.  `App.fs` picks
+the boot compat from the same session field the Mode menu reads;
+`Update.SetDrcCompat` reloads `Model.DrcView` so the choice takes
+effect (boot-time; see "Known limitations" below for the runtime-
+toggle gap).  Headless probe under KLayout view + canvas's
+checkWithToggles call shape: 11 violations on the same cell, up
+from 0.  Confirmed live by the user.
+
+Track 02 is operationally validated end-to-end.
+
+**Known limitations carried forward** (not blockers, separate
+follow-ups):
+
+- The canvas DRC cache (`GdsCanvasControl.cacheValid`, lines
+  4272-4274) checks only `cachedDrcFlat` + `cachedDrcDisabled`,
+  not `DrcCompat` / `DrcView`.  Boot-time compat selection works
+  (cache empty on first compute); runtime Mode-menu toggles
+  return stale violations until something else invalidates the
+  cache.  Small follow-up — extend the validity tuple.
+- `Drc.Check.check` (CLI) runs `applyImplantClose compat flat`
+  before `checkWithToggles`; the canvas calls `checkWithToggles`
+  directly without that step.  Accounts for the 11-vs-16 gap on
+  `tap_mux_decoder_slot.rkt`.  Pre-existing, orthogonal to compat.
+
 **Commits (post-autonomous-handoff, 7 new):**
 
 | Commit | Resolves |

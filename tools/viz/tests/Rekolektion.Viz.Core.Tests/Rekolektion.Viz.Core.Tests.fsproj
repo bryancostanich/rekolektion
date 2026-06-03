@@ -80,6 +80,7 @@
     <Compile Include="RulerTicksTests.fs" />
     <Compile Include="ZeroOriginTests.fs" />
     <Compile Include="NormalizeToGridTests.fs" />
+    <Compile Include="RoutingViaToolTests.fs" />
     <Compile Include="Placeholder.fs" />
   </ItemGroup>
   <ItemGroup>

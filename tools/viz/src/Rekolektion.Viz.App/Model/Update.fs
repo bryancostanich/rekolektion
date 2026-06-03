@@ -1140,32 +1140,33 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     Rekolektion.Viz.Core.Layout.Flatten.flattenLabels mc.Document
                 let allTargets =
                     Routing.Snap.buildTargets labels mc.FlatPolygons
-                // Filter to "strictly below top" when an active
-                // layer is set; otherwise leave the field open and
-                // pick the top from the snap result.
-                let activeTopOpt =
-                    model.Toggle.ActiveLayer
-                let candidates =
-                    match activeTopOpt with
-                    | Some (topN, _) ->
-                        allTargets |> Array.filter (fun t -> t.Layer < topN)
-                    | None -> allTargets
-                match Routing.Snap.nearest candidates (worldX, worldY) radiusDbu with
+                let activeTopOpt = model.Toggle.ActiveLayer
+                // Pure resolver — same code the headless tests
+                // exercise in `RoutingViaToolTests`.
+                let snapOpt =
+                    Routing.ViaTool.resolveSnap
+                        activeTopOpt allTargets worldX worldY radiusDbu
+                match snapOpt with
                 | None ->
                     Rekolektion.Viz.App.Services.Logger.log "via.tool"
                         {| op = "no-snap"; x = worldX; y = worldY |}
                     model, Cmd.none
-                | Some target ->
-                    let topLayer =
-                        match activeTopOpt with
-                        | Some l -> l
-                        | None -> (target.Layer + 1, 20)
-                    let bottomLayer = (target.Layer, target.DataType)
+                | Some snap ->
+                    let topLayer = Routing.ViaTool.pickTopLayer activeTopOpt snap
+                    let bottomLayer = snap.Layer
+                    // `emitStandaloneAt` wraps ViaStack.emitAt and
+                    // ALSO synthesizes the top (wire-layer) pad —
+                    // emitAt omits that pad because the wire commit
+                    // emits endpointPads separately, but the V tool
+                    // has no such pass.  Without the top pad a
+                    // met1→li1 click would drop just the mcon cut
+                    // and look invisible.  Headless test coverage
+                    // in `RoutingViaToolTests`.
                     let viaSegs =
-                        Routing.ViaStack.emitAt
+                        Routing.ViaTool.emitStandaloneAt
                             model.DrcView mc.Document.Units
                             bottomLayer topLayer
-                            target.X target.Y
+                            snap.X snap.Y
                     if List.isEmpty viaSegs then
                         Rekolektion.Viz.App.Services.Logger.log "via.tool"
                             {| op = "no-stack"
@@ -1195,7 +1196,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 Y1 = seg.CenterY - half
                                 X2 = seg.CenterX + half
                                 Y2 = seg.CenterY + half
-                                Net = Some target.Net
+                                Net = Some snap.Net
                                 Props = []
                                 Comments = []
                                 SubFormComments = Map.empty
@@ -1238,7 +1239,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                     if m.Path = path then mc' else m)
                             Rekolektion.Viz.App.Services.Logger.log "via.tool"
                                 {| op = "commit"
-                                   net = target.Net
+                                   net = snap.Net
                                    topN = fst topLayer; topDt = snd topLayer
                                    botN = fst bottomLayer; botDt = snd bottomLayer
                                    rects = List.length rects |}

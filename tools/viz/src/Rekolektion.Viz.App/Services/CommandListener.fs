@@ -199,6 +199,20 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
         | "/close-all" ->
             Dispatcher.UIThread.Post(fun () -> dispatch Msg.CloseAllTabs)
             "{\"ok\":true}"
+        | "/via/commit" ->
+            // V-tool click, programmatic.  Mirror of the canvas's
+            // OnPointerPressed dispatch in ViaMode.  Body:
+            //   { "worldX": <int64>, "worldY": <int64>, "radiusDbu": <int64> }
+            // The handler resolves the snap target + emits the via
+            // stack synchronously in the Update loop.  Returns
+            // `{ok:true}` regardless of whether a snap was found;
+            // inspect the doc via `/geometry/active` to confirm.
+            let wx = root.GetProperty("worldX").GetInt64()
+            let wy = root.GetProperty("worldY").GetInt64()
+            let r  = root.GetProperty("radiusDbu").GetInt64()
+            Dispatcher.UIThread.Post(fun () ->
+                dispatch (Msg.ViaToolCommit (wx, wy, r)))
+            "{\"ok\":true}"
         | "/tidy-routing" ->
             // Runs Routing.Wire.dedupCoincidentRects on the active
             // macro — collapses byte-identical same-layer rects.

@@ -66,6 +66,7 @@
     <Compile Include="Drc/Check.fs" />
     <Compile Include="Routing/ViaStack.fs" />
     <Compile Include="Routing/Pads.fs" />
+    <Compile Include="Routing/ViaTool.fs" />
     <Compile Include="Visibility.fs" />
     <Compile Include="Drc/Filter.fs" />
     <Compile Include="Placeholder.fs" />

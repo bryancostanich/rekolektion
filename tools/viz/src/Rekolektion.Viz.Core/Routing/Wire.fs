@@ -292,6 +292,30 @@ let bboxesTouch (a : Rectangle) (b : Rectangle) : bool =
 ///
 /// Returns rect indices in document order. Empty when the seed
 /// itself fails `keep`, or when the cell isn't in the document.
+
+/// Aspect-ratio threshold separating "knuckle" (roughly square
+/// pad) from "wire" (long thin rect).  Matches the threshold
+/// `Routing.ViaTool.isWireShape` uses for the V-tool's snap
+/// classification so a knuckle the user can drop a via on is
+/// the same as a knuckle the user can click to select alone.
+[<Literal>]
+let private knuckleAspectThreshold : float = 1.5
+
+/// True when a rect is roughly square (max-side / min-side <
+/// threshold).  Used by the canvas's wire-select handler to
+/// short-circuit the connected-component walk: clicking a
+/// knuckle picks just that rect, not the whole connected wire
+/// chain it sits on.  Clicking on a wire body (long rect)
+/// still falls through to the chain-select.
+///
+/// User-reported 2026-06-03 — "need to select a knuckle without
+/// also selecting a wire attached to it".
+let isKnuckleShape (r : Rectangle) : bool =
+    let w = abs (r.X2 - r.X1)
+    let h = abs (r.Y2 - r.Y1)
+    let lo = float (max 1L (min w h))
+    let hi = float (max w h)
+    hi / lo < knuckleAspectThreshold
 let connectedComponent
         (cellName : string)
         (seedIdx : int)

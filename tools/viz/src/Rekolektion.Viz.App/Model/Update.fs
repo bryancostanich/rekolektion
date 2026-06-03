@@ -1412,12 +1412,20 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         match pickedRect with
                         | None -> model, Cmd.none
                         | Some seed ->
-                            // Selection rule: from the clicked rect,
-                            // walk the connected component of rects
-                            // that bbox-touch, restricted to same
-                            // layer + same WireId (if tagged). This
-                            // gives the visible ribbon under the
-                            // cursor and is robust to two real-world
+                            // Knuckle short-circuit: when the
+                            // picked rect is square-ish (aspect <
+                            // `knuckleAspectThreshold`), select
+                            // just that one rect — don't drag the
+                            // whole wire chain it belongs to into
+                            // the selection.  Lets the user grab a
+                            // single endpoint pad without picking
+                            // up its attached wire.  Reported
+                            // 2026-06-03.
+                            //
+                            // Wire-body picks (the else branch)
+                            // still walk the same-layer same-WireId
+                            // connected component — same behaviour
+                            // as before, robust to the same two
                             // corruptions:
                             //   - WireId aggregated across many
                             //     independent routes (same id, no
@@ -1425,15 +1433,17 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                             //   - via-stack siblings on other layers
                             //     that share the WireId
                             // Untagged falls back to bbox-walk on
-                            // same layer alone — same behaviour the
-                            // pre-WireId era relied on.
-                            let wid = Routing.Wire.getWireId seed
-                            let keep _ (r : Rkt.Types.Rectangle) =
-                                r.Layer = seed.Layer
-                                && Routing.Wire.getWireId r = wid
+                            // same layer alone — same as pre-WireId.
                             let indices =
-                                Routing.Wire.connectedComponent
-                                    topCellName seedIdx keep keep doc
+                                if Routing.Wire.isKnuckleShape seed then
+                                    [ seedIdx ]
+                                else
+                                    let wid = Routing.Wire.getWireId seed
+                                    let keep _ (r : Rkt.Types.Rectangle) =
+                                        r.Layer = seed.Layer
+                                        && Routing.Wire.getWireId r = wid
+                                    Routing.Wire.connectedComponent
+                                        topCellName seedIdx keep keep doc
                             let polyKeys : Set<Layout.Flatten.PolyKey> =
                                 indices
                                 |> List.map (fun i ->

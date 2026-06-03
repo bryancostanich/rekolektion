@@ -410,3 +410,56 @@ let ``scrubDispersedWireIds: untagged rects are ignored`` () =
     let doc', stripped = Wire.scrubDispersedWireIds doc
     stripped |> should equal 0
     doc' |> should equal doc
+
+// ─────────────────────────────────────────────────────────────────
+// isKnuckleShape — square-vs-wire classification.  Drives the
+// canvas's wire-select short-circuit so clicking a knuckle
+// doesn't drag the whole connected wire chain into the selection.
+// 1.5× aspect threshold (max-side / min-side); mirrors the
+// `Routing.ViaTool` snap classification so the V tool and
+// selection agree on what counts as a knuckle.
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``isKnuckleShape: 1x1 square is a knuckle`` () =
+    let r = mkRect (0L, 0L, 320L, 320L)
+    Wire.isKnuckleShape r |> should be True
+
+[<Fact>]
+let ``isKnuckleShape: 1.4x aspect still classifies as knuckle`` () =
+    // Slightly elongated pad — within sky130 enclosure-asymmetry
+    // range (different met-side margin on each axis).  Must stay
+    // knuckle so the user can still single-click it.
+    let r = mkRect (0L, 0L, 200L, 280L)
+    Wire.isKnuckleShape r |> should be True
+
+[<Fact>]
+let ``isKnuckleShape: 2x aspect classifies as wire`` () =
+    let r = mkRect (0L, 0L, 200L, 400L)
+    Wire.isKnuckleShape r |> should be False
+
+[<Fact>]
+let ``isKnuckleShape: long horizontal wire is not a knuckle`` () =
+    let r = mkRect (0L, 0L, 5000L, 320L)
+    Wire.isKnuckleShape r |> should be False
+
+[<Fact>]
+let ``isKnuckleShape: long vertical wire is not a knuckle`` () =
+    let r = mkRect (0L, 0L, 320L, 5000L)
+    Wire.isKnuckleShape r |> should be False
+
+[<Fact>]
+let ``isKnuckleShape: degenerate zero-width rect is treated as knuckle (no div by zero)`` () =
+    // A zero-width rect would crash a naive max/min computation.
+    // Guard pins the 1L floor — degenerate stays classified as
+    // "pick just this rect" which is the safer default.
+    let r = mkRect (100L, 100L, 100L, 100L)
+    Wire.isKnuckleShape r |> should be True
+
+[<Fact>]
+let ``isKnuckleShape: negative-extent rect handled by abs`` () =
+    // X2 < X1 happens after a flipped drag; abs guard means the
+    // aspect-ratio math doesn't go negative and underflow the
+    // threshold comparison.
+    let r = mkRect (200L, 0L, 0L, 200L)
+    Wire.isKnuckleShape r |> should be True

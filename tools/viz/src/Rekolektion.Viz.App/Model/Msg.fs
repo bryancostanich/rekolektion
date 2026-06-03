@@ -175,6 +175,12 @@ type Msg =
     /// drift carry).  Pushes one undo snapshot; no-op when the
     /// doc is already grid-clean.
     | NormalizeToGrid
+    /// Push the live `GuidesService` state into the active macro's
+    /// `Document.Guides` field and mark the macro dirty.  Fires
+    /// after every guide commit (drag-release, MCP create / move /
+    /// delete / clear) so a subsequent Save writes the user's
+    /// guides to the .rkt.
+    | SyncGuidesToActiveDoc
     /// Toggle the interactive routing tool on/off (W key). When on,
     /// canvas clicks start/extend a draft route on the ActiveLayer;
     /// when off, clicks fall through to normal selection.

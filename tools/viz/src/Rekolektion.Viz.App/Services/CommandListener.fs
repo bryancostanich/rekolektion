@@ -220,25 +220,30 @@ let handle (path: string) (body: string) (dispatch: Msg.Msg -> unit) : string =
             let coord = root.GetProperty("coordDbu").GetInt64()
             let idRef = ref 0
             Dispatcher.UIThread.Invoke(fun () ->
-                idRef.Value <- GuidesService.addGuide orient coord)
+                idRef.Value <- GuidesService.addGuide orient coord
+                dispatch Msg.SyncGuidesToActiveDoc)
             sprintf "{\"ok\":true,\"id\":%d}" idRef.Value
         | "/guides/move" ->
             let id = root.GetProperty("id").GetInt32()
             let coord = root.GetProperty("coordDbu").GetInt64()
             let foundRef = ref false
             Dispatcher.UIThread.Invoke(fun () ->
-                foundRef.Value <- GuidesService.setGuideCoord id coord)
+                foundRef.Value <- GuidesService.setGuideCoord id coord
+                if foundRef.Value then dispatch Msg.SyncGuidesToActiveDoc)
             if foundRef.Value then "{\"ok\":true}"
             else "{\"ok\":false,\"error\":\"no such guide\"}"
         | "/guides/delete" ->
             let id = root.GetProperty("id").GetInt32()
             let foundRef = ref false
             Dispatcher.UIThread.Invoke(fun () ->
-                foundRef.Value <- GuidesService.removeGuide id)
+                foundRef.Value <- GuidesService.removeGuide id
+                if foundRef.Value then dispatch Msg.SyncGuidesToActiveDoc)
             if foundRef.Value then "{\"ok\":true}"
             else "{\"ok\":false,\"error\":\"no such guide\"}"
         | "/guides/clear" ->
-            Dispatcher.UIThread.Post(fun () -> GuidesService.clearAll())
+            Dispatcher.UIThread.Post(fun () ->
+                GuidesService.clearAll()
+                dispatch Msg.SyncGuidesToActiveDoc)
             "{\"ok\":true}"
         | _ -> "{\"ok\":false,\"error\":\"unknown path\"}"
     with ex ->

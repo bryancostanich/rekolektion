@@ -589,6 +589,12 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     Toggle = Visibility.setVisibleRatlines newNets switched.Toggle }
         // Persist open-tabs list so the next launch reopens them.
         backend.PersistSession switched'
+        // Sync the GuidesService singleton with the incoming tab's
+        // persisted guides — drops any stale guides from the
+        // outgoing tab so the canvas overlay matches the file the
+        // user is now looking at.
+        Rekolektion.Viz.App.Services.GuidesService.replaceFromDoc
+            macro.Document.Guides
         switched', cmd
     | Msg.NetsLoaded (path, nets) ->
         // Update the macro in OpenMacros by path. Drops silently if
@@ -642,6 +648,14 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             if exists then
                 let next = switchActive (Some path) model
                 backend.PersistSession next
+                // Tab switch — swap GuidesService to the new active
+                // tab's persisted guides so the canvas shows that
+                // file's marks, not the outgoing tab's.
+                next.OpenMacros
+                |> List.tryFind (fun m -> m.Path = path)
+                |> Option.iter (fun mc ->
+                    Rekolektion.Viz.App.Services.GuidesService.replaceFromDoc
+                        mc.Document.Guides)
                 next, Cmd.none
             else model, Cmd.none
     | Msg.CloseAllTabs ->
@@ -1757,6 +1771,35 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 Document = lib'
                                 FlatPolygons = flat'
                                 TopInstances = inst' }
+                        |> EditSession.markDirty
+                    let openMacros' =
+                        model.OpenMacros
+                        |> List.map (fun m ->
+                            if m.Path = path then mc' else m)
+                    { model with OpenMacros = openMacros' }, Cmd.none
+    | Msg.SyncGuidesToActiveDoc ->
+        // Snapshot the live GuidesService state into the active
+        // macro's `Document.Guides` so a Save writes the user's
+        // marks to the .rkt.  Fires after every guide commit
+        // (drag-release, MCP create / move / delete / clear).
+        //
+        // No-op when the snapshot equals what's already on the
+        // active doc — keeps the action idempotent and skips
+        // the dirty-mark when nothing actually changed.
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some path ->
+            let macroOpt =
+                model.OpenMacros |> List.tryFind (fun mc -> mc.Path = path)
+            match macroOpt with
+            | None -> model, Cmd.none
+            | Some mc ->
+                let live = Rekolektion.Viz.App.Services.GuidesService.toDocGuides()
+                if live = mc.Document.Guides then model, Cmd.none
+                else
+                    let doc' = { mc.Document with Guides = live }
+                    let mc' =
+                        { mc with Document = doc' }
                         |> EditSession.markDirty
                     let openMacros' =
                         model.OpenMacros

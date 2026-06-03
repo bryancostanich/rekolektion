@@ -4094,6 +4094,12 @@ type GdsCanvasControl() as this =
                 Rekolektion.Viz.App.Services.GuidesService.deleteByDrag()
             else
                 Rekolektion.Viz.App.Services.GuidesService.commitDrag()
+            // Mirror the now-committed guide list into the active
+            // doc so a subsequent Save persists the move (or
+            // deletion).  Mark-dirty happens inside the Update
+            // handler when the snapshot actually differs.
+            Rekolektion.Viz.App.Services.AppDispatch.send
+                Rekolektion.Viz.App.Model.Msg.SyncGuidesToActiveDoc
             this.InvalidateVisual()
         | _ ->
             this.InvalidateVisual()

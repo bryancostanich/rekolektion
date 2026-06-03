@@ -453,6 +453,22 @@ let private synthesizeLayoutForm (doc: Document) : Sexp =
     match doc.TopCell with
     | Some t -> kids.Add (mkList (indent 1) [ sym "" "top"; sym " " t ] "")
     | None -> ()
+    // Editor guides — `(guides (h Y) (v X) ...)` after `(top ...)`
+    // and before the first `(cell ...)`. Skipped entirely when the
+    // doc has no guides so files without any keep their current
+    // byte shape on round-trip.
+    if not (List.isEmpty doc.Guides) then
+        let guideKids =
+            sym "" "guides"
+            :: (doc.Guides
+                |> List.map (fun g ->
+                    let head =
+                        match g.Orientation with
+                        | Horizontal -> "h"
+                        | Vertical   -> "v"
+                    mkList (indent 2)
+                        [ sym "" head; intAtom " " g.CoordDbu ] ""))
+        kids.Add (mkList (indent 1) guideKids "")
     // No `(nets …)` block. Labels with `Kind = NetName` are the
     // source of truth for the net set; downstream consumers walk
     // labels directly. See spec.md "Source of truth for nets" and

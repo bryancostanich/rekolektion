@@ -1145,6 +1145,36 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
             |> Option.bind childrenAfterHead
             |> Option.bind (function [a] -> symbolText a | _ -> None)
 
+        // Editor guides — `(guides (h 12500) (v -800) ...)` between
+        // `(top ...)` and the first `(cell ...)`. Each child sexp
+        // is either `(h <int>)` (horizontal guide at Y = int DBU)
+        // or `(v <int>)` (vertical at X). Unknown children are
+        // silently skipped so future schema extensions don't break
+        // round-trip on existing files. Absent block → empty list.
+        let guides =
+            findForm "guides" layoutChildren
+            |> Option.bind (fun f ->
+                match f with
+                | SList l -> Some (l.Children |> List.tail)
+                | _ -> None)
+            |> Option.defaultValue []
+            |> List.choose (fun child ->
+                match childrenAfterHead child with
+                | Some [ a ] ->
+                    let coord = intValue a
+                    let head =
+                        match child with
+                        | SList l ->
+                            l.Children |> List.tryHead |> Option.bind symbolText
+                        | _ -> None
+                    match head, coord with
+                    | Some "h", Some c ->
+                        Some { Orientation = Horizontal; CoordDbu = c }
+                    | Some "v", Some c ->
+                        Some { Orientation = Vertical; CoordDbu = c }
+                    | _ -> None
+                | _ -> None)
+
         let imports =
             findForms "import" layoutChildren
             |> List.choose (fun f ->
@@ -1178,6 +1208,7 @@ let analyze (cst: Cst.Document) : Result<Document, ReaderError> =
                  Imports = imports
                  Cells = cells
                  TopCell = topCell
+                 Guides = guides
                  HeaderComments = commentsOf layout
                  SubFormComments = Map.empty }
 

@@ -233,3 +233,64 @@ module GuidesService =
     let resetForTest () =
         state := Guides.empty
         changed.Trigger Guides.empty
+
+    // ─────────────────────────────────────────────────────────────
+    // Persistence bridge — convert between the runtime service
+    // shape (carries Ids + in-flight Drag) and the on-disk
+    // `Document.Guides` shape (just orientation + coord, position
+    // within the list is the identity).
+    //
+    // Used by:
+    //   * Update.fs LoadComplete / SetActiveMacro  → replaceFromDoc
+    //   * Update.fs SyncGuidesToActiveDoc          → toDocGuides
+    // The two directions are intentionally NOT symmetric: load
+    // ALSO cancels any in-flight drag (Drag = None), so opening a
+    // different file mid-drag doesn't replay the drag onto the
+    // new doc; save snapshots the committed guides only — drag
+    // in flight stays in the service, not on disk.
+    // ─────────────────────────────────────────────────────────────
+
+    let private orientFromDoc
+            (o: Rekolektion.Viz.Core.Rkt.Types.GuideOrientation)
+            : Guides.Orientation =
+        match o with
+        | Rekolektion.Viz.Core.Rkt.Types.Horizontal -> Guides.Horizontal
+        | Rekolektion.Viz.Core.Rkt.Types.Vertical   -> Guides.Vertical
+
+    let private orientToDoc
+            (o: Guides.Orientation)
+            : Rekolektion.Viz.Core.Rkt.Types.GuideOrientation =
+        match o with
+        | Guides.Horizontal -> Rekolektion.Viz.Core.Rkt.Types.Horizontal
+        | Guides.Vertical   -> Rekolektion.Viz.Core.Rkt.Types.Vertical
+
+    /// Replace the singleton's state with the doc's guides.  Assigns
+    /// fresh autoincrement Ids 1..N so any existing hit-tests against
+    /// stale Ids cleanly miss (returning `None` from the canvas hit-
+    /// test) instead of grabbing the wrong guide by accident.
+    let replaceFromDoc
+            (docGuides: Rekolektion.Viz.Core.Rkt.Types.Guide list) : unit =
+        let svcGuides =
+            docGuides
+            |> List.mapi (fun i (g: Rekolektion.Viz.Core.Rkt.Types.Guide) ->
+                { Guides.Id = i + 1
+                  Guides.Orientation = orientFromDoc g.Orientation
+                  Guides.CoordDbu = g.CoordDbu })
+        let next : Guides.State =
+            { Guides = svcGuides
+              Drag   = None
+              NextId = svcGuides.Length + 1 }
+        if next <> !state then
+            state := next
+            changed.Trigger next
+
+    /// Snapshot the committed guides to the doc-side shape (drop
+    /// Ids, preserve order).  Used by Update's
+    /// SyncGuidesToActiveDoc handler to push the live set into the
+    /// active macro's Document.Guides field so a subsequent Save
+    /// writes the user's guides to the .rkt.
+    let toDocGuides () : Rekolektion.Viz.Core.Rkt.Types.Guide list =
+        (!state).Guides
+        |> List.map (fun g ->
+            { Rekolektion.Viz.Core.Rkt.Types.Orientation = orientToDoc g.Orientation
+              Rekolektion.Viz.Core.Rkt.Types.CoordDbu = g.CoordDbu })

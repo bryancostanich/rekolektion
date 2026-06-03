@@ -130,5 +130,6 @@ let fromLibrary (lib: Gds.Types.Library) : Document =
       Imports = []
       Cells = lib.Structures |> List.map fromStructure
       TopCell = topCell
+      Guides = []
       HeaderComments = []
       SubFormComments = Map.empty }

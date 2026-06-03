@@ -279,6 +279,21 @@ type Import = {
 /// during analyze. `TopCell` reflects an explicit `(top cell-name)` if
 /// present; otherwise the first cell in `Cells` is the document's top
 /// by convention. `HeaderComments` holds comments that appear before
+/// Editor guideline carried in the `.rkt` document.  Persists
+/// across save / reopen so a user-drawn alignment guide isn't
+/// lost when the file closes.  See `App.Services.Guides` for the
+/// runtime drag-state shape; the on-disk form is a thin slice
+/// of that (no live drag, no autoincrement id — the position
+/// within `Document.Guides` is the identity).
+type GuideOrientation =
+    | Horizontal
+    | Vertical
+
+type Guide = {
+    Orientation : GuideOrientation
+    CoordDbu    : int64
+}
+
 /// the `(layout ...)` form (typical file headers).
 type Document = {
     Version: int
@@ -287,6 +302,11 @@ type Document = {
     Imports: Import list
     Cells: Cell list
     TopCell: string option
+    /// Editor guides — emitted into the .rkt as `(guides (h Y) (v X) ...)`
+    /// between `(top ...)` and the first `(cell ...)`.  Empty when the
+    /// doc has no guides; the writer skips the block entirely so a
+    /// file with zero guides keeps its current shape byte-for-byte.
+    Guides: Guide list
     HeaderComments: string list
     SubFormComments: Map<string, string list>
 }
@@ -304,6 +324,7 @@ let emptyDocument : Document = {
     Imports = []
     Cells = []
     TopCell = None
+    Guides = []
     HeaderComments = []
     SubFormComments = Map.empty
 }

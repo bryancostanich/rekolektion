@@ -360,6 +360,7 @@ let ``synthesize then parse yields the same AST`` () =
               ] }
         ]
         TopCell = Some "c"
+        Guides = []
         HeaderComments = []
         SubFormComments = Map.empty
     }
@@ -947,3 +948,74 @@ let ``single-value props stay as scalar PvInt (no spurious PvTuple)`` () =
         |> List.pick (function PropsEl p -> Some p | _ -> None)
     let width = propsEl.Items |> List.find (fun p -> p.Key = "width")
     width.Value |> should equal (PvInt 100L)
+
+// ─────────────────────────────────────────────────────────────────
+// Editor guides — `(guides (h Y) (v X))` between `(top ...)` and
+// the first `(cell ...)`.  Persist across save/reopen so a user's
+// alignment marks survive editor restarts.
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``analyze parses (guides (h Y) (v X)) into Document.Guides`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (top stub)\n"
+        + "  (guides\n"
+        + "    (h 12500)\n"
+        + "    (v -800))\n"
+        + "  (cell stub))\n"
+    let doc = analyzeOk src
+    doc.Guides |> List.length |> should equal 2
+    doc.Guides.[0].Orientation |> should equal Horizontal
+    doc.Guides.[0].CoordDbu    |> should equal 12500L
+    doc.Guides.[1].Orientation |> should equal Vertical
+    doc.Guides.[1].CoordDbu    |> should equal -800L
+
+[<Fact>]
+let ``a doc without guides parses to an empty list`` () =
+    let src =
+        "(layout (version 1) (pdk sky130)\n"
+        + "  (top stub)\n"
+        + "  (cell stub))\n"
+    let doc = analyzeOk src
+    doc.Guides |> should be Empty
+
+[<Fact>]
+let ``writer roundtrips guides through text and back`` () =
+    let original : Document =
+        { emptyDocument with
+            TopCell = Some "c"
+            Cells = [
+                { Name = "c"; Meta = None; Elements = []
+                  Comments = []; SubFormComments = Map.empty }
+            ]
+            Guides = [
+                { Orientation = Horizontal; CoordDbu = 12500L }
+                { Orientation = Vertical;   CoordDbu = -800L }
+                { Orientation = Horizontal; CoordDbu = 0L }
+            ] }
+    let text = Writer.write original
+    // Sanity: the form appears in the textual output.
+    text.Contains "(guides" |> should be True
+    text.Contains "(h 12500)" |> should be True
+    text.Contains "(v -800)" |> should be True
+    // Reparse and compare guide list verbatim.
+    let reparsed = analyzeOk text
+    reparsed.Guides |> should equal original.Guides
+
+[<Fact>]
+let ``writer omits the (guides ...) block when the list is empty`` () =
+    // Contract: a doc with zero guides keeps its current byte
+    // shape on round-trip — no empty `(guides)` form sneaking in
+    // and bloating every existing .rkt that doesn't use the
+    // feature.
+    let doc : Document =
+        { emptyDocument with
+            TopCell = Some "c"
+            Cells = [
+                { Name = "c"; Meta = None; Elements = []
+                  Comments = []; SubFormComments = Map.empty }
+            ]
+            Guides = [] }
+    let text = Writer.write doc
+    text.Contains "guides" |> should equal false

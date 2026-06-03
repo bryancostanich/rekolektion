@@ -18,6 +18,7 @@ open Avalonia.Rendering.SceneGraph
 open Avalonia.Skia
 open SkiaSharp
 open Rekolektion.Viz.Core.Layout
+open Rekolektion.Viz.App.Model
 open Rekolektion.Viz.App.Services
 
 /// Pixel width of each ruler gutter. Matches the spacing of
@@ -300,8 +301,12 @@ type TopRulerControl() =
             e.Pointer.Capture null
             let rulerY = e.GetPosition(this).Y
             if rulerY >= GutterPx then
-                // Released inside the canvas area → commit.
+                // Released inside the canvas area → commit AND
+                // sync the new guide into the active doc so the
+                // mark survives Save + reopen.
                 GuidesService.commitDrag ()
+                Rekolektion.Viz.App.Services.AppDispatch.send
+                    Msg.SyncGuidesToActiveDoc
             else
                 // Released still on the ruler → discard.
                 GuidesService.cancelDrag ()
@@ -367,6 +372,9 @@ type LeftRulerControl() =
                        && d.Orientation = Guides.Vertical ->
             e.Pointer.Capture null
             let rulerX = e.GetPosition(this).X
-            if rulerX >= GutterPx then GuidesService.commitDrag ()
+            if rulerX >= GutterPx then
+                GuidesService.commitDrag ()
+                Rekolektion.Viz.App.Services.AppDispatch.send
+                    Msg.SyncGuidesToActiveDoc
             else GuidesService.cancelDrag ()
         | _ -> ()

@@ -86,6 +86,62 @@ let ``emitStandaloneAt centres every segment at the click point`` () =
         s.CenterX |> should equal cx
         s.CenterY |> should equal cy)
 
+// ─────────────────────────────────────────────────────────────────
+// DRC-view sensitivity — Compat.Klayout is the user default but
+// its rule list is missing Width for via2 + the matching
+// met2/met3 enclosures.  These tests pin (a) the bug as it would
+// surface if the V tool used model.DrcView under Klayout — only
+// 4 segments emit for met3 ← li1, no via2 cut, no top pad — and
+// (b) the Magic-full view as the right input for via emission.
+// Update.fs's handler always passes Magic.defaultView; if a future
+// refactor switches it back to model.DrcView the user-side
+// regression surfaces here.
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``met3 li1 under Magic view emits the full 6-segment stack`` () =
+    // Magic view carries via2 width + every metal enclosure rule,
+    // so emit produces: mcon, via1, via2, met1 pad, met2 pad,
+    // met3 top pad.  Compare against the Klayout-view variant
+    // below — the contrast is what makes the "use Magic for
+    // emission" choice in Update.fs honest.
+    let segs =
+        ViaTool.emitStandaloneAt
+            Rules.Magic.defaultView testUnits li1 met3 0L 0L
+    segs |> List.length |> should equal 6
+    let layers = segs |> List.map (fun s -> s.Layer) |> List.distinct |> List.sort
+    layers |> should contain mcon
+    layers |> should contain via1
+    layers |> should contain via2
+    layers |> should contain met1
+    layers |> should contain met2
+    layers |> should contain met3
+
+[<Fact>]
+let ``met3 li1 under Klayout view emits a partial 4-segment stack`` () =
+    // Documents the gap that surfaced as 'V tool didn't work'
+    // on 2026-06-03: under the Klayout view the via2 width +
+    // met2/met3 enclosures aren't defined, so the V tool would
+    // silently drop a partial 4-rect stack with no via2 contact
+    // and no met3 top pad.  Update.fs avoids the bug by always
+    // emitting against Magic.defaultView; this test is the
+    // canary that catches a regression if anyone switches it
+    // back.
+    let segs =
+        ViaTool.emitStandaloneAt
+            Rules.Klayout.defaultView testUnits li1 met3 0L 0L
+    segs |> List.length |> should equal 4
+    let layers = segs |> List.map (fun s -> s.Layer) |> List.distinct |> List.sort
+    // Lower-stack survives because mcon / via1 / met1 / met2
+    // rules ARE in the Klayout view.
+    layers |> should contain mcon
+    layers |> should contain via1
+    layers |> should contain met1
+    layers |> should contain met2
+    // Missing under Klayout — drives the user-visible breakage.
+    layers |> should not' (contain via2)
+    layers |> should not' (contain met3)
+
 [<Fact>]
 let ``emitStandaloneAt top pad has same side as padSideForVia`` () =
     // Documents the wire-side pad's sizing rule: it encloses

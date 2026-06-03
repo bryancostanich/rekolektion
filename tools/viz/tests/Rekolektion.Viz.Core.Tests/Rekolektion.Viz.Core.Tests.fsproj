@@ -76,6 +76,7 @@
     <Compile Include="LiveDrcTests.fs" />
     <Compile Include="RulesYamlTests.fs" />
     <Compile Include="DrcCompatTests.fs" />
+    <Compile Include="DrcStaticCacheTests.fs" />
     <Compile Include="LayoutSnapTests.fs" />
     <Compile Include="RulerTicksTests.fs" />
     <Compile Include="ZeroOriginTests.fs" />

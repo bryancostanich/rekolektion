@@ -1205,35 +1205,16 @@ type GdsCanvasControl() as this =
     // cursor. None when no drag is active.
     let mutable dragLiveLib : Document option = None
     let mutable dragLiveFlat : FlatPolygon array = [||]
-    // DRC cache for fast drag updates. `cachedDrcFlat` is the
-    // FlatPolygons reference (by identity) that produced
-    // `cachedDrcViolations`. If the static FlatPolygons hasn't
-    // changed identity, the cache is reusable. During a drag,
-    // we compute fresh DRC only for the moving area and merge
-    // with the cached violations from the rest of the design.
-    //
-    // Implant tags are cached separately because they're
-    // expensive to compute (O(N×M) bbox AND of every polygon
-    // against every implant marker) and don't change unless
-    // the underlying flat changes.
-    //
-    // Cache invariant: cached violations + tags are valid when
-    // `cachedDrcFlat` references the same array as
-    // `this.FlatPolygons` AND `cachedDrcDisabled` equals the
-    // current disabled-rule set AND `cachedDrcCompat` matches the
-    // active compat AND `cachedDrcView` references the same
-    // `RulesetView` instance.  The last two were added so the
-    // Mode-menu DRC-compat toggle invalidates the cache at
-    // runtime — without them, flipping Magic ↔ KLayout in a
-    // running session returned stale violations from whichever
-    // compat ran the first DRC pass.  Initial values are placeholders;
-    // first frame's flat-identity mismatch fires the refresh.
-    let mutable cachedDrcFlat : FlatPolygon array = [||]
-    let mutable cachedDrcViolations : Drc.Check.Violation array = [||]
-    let mutable cachedDrcImplantTags : Drc.Implant.ImplantTags array = [||]
-    let mutable cachedDrcDisabled : Set<string> = Set.empty
-    let mutable cachedDrcCompat : Drc.Compat.Compat = Drc.Compat.Klayout
-    let mutable cachedDrcView : Drc.Rules.RulesetView = Drc.Rules.defaultView
+    // Static-layout DRC cache.  Validity tuple — flat identity,
+    // disabled-rule set, compat, view identity — lives inside
+    // `Drc.StaticCache`; canvas just calls `get` on each render
+    // and gets back the cached violation array (or a freshly-
+    // computed one on miss).  Extracted from this file so the
+    // invariant can be unit-tested without spinning up Avalonia.
+    // During a drag, we compute fresh DRC only for the moving
+    // area and merge with these cached violations from the rest
+    // of the design (see drcDragActive branch in OnRender).
+    let staticDrcCache = Drc.StaticCache.empty ()
     /// ADR-0003 — violations from the live DRC pass against the
     /// current draft route. Recomputed in OnPropertyChanged when
     /// DraftRoute changes; consumed by SkiaDraw to paint red
@@ -4335,10 +4316,10 @@ type GdsCanvasControl() as this =
                     // (cached across frames), incremental pass
                     // for the moving region during a drag.
                     //
-                    // Non-drag render: cache invariant holds
-                    // (this.FlatPolygons identity matches
-                    // cachedDrcFlat) → return cache. Otherwise
-                    // recompute full, refresh cache.
+                    // Non-drag render: StaticCache.get returns the
+                    // cached array when (flat identity, disabled
+                    // set, compat, view identity) all match;
+                    // otherwise recomputes and refreshes.
                     //
                     // Drag render: keep cached violations
                     // OUTSIDE the moving region (they can't
@@ -4347,31 +4328,16 @@ type GdsCanvasControl() as this =
                     // region + halo (drag-affected area). Concat.
                     let disabled = this.DisabledDrcRules
                     let staticFlat = this.FlatPolygons
-                    let compat = this.DrcCompat
-                    let view = this.DrcView
-                    // Refresh cache if the static flat changed
-                    // identity OR the disabled-rules set changed
-                    // OR the compat / view changed (Mode-menu
-                    // toggle).
-                    let cacheValid =
-                        obj.ReferenceEquals(cachedDrcFlat, staticFlat)
-                        && cachedDrcDisabled = disabled
-                        && cachedDrcCompat = compat
-                        && obj.ReferenceEquals(cachedDrcView, view)
-                    if not cacheValid then
-                        let tags = Drc.Implant.tagAll staticFlat
-                        let vs =
-                            Drc.Check.checkWithToggles
-                                compat
-                                true      // full: canvas keeps LU.*-class checks visible
-                                view
-                                lib.Units staticFlat tags disabled
-                        cachedDrcFlat <- staticFlat
-                        cachedDrcImplantTags <- tags
-                        cachedDrcViolations <- vs
-                        cachedDrcDisabled <- disabled
-                        cachedDrcCompat <- compat
-                        cachedDrcView <- view
+                    // Cache validity (flat ∧ disabled ∧ compat ∧
+                    // view) + refresh both live in `StaticCache.get`.
+                    let cachedDrcViolations =
+                        Drc.StaticCache.get
+                            staticDrcCache
+                            this.DrcCompat
+                            this.DrcView
+                            lib.Units
+                            staticFlat
+                            disabled
                     let drcDragActive =
                         dragLiveLib.IsSome
                         && (dragKind = PolygonDrag

@@ -64,6 +64,7 @@
     <Compile Include="Drc/Implant.fs" />
     <Compile Include="Drc/Waiver.fs" />
     <Compile Include="Drc/Check.fs" />
+    <Compile Include="Drc/StaticCache.fs" />
     <Compile Include="Routing/ViaStack.fs" />
     <Compile Include="Routing/Pads.fs" />
     <Compile Include="Routing/ViaTool.fs" />

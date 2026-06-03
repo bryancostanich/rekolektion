@@ -298,3 +298,69 @@ let ``orphanCells surfaces names not in CellIndex`` () =
                     Map.add (Path.GetFullPath p) { ld with Ast = newAst } lib.Documents }
         let orphans = SaveRouter.orphanCells edited
         orphans |> should contain "synthesized")
+
+[<Fact>]
+let ``projectIntoLibrary carries live Guides into the root file on save`` () =
+    // Guides live at the root document's level. Without the
+    // carry-through, `{ prev with Cells = cells }` would discard
+    // any guide the user added in-App because `prev` is the
+    // load-time snapshot. The fix: when path = rootPath, copy
+    // `currentMerged.Guides` onto the new AST.
+    withTempDir (fun dir ->
+        let macro = Path.Combine(dir, "macro.rkt")
+        writeRkt macro "(layout (version 1) (pdk sky130) (cell parent))"
+        let lib =
+            match Reader.loadSingle macro with
+            | Ok l -> l
+            | Error e -> failwithf "%A" e
+        let macroKey = Path.GetFullPath macro
+        // Live merged Document mirrors the App's mc.Document with
+        // a fresh guide added in-session.
+        let edited =
+            let rootDoc = (Map.find macroKey lib.Documents).Ast
+            { rootDoc with
+                Guides = [
+                    { Orientation = Horizontal; CoordDbu = 12500L }
+                    { Orientation = Vertical;   CoordDbu = -800L }
+                ] }
+        let projected = SaveRouter.projectIntoLibrary lib edited macroKey Map.empty
+        let projMacro = Map.find macroKey projected.Documents
+        projMacro.Ast.Guides |> should equal edited.Guides
+        // diffByFile picks up the change: prev had no guides, now has 2.
+        let diff = SaveRouter.diffByFile lib projected
+        diff |> Map.containsKey macroKey |> should equal true)
+
+[<Fact>]
+let ``projectIntoLibrary does NOT push root guides into imported files`` () =
+    // Imported subcell files don't carry the root's guide set.
+    // Otherwise saving the root after authoring a guide would
+    // also re-touch every imported file with the root's guide
+    // list — wrong, and noisy in diffs.
+    withTempDir (fun dir ->
+        let prim = Path.Combine(dir, "prim.rkt")
+        let macro = Path.Combine(dir, "macro.rkt")
+        writeRkt prim "(layout (version 1) (pdk sky130) (cell shared))"
+        writeRkt macro
+            ("(layout (version 1) (pdk sky130)\n"
+             + "  (import \"prim.rkt\")\n"
+             + "  (cell parent (sref (cell shared) (origin 0 0))))\n")
+        let lib =
+            match Reader.loadSingle macro with
+            | Ok l -> l
+            | Error e -> failwithf "%A" e
+        let macroKey = Path.GetFullPath macro
+        let primKey = Path.GetFullPath prim
+        let edited =
+            let rootDoc = (Map.find macroKey lib.Documents).Ast
+            let primDoc = (Map.find primKey lib.Documents).Ast
+            { rootDoc with
+                Cells = rootDoc.Cells @ primDoc.Cells
+                Guides = [ { Orientation = Horizontal; CoordDbu = 100L } ] }
+        let projected = SaveRouter.projectIntoLibrary lib edited macroKey Map.empty
+        let projPrim = Map.find primKey projected.Documents
+        let projMacro = Map.find macroKey projected.Documents
+        // Root carries the new guide.
+        projMacro.Ast.Guides
+        |> should equal [ { Orientation = Horizontal; CoordDbu = 100L } ]
+        // Imported file does NOT inherit it.
+        projPrim.Ast.Guides |> should be Empty)

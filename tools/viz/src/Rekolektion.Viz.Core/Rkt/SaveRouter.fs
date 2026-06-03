@@ -115,7 +115,19 @@ let projectIntoLibrary
                     { emptyDocument with
                         Pdk = currentMerged.Pdk
                         Units = currentMerged.Units }
-            let newAst = { prev with Cells = cells }
+            // Editor guides live at the root document's level —
+            // the user authors them in the active tab, not inside
+            // an imported subcell file. On save, the root file
+            // picks up `currentMerged.Guides`; imported files
+            // keep whatever they had (typically `[]`).  Without
+            // this carry-through, every save would discard the
+            // live guide set because the per-file `prev` doc was
+            // captured at LOAD time, before any edits.
+            let newAst =
+                if path = rootPath then
+                    { prev with Cells = cells; Guides = currentMerged.Guides }
+                else
+                    { prev with Cells = cells }
             let loaded : Reader.LoadedDocument = {
                 Path = path
                 Cst =

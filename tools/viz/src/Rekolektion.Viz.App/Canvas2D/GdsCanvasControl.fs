@@ -1522,6 +1522,23 @@ type GdsCanvasControl() as this =
     static member val EditRoutingModeProperty : StyledProperty<bool> =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("EditRoutingMode", false)
         with get
+    /// When true, left-click on the canvas drops a via that
+    /// plumbs to the nearest labeled-pin centroid strictly below
+    /// the active routing layer.  Drives V-key behaviour.
+    static member val ViaModeProperty : StyledProperty<bool> =
+        AvaloniaProperty.Register<GdsCanvasControl, bool>("ViaMode", false)
+        with get
+    /// Callback fired when a via-tool click should commit.  Args:
+    /// `(worldX, worldY, snapRadiusDbu)` — the canvas computes the
+    /// radius from current pxPerDbu so a 20 px tolerance reads
+    /// the same regardless of zoom.  The Update handler resolves
+    /// the snap target + emits the via stack through
+    /// `Routing.ViaStack.emitAt`.  None when no handler is wired.
+    static member val ViaToolCommitHandlerProperty
+            : StyledProperty<Action<int64, int64, int64>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int64, int64, int64>>(
+            "ViaToolCommitHandler", null)
+        with get
     /// Current in-flight draft route, or None when nothing is being
     /// drawn. Drives the canvas overlay and click semantics.
     static member val DraftRouteProperty
@@ -1816,6 +1833,17 @@ type GdsCanvasControl() as this =
         with get() : bool = this.GetValue(GdsCanvasControl.EditRoutingModeProperty)
         and set(v: bool) =
             this.SetValue(GdsCanvasControl.EditRoutingModeProperty, v) |> ignore
+
+    member this.ViaMode
+        with get() : bool = this.GetValue(GdsCanvasControl.ViaModeProperty)
+        and set(v: bool) =
+            this.SetValue(GdsCanvasControl.ViaModeProperty, v) |> ignore
+
+    member this.ViaToolCommitHandler
+        with get() : Action<int64, int64, int64> =
+            this.GetValue(GdsCanvasControl.ViaToolCommitHandlerProperty)
+        and set(v: Action<int64, int64, int64>) =
+            this.SetValue(GdsCanvasControl.ViaToolCommitHandlerProperty, v) |> ignore
 
     member this.DraftRoute
         with get() : Routing.Draft.DraftRoute option =
@@ -2576,6 +2604,23 @@ type GdsCanvasControl() as this =
         lastPos <- p
         e.Pointer.Capture this
         this.Focus () |> ignore
+
+        // Via tool — left-click drops a via at the cursor that
+        // plumbs to the highest routing-layer geometry under it
+        // strictly below the via's top layer.  Wins over every
+        // other left-click branch so the user can drop vias on
+        // top of existing wires / pins without the canvas
+        // re-interpreting the click as a segment-drag pickup or
+        // selection. Tolerance is 20 px in DBU at current zoom —
+        // generous enough to click-near rather than pixel-aim.
+        if this.ViaMode && props.IsLeftButtonPressed then
+            let wx, wy = this.ScreenToWorld p
+            let radiusDbu =
+                int64 (20.0 / max pixelsPerDbu 0.0001)
+            let cb = this.ViaToolCommitHandler
+            if not (isNull cb) then
+                cb.Invoke(int64 wx, int64 wy, radiusDbu)
+            e.Handled <- true
 
         // Guideline grab-to-move. Hit-test BEFORE every other
         // pickup so a click that lands on a guide line snaps to

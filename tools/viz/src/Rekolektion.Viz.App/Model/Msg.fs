@@ -192,6 +192,15 @@ type Msg =
     /// Independent from RoutingMode — turning V on disarms W and
     /// vice versa so the two click-handlers don't fight.
     | ToggleViaMode
+    /// Canvas left-click in V mode.  `(worldX, worldY, radiusDbu)` —
+    /// canvas-computed click position + a zoom-aware snap tolerance
+    /// (20 px expressed in DBU at the current zoom).  Handler
+    /// resolves the snap target via Routing.Snap, picks top /
+    /// bottom routing layers per the V-tool decision matrix, emits
+    /// the via stack with Routing.ViaStack.emitAt, and appends the
+    /// segments to the active doc's top cell.  Refused silently
+    /// when no snap target falls within `radiusDbu` of the cursor.
+    | ViaToolCommit of worldX: int64 * worldY: int64 * radiusDbu: int64
     /// Toggle layout label text rendering (all `(label …)` forms).
     | ToggleLabels
     /// Toggle drag-snap (S key). When on, move + resize land on

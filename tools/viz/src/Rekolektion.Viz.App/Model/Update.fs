@@ -1107,6 +1107,142 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             ViaMode = next
             RoutingMode = if next then false else model.RoutingMode
             DraftRoute = if next then None else model.DraftRoute }, Cmd.none
+    | Msg.ViaToolCommit (worldX, worldY, radiusDbu) ->
+        // Resolve a snap target under the cursor at routing layers
+        // strictly below the via's top layer, then emit the via
+        // stack via `Routing.ViaStack.emitAt` and append it to the
+        // active macro's top cell.
+        //
+        // Top layer rule:
+        //   * `Toggle.ActiveLayer = Some L` → use L unconditionally;
+        //     emitAt fills in every intermediate metal + via cut
+        //     between L and the snap target (multi-layer stacks
+        //     work — active = met3, snap = li1 → mcon, met1, via,
+        //     met2, via2 all emit).
+        //   * `Toggle.ActiveLayer = None`   → one routing layer above
+        //     the snap's own layer (li1-snap → met1, met1-snap → met2).
+        //
+        // Snap priority for v1 is cell-pin centroid only.  Knuckle /
+        // wire-centerline / wire-end snap come in a follow-up.
+        match model.ActiveMacroPath with
+        | None -> model, Cmd.none
+        | Some path ->
+            let macroOpt =
+                model.OpenMacros |> List.tryFind (fun mc -> mc.Path = path)
+            match macroOpt with
+            | None -> model, Cmd.none
+            | Some mc ->
+                // Pin snap candidates: labeled-pin centroids on
+                // every routing layer.  Re-derived on each click
+                // (cheap) so we don't have to plumb the canvas's
+                // cached set through the model.
+                let labels =
+                    Rekolektion.Viz.Core.Layout.Flatten.flattenLabels mc.Document
+                let allTargets =
+                    Routing.Snap.buildTargets labels mc.FlatPolygons
+                // Filter to "strictly below top" when an active
+                // layer is set; otherwise leave the field open and
+                // pick the top from the snap result.
+                let activeTopOpt =
+                    model.Toggle.ActiveLayer
+                let candidates =
+                    match activeTopOpt with
+                    | Some (topN, _) ->
+                        allTargets |> Array.filter (fun t -> t.Layer < topN)
+                    | None -> allTargets
+                match Routing.Snap.nearest candidates (worldX, worldY) radiusDbu with
+                | None ->
+                    Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                        {| op = "no-snap"; x = worldX; y = worldY |}
+                    model, Cmd.none
+                | Some target ->
+                    let topLayer =
+                        match activeTopOpt with
+                        | Some l -> l
+                        | None -> (target.Layer + 1, 20)
+                    let bottomLayer = (target.Layer, target.DataType)
+                    let viaSegs =
+                        Routing.ViaStack.emitAt
+                            model.DrcView mc.Document.Units
+                            bottomLayer topLayer
+                            target.X target.Y
+                    if List.isEmpty viaSegs then
+                        Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                            {| op = "no-stack"
+                               topN = fst topLayer; topDt = snd topLayer
+                               botN = fst bottomLayer; botDt = snd bottomLayer |}
+                        model, Cmd.none
+                    else
+                        // Convert each ViaSegment → RectEl.  Layer
+                        // tag: try the PDK-named form first (so the
+                        // .rkt reads as `(layer sky130:met1)`);
+                        // fall back to `Unknown` only if the
+                        // (number, datatype) pair isn't in the
+                        // registry, which would itself be a bug.
+                        let mkRect (seg: Routing.ViaStack.ViaSegment) =
+                            let (n, d) = seg.Layer
+                            let layer =
+                                match Layout.Layer.bySky130Number n d with
+                                | Some lr ->
+                                    Rekolektion.Viz.Core.Rkt.Types.Named
+                                        (mc.Document.Pdk, lr.Name)
+                                | None ->
+                                    Rekolektion.Viz.Core.Rkt.Types.Unknown (n, d)
+                            let half = seg.SideDbu / 2L
+                            Rekolektion.Viz.Core.Rkt.Types.RectEl {
+                                Layer = layer
+                                X1 = seg.CenterX - half
+                                Y1 = seg.CenterY - half
+                                X2 = seg.CenterX + half
+                                Y2 = seg.CenterY + half
+                                Net = Some target.Net
+                                Props = []
+                                Comments = []
+                                SubFormComments = Map.empty
+                            }
+                        let rects = viaSegs |> List.map mkRect
+                        let topName =
+                            mc.Document.TopCell
+                            |> Option.orElseWith (fun () ->
+                                mc.Document.Cells
+                                |> List.tryHead
+                                |> Option.map (fun c -> c.Name))
+                        match topName with
+                        | None -> model, Cmd.none
+                        | Some n ->
+                            let cells' =
+                                mc.Document.Cells
+                                |> List.map (fun c ->
+                                    if c.Name = n then
+                                        { c with Elements = c.Elements @ rects }
+                                    else c)
+                            let doc' = { mc.Document with Cells = cells' }
+                            // Same-bbox same-layer dedup so a via
+                            // dropped on top of an existing wire's
+                            // via stack doesn't pile mcon over mcon
+                            // (mcon.2 spacing-zero).
+                            let doc' = Routing.Wire.dedupCoincidentRects doc'
+                            let flat' = Layout.Flatten.flatten doc'
+                            let inst' = Layout.Instances.enumerate doc'
+                            let mc' =
+                                EditSession.pushUndoSnapshot mc
+                                |> fun m ->
+                                    { m with
+                                        Document = doc'
+                                        FlatPolygons = flat'
+                                        TopInstances = inst' }
+                                |> EditSession.markDirty
+                            let openMacros' =
+                                model.OpenMacros
+                                |> List.map (fun m ->
+                                    if m.Path = path then mc' else m)
+                            Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                                {| op = "commit"
+                                   net = target.Net
+                                   topN = fst topLayer; topDt = snd topLayer
+                                   botN = fst bottomLayer; botDt = snd bottomLayer
+                                   rects = List.length rects |}
+                            { model with OpenMacros = openMacros' }, Cmd.none
     | Msg.StartRoute (layer, width, startNet, x, y, startSnapLayer) ->
         match model.ActiveMacroPath with
         | None -> model, Cmd.none

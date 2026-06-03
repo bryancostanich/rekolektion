@@ -50,8 +50,11 @@ order shown:
   (version 1)                    ; required, integer, currently 1
   (pdk sky130)                   ; default PDK for unqualified layer refs
   (units (dbu_nm 1) (uu_um 1))   ; integer scale; 1 nm/DBU is the SKY130 default
-  (top cell-name)                ; optional; otherwise the first cell is top
   (import "../primitives/fets.rkt")  ; optional, repeatable
+  (top cell-name)                ; optional; otherwise the first cell is top
+  (guides                        ; optional; editor alignment marks (see §Guides)
+    (h 12500)                    ; horizontal guide at Y = 12500 DBU
+    (v -800))                    ; vertical guide at X = -800 DBU
   (nets                          ; optional top-level net declarations
     (net BL (domain signal))
     (net VPWR (domain power) (voltage 1.8)))
@@ -250,6 +253,64 @@ file write back to that file, not the parent.
 `(import ...)` is the right tool for multi-file projects. Do not
 embed paths in `(sref (cell <path>))`; cell references are by name
 only.
+
+### Guides
+
+Editor alignment marks — the dashed cyan lines the viz tool's
+ruler-drag feature creates. Persisted in the `.rkt` so a layout
+under review keeps the reviewer's measurement marks across save
++ reopen.
+
+```scheme
+(layout (version 1) (pdk sky130)
+  (top blc_comparator)
+  (guides
+    (h 12500)         ; horizontal guide at Y = 12500 DBU
+    (v -800)          ; vertical guide at X = -800 DBU
+    (h 0))            ; horizontal at the origin
+  (cell blc_comparator ...))
+```
+
+**Form.** A single optional `(guides ...)` block, written between
+`(top ...)` and the first `(cell ...)`. Each child is either
+`(h <int>)` (horizontal guide — constant Y in world DBU) or
+`(v <int>)` (vertical — constant X). Order within the block is
+preserved on round-trip; the position is the guide's stable
+identity for the in-memory editor session.
+
+**Coordinates** are world DBU at the **document level**, NOT
+relative to any cell — guides span the whole viewport regardless
+of where the camera is pointed. Negative integers are fine for
+guides in the negative quadrant. Snap rounding is the user's
+responsibility at drag-time; the writer emits whatever the
+caller provides.
+
+**Empty list.** A doc with no guides omits the `(guides ...)`
+form entirely — files that don't use the feature round-trip
+byte-for-byte. The reader treats a missing form as `[]` and
+silently skips unknown children inside the block so future
+schema growth (e.g. labeled or coloured guides) doesn't break
+existing files.
+
+**Multi-file routing.** Guides live on the **root** document only.
+When the SaveRouter splits an edit across imported files, the
+guide list flows back into the root file alone — imported subcell
+files keep their own `Guides = []` so saving the root doesn't
+re-touch every primitive.
+
+**Viz integration.** The desktop tool's drag-from-ruler gesture
+calls `GuidesService.commitDrag` on release, which dispatches a
+`SyncGuidesToActiveDoc` Msg that copies the live set into the
+active macro's `Document.Guides` and marks the macro dirty.
+MCP-driven create / move / delete go through the same dispatch.
+On document open and tab-switch, the service is replaced from
+`Document.Guides` so the canvas overlay matches the file the
+user is looking at.
+
+**Tape-out.** Guides are editor metadata. `to-gds` ignores them;
+the GDS export contains no equivalent record. If a downstream
+consumer cares about alignment marks it should walk the `.rkt`
+directly.
 
 ### Property bag
 

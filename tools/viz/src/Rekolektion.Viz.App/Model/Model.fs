@@ -206,6 +206,15 @@ type Model = {
     /// from `DraftRoute` (the tool may be armed without an in-flight
     /// draft, e.g. just after finishing a previous route).
     RoutingMode : bool
+    /// Via-tool armed (V key + TopBar button).  When true, canvas
+    /// left-click drops a via that auto-plumbs to the highest
+    /// routing-layer geometry under the cursor that's strictly
+    /// below the via's top layer.  The top layer is the toolbar's
+    /// ActiveLayer when set, else one layer above the geometry
+    /// found under the cursor.  Snap priority: cell pin > knuckle
+    /// > wire end > wire centerline. Free-space click (no snap
+    /// target) is refused — no orphan vias.
+    ViaMode : bool
     /// Ratlines master "want them on" flag (U key + TopBar button).
     /// When true, NetsLoaded will populate `Toggle.VisibleRatlines`
     /// from the freshly-derived net map as soon as the background
@@ -270,6 +279,7 @@ let empty : Model = {
     TightenMode = false
     EditRoutingMode = false
     RoutingMode = false
+    ViaMode = false
     RatlinesArmed = false
     DraftRoute = None
     SegmentDrag = None

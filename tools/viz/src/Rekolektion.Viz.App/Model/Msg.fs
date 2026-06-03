@@ -185,6 +185,13 @@ type Msg =
     /// canvas clicks start/extend a draft route on the ActiveLayer;
     /// when off, clicks fall through to normal selection.
     | ToggleRoutingMode
+    /// Toggle the via tool on/off (V key).  When on, canvas
+    /// left-click drops a via stack at the cursor that plumbs to
+    /// the highest routing-layer geometry under it (cell pin /
+    /// knuckle / wire end / wire centerline, in priority order).
+    /// Independent from RoutingMode — turning V on disarms W and
+    /// vice versa so the two click-handlers don't fight.
+    | ToggleViaMode
     /// Toggle layout label text rendering (all `(label …)` forms).
     | ToggleLabels
     /// Toggle drag-snap (S key). When on, move + resize land on

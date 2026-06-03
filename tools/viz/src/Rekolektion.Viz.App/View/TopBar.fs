@@ -122,6 +122,10 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
     // routing-related modes group visually.
     let wireToggle =
         mkToggle "Wire (W)" model.RoutingMode "#a85a1f" Msg.ToggleRoutingMode
+    // Via tool — V key.  Mutually exclusive with Wire (Update.fs
+    // gates each off when the other turns on).
+    let viaToggle =
+        mkToggle "Via (V)" model.ViaMode "#a85a1f" Msg.ToggleViaMode
     // One-shot legacy cleanup: strips WireId from any wire whose
     // rects aren't all spatially connected — corruption left over
     // from the pre-fix drag bug.  Not a mode (no active state),
@@ -194,6 +198,7 @@ let view (model: Model.Model) (dispatch: Msg.Msg -> unit) : IView =
                                     tightenToggle
                                     editRoutingToggle
                                     wireToggle
+                                    viaToggle
                                     scrubButton
                                     zeroOriginButton
                                     normButton

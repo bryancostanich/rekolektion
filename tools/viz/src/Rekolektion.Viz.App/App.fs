@@ -76,6 +76,7 @@ module KeyMap =
         | Key.R,     KeyModifiers.Shift -> Some Msg.ToggleDrcLabels
         | Key.O,     KeyModifiers.None -> Some Msg.ToggleDebugOverlay
         | Key.W,     KeyModifiers.None -> Some Msg.ToggleRoutingMode
+        | Key.V,     KeyModifiers.None -> Some Msg.ToggleViaMode
         | Key.U,     KeyModifiers.None -> Some Msg.ToggleRatlines
         | Key.L,     KeyModifiers.None -> Some Msg.ToggleAxes
         | Key.G,     KeyModifiers.None -> Some Msg.ToggleGrid
@@ -748,6 +749,9 @@ type App() =
         addItem modeSub "Edit routing (segment gizmos)"
             (Some (KeyGesture(Key.E, KeyModifiers.None)))
             Msg.ToggleEditRoutingMode |> ignore
+        addItem modeSub "Via (drop + plumb)"
+            (Some (KeyGesture(Key.V, KeyModifiers.None)))
+            Msg.ToggleViaMode |> ignore
         addItem modeSub "Tighten (numbered candidates)"
             (Some (KeyGesture(Key.T, KeyModifiers.None)))
             Msg.ToggleTightenMode |> ignore

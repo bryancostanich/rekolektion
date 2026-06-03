@@ -1090,9 +1090,23 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             {| op = "wire-mode"; on = next |}
         // Turning the tool off also aborts any in-flight draft so a
         // user toggling out can't leave a half-drawn route hanging.
+        // Wire and Via are mutually exclusive — turning Wire on
+        // disarms Via so the canvas click-handler isn't ambiguous.
         { model with
             RoutingMode = next
+            ViaMode = if next then false else model.ViaMode
             DraftRoute = if next then model.DraftRoute else None }, Cmd.none
+    | Msg.ToggleViaMode ->
+        let next = not model.ViaMode
+        Rekolektion.Viz.App.Services.Logger.log "route.tool"
+            {| op = "via-mode"; on = next |}
+        // Mutually exclusive with Wire (see ToggleRoutingMode).
+        // Toggling Via on also drops any in-flight wire draft so
+        // the previous click-and-draw doesn't leak across tools.
+        { model with
+            ViaMode = next
+            RoutingMode = if next then false else model.RoutingMode
+            DraftRoute = if next then None else model.DraftRoute }, Cmd.none
     | Msg.StartRoute (layer, width, startNet, x, y, startSnapLayer) ->
         match model.ActiveMacroPath with
         | None -> model, Cmd.none

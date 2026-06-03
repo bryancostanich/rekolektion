@@ -1145,7 +1145,8 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 // exercise in `RoutingViaToolTests`.
                 let snapOpt =
                     Routing.ViaTool.resolveSnap
-                        activeTopOpt allTargets worldX worldY radiusDbu
+                        activeTopOpt allTargets mc.FlatPolygons
+                        worldX worldY radiusDbu
                 match snapOpt with
                 | None ->
                     Rekolektion.Viz.App.Services.Logger.log "via.tool"

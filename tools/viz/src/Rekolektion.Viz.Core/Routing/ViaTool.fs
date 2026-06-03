@@ -16,6 +16,7 @@ module Rekolektion.Viz.Core.Routing.ViaTool
 
 open Rekolektion.Viz.Core.Rkt.Types
 open Rekolektion.Viz.Core.Drc.Rules
+open Rekolektion.Viz.Core.Layout.Flatten
 
 /// Minimum square-side (DBU) that satisfies a metal layer's
 /// `MinArea` rule.  `ceil(sqrt(minArea))` so a partially-rounded
@@ -110,12 +111,15 @@ let emitStandaloneAt
                 | None   -> baseSegs
             floorMetalPadsAtMinArea view units withTopPad
 
-/// The picked snap target.  Mirrors the priority order of the
-/// upcoming knuckle / wire-snap commits — for v1 only `Pin` is
-/// returned, but downstream code keeps a single sum-type so
-/// adding new kinds doesn't ripple through the call site.
+/// The picked snap target.  `Knuckle` wins over `Pin` when both
+/// are within reach: clicking on visibly-painted met1+ geometry
+/// should land the via on that layer rather than chasing a label
+/// one layer down (the original v1 behavior produced a li1→met1
+/// via on a met1 knuckle, then dedup'd it against the existing
+/// contact and looked like nothing happened).
 type SnapKind =
     | Pin
+    | Knuckle
 
 type Snap = {
     X        : int64
@@ -125,33 +129,112 @@ type Snap = {
     Kind     : SnapKind
 }
 
-/// Resolve the snap target under the cursor.  v1: cell-pin
-/// centroid only (uses the pre-built target array from
-/// `Routing.Snap.buildTargets`).
+/// Sky130 routing layers: li1 + met1..met5, all on dataType 20.
+/// Hard-coded against the gds-stream numbers because the V tool's
+/// snap path runs hot enough that a per-call lookup into
+/// `Layout.Layer` is wasted work, and the routing stack is
+/// PDK-stable (no fab is renumbering li1 between releases).
+let private isRoutingLayerKey (n: int) (dt: int) : bool =
+    dt = 20 && n >= 67 && n <= 72
+
+let private polyBbox (poly: FlatPolygon) : int64 * int64 * int64 * int64 =
+    let mutable xMin = System.Int64.MaxValue
+    let mutable yMin = System.Int64.MaxValue
+    let mutable xMax = System.Int64.MinValue
+    let mutable yMax = System.Int64.MinValue
+    for pt in poly.Points do
+        if pt.X < xMin then xMin <- pt.X
+        if pt.X > xMax then xMax <- pt.X
+        if pt.Y < yMin then yMin <- pt.Y
+        if pt.Y > yMax then yMax <- pt.Y
+    xMin, yMin, xMax, yMax
+
+/// Find the topmost routing-layer poly whose bbox contains the
+/// cursor.  Returned `Snap` lands at the bbox centroid and tags
+/// the result `Knuckle`.
 ///
-/// When `topLayerOpt = Some L`, candidates are filtered to those
-/// strictly below `L`'s layer number — this is what gives "active
-/// = met3 → only show pin snaps on li1 / met1 / met2" semantics.
-/// When `None`, every target is a candidate and the caller picks
-/// a top from the snap's own layer.
+/// "Topmost" = highest layer number (= higher metal in the
+/// sky130 stack).  Rationale: a met1 knuckle sitting on top of a
+/// li1 rail means the user is visibly on met1 and wants the via
+/// dropped FROM met1.  Picking li1 because it's also under the
+/// cursor would build a redundant li1→met1 via that dedup eats.
+///
+/// `topLayerOpt = Some L` filters to knuckles strictly below L
+/// (so an active layer of met2 won't snap to a met2 knuckle —
+/// that'd give a same-layer via with no plumbing).  `None` lets
+/// every routing layer through.
+///
+/// Net is left empty: a FlatPolygon doesn't always carry one
+/// (wire rects do via WireId, but a primitive's pin patch
+/// doesn't expose its label here).  Downstream callers can
+/// attribute net later if needed.
+let findKnuckleAt
+        (topLayerOpt: (int * int) option)
+        (flatPolys  : FlatPolygon array)
+        (cursorX    : int64) (cursorY : int64) : Snap option =
+    let candidates =
+        flatPolys
+        |> Array.filter (fun p ->
+            if not (isRoutingLayerKey p.Layer p.DataType) then false
+            else
+                let xMin, yMin, xMax, yMax = polyBbox p
+                cursorX >= xMin && cursorX <= xMax
+                && cursorY >= yMin && cursorY <= yMax
+                && (match topLayerOpt with
+                    | Some (topN, _) -> p.Layer < topN
+                    | None -> true))
+    if Array.isEmpty candidates then None
+    else
+        let topmost = candidates |> Array.maxBy (fun p -> p.Layer)
+        let xMin, yMin, xMax, yMax = polyBbox topmost
+        let cx = (xMin + xMax) / 2L
+        let cy = (yMin + yMax) / 2L
+        Some {
+            X     = cx
+            Y     = cy
+            Layer = (topmost.Layer, topmost.DataType)
+            Net   = ""
+            Kind  = Knuckle
+        }
+
+/// Resolve the snap target under the cursor.  Priority:
+///   1. Knuckle — a routing-layer poly whose bbox contains the
+///      cursor.  Highest layer wins (see `findKnuckleAt`).
+///   2. Cell pin label centroid — nearest labeled pin within
+///      `radiusDbu`.
+///
+/// Knuckle wins over pin because the user is visibly pointing at
+/// the metal they painted; a label one layer down may be there
+/// too (the pin patch under a knuckle) but that's not what the
+/// click intends.  Reported 2026-06-03 as "clicked on met1
+/// knuckle, expected via UP, got nothing visible".
+///
+/// `topLayerOpt = Some L` filters both candidate sets to layers
+/// strictly below `L` (matches the "active layer = top of via"
+/// rule).  `None` lets every layer through and the caller picks
+/// a top from the snap's own layer + 1.
 let resolveSnap
         (topLayerOpt: (int * int) option)
         (targets    : Snap.SnapTarget array)
+        (flatPolys  : FlatPolygon array)
         (cursorX    : int64) (cursorY : int64)
         (radiusDbu  : int64)
         : Snap option =
-    let candidates =
-        match topLayerOpt with
-        | Some (topN, _) ->
-            targets |> Array.filter (fun t -> t.Layer < topN)
-        | None -> targets
-    Snap.nearest candidates (cursorX, cursorY) radiusDbu
-    |> Option.map (fun t ->
-        { X     = t.X
-          Y     = t.Y
-          Layer = (t.Layer, t.DataType)
-          Net   = t.Net
-          Kind  = Pin })
+    match findKnuckleAt topLayerOpt flatPolys cursorX cursorY with
+    | Some k -> Some k
+    | None ->
+        let candidates =
+            match topLayerOpt with
+            | Some (topN, _) ->
+                targets |> Array.filter (fun t -> t.Layer < topN)
+            | None -> targets
+        Snap.nearest candidates (cursorX, cursorY) radiusDbu
+        |> Option.map (fun t ->
+            { X     = t.X
+              Y     = t.Y
+              Layer = (t.Layer, t.DataType)
+              Net   = t.Net
+              Kind  = Pin })
 
 /// Pick the via-stack top layer per the V-tool rule: prefer the
 /// caller's `topLayerOpt` (toolbar's ActiveLayer) when present,

@@ -226,12 +226,27 @@ let private mkTarget (layer: int * int) (x: int64) (y: int64) (net: string)
       Layer = n; DataType = d
       Source = ("c", 0) }
 
+let private mkKnuckle
+        (layer: int * int)
+        (x1: int64) (y1: int64) (x2: int64) (y2: int64)
+        : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon =
+    let (n, d) = layer
+    { Layer = n; DataType = d
+      Points =
+        [| { X = x1; Y = y1 }
+           { X = x2; Y = y1 }
+           { X = x2; Y = y2 }
+           { X = x1; Y = y2 } |]
+      SourceStructure = "top"
+      SourceIndex = 0
+      TopInstanceIndex = None }
+
 [<Fact>]
 let ``resolveSnap with no top filter returns the nearest pin`` () =
     let targets =
         [| mkTarget li1  100L 100L "VSS"
            mkTarget met1 200L 200L "VDD" |]
-    let s = ViaTool.resolveSnap None targets 110L 105L 50L
+    let s = ViaTool.resolveSnap None targets [||] 110L 105L 50L
     match s with
     | Some snap ->
         snap.Net |> should equal "VSS"
@@ -247,7 +262,7 @@ let ``resolveSnap with top = met1 filters out met1 pins (strictly below)`` () =
     // Cursor near both — without the filter VDD wins (it's
     // closer). With the strict-below filter, VSS wins because
     // VDD's layer = top layer.
-    let s = ViaTool.resolveSnap (Some met1) targets 110L 105L 50L
+    let s = ViaTool.resolveSnap (Some met1) targets [||] 110L 105L 50L
     match s with
     | Some snap -> snap.Net |> should equal "VSS"
     | None -> failwith "expected VSS to survive the filter"
@@ -255,12 +270,95 @@ let ``resolveSnap with top = met1 filters out met1 pins (strictly below)`` () =
 [<Fact>]
 let ``resolveSnap returns None when no target within radius`` () =
     let targets = [| mkTarget li1 1000L 1000L "VSS" |]
-    ViaTool.resolveSnap None targets 0L 0L 100L
+    ViaTool.resolveSnap None targets [||] 0L 0L 100L
     |> should equal (None : ViaTool.Snap option)
 
 [<Fact>]
 let ``resolveSnap returns None on an empty target array`` () =
-    ViaTool.resolveSnap None [||] 0L 0L 100L
+    ViaTool.resolveSnap None [||] [||] 0L 0L 100L
+    |> should equal (None : ViaTool.Snap option)
+
+// ─────────────────────────────────────────────────────────────────
+// Knuckle snap — wins over pin when the cursor is INSIDE
+// routing-layer geometry. Reported 2026-06-03: clicks on a met1
+// knuckle were snapping to the li1 label underneath and
+// emitting a li1→met1 via that dedup'd against the existing
+// contact stack ("looked like nothing happened").
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``resolveSnap prefers a met1 knuckle over a li1 pin under it`` () =
+    // Click coords inside both the met1 knuckle (a 400 nm square
+    // centred at 0,0) AND within radius of a li1 pin label.
+    let targets = [| mkTarget li1 0L 0L "NAND_OUT" |]
+    let knuckles =
+        [| mkKnuckle met1 -200L -200L 200L 200L |]
+    let s = ViaTool.resolveSnap None targets knuckles 50L 30L 100L
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
+        snap.Layer |> should equal met1
+        // Centroid of the (-200,-200)–(200,200) rect.
+        snap.X |> should equal 0L
+        snap.Y |> should equal 0L
+    | None -> failwith "expected the met1 knuckle to win"
+
+[<Fact>]
+let ``resolveSnap picks the topmost routing-layer rect under cursor`` () =
+    // met1 knuckle sits inside a wider met2 rect. Cursor inside
+    // both → met2 wins (higher routing layer = "you're visibly
+    // on met2"). Without this, a met2 pad over a met1 stub would
+    // always drop a met1→met2 via via the met1 path.
+    let polys =
+        [| mkKnuckle met1 -100L -100L 100L 100L
+           mkKnuckle met2 -300L -300L 300L 300L |]
+    let s = ViaTool.resolveSnap None [||] polys 0L 0L 50L
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
+        snap.Layer |> should equal met2
+    | None -> failwith "expected met2 to win"
+
+[<Fact>]
+let ``resolveSnap knuckle obeys the strictly-below filter`` () =
+    // Active layer = met2; knuckles are met1 + met2 + met3. The
+    // strict-below filter has to exclude met2 (=top) and met3
+    // (above top), leaving met1 as the winner.
+    let met3 : int * int = (70, 20)
+    let polys =
+        [| mkKnuckle met1 -100L -100L 100L 100L
+           mkKnuckle met2 -100L -100L 100L 100L
+           mkKnuckle met3 -100L -100L 100L 100L |]
+    let s = ViaTool.resolveSnap (Some met2) [||] polys 0L 0L 50L
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
+        snap.Layer |> should equal met1
+    | None -> failwith "expected met1 to survive the strict-below filter"
+
+[<Fact>]
+let ``resolveSnap falls back to pin when no knuckle is under cursor`` () =
+    // Cursor outside the knuckle's bbox AND near a pin → pin path
+    // engages.  Same shape as the original v1 behavior; guard
+    // against a knuckle-only resolver that loses pin snap.
+    let targets = [| mkTarget li1 500L 500L "VSS" |]
+    let knuckles =
+        [| mkKnuckle met1 -100L -100L 100L 100L |]
+    let s = ViaTool.resolveSnap None targets knuckles 495L 502L 50L
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.Pin
+        snap.Net  |> should equal "VSS"
+    | None -> failwith "expected the pin to win when no knuckle covers the cursor"
+
+[<Fact>]
+let ``resolveSnap skips non-routing layers when searching for a knuckle`` () =
+    // A `diff` rect under the cursor is NOT a knuckle.  Without
+    // the isRoutingLayerKey guard the V tool would happily snap
+    // to diff and produce a nonsensical via.
+    let diff : int * int = (65, 20)
+    let polys = [| mkKnuckle diff -100L -100L 100L 100L |]
+    ViaTool.resolveSnap None [||] polys 0L 0L 50L
     |> should equal (None : ViaTool.Snap option)
 
 // ─────────────────────────────────────────────────────────────────

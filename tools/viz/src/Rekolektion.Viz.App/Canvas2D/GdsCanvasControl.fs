@@ -1217,15 +1217,23 @@ type GdsCanvasControl() as this =
     // against every implant marker) and don't change unless
     // the underlying flat changes.
     //
-    // Cache invariant: if `cachedDrcFlat` references the same
-    // array as `this.FlatPolygons`, the cached violations and
-    // tags are valid. Any property change that produces a new
-    // FlatPolygons array invalidates the cache automatically
-    // by identity mismatch.
+    // Cache invariant: cached violations + tags are valid when
+    // `cachedDrcFlat` references the same array as
+    // `this.FlatPolygons` AND `cachedDrcDisabled` equals the
+    // current disabled-rule set AND `cachedDrcCompat` matches the
+    // active compat AND `cachedDrcView` references the same
+    // `RulesetView` instance.  The last two were added so the
+    // Mode-menu DRC-compat toggle invalidates the cache at
+    // runtime — without them, flipping Magic ↔ KLayout in a
+    // running session returned stale violations from whichever
+    // compat ran the first DRC pass.  Initial values are placeholders;
+    // first frame's flat-identity mismatch fires the refresh.
     let mutable cachedDrcFlat : FlatPolygon array = [||]
     let mutable cachedDrcViolations : Drc.Check.Violation array = [||]
     let mutable cachedDrcImplantTags : Drc.Implant.ImplantTags array = [||]
     let mutable cachedDrcDisabled : Set<string> = Set.empty
+    let mutable cachedDrcCompat : Drc.Compat.Compat = Drc.Compat.Klayout
+    let mutable cachedDrcView : Drc.Rules.RulesetView = Drc.Rules.defaultView
     /// ADR-0003 — violations from the live DRC pass against the
     /// current draft route. Recomputed in OnPropertyChanged when
     /// DraftRoute changes; consumed by SkiaDraw to paint red
@@ -4318,23 +4326,31 @@ type GdsCanvasControl() as this =
                     // region + halo (drag-affected area). Concat.
                     let disabled = this.DisabledDrcRules
                     let staticFlat = this.FlatPolygons
+                    let compat = this.DrcCompat
+                    let view = this.DrcView
                     // Refresh cache if the static flat changed
-                    // identity OR the disabled-rules set changed.
+                    // identity OR the disabled-rules set changed
+                    // OR the compat / view changed (Mode-menu
+                    // toggle).
                     let cacheValid =
                         obj.ReferenceEquals(cachedDrcFlat, staticFlat)
                         && cachedDrcDisabled = disabled
+                        && cachedDrcCompat = compat
+                        && obj.ReferenceEquals(cachedDrcView, view)
                     if not cacheValid then
                         let tags = Drc.Implant.tagAll staticFlat
                         let vs =
                             Drc.Check.checkWithToggles
-                                this.DrcCompat
+                                compat
                                 true      // full: canvas keeps LU.*-class checks visible
-                                this.DrcView
+                                view
                                 lib.Units staticFlat tags disabled
                         cachedDrcFlat <- staticFlat
                         cachedDrcImplantTags <- tags
                         cachedDrcViolations <- vs
                         cachedDrcDisabled <- disabled
+                        cachedDrcCompat <- compat
+                        cachedDrcView <- view
                     let drcDragActive =
                         dragLiveLib.IsSome
                         && (dragKind = PolygonDrag

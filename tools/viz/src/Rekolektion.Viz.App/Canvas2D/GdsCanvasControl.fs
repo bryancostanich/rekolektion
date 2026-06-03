@@ -3811,20 +3811,29 @@ type GdsCanvasControl() as this =
         // Also stash the hovered snap target whenever the wire tool
         // is active so the renderer can paint a hint circle at
         // valid start/end points before the user clicks.
-        if this.RoutingMode || (this.DraftRoute).IsSome then
+        if this.RoutingMode || this.ViaMode || (this.DraftRoute).IsSome then
             let swTotal = System.Diagnostics.Stopwatch.StartNew()
             let swScreen = System.Diagnostics.Stopwatch.StartNew()
             let (wx, wy) = this.ScreenToWorld p
             swScreen.Stop()
             let swTargets = System.Diagnostics.Stopwatch.StartNew()
-            // Same filter as the press path (above): hide foreign-net
-            // pins from the hover/snap pass while a draft is active
-            // so the user sees only valid termination targets glow.
+            // Wire mode + in-flight draft: hide foreign-net pins so
+            // only valid termination targets glow.
+            // Via mode: filter to "strictly below ActiveLayer" so
+            // the hover circle matches exactly what V-tool commit
+            // would land on — pins on or above the active layer
+            // don't light up.
             let targets =
                 let raw = this.SnapTargets ()
-                match this.DraftRoute with
-                | Some d -> Routing.Snap.forStartNet d.StartNet raw
-                | None -> raw
+                if this.ViaMode then
+                    match this.ActiveLayer with
+                    | Some (topN, _) ->
+                        raw |> Array.filter (fun t -> t.Layer < topN)
+                    | None -> raw
+                else
+                    match this.DraftRoute with
+                    | Some d -> Routing.Snap.forStartNet d.StartNet raw
+                    | None -> raw
             let snapCacheHit =
                 obj.ReferenceEquals(cachedSnapTargetsFor, this.FlatPolygons)
             swTargets.Stop()

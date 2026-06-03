@@ -137,11 +137,10 @@ let ``cached violations match a fresh checkWithToggles call`` () =
     let cached =
         StaticCache.get cache Compat.Klayout
             Rules.Klayout.defaultView units1nm flat Set.empty
-    let tags = Implant.tagAll flat
     let fresh =
         Check.checkWithToggles
             Compat.Klayout true Rules.Klayout.defaultView
-            units1nm flat tags Set.empty
+            units1nm flat Set.empty
     cached
     |> Array.map (fun v -> v.Rule, v.MeasuredDbu)
     |> should equal (fresh |> Array.map (fun v -> v.Rule, v.MeasuredDbu))

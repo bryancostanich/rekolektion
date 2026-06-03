@@ -4382,12 +4382,11 @@ type GdsCanvasControl() as this =
                             // drag without instance context).
                             // Fall back to full recompute on the
                             // live state — slow but correct.
-                            let tags = Drc.Implant.tagAll renderFlat
                             Drc.Check.checkWithToggles
                                 this.DrcCompat
                                 true      // full: canvas keeps LU.*-class checks visible
                                 this.DrcView
-                                renderLib.Units renderFlat tags disabled
+                                renderLib.Units renderFlat disabled
                         else
                             // Affected = union bbox of all
                             // selected instances' areas.
@@ -4437,14 +4436,12 @@ type GdsCanvasControl() as this =
                                 renderFlat
                                 |> Array.filter (fun p ->
                                     overlapsAffected (polyBb p))
-                            let smallTags =
-                                Drc.Implant.tagAll smallFlat
                             let fresh =
                                 Drc.Check.checkWithToggles
                                     this.DrcCompat
                                     true      // full: canvas keeps LU.*-class checks visible
                                     this.DrcView
-                                    renderLib.Units smallFlat smallTags disabled
+                                    renderLib.Units smallFlat disabled
                             Array.append kept fresh
                 else
                     [||]

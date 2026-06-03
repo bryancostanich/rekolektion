@@ -296,9 +296,16 @@ let checkWithToggles
         (view: Rules.RulesetView)
         (units: Units)
         (flat: FlatPolygon array)
-        (tags: Implant.ImplantTags array)
         (disabledRules: Set<string>)
         : Violation array =
+    // Apply implant close + compute tags from the post-close flat.
+    // Both used to live one frame up in `Check.check`; the canvas
+    // and live-DRC paths bypassed them and produced extra
+    // `nsdm.1` / `psdm.1` fires under Magic-compat (Track 02
+    // follow-up #2).  Klayout-compat short-circuits inside
+    // `applyImplantClose` so the cost is zero under the default.
+    let flat = Implant.applyImplantClose compat flat
+    let tags = Implant.tagAll flat
     let umPerDbu = umPerDbuOf units
     let raw = System.Collections.Generic.List<Violation>()
     let result = raw
@@ -1395,95 +1402,16 @@ let checkWithToggles
                   BboxA = (cx1, cy1, cx2, cy2)
                   BboxB = None }))
 
-/// SKY130 sign-off pre-processing for implant layers.
-///
-/// Magic's `sky130B.tech` (lines 838–871) treats NSDM/PSDM as
-/// CIF-processed layers, not silicon-truth inputs:
-///
-/// ```
-/// templayer extendNSDM  baseNSDM
-///     bridge  380 380             ← merges NSDM rects ≤380 nm apart
-///     and-not basePSDM
-/// layer NSDM baseNSDM,extendNSDM
-///     grow    185
-///     shrink  185
-///     close   265000
-/// ```
-///
-/// Spacing rules apply to the post-processed silicon — the input
-/// rects are intentionally drawn with small gaps that get bridged.
-/// Running a raw `nsdm.2` spacing check on input rects produces
-/// false positives at every legitimate sub-380 nm gap (e.g. two
-/// abutting nfet primitives whose own nsdm rects sit 20 nm apart,
-/// j_az_col.rkt 2026-05-31).
-///
-/// This step models the magic pipeline at the boolean-region
-/// level: morphological close at radius (bridgeDistance / 2)
-/// bridges any gap ≤ bridgeDistance. The 185-nm grow/shrink halo
-/// and 265 µm pinch-close are deferred — those affect outer-edge
-/// position by ≤185 nm, far below the violation threshold for the
-/// spacing rules they gate, so we leave them out until a regression
-/// test demands them.
-///
-/// Returns the rebuilt `FlatPolygon array` with implant layers
-/// replaced by their post-close polygons. Other layers pass
-/// through unchanged.
-let private applyImplantClose
-        (compat: Compat.Compat)
-        (flat: FlatPolygon array) : FlatPolygon array =
-    // KLayout external doesn't apply this preprocessing — `nsdm.1` /
-    // `psdm.1` spacing fires on the literal gap regardless of any
-    // grow-merge intuition.  Under `Compat.Klayout` we bypass the
-    // closure so F# Klayout matches that semantics.  Magic-compat
-    // keeps the grow-shrink to match Magic external's view of an
-    // implant region as one merged feature.
-    if compat = Compat.Klayout then flat else
-    let nsdmKey = (93, 44)
-    let psdmKey = (94, 20)
-    let bridgeRadius = 190L   // close at 190 nm bridges any gap ≤380 nm
-    let closeLayer ((num, dt): int * int) (polys: FlatPolygon array)
-            : FlatPolygon array =
-        if polys.Length = 0 then polys
-        else
-            let region = Geometry.Region.ofPolygons polys
-            let closed =
-                region
-                |> Geometry.Size.grow bridgeRadius
-                |> Geometry.Size.shrink bridgeRadius
-            // Re-emit as FlatPolygons on the original layer. Source
-            // tracking is lost in the boolean-region round-trip, so
-            // we tag the result with a "drc-closed" structure name
-            // for diagnostics.
-            Geometry.Region.toPolygons num dt closed
-            |> Array.mapi (fun i p ->
-                { p with
-                    SourceStructure = "drc-implant-closed"
-                    SourceIndex = i
-                    TopInstanceIndex = None })
-    let groupByKey (key: int * int) =
-        flat |> Array.filter (fun p ->
-            p.Layer = fst key && p.DataType = snd key)
-    let nsdmIn = groupByKey nsdmKey
-    let psdmIn = groupByKey psdmKey
-    let nsdmOut = closeLayer nsdmKey nsdmIn
-    let psdmOut = closeLayer psdmKey psdmIn
-    let other =
-        flat
-        |> Array.filter (fun p ->
-            not (p.Layer = fst nsdmKey && p.DataType = snd nsdmKey)
-            && not (p.Layer = fst psdmKey && p.DataType = snd psdmKey))
-    Array.concat [ other; nsdmOut; psdmOut ]
-
-/// Entry point that computes implant tags internally and runs
-/// the full check with no rule toggles. Tests and callers without
-/// a tag pipeline call this; the canvas uses `checkWithToggles`
-/// directly so the tag computation is shared with other consumers.
+/// Entry point that runs the full check with no rule toggles.
+/// Trivial wrapper around `checkWithToggles` — kept as a named
+/// entry for tests and CLI callers that don't carry a disabled
+/// rule set.
 ///
 /// `compat` selects which authority's rules / semantics drive the
 /// check — Klayout default, Magic permanent alternate. Applies to
-/// `applyImplantClose` (skipped under Klayout, run under Magic),
-/// the per-rule emit style (edge-counting under Klayout, polygon
-/// under Magic, for the enclosure family), and post-pass
+/// `Implant.applyImplantClose` (skipped under Klayout, run under
+/// Magic), the per-rule emit style (edge-counting under Klayout,
+/// polygon under Magic, for the enclosure family), and post-pass
 /// clustering (skipped for rules that emit one-per-edge).
 let check
         (compat: Compat.Compat)
@@ -1492,9 +1420,7 @@ let check
         (units: Units)
         (flat: FlatPolygon array)
         : Violation array =
-    let flat = applyImplantClose compat flat
-    let tags = Implant.tagAll flat
-    checkWithToggles compat full view units flat tags Set.empty
+    checkWithToggles compat full view units flat Set.empty
 
 /// ADR-0003 — precompute the cross-net overlap violations within
 /// the cell itself (no draft involved). O(N²) over `cellFlat` so
@@ -1674,10 +1600,11 @@ let runLiveWithIndexTimed
     timings.RegionFilterCount <- regionFiltered.Length
     timings.CombinedCount <- combined.Length
 
-    phaseSw.Restart()
-    let tags = Implant.tagAll combined
-    phaseSw.Stop()
-    timings.TagAllMs <- phaseSw.ElapsedMilliseconds
+    // `checkWithToggles` now does its own `applyImplantClose` +
+    // `Implant.tagAll`; the standalone `TagAllMs` phase folds into
+    // the standard-rule phase below (close + tag + iterate).  Kept
+    // as 0 for legacy log readers.
+    timings.TagAllMs <- 0L
 
     phaseSw.Restart()
     let nonLiveDisabled =
@@ -1686,7 +1613,7 @@ let runLiveWithIndexTimed
         |> List.map Rules.nameOf
         |> Set.ofList
     let disabled' = Set.union disabledRules nonLiveDisabled
-    let standardViolations = checkWithToggles compat full view units combined tags disabled'
+    let standardViolations = checkWithToggles compat full view units combined disabled'
     phaseSw.Stop()
     timings.StandardMs <- phaseSw.ElapsedMilliseconds
 

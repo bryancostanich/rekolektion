@@ -49,10 +49,12 @@ let get
     if valid then
         cache.Violations
     else
-        let tags = Implant.tagAll flat
+        // `checkWithToggles` does its own implant-close + tagAll;
+        // the cache just owns the (compat, view, flat, disabled)
+        // identity tuple and the resulting violation array.
         let vs =
             Check.checkWithToggles
-                compat true view units flat tags disabled
+                compat true view units flat disabled
         cache.Flat       <- flat
         cache.Disabled   <- disabled
         cache.Compat     <- compat

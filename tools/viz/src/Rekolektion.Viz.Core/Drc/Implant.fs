@@ -126,3 +126,85 @@ let tagAll (flat: FlatPolygon array) : ImplantTags array =
 /// after tagging).
 let tagOf (tags: ImplantTags array) (i: int) : ImplantTags =
     if i >= 0 && i < tags.Length then tags.[i] else emptyTags
+
+/// SKY130 sign-off pre-processing for implant layers.
+///
+/// Magic's `sky130B.tech` (lines 838–871) treats NSDM/PSDM as
+/// CIF-processed layers, not silicon-truth inputs:
+///
+/// ```
+/// templayer extendNSDM  baseNSDM
+///     bridge  380 380             ← merges NSDM rects ≤380 nm apart
+///     and-not basePSDM
+/// layer NSDM baseNSDM,extendNSDM
+///     grow    185
+///     shrink  185
+///     close   265000
+/// ```
+///
+/// Spacing rules apply to the post-processed silicon — the input
+/// rects are intentionally drawn with small gaps that get bridged.
+/// Running a raw `nsdm.2` spacing check on input rects produces
+/// false positives at every legitimate sub-380 nm gap (e.g. two
+/// abutting nfet primitives whose own nsdm rects sit 20 nm apart,
+/// j_az_col.rkt 2026-05-31).
+///
+/// This step models the magic pipeline at the boolean-region
+/// level: morphological close at radius (bridgeDistance / 2)
+/// bridges any gap ≤ bridgeDistance. The 185-nm grow/shrink halo
+/// and 265 µm pinch-close are deferred — those affect outer-edge
+/// position by ≤185 nm, far below the violation threshold for the
+/// spacing rules they gate, so we leave them out until a regression
+/// test demands them.
+///
+/// Returns the rebuilt `FlatPolygon array` with implant layers
+/// replaced by their post-close polygons. Other layers pass
+/// through unchanged.
+///
+/// Track 02 follow-up #2 — moved here from Check.fs so
+/// `checkWithToggles` can call it directly.  Was previously only
+/// applied by the higher-level `Check.check` entry point; the
+/// canvas + live-DRC paths called `checkWithToggles` directly and
+/// silently skipped the close, producing extra `nsdm.1` / `psdm.1`
+/// fires on layouts with abutting primitive rects under
+/// Magic-compat.  Under Klayout-compat the function is a no-op
+/// (the KLayout deck spacing rules fire on the literal gap).
+let applyImplantClose
+        (compat: Compat.Compat)
+        (flat: FlatPolygon array) : FlatPolygon array =
+    if compat = Compat.Klayout then flat else
+    let nsdmKey = (93, 44)
+    let psdmKey = (94, 20)
+    let bridgeRadius = 190L   // close at 190 nm bridges any gap ≤380 nm
+    let closeLayer ((num, dt): int * int) (polys: FlatPolygon array)
+            : FlatPolygon array =
+        if polys.Length = 0 then polys
+        else
+            let region = Geometry.Region.ofPolygons polys
+            let closed =
+                region
+                |> Geometry.Size.grow bridgeRadius
+                |> Geometry.Size.shrink bridgeRadius
+            // Re-emit as FlatPolygons on the original layer. Source
+            // tracking is lost in the boolean-region round-trip, so
+            // we tag the result with a "drc-closed" structure name
+            // for diagnostics.
+            Geometry.Region.toPolygons num dt closed
+            |> Array.mapi (fun i p ->
+                { p with
+                    SourceStructure = "drc-implant-closed"
+                    SourceIndex = i
+                    TopInstanceIndex = None })
+    let groupByKey (key: int * int) =
+        flat |> Array.filter (fun p ->
+            p.Layer = fst key && p.DataType = snd key)
+    let nsdmIn = groupByKey nsdmKey
+    let psdmIn = groupByKey psdmKey
+    let nsdmOut = closeLayer nsdmKey nsdmIn
+    let psdmOut = closeLayer psdmKey psdmIn
+    let other =
+        flat
+        |> Array.filter (fun p ->
+            not (p.Layer = fst nsdmKey && p.DataType = snd nsdmKey)
+            && not (p.Layer = fst psdmKey && p.DataType = snd psdmKey))
+    Array.concat [ other; nsdmOut; psdmOut ]

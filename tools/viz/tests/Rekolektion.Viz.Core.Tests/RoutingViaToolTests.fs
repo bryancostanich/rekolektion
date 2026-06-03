@@ -118,29 +118,85 @@ let ``met3 li1 under Magic view emits the full 6-segment stack`` () =
     layers |> should contain met3
 
 [<Fact>]
-let ``met3 li1 under Klayout view emits a partial 4-segment stack`` () =
-    // Documents the gap that surfaced as 'V tool didn't work'
-    // on 2026-06-03: under the Klayout view the via2 width +
-    // met2/met3 enclosures aren't defined, so the V tool would
-    // silently drop a partial 4-rect stack with no via2 contact
-    // and no met3 top pad.  Update.fs avoids the bug by always
-    // emitting against Magic.defaultView; this test is the
-    // canary that catches a regression if anyone switches it
-    // back.
+let ``met3 li1 under Klayout view emits the full 6-segment stack`` () =
+    // Originally documented as the gap that surfaced as 'V tool
+    // didn't work' on 2026-06-03: under the Klayout view the via2
+    // width + met2/met3 enclosures weren't defined, so the V tool
+    // silently dropped a partial 4-rect stack with no via2 contact
+    // and no met3 top pad.  Fixed in `Rules.fs` by adding `via2.1`,
+    // `via2.2`, `via2.4`, `via2.5` to `Rules.Klayout.allRules` —
+    // PDK thresholds are identical on both compats so the values
+    // copy verbatim from the Magic block.  Forward-looking
+    // regression guard: the Klayout view must now match the Magic
+    // view's full 6-segment emit.
     let segs =
         ViaTool.emitStandaloneAt
             Rules.Klayout.defaultView testUnits li1 met3 0L 0L
-    segs |> List.length |> should equal 4
+    segs |> List.length |> should equal 6
     let layers = segs |> List.map (fun s -> s.Layer) |> List.distinct |> List.sort
-    // Lower-stack survives because mcon / via1 / met1 / met2
-    // rules ARE in the Klayout view.
     layers |> should contain mcon
     layers |> should contain via1
+    layers |> should contain via2
     layers |> should contain met1
     layers |> should contain met2
-    // Missing under Klayout — drives the user-visible breakage.
-    layers |> should not' (contain via2)
-    layers |> should not' (contain met3)
+    layers |> should contain met3
+
+// ─────────────────────────────────────────────────────────────────
+// Min-area floor — every metal pad must be at least sqrt(MinArea)
+// on a side, otherwise the standalone via fails min-area DRC.  The
+// wire-route path skates by because the wire body extends past the
+// pad and adds area; a standalone V-tool via has no wire body to
+// pick up the slack.  Reported 2026-06-03: user clicked V at met3
+// active, got a met3 pad of 390 nm (200 + 2*95 enclosure-driven)
+// vs the met3.6 min-area floor of ~490 nm (sqrt 0.240 µm²).
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``met3 top pad floors at sqrt(met3.6 min-area)`` () =
+    let segs =
+        ViaTool.emitStandaloneAt
+            Rules.Magic.defaultView testUnits li1 met3 0L 0L
+    let met3Seg = segs |> List.find (fun s -> s.Layer = met3)
+    // met3.6 = 0.240 µm² → side ≥ 0.4899 µm.  With DbuNm = 1 that's
+    // 490 DBU after Math.Ceiling.  Pure enclosure would give
+    // 200 + 2*95 = 390 DBU — the regression the floor catches.
+    met3Seg.SideDbu |> should be (greaterThanOrEqualTo 490L)
+
+[<Fact>]
+let ``met2 pad already satisfies min-area without the floor needing to kick in`` () =
+    // Documents that the floor is layer-specific: met2.6 = 0.0676 µm²
+    // → side ≥ 260 nm.  Enclosure-driven met2 pad (via2 = 200 nm +
+    // 2*85 = 370 nm or via1 = 150 + 2*85 = 320 nm, whichever
+    // dominates) sails past that.  So the met2 segment's side is
+    // STILL exactly `padSideForVia met2 vMax` — the floor is a
+    // no-op here, and the test pins that so a future overzealous
+    // floor doesn't bloat layers that don't need it.
+    let segs =
+        ViaTool.emitStandaloneAt
+            Rules.Magic.defaultView testUnits li1 met3 0L 0L
+    let met2Seg = segs |> List.find (fun s -> s.Layer = met2)
+    let viaBased =
+        max
+            (ViaStack.padSideForVia Rules.Magic.defaultView testUnits met2 via1
+             |> Option.defaultValue 0L)
+            (ViaStack.padSideForVia Rules.Magic.defaultView testUnits met2 via2
+             |> Option.defaultValue 0L)
+    met2Seg.SideDbu |> should equal viaBased
+
+[<Fact>]
+let ``via cuts pass through the floor untouched`` () =
+    // Vias / contacts on dataType 44 have their own Width rule; the
+    // metal min-area floor doesn't apply to them.  Without this
+    // guard the floor could accidentally bloat a mcon cut from
+    // 170 nm up to met1's 290 nm min-area side or similar.
+    let segs =
+        ViaTool.emitStandaloneAt
+            Rules.Magic.defaultView testUnits li1 met3 0L 0L
+    let mconSeg = segs |> List.find (fun s -> s.Layer = mcon)
+    // mcon width per `ct.1_a` / `mcon.1` = 0.17 µm = 170 nm with
+    // DbuNm = 1.  Pin the expected size directly so the test
+    // doesn't have to muck with rule-list pattern matching.
+    mconSeg.SideDbu |> should equal 170L
 
 [<Fact>]
 let ``emitStandaloneAt top pad has same side as padSideForVia`` () =

@@ -2626,6 +2626,18 @@ type GdsCanvasControl() as this =
             let radiusDbu =
                 int64 (20.0 / max pixelsPerDbu 0.0001)
             let cb = this.ViaToolCommitHandler
+            // Always log the press, even when the handler is null —
+            // that's how we tell "click reached the canvas but the
+            // dispatch wasn't wired" apart from "click never
+            // reached the canvas at all". Reported 2026-06-03:
+            // user reports no via dropped, the log has no
+            // ViaToolCommit msg.
+            Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                {| op = "press"
+                   x = int64 wx
+                   y = int64 wy
+                   radiusDbu = radiusDbu
+                   handlerWired = not (isNull cb) |}
             if not (isNull cb) then
                 cb.Invoke(int64 wx, int64 wy, radiusDbu)
             e.Handled <- true

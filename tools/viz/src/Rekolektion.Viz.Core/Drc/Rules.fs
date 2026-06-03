@@ -772,6 +772,21 @@ module Klayout =
         Width   ("m3.1", met3, 0.30)
         Spacing ("m3.2", met3, 0.30)
         MinArea ("m3.6", met3, 0.240)   // 0.240 µm² min area
+        // --- via2 (met2↔met3) ---
+        //
+        // PDK thresholds are identical on both compats; copying
+        // Magic-side values verbatim (lines 521-534).  KLayout deck
+        // doesn't define a symmetric via2 enclosure (no `via2.4a`
+        // equivalent), so only the asymmetric pair lands here.
+        // The viz V tool queries enclosure rules out of the active
+        // RulesetView to build the via stack — without these the
+        // met2→met3 segments of a met3 click are dropped silently.
+        Width   ("via2.1", via2, 0.20)  // min via2 width
+        Spacing ("via2.2", via2, 0.20)  // min via2 spacing
+        // via2.4 — met2 encloses via2. Asymmetric: 0.04 alt, 0.085 main.
+        AsymEnclosure ("via2.4", met2, via2, 0.085, 0.04, Always)
+        // via2.5 — met3 encloses via2. Asymmetric: 0.065 alt, 0.095 main.
+        AsymEnclosure ("via2.5", met3, via2, 0.095, 0.065, Always)
         // --- Local interconnect (li1) ---
         Width   ("li.1", li1,  0.17)
         Spacing ("li.3", li1,  0.17)

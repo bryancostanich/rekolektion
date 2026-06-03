@@ -1162,24 +1162,19 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     // met1→li1 click would drop just the mcon cut
                     // and look invisible.  Headless test coverage
                     // in `RoutingViaToolTests`.
-                    // Use the FULL (Magic) view for via emission
-                    // regardless of `model.DrcView`. The two views
-                    // are orthogonal: V tool builds geometry, the
-                    // canvas's DRC overlay picks which authority's
-                    // rules to evaluate against.  Under
-                    // `Compat.Klayout` (the default) the user's
-                    // view is missing Width rules for via2 / via3
-                    // and the matching met3/met4 enclosures, so a
-                    // met3 → li1 click would drop a 4-rect partial
-                    // stack with no via2 cut and no top pad.
-                    // Reported 2026-06-03 — user clicked V, saw the
-                    // contact dots, said "still didn't work".  See
-                    // RoutingViaToolTests `KlayoutView` cases for the
-                    // partial-emit reproduction and the Magic-view
-                    // baseline.
+                    // Honor the user's active DRC view — the V tool
+                    // queries Width + Enclosure rules out of it to
+                    // size each segment of the stack.  Earlier
+                    // workaround (commit 6514bea) hard-coded the
+                    // Magic view because the Klayout view was
+                    // missing via2 rules; that hole is closed in
+                    // `Rules.Klayout.allRules` so the workaround
+                    // can come back out.  User overrides via YAML
+                    // (loaded into `model.DrcView` at boot) now
+                    // flow through to via emission.
                     let viaSegs =
                         Routing.ViaTool.emitStandaloneAt
-                            Rekolektion.Viz.Core.Drc.Rules.defaultView
+                            model.DrcView
                             mc.Document.Units
                             bottomLayer topLayer
                             snap.X snap.Y

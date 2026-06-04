@@ -95,29 +95,46 @@ Explicitly removed in this redesign:
 
 ### 2. Priority
 
-The resolver picks at most one outcome per click:
+The resolver picks at most one outcome per click.  Point and
+axis snaps **compete on actual cursor-to-snap-point Euclidean
+distance** — closer wins.  This is the Figma / Illustrator
+behaviour: alignment lines win when they pull less than an
+anchor point would.
 
 - 2.1 — **Alt** wins over everything.  If held, skip resolve and
   return a raw-cursor snap (or `None` if active layer would make
   a via impossible — see rule 3).
-- 2.2 — **Point snaps** win over line snaps.  If any pin / wire
-  endpoint / knuckle center is within radius, the nearest one
-  (Euclidean cursor-to-point) is the snap.  Ties: pin > wire
-  endpoint > knuckle center (stable order; matters only at
-  exact-tie distances).
-- 2.3 — **Line snaps combine across axes.**  When no point snap
-  fires, X and Y are solved independently.
+- 2.2 — **Compute the best point snap.**  Cursor-to-point
+  Euclidean distance, nearest pin / knuckle centre / wire
+  endpoint within the 8 px radius.
+- 2.3 — **Compute the best axis snap.**  X and Y solved
+  independently:
   - X axis: nearest of (vertical guides, vertical wire
     centerlines) within perpendicular radius.  If none, X stays
     at cursor.
   - Y axis: nearest of (horizontal guides, horizontal wire
     centerlines) within perpendicular radius.  If none, Y stays
     at cursor.
-- 2.4 — At least one axis must snap (or a point must fire) to
+  The resolved axis snap point is `(snapX, snapY)`; the
+  axis-snap distance is the Euclidean cursor-to-snap-point
+  distance from that point.
+- 2.4 — **Pick whichever has the smaller distance.**  Tie goes
+  to the point snap (stable order; matches "snap exactly to the
+  labelled thing when both are equally close").
+- 2.5 — At least one axis must snap (or a point must fire) to
   count as a snap.  If neither axis has a line source within
   radius and no point fires, the resolver returns `None` — no
   via is placed.  (Alt is the escape hatch for "I really want
   the cursor position".)
+
+> Worked example: cursor at (2510, 2400), radius 64.  A wire
+> endpoint sits at (2530, 2405) — Euclidean distance ~21.  A
+> vertical guide at X = 2495 — perpendicular distance 15, axis
+> snap point (2495, 2400), distance 15.  15 < 21 → guide AxisX
+> wins, even though both are within radius.  Pre-2.4 the wire
+> endpoint would have stolen the snap because point snaps
+> categorically beat axis snaps; that produced the user's "vias
+> aren't snapping to guidelines" report.
 
 ### 3. Layer rules
 
@@ -184,4 +201,5 @@ the toolbar's active layer.
 | Date | Commit / PR | Change |
 |---|---|---|
 | 2026-06-04 | `ddc4905` | Initial spec — pin radius 8 px, single-winner with knuckle / pin / guide priority. |
-| 2026-06-04 | (this commit) | Full rewrite of the snap model to match Figma / Illustrator / AutoCAD convention.  Removed bbox-containment centroid pull (root cause of "super coarse" feel).  Added per-axis combination (X from one source, Y from another).  Added Alt-to-suppress.  Knuckle / wire snaps now require cursor to be near a specific candidate point (center, endpoint, centerline) within the 8 px radius — not just inside the rect's bbox. |
+| 2026-06-04 | `b490165` | Full rewrite of the snap model to match Figma / Illustrator / AutoCAD convention.  Removed bbox-containment centroid pull (root cause of "super coarse" feel).  Added per-axis combination (X from one source, Y from another).  Added Alt-to-suppress.  Knuckle / wire snaps now require cursor to be near a specific candidate point (center, endpoint, centerline) within the 8 px radius — not just inside the rect's bbox. |
+| 2026-06-04 | (this commit) | Priority rule 2 changed: point and axis snaps now compete on actual cursor-to-snap-point Euclidean distance (closer wins) rather than point-always-beats-axis.  Was: a wire endpoint near the cursor would always steal the snap from a closer guide line.  Now: the guide AxisX wins whenever its perpendicular distance is smaller than the endpoint's Euclidean distance.  Resolves the "vias aren't snapping to guidelines" report — the resolver was finding nearby wire endpoints and short-circuiting before evaluating the guide axis. |

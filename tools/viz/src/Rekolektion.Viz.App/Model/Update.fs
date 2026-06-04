@@ -1151,11 +1151,32 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 match snapOpt with
                 | None ->
                     Rekolektion.Viz.App.Services.Logger.log "via.tool"
-                        {| op = "no-snap"; x = worldX; y = worldY |}
+                        {| op = "no-snap"
+                           x = worldX
+                           y = worldY
+                           radiusDbu = radiusDbu
+                           altHeld = altHeld
+                           activeLayerN =
+                               activeTopOpt
+                               |> Option.map fst
+                               |> Option.defaultValue 0
+                           guidesCount = List.length mc.Document.Guides
+                           pinCount = Array.length allTargets
+                           flatPolyCount = Array.length mc.FlatPolygons |}
                     model, Cmd.none
                 | Some snap ->
                     let topLayer = Routing.ViaTool.pickTopLayer activeTopOpt snap
                     let bottomLayer = snap.Layer
+                    Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                        {| op = "resolved"
+                           x = worldX
+                           y = worldY
+                           snapX = snap.X
+                           snapY = snap.Y
+                           snapKind = sprintf "%A" snap.Kind
+                           snapLayerN = fst snap.Layer
+                           guidesCount = List.length mc.Document.Guides
+                           altHeld = altHeld |}
                     // `emitStandaloneAt` wraps ViaStack.emitAt and
                     // ALSO synthesizes the top (wire-layer) pad —
                     // emitAt omits that pad because the wire commit

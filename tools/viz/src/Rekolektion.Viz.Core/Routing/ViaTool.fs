@@ -342,26 +342,24 @@ let resolveSnap
     else
     let pointCands, lineCands =
         gatherCandidates topLayerOpt targets guides flatPolys
-    // ── Step 1: nearest point candidate within radius ────────
     let rSq = radiusDbu * radiusDbu
-    let pointHit =
+    // ── Best POINT snap (Euclidean to candidate) ──────────────
+    let pointResult : (Snap * int64) option =
         pointCands
         |> List.choose (fun pc ->
             let d = distSq (pc.X - cursorX) (pc.Y - cursorY)
             if d <= rSq then Some (pc, d) else None)
         |> List.sortBy (fun (_, d) -> d)
         |> List.tryHead
-    match pointHit with
-    | Some (pc, _) ->
-        Some { X = pc.X; Y = pc.Y
-               Layer = pc.Layer
-               Net = pc.Net
-               Kind = pc.Kind }
-    | None ->
-    // ── Step 2: per-axis line snap ──────────────────────────
-    // Guides are only usable when the caller gave us an active
-    // layer ≥ met1; we'll use activeLayer - 1 as the bottom for
-    // guide-only axes.  Wire centerlines carry their own layer.
+        |> Option.map (fun (pc, d) ->
+            { X = pc.X; Y = pc.Y
+              Layer = pc.Layer
+              Net = pc.Net
+              Kind = pc.Kind }, d)
+    // ── Best AXIS snap (Euclidean to resolved point) ─────────
+    // Guides need an implied bottom layer (activeLayer - 1) so
+    // they're only usable when active layer ≥ met1.  Wire
+    // centerlines carry their own layer and are always usable.
     let guideBottom : (int * int) option =
         match topLayerOpt with
         | Some (n, dt) when n > 67 -> Some (n - 1, dt)
@@ -370,9 +368,7 @@ let resolveSnap
         lineCands
         |> List.choose (fun lc ->
             if lc.Axis <> axis then None
-            elif not lc.IsWire && guideBottom.IsNone then
-                // Guide line but no active-layer top → unusable.
-                None
+            elif not lc.IsWire && guideBottom.IsNone then None
             else
                 let cursorOnAxis =
                     match axis with
@@ -384,11 +380,6 @@ let resolveSnap
         |> List.tryHead
     let xHit = nearestLine Vertical    // contributes X
     let yHit = nearestLine Horizontal  // contributes Y
-    // Pick a bottom layer for the composite axis snap.  A wire
-    // contributes a real metal; a guide contributes none.  When
-    // both axes fire, prefer a wire's layer over a guide's
-    // default; if both are wires, prefer the lower layer (closer
-    // to the snap source the user is visibly aiming at).
     let pickLayer (hits : LineCandidate list) : (int * int) option =
         let wireLayers =
             hits |> List.filter (fun lc -> lc.IsWire) |> List.map (fun lc -> lc.Layer)
@@ -397,22 +388,37 @@ let resolveSnap
         | xs -> Some (xs |> List.minBy fst)
     let xLine = xHit |> Option.map fst
     let yLine = yHit |> Option.map fst
-    let activeHits =
-        [ xLine; yLine ] |> List.choose id
+    let activeHits = [ xLine; yLine ] |> List.choose id
     let layerOpt = pickLayer activeHits
-    match xLine, yLine, layerOpt with
-    | Some x, Some y, Some layer ->
-        Some { X = x.Coord; Y = y.Coord
-               Layer = layer; Net = ""; Kind = AxisCross }
-    | Some x, None, Some layer ->
-        Some { X = x.Coord; Y = cursorY
-               Layer = layer; Net = ""; Kind = AxisX }
-    | None, Some y, Some layer ->
-        Some { X = cursorX; Y = y.Coord
-               Layer = layer; Net = ""; Kind = AxisY }
-    | _ ->
-        // No point hit, no usable axis hit → no snap (rule 2.4).
-        None
+    let axisResult : (Snap * int64) option =
+        match xLine, yLine, layerOpt with
+        | Some x, Some y, Some layer ->
+            let dx = x.Coord - cursorX
+            let dy = y.Coord - cursorY
+            let d = distSq dx dy
+            Some ({ X = x.Coord; Y = y.Coord
+                    Layer = layer; Net = ""; Kind = AxisCross }, d)
+        | Some x, None, Some layer ->
+            let dx = x.Coord - cursorX
+            let d = distSq dx 0L
+            Some ({ X = x.Coord; Y = cursorY
+                    Layer = layer; Net = ""; Kind = AxisX }, d)
+        | None, Some y, Some layer ->
+            let dy = y.Coord - cursorY
+            let d = distSq 0L dy
+            Some ({ X = cursorX; Y = y.Coord
+                    Layer = layer; Net = ""; Kind = AxisY }, d)
+        | _ -> None
+    // ── Pick nearer of point vs axis ─────────────────────────
+    // Squared Euclidean distances compare directly (monotone).
+    // Ties go to point snap (stable; matches the user's "snap
+    // to the labelled thing exactly when both are equally close"
+    // intuition).
+    match pointResult, axisResult with
+    | Some (p, dp), Some (_, da) when dp <= da -> Some p
+    | Some (p, _),  None                       -> Some p
+    | _, Some (a, _)                           -> Some a
+    | None, None                               -> None
 
 /// Pick the via-stack top layer per the V-tool rule: prefer the
 /// caller's `topLayerOpt` (toolbar's ActiveLayer) when present,

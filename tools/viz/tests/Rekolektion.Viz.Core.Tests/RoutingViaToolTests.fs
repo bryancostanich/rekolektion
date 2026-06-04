@@ -365,19 +365,36 @@ let ``non-routing rect: never generates snap candidates`` () =
 // ─────────────────────────────────────────────────────────────────
 
 [<Fact>]
-let ``wire endpoint: cursor near left tip wins as point snap`` () =
-    // Horizontal met1 wire (0..1000, 0..100) — endpoints at
-    // (0, 50) and (1000, 50).  Cursor at (3, 48) is ~3 dbu from
-    // the left tip.  Radius 50 → endpoint wins.
+let ``wire endpoint: cursor exactly at tip yields point snap (tie → point)`` () =
+    // Horizontal met1 wire (0..1000, 0..100) — left tip at (0, 50).
+    // Cursor at (0, 50) — endpoint distance 0; centerline AxisY
+    // distance 0.  Tie → point snap wins per rule 2.4.
     let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 3L 48L 50L false
+    let s = ViaTool.resolveSnap None [||] [] polys 0L 50L 50L false
     match s with
     | Some snap ->
         snap.Kind  |> should equal ViaTool.SnapKind.WireEndpoint
         snap.X     |> should equal 0L
         snap.Y     |> should equal 50L
         snap.Layer |> should equal met1
-    | None -> failwith "expected wire-endpoint point snap"
+    | None -> failwith "expected wire-endpoint point snap on exact-tie cursor"
+
+[<Fact>]
+let ``wire centerline beats endpoint when cursor is perpendicular-closer`` () =
+    // Same wire.  Cursor at (3, 48) — endpoint at (0, 50) is
+    // ~3.6 Euclidean away; centerline midY=50 is 2 perpendicular.
+    // 2 < 3.6 → AxisY wins.  This is the design choice: when
+    // the cursor is closer to the centerline than to the tip,
+    // snap to the centerline (axis snap).  Users who want the
+    // tip exactly click AT the tip (covered above).
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let s = ViaTool.resolveSnap (Some met2) [||] [] polys 3L 48L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.AxisY
+        snap.X    |> should equal 3L
+        snap.Y    |> should equal 50L
+    | None -> failwith "expected centerline AxisY to beat endpoint by distance"
 
 [<Fact>]
 let ``wire centerline: cursor perpendicular-close yields AxisY snap`` () =
@@ -518,40 +535,60 @@ let ``guide AxisX: picks nearest of multiple guides`` () =
     | None -> failwith "expected nearest guide to win"
 
 // ─────────────────────────────────────────────────────────────────
-// Point snaps win over axis snaps (rule 2.2).
+// Point vs axis priority — closer cursor-to-snap-point wins.
+// (Rule 2.4 — Figma / Illustrator behaviour.)
 // ─────────────────────────────────────────────────────────────────
 
 [<Fact>]
-let ``point snap beats axis snap when both are in range`` () =
-    // Pin at (102, 252) — Euclidean distance 2.8 from cursor (100, 250).
-    // Vertical guide at X=98 — perpendicular distance 2.
-    // Even though the guide's perpendicular distance is smaller,
-    // point snaps win over axis snaps (rule 2.2).
-    let targets = [| mkTarget li1 102L 252L "NAND_OUT" |]
-    let guides = [vGuide 98L]
+let ``point snap wins when closer than axis snap`` () =
+    // Pin at (101, 250) — Euclidean distance 1 from cursor (100, 250).
+    // Vertical guide at X=90 — perpendicular distance 10.
+    // Pin is closer (1 < 10) → point wins.
+    let targets = [| mkTarget li1 101L 250L "NAND_OUT" |]
+    let guides = [vGuide 90L]
     let s = ViaTool.resolveSnap (Some met2) targets guides [||]
-                                100L 250L 20L false
+                                100L 250L 50L false
     match s with
     | Some snap ->
         snap.Kind |> should equal ViaTool.SnapKind.Pin
         snap.Net  |> should equal "NAND_OUT"
-    | None -> failwith "expected point snap to beat axis snap"
+    | None -> failwith "expected closer point snap to win"
 
 [<Fact>]
-let ``knuckle centre beats guide when both in range`` () =
-    // Knuckle centre at (0, 0), Euclidean distance 5 from cursor (3, 4).
-    // Guide at X=2 — perpendicular distance 1.
-    // Point (knuckle) wins.
-    let polys = [| mkKnuckle met1 -100L -100L 100L 100L |]
-    let guides = [vGuide 2L]
-    let s = ViaTool.resolveSnap (Some met2) [||] guides polys
-                                3L 4L 50L false
+let ``axis snap wins when closer than point snap`` () =
+    // The NAND_OUT regression case the user reported.  Cursor
+    // (2510, 2400).  Wire endpoint at (2530, 2405) — Euclidean
+    // ~21.  Guide at X=2495 — perpendicular 15.  15 < 21 →
+    // guide AxisX wins.  Pre-fix point snaps unconditionally
+    // beat axis snaps and the wire endpoint stole the click.
+    // Long horizontal li1 wire (5:1 aspect so it's clearly a wire,
+    // not a knuckle).  Endpoints at (2400, 2405) and (2540, 2405).
+    let wire = [| mkKnuckle li1 2400L 2395L 2540L 2415L |]
+    let guides = [vGuide 2495L]
+    let s = ViaTool.resolveSnap (Some met2) [||] guides wire
+                                2510L 2400L 64L false
     match s with
     | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.KnuckleCenter
-        snap.X    |> should equal 0L
-        snap.Y    |> should equal 0L
-    | None -> failwith "expected knuckle centre to beat guide"
+        snap.Kind |> should equal ViaTool.SnapKind.AxisCross
+        snap.X    |> should equal 2495L
+        // Y from the wire's centerline at midY=2405.
+        snap.Y    |> should equal 2405L
+        // Layer = li1 (the wire) — wire wins over guide default.
+        snap.Layer |> should equal li1
+    | None -> failwith "expected guide+wire AxisCross to beat wire-endpoint point snap"
+
+[<Fact>]
+let ``point and axis tied: point wins (stable tie-break)`` () =
+    // Pin at (105, 250) — distance 5.
+    // Vertical guide at X=95 — perpendicular distance 5.
+    // Tie → point wins per rule 2.4.
+    let targets = [| mkTarget li1 105L 250L "VSS" |]
+    let guides = [vGuide 95L]
+    let s = ViaTool.resolveSnap (Some met2) targets guides [||]
+                                100L 250L 50L false
+    match s with
+    | Some snap -> snap.Kind |> should equal ViaTool.SnapKind.Pin
+    | None -> failwith "expected point to win on equal distance"
 
 // ─────────────────────────────────────────────────────────────────
 // Alt suppress — drops via at raw cursor (rule 2.1 / 3.5).

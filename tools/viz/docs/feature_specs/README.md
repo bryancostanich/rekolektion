@@ -56,3 +56,5 @@ spec drift.
 - [`selection.md`](selection.md) — wire and knuckle selection
   rules (click semantics, shift modifier, connected-component
   walk).
+- [`via_tool.md`](via_tool.md) — V-tool snap priority and radii
+  (knuckle, pin, guide), guide-snap layer rules, hover preview.

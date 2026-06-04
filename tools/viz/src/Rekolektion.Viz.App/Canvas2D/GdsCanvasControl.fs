@@ -2600,12 +2600,14 @@ type GdsCanvasControl() as this =
         // other left-click branch so the user can drop vias on
         // top of existing wires / pins without the canvas
         // re-interpreting the click as a segment-drag pickup or
-        // selection. Tolerance is 20 px in DBU at current zoom —
-        // generous enough to click-near rather than pixel-aim.
+        // selection.  Tolerance is 8 px in DBU at current zoom
+        // (via_tool.md rule 1.1) — tight enough that an unrelated
+        // label one micron away doesn't steal the snap, generous
+        // enough for click-near rather than pixel-aim.
         if this.ViaMode && props.IsLeftButtonPressed then
             let wx, wy = this.ScreenToWorld p
             let radiusDbu =
-                int64 (20.0 / max pixelsPerDbu 0.0001)
+                int64 (8.0 / max pixelsPerDbu 0.0001)
             let cb = this.ViaToolCommitHandler
             // Always log the press, even when the handler is null —
             // that's how we tell "click reached the canvas but the
@@ -3831,8 +3833,13 @@ type GdsCanvasControl() as this =
                 obj.ReferenceEquals(cachedSnapTargetsFor, this.FlatPolygons)
             swTargets.Stop()
             let swNearest = System.Diagnostics.Stopwatch.StartNew()
+            // Hover radius mirrors the press path so preview ==
+            // commit (via_tool.md rule 4.1).  8 px at current zoom.
             let radiusDbu =
-                int64 (20.0 / max pixelsPerDbu 0.0001)
+                if this.ViaMode then
+                    int64 (8.0 / max pixelsPerDbu 0.0001)
+                else
+                    int64 (20.0 / max pixelsPerDbu 0.0001)
             // Via mode reuses the full `ViaTool.resolveSnap`
             // priority — knuckle (routing-layer rect under
             // cursor) wins over labeled pin centroid.  Without
@@ -3845,8 +3852,12 @@ type GdsCanvasControl() as this =
             let target =
                 if this.ViaMode then
                     let topLayerOpt = this.ActiveLayer
+                    let guides =
+                        match this.Library with
+                        | Some lib -> lib.Guides
+                        | None -> []
                     Routing.ViaTool.resolveSnap
-                        topLayerOpt targets this.FlatPolygons
+                        topLayerOpt targets guides this.FlatPolygons
                         (int64 wx) (int64 wy) radiusDbu
                     |> Option.map (fun s ->
                         let (ln, ld) = s.Layer

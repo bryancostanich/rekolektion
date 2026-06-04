@@ -122,6 +122,7 @@ type SnapKind =
     | Knuckle
     | WireEnd
     | WireCenterline
+    | Guide
 
 type Snap = {
     X        : int64
@@ -241,25 +242,68 @@ let findRoutingSnapAt
                     else cursorY, WireCenterline
                 Some { X = midX; Y = snapY; Layer = layer; Net = ""; Kind = kind }
 
-/// Resolve the snap target under the cursor.  Priority:
-///   1. Knuckle — a routing-layer poly whose bbox contains the
-///      cursor.  Highest layer wins (see `findKnuckleAt`).
-///   2. Cell pin label centroid — nearest labeled pin within
-///      `radiusDbu`.
+/// Nearest guide line that lies within `radiusDbu` of the cursor
+/// on its perpendicular axis.  See `via_tool.md` rules 1.2 / 2.2.
 ///
-/// Knuckle wins over pin because the user is visibly pointing at
-/// the metal they painted; a label one layer down may be there
-/// too (the pin patch under a knuckle) but that's not what the
-/// click intends.  Reported 2026-06-03 as "clicked on met1
-/// knuckle, expected via UP, got nothing visible".
+/// A vertical guide constrains only X (Y stays at cursor).
+/// A horizontal guide constrains only Y (X stays at cursor).
 ///
-/// `topLayerOpt = Some L` filters both candidate sets to layers
-/// strictly below `L` (matches the "active layer = top of via"
-/// rule).  `None` lets every layer through and the caller picks
-/// a top from the snap's own layer + 1.
+/// Returns the snap result alongside the perpendicular distance —
+/// `resolveSnap` uses the distance to break ties against the
+/// nearest pin (rule 2.2 — physically closer wins).
+///
+/// `bottomLayer` becomes the snap's `Layer`.  Guides carry no
+/// implied metal, so the caller computes a sensible bottom from
+/// the toolbar's active layer (see `resolveSnap` for the active-
+/// layer ≥ met1 gating per rule 3).
+let private findGuideSnap
+        (guides     : Guide list)
+        (bottomLayer: int * int)
+        (cursorX    : int64) (cursorY : int64)
+        (radiusDbu  : int64) : (Snap * int64) option =
+    let mutable best : (Snap * int64) option = None
+    for g in guides do
+        let dist =
+            match g.Orientation with
+            | Vertical   -> abs (cursorX - g.CoordDbu)
+            | Horizontal -> abs (cursorY - g.CoordDbu)
+        if dist <= radiusDbu then
+            let snap : Snap =
+                match g.Orientation with
+                | Vertical ->
+                    { X = g.CoordDbu; Y = cursorY
+                      Layer = bottomLayer; Net = ""; Kind = Guide }
+                | Horizontal ->
+                    { X = cursorX; Y = g.CoordDbu
+                      Layer = bottomLayer; Net = ""; Kind = Guide }
+            match best with
+            | None -> best <- Some (snap, dist)
+            | Some (_, d) when dist < d -> best <- Some (snap, dist)
+            | _ -> ()
+    best
+
+/// Resolve the snap target under the cursor per `via_tool.md`:
+///   1. Knuckle / wire — routing-layer rect whose bbox contains
+///      the cursor.  Highest layer wins (see `findRoutingSnapAt`).
+///   2. Pin and guide compete on physical distance — whichever is
+///      closer wins.  Pin distance is Euclidean; guide distance
+///      is single-axis (perpendicular to the guide line).  Ties
+///      go to pin (stable order).
+///
+/// Knuckle wins over both pin and guide because the user is
+/// visibly pointing at painted geometry — chasing a label or
+/// guide line away from it is wrong.
+///
+/// `topLayerOpt = Some L` filters knuckle + pin candidates to
+/// layers strictly below `L`.  Guide snap is gated separately:
+/// guides need an implied bottom layer (`L - 1`) so they're only
+/// considered when `topLayerOpt = Some L` with `L ≥ met1`.  When
+/// `topLayerOpt = None` or `L = li1`, guide snap is disabled and
+/// the resolver returns knuckle / pin / nothing.
 let resolveSnap
         (topLayerOpt: (int * int) option)
         (targets    : Snap.SnapTarget array)
+        (guides     : Guide list)
         (flatPolys  : FlatPolygon array)
         (cursorX    : int64) (cursorY : int64)
         (radiusDbu  : int64)
@@ -267,18 +311,45 @@ let resolveSnap
     match findRoutingSnapAt topLayerOpt flatPolys cursorX cursorY with
     | Some k -> Some k
     | None ->
-        let candidates =
+        let pinCandidates =
             match topLayerOpt with
             | Some (topN, _) ->
                 targets |> Array.filter (fun t -> t.Layer < topN)
             | None -> targets
-        Snap.nearest candidates (cursorX, cursorY) radiusDbu
-        |> Option.map (fun t ->
-            { X     = t.X
-              Y     = t.Y
-              Layer = (t.Layer, t.DataType)
-              Net   = t.Net
-              Kind  = Pin })
+        let pinHit =
+            Snap.nearest pinCandidates (cursorX, cursorY) radiusDbu
+            |> Option.map (fun t ->
+                let dx = t.X - cursorX
+                let dy = t.Y - cursorY
+                // sqrt via float — cursors stay in int64 dbu range
+                // (sky130 chip is ~10^7 dbu across) so the cast
+                // round-trip is exact.
+                let dist =
+                    int64 (sqrt (float (dx * dx + dy * dy)))
+                let snap : Snap =
+                    { X     = t.X
+                      Y     = t.Y
+                      Layer = (t.Layer, t.DataType)
+                      Net   = t.Net
+                      Kind  = Pin }
+                snap, dist)
+        let guideHit =
+            // Guide snap requires an active layer ≥ met1 (per
+            // via_tool.md rule 3): we need an implied bottom layer
+            // (`activeLayer - 1`) for the single-step via stack.
+            match topLayerOpt with
+            | Some (topN, topDt) when topN > 67 ->
+                findGuideSnap guides (topN - 1, topDt)
+                              cursorX cursorY radiusDbu
+            | _ -> None
+        match pinHit, guideHit with
+        | Some (p, dp), Some (g, dg) ->
+            // Rule 2.2 — nearest wins.  Rule 2.3 — ties go to pin
+            // (strict `<` keeps pin on equality).
+            if dg < dp then Some g else Some p
+        | Some (p, _), None -> Some p
+        | None, Some (g, _) -> Some g
+        | None, None        -> None
 
 /// Pick the via-stack top layer per the V-tool rule: prefer the
 /// caller's `topLayerOpt` (toolbar's ActiveLayer) when present,

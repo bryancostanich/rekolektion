@@ -1429,12 +1429,27 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                         && Routing.Wire.getWireId r = wid
                                     Routing.Wire.connectedComponentWireBodiesOnly
                                         topCellName seedIdx pred doc
+                            // Net comes from the rect's own (net …)
+                            // annotation when present; missing is
+                            // the common case for routed wires
+                            // (the net is determined by label
+                            // flood-fill, not by per-rect tags).
+                            // Logging both the rect's annotated
+                            // net AND the layer makes it easy to
+                            // tell a "wrong net" report apart from
+                            // a "wrong layer" report next time.
+                            let seedLayerN, seedLayerDt =
+                                Rkt.ToGds.layerToGds seed.Layer
                             Rekolektion.Viz.App.Services.Logger.log "wire.select"
                                 {| seedIdx = seedIdx
                                    seedX1 = seed.X1
                                    seedY1 = seed.Y1
                                    seedX2 = seed.X2
                                    seedY2 = seed.Y2
+                                   seedLayerN = seedLayerN
+                                   seedLayerDt = seedLayerDt
+                                   seedNet =
+                                       seed.Net |> Option.defaultValue "(unannotated)"
                                    seedIsKnuckle = seedIsKnuckle
                                    selectionCount = List.length indices |}
                             let polyKeys : Set<Layout.Flatten.PolyKey> =

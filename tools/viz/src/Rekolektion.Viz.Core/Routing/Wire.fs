@@ -162,24 +162,45 @@ let containsPoint (x : int64) (y : int64) (r : Rectangle) : bool =
     let yHi = max r.Y1 r.Y2
     x >= xLo && x <= xHi && y >= yLo && y <= yHi
 
-/// Find the topmost rect in `doc` whose bbox contains `(x, y)`.
-/// Returns `(wireId?, cellName, rectIndexInCell, rectangle)` of
-/// the hit rect, or `None`. WireId is `None` when the rect was
-/// authored without a wire tag (hand-edited geometry, pre-WireId
-/// files); segment-drag treats those as single-rect "wires" with
-/// no neighbour lookup. Walks document order; ties go to the
-/// later-authored rect (renderer paints later rects on top, so
-/// the hit-test matches the visible top).
+/// Find the visually-topmost rect in `doc` whose bbox contains
+/// `(x, y)`.  Returns `(wireId?, cellName, rectIndexInCell,
+/// rectangle)` of the hit rect, or `None`.  WireId is `None`
+/// when the rect was authored without a wire tag (hand-edited
+/// geometry, pre-WireId files); segment-drag treats those as
+/// single-rect "wires" with no neighbour lookup.
+///
+/// Selection rule (per `tools/viz/docs/feature_specs/selection.md`
+/// rules 1.2 and 1.3): among rects containing the cursor, the
+/// one on the highest GDS layer number wins (met5 > met4 > … >
+/// li1; routing layers above substrate layers).  When two rects
+/// on the same layer both contain the cursor, the later-authored
+/// rect wins — within a single layer the renderer paints later
+/// rects on top.
+///
+/// Previous behaviour pre-2026-06-04 walked document order
+/// without consulting layer at all, which often happened to
+/// match visual stacking (routing tools append) but failed
+/// whenever a higher-layer rect was authored earlier in the
+/// file than a lower-layer rect underneath it.
 let findSegmentAt (x : int64) (y : int64) (doc : Document)
                   : (int option * string * int * Rectangle) option =
-    let mutable result : (int option * string * int * Rectangle) option = None
+    let mutable bestLayer = System.Int32.MinValue
+    let mutable bestDocPos = -1
+    let mutable best : (int option * string * int * Rectangle) option = None
+    let mutable docPos = 0
     for c in doc.Cells do
         for idx, el in List.indexed c.Elements do
-            match el with
-            | RectEl r when containsPoint x y r ->
-                result <- Some (getWireId r, c.Name, idx, r)
-            | _ -> ()
-    result
+            (match el with
+             | RectEl r when containsPoint x y r ->
+                 let layerNum = fst (Rekolektion.Viz.Core.Rkt.ToGds.layerToGds r.Layer)
+                 if layerNum > bestLayer
+                    || (layerNum = bestLayer && docPos > bestDocPos) then
+                     bestLayer <- layerNum
+                     bestDocPos <- docPos
+                     best <- Some (getWireId r, c.Name, idx, r)
+             | _ -> ())
+            docPos <- docPos + 1
+    best
 
 /// True when two rects are "collinear and abutting" — they are
 /// effectively one logical segment that's stored as multiple
@@ -316,6 +337,7 @@ let isKnuckleShape (r : Rectangle) : bool =
     let lo = float (max 1L (min w h))
     let hi = float (max w h)
     hi / lo < knuckleAspectThreshold
+
 let connectedComponent
         (cellName : string)
         (seedIdx : int)
@@ -366,6 +388,45 @@ let connectedComponent
                                 queue.Enqueue (i, r)
                         | _ -> ()
             result |> List.ofSeq
+
+/// Walk the connected component from `seedIdx` and return only
+/// the wire-body indices — knuckles are TRAVERSED as bridges but
+/// NOT included in the result.  Critical for "click a wire to
+/// select it": a wire chain often has knuckles where it changes
+/// direction or terminates, and the user wants the wire bodies
+/// selected without the pads.
+///
+/// The seed always lands in the result, even when it's itself a
+/// knuckle — the caller (canvas wire-select handler) has already
+/// decided that a knuckle seed gets single-rect select, so by
+/// the time we land here the seed is normally a wire body.
+/// Preserving the seed anyway guards against a future refactor
+/// that calls this from a pad-seed and silently gets an empty
+/// selection.
+///
+/// `pred` is the per-rect filter for both `keep` and `propagate`
+/// — typically same-layer + same-WireId.  Pass-through to
+/// `connectedComponent`'s shape; we just post-filter the result.
+let connectedComponentWireBodiesOnly
+        (cellName : string)
+        (seedIdx  : int)
+        (pred     : int -> Rectangle -> bool)
+        (doc      : Document) : int list =
+    let chain = connectedComponent cellName seedIdx pred pred doc
+    let topCell = doc.Cells |> List.tryFind (fun c -> c.Name = cellName)
+    match topCell with
+    | None -> chain
+    | Some c ->
+        let elsByIdx = c.Elements |> List.indexed
+        let isKnuckle i =
+            elsByIdx
+            |> List.tryFind (fun (ix, _) -> ix = i)
+            |> Option.bind (fun (_, el) ->
+                match el with
+                | RectEl r -> Some (isKnuckleShape r)
+                | _ -> None)
+            |> Option.defaultValue false
+        chain |> List.filter (fun i -> i = seedIdx || not (isKnuckle i))
 
 /// True when `n`'s long-axis endpoint touches `picked`'s body,
 /// i.e., `n` is a perpendicular cross-wire whose tip lands inside

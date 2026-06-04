@@ -1412,38 +1412,31 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         match pickedRect with
                         | None -> model, Cmd.none
                         | Some seed ->
-                            // Knuckle short-circuit: when the
-                            // picked rect is square-ish (aspect <
-                            // `knuckleAspectThreshold`), select
-                            // just that one rect — don't drag the
-                            // whole wire chain it belongs to into
-                            // the selection.  Lets the user grab a
-                            // single endpoint pad without picking
-                            // up its attached wire.  Reported
-                            // 2026-06-03.
-                            //
-                            // Wire-body picks (the else branch)
-                            // still walk the same-layer same-WireId
-                            // connected component — same behaviour
-                            // as before, robust to the same two
-                            // corruptions:
-                            //   - WireId aggregated across many
-                            //     independent routes (same id, no
-                            //     spatial connection on this layer)
-                            //   - via-stack siblings on other layers
-                            //     that share the WireId
-                            // Untagged falls back to bbox-walk on
-                            // same layer alone — same as pre-WireId.
+                            // Selection rules from
+                            //   tools/viz/docs/feature_specs/selection.md
+                            // Rule 2: knuckle click picks only that rect.
+                            // Rule 3: wire-body click walks same-layer
+                            //   same-WireId chain, knuckles traversed
+                            //   but excluded from the final selection.
+                            let seedIsKnuckle =
+                                Routing.Wire.isKnuckleShape seed
                             let indices =
-                                if Routing.Wire.isKnuckleShape seed then
-                                    [ seedIdx ]
+                                if seedIsKnuckle then [ seedIdx ]
                                 else
                                     let wid = Routing.Wire.getWireId seed
-                                    let keep _ (r : Rkt.Types.Rectangle) =
+                                    let pred _ (r : Rkt.Types.Rectangle) =
                                         r.Layer = seed.Layer
                                         && Routing.Wire.getWireId r = wid
-                                    Routing.Wire.connectedComponent
-                                        topCellName seedIdx keep keep doc
+                                    Routing.Wire.connectedComponentWireBodiesOnly
+                                        topCellName seedIdx pred doc
+                            Rekolektion.Viz.App.Services.Logger.log "wire.select"
+                                {| seedIdx = seedIdx
+                                   seedX1 = seed.X1
+                                   seedY1 = seed.Y1
+                                   seedX2 = seed.X2
+                                   seedY2 = seed.Y2
+                                   seedIsKnuckle = seedIsKnuckle
+                                   selectionCount = List.length indices |}
                             let polyKeys : Set<Layout.Flatten.PolyKey> =
                                 indices
                                 |> List.map (fun i ->

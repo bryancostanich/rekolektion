@@ -111,18 +111,22 @@ let emitStandaloneAt
                 | None   -> baseSegs
             floorMetalPadsAtMinArea view units withTopPad
 
-/// The picked snap target.  `Knuckle` wins over `Pin` when both
-/// are within reach: clicking on visibly-painted met1+ geometry
-/// should land the via on that layer rather than chasing a label
-/// one layer down (the original v1 behavior produced a li1→met1
-/// via on a met1 knuckle, then dedup'd it against the existing
-/// contact and looked like nothing happened).
+/// What the resolver pulled to.  Drives the hover-preview glyph
+/// (today just a circle, future polish per via_tool.md OQ-3).
+///
+/// `Pin`, `KnuckleCenter`, `WireEndpoint` are point snaps — both
+/// axes come from the same source.  `AxisX` / `AxisY` /
+/// `AxisCross` are per-axis snaps composed from one or two line
+/// sources (guides and / or wire centerlines).  `RawCursor` is
+/// the Alt-held escape hatch.
 type SnapKind =
     | Pin
-    | Knuckle
-    | WireEnd
-    | WireCenterline
-    | Guide
+    | KnuckleCenter
+    | WireEndpoint
+    | AxisX        // X from a vertical line source; Y stayed at cursor
+    | AxisY        // Y from a horizontal line source; X stayed at cursor
+    | AxisCross    // X and Y from two line sources
+    | RawCursor    // Alt held — snap suppressed
 
 type Snap = {
     X        : int64
@@ -168,138 +172,153 @@ let private isWireShape (xMin, yMin, xMax, yMax) : bool =
     let hi = float (max w h)
     hi / lo > wireAspectThreshold
 
-/// Find the topmost routing-layer rect under the cursor and
-/// classify it as a knuckle (square pad → centroid), a wire end
-/// (long rect, cursor near a tip → snap to tip), or a wire
-/// centerline (long rect, cursor along the body → project cursor
-/// onto the midline).
-///
-/// "Topmost" = highest layer number (= higher metal in the
-/// sky130 stack).  A met1 knuckle sitting on a li1 rail wins
-/// over the rail because the user is visibly clicking on met1.
-///
-/// `topLayerOpt = Some L` filters to candidates strictly below L
-/// (so an active met2 won't snap to a met2 rect — same-layer
-/// via has no plumbing).  `None` lets every routing layer
-/// through and the caller picks a top from snap.Layer + 1.
-///
-/// Net is left empty: a FlatPolygon doesn't carry one directly.
-/// Downstream attribution can be added if needed.
-let findRoutingSnapAt
-        (topLayerOpt: (int * int) option)
-        (flatPolys  : FlatPolygon array)
-        (cursorX    : int64) (cursorY : int64) : Snap option =
-    let candidates =
-        flatPolys
-        |> Array.filter (fun p ->
-            if not (isRoutingLayerKey p.Layer p.DataType) then false
-            else
-                let xMin, yMin, xMax, yMax = polyBbox p
-                cursorX >= xMin && cursorX <= xMax
-                && cursorY >= yMin && cursorY <= yMax
-                && (match topLayerOpt with
-                    | Some (topN, _) -> p.Layer < topN
-                    | None -> true))
-    if Array.isEmpty candidates then None
+// ─────────────────────────────────────────────────────────────────
+// Candidate gathering — see via_tool.md "Snap sources".
+//
+// Two flavours:
+//
+//   * Point candidates — (x, y, layer, kind).  Cursor pulls if
+//     within `radiusDbu` Euclidean.  Pin, knuckle centre, wire
+//     endpoint.
+//
+//   * Line candidates — (axis, coord, layer, isWire).  Cursor
+//     pulls if within `radiusDbu` on the perpendicular axis.
+//     Vertical guides + vertical wire centerlines feed the X
+//     axis; horizontal ones feed Y.  `isWire = true` for wire
+//     centerlines (the line carries a real metal layer; layer
+//     is the wire's); `false` for guides (layer is just the
+//     caller-supplied default).
+// ─────────────────────────────────────────────────────────────────
+
+type private PointCandidate = {
+    X     : int64
+    Y     : int64
+    Layer : int * int
+    Net   : string
+    Kind  : SnapKind
+}
+
+type private LineCandidate = {
+    Axis    : GuideOrientation  // Vertical → contributes X; Horizontal → contributes Y
+    Coord   : int64             // the constrained value on that axis
+    Layer   : int * int
+    IsWire  : bool              // true → from a wire centerline (real metal); false → guide
+}
+
+/// Per-routing-rect candidates: a wire contributes two endpoint
+/// points + one centerline.  A knuckle (square-ish pad)
+/// contributes only its bbox centre — bbox-containment pull is
+/// NOT a snap source any more (via_tool.md "What is NOT a snap
+/// source").
+let private rectCandidates
+        (poly : FlatPolygon)
+        : PointCandidate list * LineCandidate list =
+    let xMin, yMin, xMax, yMax = polyBbox poly
+    let layer = (poly.Layer, poly.DataType)
+    let midX = (xMin + xMax) / 2L
+    let midY = (yMin + yMax) / 2L
+    if not (isWireShape (xMin, yMin, xMax, yMax)) then
+        // Knuckle / pad — single centre candidate.
+        let pt : PointCandidate =
+            { X = midX; Y = midY; Layer = layer; Net = ""; Kind = KnuckleCenter }
+        [pt], []
     else
-        let topmost = candidates |> Array.maxBy (fun p -> p.Layer)
-        let bbox = polyBbox topmost
-        let xMin, yMin, xMax, yMax = bbox
-        let layer = (topmost.Layer, topmost.DataType)
-        if not (isWireShape bbox) then
-            // Knuckle / pad — snap to bbox centroid.
-            Some {
-                X     = (xMin + xMax) / 2L
-                Y     = (yMin + yMax) / 2L
-                Layer = layer
-                Net   = ""
-                Kind  = Knuckle
-            }
+        let w = xMax - xMin
+        let h = yMax - yMin
+        if w >= h then
+            // Horizontal wire — endpoints at (xMin, midY) and
+            // (xMax, midY); centerline at Y = midY.
+            let endpoints : PointCandidate list = [
+                { X = xMin; Y = midY; Layer = layer; Net = ""; Kind = WireEndpoint }
+                { X = xMax; Y = midY; Layer = layer; Net = ""; Kind = WireEndpoint }
+            ]
+            let line : LineCandidate =
+                { Axis = Horizontal; Coord = midY; Layer = layer; IsWire = true }
+            endpoints, [line]
         else
-            // Wire — project cursor onto the centerline.  When
-            // the projection lands within `2 × thin-axis` of an
-            // end, snap to the end instead of mid-wire (matches
-            // the user's "via at the corner where I stopped
-            // routing" gesture).
-            let w = xMax - xMin
-            let h = yMax - yMin
-            if w >= h then
-                // Horizontal wire.
-                let midY = (yMin + yMax) / 2L
-                let endTol = max 1L (h * 2L)
-                let snapX, kind =
-                    if cursorX - xMin < endTol      then xMin, WireEnd
-                    elif xMax - cursorX < endTol    then xMax, WireEnd
-                    else cursorX, WireCenterline
-                Some { X = snapX; Y = midY; Layer = layer; Net = ""; Kind = kind }
-            else
-                // Vertical wire.
-                let midX = (xMin + xMax) / 2L
-                let endTol = max 1L (w * 2L)
-                let snapY, kind =
-                    if cursorY - yMin < endTol      then yMin, WireEnd
-                    elif yMax - cursorY < endTol    then yMax, WireEnd
-                    else cursorY, WireCenterline
-                Some { X = midX; Y = snapY; Layer = layer; Net = ""; Kind = kind }
+            // Vertical wire — endpoints at top/bottom mid-width.
+            let endpoints : PointCandidate list = [
+                { X = midX; Y = yMin; Layer = layer; Net = ""; Kind = WireEndpoint }
+                { X = midX; Y = yMax; Layer = layer; Net = ""; Kind = WireEndpoint }
+            ]
+            let line : LineCandidate =
+                { Axis = Vertical; Coord = midX; Layer = layer; IsWire = true }
+            endpoints, [line]
 
-/// Nearest guide line that lies within `radiusDbu` of the cursor
-/// on its perpendicular axis.  See `via_tool.md` rules 1.2 / 2.2.
-///
-/// A vertical guide constrains only X (Y stays at cursor).
-/// A horizontal guide constrains only Y (X stays at cursor).
-///
-/// Returns the snap result alongside the perpendicular distance —
-/// `resolveSnap` uses the distance to break ties against the
-/// nearest pin (rule 2.2 — physically closer wins).
-///
-/// `bottomLayer` becomes the snap's `Layer`.  Guides carry no
-/// implied metal, so the caller computes a sensible bottom from
-/// the toolbar's active layer (see `resolveSnap` for the active-
-/// layer ≥ met1 gating per rule 3).
-let private findGuideSnap
+/// Gather every snap candidate the resolver should consider.
+/// `topLayerOpt = Some L` restricts routing rects to layers
+/// strictly below L; guides and pins are filtered separately.
+let private gatherCandidates
+        (topLayerOpt: (int * int) option)
+        (pinTargets : Snap.SnapTarget array)
         (guides     : Guide list)
-        (bottomLayer: int * int)
-        (cursorX    : int64) (cursorY : int64)
-        (radiusDbu  : int64) : (Snap * int64) option =
-    let mutable best : (Snap * int64) option = None
-    for g in guides do
-        let dist =
-            match g.Orientation with
-            | Vertical   -> abs (cursorX - g.CoordDbu)
-            | Horizontal -> abs (cursorY - g.CoordDbu)
-        if dist <= radiusDbu then
-            let snap : Snap =
-                match g.Orientation with
-                | Vertical ->
-                    { X = g.CoordDbu; Y = cursorY
-                      Layer = bottomLayer; Net = ""; Kind = Guide }
-                | Horizontal ->
-                    { X = cursorX; Y = g.CoordDbu
-                      Layer = bottomLayer; Net = ""; Kind = Guide }
-            match best with
-            | None -> best <- Some (snap, dist)
-            | Some (_, d) when dist < d -> best <- Some (snap, dist)
-            | _ -> ()
-    best
+        (flatPolys  : FlatPolygon array)
+        : PointCandidate list * LineCandidate list =
+    let topN =
+        match topLayerOpt with
+        | Some (n, _) -> Some n
+        | None -> None
+    // Pin candidates — labelled centroids on a routing layer
+    // below the active layer.
+    let pinPts =
+        pinTargets
+        |> Array.toList
+        |> List.filter (fun t ->
+            match topN with
+            | Some n -> t.Layer < n
+            | None -> true)
+        |> List.map (fun t ->
+            { X = t.X; Y = t.Y
+              Layer = (t.Layer, t.DataType)
+              Net = t.Net
+              Kind = Pin })
+    // Routing-rect candidates — knuckle centres + wire endpoints
+    // (points) and wire centerlines (lines).
+    let rectPts, rectLines =
+        flatPolys
+        |> Array.toList
+        |> List.filter (fun p ->
+            isRoutingLayerKey p.Layer p.DataType
+            && (match topN with
+                | Some n -> p.Layer < n
+                | None -> true))
+        |> List.map rectCandidates
+        |> List.unzip
+        |> fun (pts, lines) -> List.concat pts, List.concat lines
+    // Guide candidates — line sources only.  Layer hint is the
+    // caller-supplied default (activeLayer - 1, gated to met1+
+    // upstream).  We collect guides regardless of the active-
+    // layer check here and let the caller filter; this keeps the
+    // gather pure and the layer-gating in resolveSnap.
+    let guideLines =
+        guides
+        |> List.map (fun g ->
+            { Axis = g.Orientation
+              Coord = g.CoordDbu
+              Layer = (0, 0)  // sentinel; replaced when guides are usable
+              IsWire = false })
+    pinPts @ rectPts, rectLines @ guideLines
 
-/// Resolve the snap target under the cursor per `via_tool.md`:
-///   1. Knuckle / wire — routing-layer rect whose bbox contains
-///      the cursor.  Highest layer wins (see `findRoutingSnapAt`).
-///   2. Pin and guide compete on physical distance — whichever is
-///      closer wins.  Pin distance is Euclidean; guide distance
-///      is single-axis (perpendicular to the guide line).  Ties
-///      go to pin (stable order).
+// ─────────────────────────────────────────────────────────────────
+// Resolver.  See via_tool.md "Behaviour rules / Priority".
+// ─────────────────────────────────────────────────────────────────
+
+/// Squared Euclidean distance, integer-safe.
+let private distSq (dx: int64) (dy: int64) : int64 = dx * dx + dy * dy
+
+/// Resolve the snap target under the cursor per via_tool.md.
 ///
-/// Knuckle wins over both pin and guide because the user is
-/// visibly pointing at painted geometry — chasing a label or
-/// guide line away from it is wrong.
+/// Priority (rule 2):
+///   1. Alt held → raw-cursor snap (subject to active-layer rule).
+///   2. Nearest point candidate within radius (Euclidean).
+///   3. Per-axis line candidates — X and Y solved independently
+///      (perpendicular distance).
 ///
-/// `topLayerOpt = Some L` filters knuckle + pin candidates to
-/// layers strictly below `L`.  Guide snap is gated separately:
-/// guides need an implied bottom layer (`L - 1`) so they're only
-/// considered when `topLayerOpt = Some L` with `L ≥ met1`.  When
-/// `topLayerOpt = None` or `L = li1`, guide snap is disabled and
-/// the resolver returns knuckle / pin / nothing.
+/// `topLayerOpt = Some L` is the toolbar's active layer; required
+/// for any guide-derived or raw-cursor snap (the via needs an
+/// implied top).  When `None`, guide / raw snaps are disabled;
+/// point and wire snaps still work and the caller derives top
+/// from `snap.Layer + 1`.
 let resolveSnap
         (topLayerOpt: (int * int) option)
         (targets    : Snap.SnapTarget array)
@@ -307,49 +326,93 @@ let resolveSnap
         (flatPolys  : FlatPolygon array)
         (cursorX    : int64) (cursorY : int64)
         (radiusDbu  : int64)
+        (altHeld    : bool)
         : Snap option =
-    match findRoutingSnapAt topLayerOpt flatPolys cursorX cursorY with
-    | Some k -> Some k
+    // Alt-suppress (rule 2.1) — drop a via at the raw cursor.
+    // Requires active layer ≥ met1 so we have an implied
+    // bottomLayer (= activeLayer - 1).
+    if altHeld then
+        match topLayerOpt with
+        | Some (topN, topDt) when topN > 67 ->
+            Some { X = cursorX; Y = cursorY
+                   Layer = (topN - 1, topDt)
+                   Net = ""
+                   Kind = RawCursor }
+        | _ -> None
+    else
+    let pointCands, lineCands =
+        gatherCandidates topLayerOpt targets guides flatPolys
+    // ── Step 1: nearest point candidate within radius ────────
+    let rSq = radiusDbu * radiusDbu
+    let pointHit =
+        pointCands
+        |> List.choose (fun pc ->
+            let d = distSq (pc.X - cursorX) (pc.Y - cursorY)
+            if d <= rSq then Some (pc, d) else None)
+        |> List.sortBy (fun (_, d) -> d)
+        |> List.tryHead
+    match pointHit with
+    | Some (pc, _) ->
+        Some { X = pc.X; Y = pc.Y
+               Layer = pc.Layer
+               Net = pc.Net
+               Kind = pc.Kind }
     | None ->
-        let pinCandidates =
-            match topLayerOpt with
-            | Some (topN, _) ->
-                targets |> Array.filter (fun t -> t.Layer < topN)
-            | None -> targets
-        let pinHit =
-            Snap.nearest pinCandidates (cursorX, cursorY) radiusDbu
-            |> Option.map (fun t ->
-                let dx = t.X - cursorX
-                let dy = t.Y - cursorY
-                // sqrt via float — cursors stay in int64 dbu range
-                // (sky130 chip is ~10^7 dbu across) so the cast
-                // round-trip is exact.
-                let dist =
-                    int64 (sqrt (float (dx * dx + dy * dy)))
-                let snap : Snap =
-                    { X     = t.X
-                      Y     = t.Y
-                      Layer = (t.Layer, t.DataType)
-                      Net   = t.Net
-                      Kind  = Pin }
-                snap, dist)
-        let guideHit =
-            // Guide snap requires an active layer ≥ met1 (per
-            // via_tool.md rule 3): we need an implied bottom layer
-            // (`activeLayer - 1`) for the single-step via stack.
-            match topLayerOpt with
-            | Some (topN, topDt) when topN > 67 ->
-                findGuideSnap guides (topN - 1, topDt)
-                              cursorX cursorY radiusDbu
-            | _ -> None
-        match pinHit, guideHit with
-        | Some (p, dp), Some (g, dg) ->
-            // Rule 2.2 — nearest wins.  Rule 2.3 — ties go to pin
-            // (strict `<` keeps pin on equality).
-            if dg < dp then Some g else Some p
-        | Some (p, _), None -> Some p
-        | None, Some (g, _) -> Some g
-        | None, None        -> None
+    // ── Step 2: per-axis line snap ──────────────────────────
+    // Guides are only usable when the caller gave us an active
+    // layer ≥ met1; we'll use activeLayer - 1 as the bottom for
+    // guide-only axes.  Wire centerlines carry their own layer.
+    let guideBottom : (int * int) option =
+        match topLayerOpt with
+        | Some (n, dt) when n > 67 -> Some (n - 1, dt)
+        | _ -> None
+    let nearestLine (axis : GuideOrientation) =
+        lineCands
+        |> List.choose (fun lc ->
+            if lc.Axis <> axis then None
+            elif not lc.IsWire && guideBottom.IsNone then
+                // Guide line but no active-layer top → unusable.
+                None
+            else
+                let cursorOnAxis =
+                    match axis with
+                    | Vertical   -> cursorX
+                    | Horizontal -> cursorY
+                let dist = abs (cursorOnAxis - lc.Coord)
+                if dist <= radiusDbu then Some (lc, dist) else None)
+        |> List.sortBy (fun (_, d) -> d)
+        |> List.tryHead
+    let xHit = nearestLine Vertical    // contributes X
+    let yHit = nearestLine Horizontal  // contributes Y
+    // Pick a bottom layer for the composite axis snap.  A wire
+    // contributes a real metal; a guide contributes none.  When
+    // both axes fire, prefer a wire's layer over a guide's
+    // default; if both are wires, prefer the lower layer (closer
+    // to the snap source the user is visibly aiming at).
+    let pickLayer (hits : LineCandidate list) : (int * int) option =
+        let wireLayers =
+            hits |> List.filter (fun lc -> lc.IsWire) |> List.map (fun lc -> lc.Layer)
+        match wireLayers with
+        | [] -> guideBottom
+        | xs -> Some (xs |> List.minBy fst)
+    let xLine = xHit |> Option.map fst
+    let yLine = yHit |> Option.map fst
+    let activeHits =
+        [ xLine; yLine ] |> List.choose id
+    let layerOpt = pickLayer activeHits
+    match xLine, yLine, layerOpt with
+    | Some x, Some y, Some layer ->
+        Some { X = x.Coord; Y = y.Coord
+               Layer = layer; Net = ""; Kind = AxisCross }
+    | Some x, None, Some layer ->
+        Some { X = x.Coord; Y = cursorY
+               Layer = layer; Net = ""; Kind = AxisX }
+    | None, Some y, Some layer ->
+        Some { X = cursorX; Y = y.Coord
+               Layer = layer; Net = ""; Kind = AxisY }
+    | _ ->
+        // No point hit, no usable axis hit → no snap (rule 2.4).
+        None
 
 /// Pick the via-stack top layer per the V-tool rule: prefer the
 /// caller's `topLayerOpt` (toolbar's ActiveLayer) when present,

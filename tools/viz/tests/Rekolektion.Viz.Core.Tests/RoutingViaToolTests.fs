@@ -241,218 +241,9 @@ let private mkKnuckle
       SourceIndex = 0
       TopInstanceIndex = None }
 
-[<Fact>]
-let ``resolveSnap with no top filter returns the nearest pin`` () =
-    let targets =
-        [| mkTarget li1  100L 100L "VSS"
-           mkTarget met1 200L 200L "VDD" |]
-    let s = ViaTool.resolveSnap None targets [] [||] 110L 105L 50L
-    match s with
-    | Some snap ->
-        snap.Net |> should equal "VSS"
-        snap.Layer |> should equal li1
-        snap.Kind |> should equal ViaTool.SnapKind.Pin
-    | None -> failwith "expected a snap"
-
-[<Fact>]
-let ``resolveSnap with top = met1 filters out met1 pins (strictly below)`` () =
-    let targets =
-        [| mkTarget li1  100L 100L "VSS"
-           mkTarget met1 110L 105L "VDD" |]
-    // Cursor near both — without the filter VDD wins (it's
-    // closer). With the strict-below filter, VSS wins because
-    // VDD's layer = top layer.
-    let s = ViaTool.resolveSnap (Some met1) targets [] [||] 110L 105L 50L
-    match s with
-    | Some snap -> snap.Net |> should equal "VSS"
-    | None -> failwith "expected VSS to survive the filter"
-
-[<Fact>]
-let ``resolveSnap returns None when no target within radius`` () =
-    let targets = [| mkTarget li1 1000L 1000L "VSS" |]
-    ViaTool.resolveSnap None targets [] [||] 0L 0L 100L
-    |> should equal (None : ViaTool.Snap option)
-
-[<Fact>]
-let ``resolveSnap returns None on an empty target array`` () =
-    ViaTool.resolveSnap None [||] [] [||] 0L 0L 100L
-    |> should equal (None : ViaTool.Snap option)
-
 // ─────────────────────────────────────────────────────────────────
-// Knuckle snap — wins over pin when the cursor is INSIDE
-// routing-layer geometry. Reported 2026-06-03: clicks on a met1
-// knuckle were snapping to the li1 label underneath and
-// emitting a li1→met1 via that dedup'd against the existing
-// contact stack ("looked like nothing happened").
-// ─────────────────────────────────────────────────────────────────
-
-[<Fact>]
-let ``resolveSnap prefers a met1 knuckle over a li1 pin under it`` () =
-    // Click coords inside both the met1 knuckle (a 400 nm square
-    // centred at 0,0) AND within radius of a li1 pin label.
-    let targets = [| mkTarget li1 0L 0L "NAND_OUT" |]
-    let knuckles =
-        [| mkKnuckle met1 -200L -200L 200L 200L |]
-    let s = ViaTool.resolveSnap None targets [] knuckles 50L 30L 100L
-    match s with
-    | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
-        snap.Layer |> should equal met1
-        // Centroid of the (-200,-200)–(200,200) rect.
-        snap.X |> should equal 0L
-        snap.Y |> should equal 0L
-    | None -> failwith "expected the met1 knuckle to win"
-
-[<Fact>]
-let ``resolveSnap picks the topmost routing-layer rect under cursor`` () =
-    // met1 knuckle sits inside a wider met2 rect. Cursor inside
-    // both → met2 wins (higher routing layer = "you're visibly
-    // on met2"). Without this, a met2 pad over a met1 stub would
-    // always drop a met1→met2 via via the met1 path.
-    let polys =
-        [| mkKnuckle met1 -100L -100L 100L 100L
-           mkKnuckle met2 -300L -300L 300L 300L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 0L 0L 50L
-    match s with
-    | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
-        snap.Layer |> should equal met2
-    | None -> failwith "expected met2 to win"
-
-[<Fact>]
-let ``resolveSnap knuckle obeys the strictly-below filter`` () =
-    // Active layer = met2; knuckles are met1 + met2 + met3. The
-    // strict-below filter has to exclude met2 (=top) and met3
-    // (above top), leaving met1 as the winner.
-    let met3 : int * int = (70, 20)
-    let polys =
-        [| mkKnuckle met1 -100L -100L 100L 100L
-           mkKnuckle met2 -100L -100L 100L 100L
-           mkKnuckle met3 -100L -100L 100L 100L |]
-    let s = ViaTool.resolveSnap (Some met2) [||] [] polys 0L 0L 50L
-    match s with
-    | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
-        snap.Layer |> should equal met1
-    | None -> failwith "expected met1 to survive the strict-below filter"
-
-[<Fact>]
-let ``resolveSnap falls back to pin when no knuckle is under cursor`` () =
-    // Cursor outside the knuckle's bbox AND near a pin → pin path
-    // engages.  Same shape as the original v1 behavior; guard
-    // against a knuckle-only resolver that loses pin snap.
-    let targets = [| mkTarget li1 500L 500L "VSS" |]
-    let knuckles =
-        [| mkKnuckle met1 -100L -100L 100L 100L |]
-    let s = ViaTool.resolveSnap None targets [] knuckles 495L 502L 50L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.Pin
-        snap.Net  |> should equal "VSS"
-    | None -> failwith "expected the pin to win when no knuckle covers the cursor"
-
-[<Fact>]
-let ``resolveSnap skips non-routing layers when searching for a knuckle`` () =
-    // A `diff` rect under the cursor is NOT a knuckle.  Without
-    // the isRoutingLayerKey guard the V tool would happily snap
-    // to diff and produce a nonsensical via.
-    let diff : int * int = (65, 20)
-    let polys = [| mkKnuckle diff -100L -100L 100L 100L |]
-    ViaTool.resolveSnap None [||] [] polys 0L 0L 50L
-    |> should equal (None : ViaTool.Snap option)
-
-// ─────────────────────────────────────────────────────────────────
-// Wire snap — long rects branch into centerline + end snapping
-// instead of bbox-centroid.  Spec called out by the user during
-// the V tool design: "if wire is below, snap to centerline /
-// centerline end if at end of wire".
-// ─────────────────────────────────────────────────────────────────
-
-[<Fact>]
-let ``wire midbody snaps to centerline projection`` () =
-    // Horizontal met1 wire from x=0..1000, y=0..100 (10:1 aspect).
-    // Cursor at (500, 60) → centerline midY = 50, snapX = 500.
-    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 500L 60L 0L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.WireCenterline
-        snap.X    |> should equal 500L
-        snap.Y    |> should equal 50L
-        snap.Layer |> should equal met1
-    | None -> failwith "expected wire centerline snap"
-
-[<Fact>]
-let ``wire end (left tip) snaps to the wire endpoint`` () =
-    // Same horizontal wire; cursor at (100, 50).  endTol = h * 2
-    // = 200.  cursor.X - xMin = 100 < 200 → left end (xMin = 0).
-    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 100L 50L 0L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.WireEnd
-        snap.X    |> should equal 0L
-        snap.Y    |> should equal 50L
-    | None -> failwith "expected wire-end snap at the left tip"
-
-[<Fact>]
-let ``wire end (right tip) snaps to the far endpoint`` () =
-    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 900L 50L 0L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.WireEnd
-        snap.X    |> should equal 1000L
-        snap.Y    |> should equal 50L
-    | None -> failwith "expected wire-end snap at the right tip"
-
-[<Fact>]
-let ``vertical wire snaps along the X midline`` () =
-    // Vertical met2 wire 0..100 wide, 0..1000 tall (1:10).
-    // Cursor at (40, 500) → midX = 50, centerline snap.
-    let polys = [| mkKnuckle met2 0L 0L 100L 1000L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 40L 500L 0L
-    match s with
-    | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.WireCenterline
-        snap.X     |> should equal 50L
-        snap.Y     |> should equal 500L
-        snap.Layer |> should equal met2
-    | None -> failwith "expected vertical wire centerline snap"
-
-[<Fact>]
-let ``vertical wire bottom tip snaps to wire end`` () =
-    let polys = [| mkKnuckle met2 0L 0L 100L 1000L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 50L 100L 0L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.WireEnd
-        snap.X    |> should equal 50L
-        snap.Y    |> should equal 0L
-    | None -> failwith "expected wire-end snap at the bottom tip"
-
-[<Fact>]
-let ``square pad stays a knuckle (centroid), not a wire`` () =
-    // Aspect 1:1 — must be classified Knuckle, not WireCenterline.
-    // Guards the threshold against a sloppy refactor that lowers
-    // it under 1.0 and turns every pad into a wire.
-    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
-    let s = ViaTool.resolveSnap None [||] [] polys 0L 0L 0L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.Knuckle
-        snap.X    |> should equal 0L
-        snap.Y    |> should equal 0L
-    | None -> failwith "expected knuckle classification"
-
-// ─────────────────────────────────────────────────────────────────
-// pickTopLayer — explicit-active vs default-to-snap+1.
-// ─────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────
-// Guide snap — via_tool.md rule 2.2 / 3.  Guides constrain one
-// axis only; bottom layer = activeLayer - 1; nearest-of-pin-guide
-// wins when both are in range; disabled when active layer < met1.
+// resolveSnap — pin point snap.  See via_tool.md "Snap sources / 1".
+// 8 px Euclidean radius; nearest pin wins.
 // ─────────────────────────────────────────────────────────────────
 
 let private vGuide (xDbu: int64) : Guide =
@@ -462,106 +253,340 @@ let private hGuide (yDbu: int64) : Guide =
     { Orientation = Horizontal; CoordDbu = yDbu }
 
 [<Fact>]
-let ``guide snap: vertical guide pulls X, Y stays at cursor`` () =
-    // Vertical guide at X=100.  Cursor at (103, 250) — 3 dbu off
-    // the guide.  Radius 10 → guide wins.  Result: X=100, Y=250.
-    // Active layer = met2 → bottom = met1.
-    let s = ViaTool.resolveSnap (Some met2) [||] [vGuide 100L] [||]
-                                103L 250L 10L
+let ``pin snap: nearest pin within radius wins`` () =
+    let targets =
+        [| mkTarget li1  100L 100L "VSS"
+           mkTarget met1 200L 200L "VDD" |]
+    // Cursor at (110, 105) is ~11 dbu from VSS, ~110 from VDD.
+    // Radius 50 → VSS wins.
+    let s = ViaTool.resolveSnap None targets [] [||] 110L 105L 50L false
     match s with
     | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.Guide
+        snap.Net   |> should equal "VSS"
+        snap.Layer |> should equal li1
+        snap.Kind  |> should equal ViaTool.SnapKind.Pin
+    | None -> failwith "expected a pin snap"
+
+[<Fact>]
+let ``pin snap: strictly-below filter excludes pins on the active layer`` () =
+    let targets =
+        [| mkTarget li1  100L 100L "VSS"
+           mkTarget met1 110L 105L "VDD" |]
+    // VDD is closer but lives on met1 = active layer → excluded.
+    let s = ViaTool.resolveSnap (Some met1) targets [] [||] 110L 105L 50L false
+    match s with
+    | Some snap -> snap.Net |> should equal "VSS"
+    | None -> failwith "expected VSS to survive the filter"
+
+[<Fact>]
+let ``pin snap: outside radius returns None`` () =
+    let targets = [| mkTarget li1 1000L 1000L "VSS" |]
+    ViaTool.resolveSnap None targets [] [||] 0L 0L 100L false
+    |> should equal (None : ViaTool.Snap option)
+
+[<Fact>]
+let ``pin snap: empty target array returns None`` () =
+    ViaTool.resolveSnap None [||] [] [||] 0L 0L 100L false
+    |> should equal (None : ViaTool.Snap option)
+
+// ─────────────────────────────────────────────────────────────────
+// Knuckle centre snap — point candidate at the bbox centroid of a
+// square-ish routing rect.  Only fires when cursor is within
+// radius of the CENTRE (not the whole bbox — that bbox-containment
+// pull was the "super coarse" feel and is gone, per via_tool.md
+// "What is NOT a snap source").
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``knuckle centre: cursor near centre wins`` () =
+    // Met1 square 400 nm wide, centre at (0, 0).  Cursor at (5, 3)
+    // is ~6 dbu from centre.  Radius 50 → centre wins.
+    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
+    let s = ViaTool.resolveSnap None [||] [] polys 5L 3L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.KnuckleCenter
+        snap.Layer |> should equal met1
+        snap.X     |> should equal 0L
+        snap.Y     |> should equal 0L
+    | None -> failwith "expected knuckle centre snap"
+
+[<Fact>]
+let ``knuckle centre: cursor inside bbox but far from centre does NOT snap`` () =
+    // The headline bug fix.  Cursor at (180, 180) is INSIDE the
+    // bbox (-200..200) but ~250 dbu from centre (0, 0).  Radius
+    // 50 → no snap.  Old behaviour: bbox-containment yanked
+    // cursor to centre regardless of distance.
+    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
+    ViaTool.resolveSnap None [||] [] polys 180L 180L 50L false
+    |> should equal (None : ViaTool.Snap option)
+
+[<Fact>]
+let ``knuckle centre: nearer centre wins over farther centre`` () =
+    // Two knuckle centres; cursor closer to met2's.  Layer ordering
+    // doesn't auto-decide any more — distance does.
+    let polys =
+        [| mkKnuckle met1 0L 0L 100L 100L       // centre (50, 50)
+           mkKnuckle met2 100L 100L 200L 200L |] // centre (150, 150)
+    let s = ViaTool.resolveSnap None [||] [] polys 40L 50L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.KnuckleCenter
+        snap.Layer |> should equal met1
+        snap.X     |> should equal 50L
+        snap.Y     |> should equal 50L
+    | None -> failwith "expected the nearer met1 centre to win"
+
+[<Fact>]
+let ``knuckle centre: strictly-below filter excludes active layer`` () =
+    let met3 : int * int = (70, 20)
+    let polys =
+        [| mkKnuckle met1 -100L -100L 100L 100L
+           mkKnuckle met2 -100L -100L 100L 100L
+           mkKnuckle met3 -100L -100L 100L 100L |]
+    let s = ViaTool.resolveSnap (Some met2) [||] [] polys 0L 0L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.KnuckleCenter
+        snap.Layer |> should equal met1
+    | None -> failwith "expected met1 to survive the strict-below filter"
+
+[<Fact>]
+let ``non-routing rect: never generates snap candidates`` () =
+    let diff : int * int = (65, 20)
+    let polys = [| mkKnuckle diff -100L -100L 100L 100L |]
+    ViaTool.resolveSnap None [||] [] polys 0L 0L 50L false
+    |> should equal (None : ViaTool.Snap option)
+
+// ─────────────────────────────────────────────────────────────────
+// Wire endpoint snap — point candidate at each tip of a thin rect.
+// Wire centerline snap — line candidate (axis snap) at the wire's
+// mid-width coord.
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``wire endpoint: cursor near left tip wins as point snap`` () =
+    // Horizontal met1 wire (0..1000, 0..100) — endpoints at
+    // (0, 50) and (1000, 50).  Cursor at (3, 48) is ~3 dbu from
+    // the left tip.  Radius 50 → endpoint wins.
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let s = ViaTool.resolveSnap None [||] [] polys 3L 48L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.WireEndpoint
+        snap.X     |> should equal 0L
+        snap.Y     |> should equal 50L
+        snap.Layer |> should equal met1
+    | None -> failwith "expected wire-endpoint point snap"
+
+[<Fact>]
+let ``wire centerline: cursor perpendicular-close yields AxisY snap`` () =
+    // Horizontal wire midline at Y=50.  Cursor at (500, 53) →
+    // perpendicular distance 3, within radius 50.  Result: X stays
+    // at cursor (500), Y snaps to 50, kind = AxisY.
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let s = ViaTool.resolveSnap (Some met2) [||] [] polys 500L 53L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.AxisY
+        snap.X     |> should equal 500L
+        snap.Y     |> should equal 50L
+        snap.Layer |> should equal met1
+    | None -> failwith "expected wire centerline AxisY snap"
+
+[<Fact>]
+let ``wire centerline: cursor far perpendicular returns no axis snap`` () =
+    // Cursor at (500, 200) — perpendicular distance to midline
+    // (Y=50) is 150, outside radius 50.  No other targets → None.
+    let polys = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    ViaTool.resolveSnap (Some met2) [||] [] polys 500L 200L 50L false
+    |> should equal (None : ViaTool.Snap option)
+
+[<Fact>]
+let ``vertical wire centerline yields AxisX snap`` () =
+    // Vertical met2 wire (0..100, 0..1000) — midline at X=50.
+    // Cursor at (47, 500) → AxisX, X=50, Y stays at 500.
+    let polys = [| mkKnuckle met2 0L 0L 100L 1000L |]
+    let s = ViaTool.resolveSnap (Some met3) [||] [] polys 47L 500L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.AxisX
+        snap.X     |> should equal 50L
+        snap.Y     |> should equal 500L
+        snap.Layer |> should equal met2
+    | None -> failwith "expected vertical wire AxisX snap"
+
+[<Fact>]
+let ``square pad classifies as knuckle (centre), not wire`` () =
+    // Aspect 1:1 → KnuckleCenter, not AxisX / AxisY / Endpoint.
+    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
+    let s = ViaTool.resolveSnap None [||] [] polys 0L 0L 50L false
+    match s with
+    | Some snap -> snap.Kind |> should equal ViaTool.SnapKind.KnuckleCenter
+    | None -> failwith "expected knuckle classification"
+
+// ─────────────────────────────────────────────────────────────────
+// Guide snap — line candidate, contributes one axis.  Requires
+// active layer ≥ met1 so the via has an implied top.
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``guide AxisX: vertical guide pulls X, Y stays at cursor`` () =
+    let s = ViaTool.resolveSnap (Some met2) [||] [vGuide 100L] [||]
+                                103L 250L 10L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.AxisX
         snap.X     |> should equal 100L
         snap.Y     |> should equal 250L
         snap.Layer |> should equal met1
-    | None -> failwith "expected guide snap"
+    | None -> failwith "expected guide AxisX snap"
 
 [<Fact>]
-let ``guide snap: horizontal guide pulls Y, X stays at cursor`` () =
+let ``guide AxisY: horizontal guide pulls Y, X stays at cursor`` () =
     let s = ViaTool.resolveSnap (Some met2) [||] [hGuide 500L] [||]
-                                400L 497L 10L
+                                400L 497L 10L false
     match s with
     | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.Guide
+        snap.Kind  |> should equal ViaTool.SnapKind.AxisY
         snap.X     |> should equal 400L
         snap.Y     |> should equal 500L
         snap.Layer |> should equal met1
-    | None -> failwith "expected horizontal guide snap"
+    | None -> failwith "expected guide AxisY snap"
 
 [<Fact>]
-let ``guide snap: outside perpendicular radius returns None`` () =
-    // Guide at X=100, cursor at X=200 → 100 dbu away, radius=10
-    // → no guide hit.  No other targets → overall None.
+let ``guide AxisCross: vertical + horizontal guides combine`` () =
+    // Vertical guide at X=100, horizontal guide at Y=200.  Cursor
+    // at (105, 198) — within radius of both.  AxisCross: X=100,
+    // Y=200.
+    let guides = [vGuide 100L; hGuide 200L]
+    let s = ViaTool.resolveSnap (Some met2) [||] guides [||]
+                                105L 198L 10L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.AxisCross
+        snap.X     |> should equal 100L
+        snap.Y     |> should equal 200L
+        snap.Layer |> should equal met1
+    | None -> failwith "expected AxisCross from two guides"
+
+[<Fact>]
+let ``AxisCross from guide-X + wire-centerline-Y inherits wire's layer`` () =
+    // The NAND_OUT case.  Horizontal met1 wire at Y=50.  Vertical
+    // guide at X=100.  Cursor at (98, 53) — within both radii.
+    // AxisCross at (100, 50); layer = met1 (the wire), NOT met1
+    // (guide default — happens to match here, but the rule is
+    // "wire layer wins").  Active layer met2 confirms top.
+    let wire = [| mkKnuckle met1 0L 0L 1000L 100L |]
+    let guides = [vGuide 100L]
+    let s = ViaTool.resolveSnap (Some met2) [||] guides wire
+                                98L 53L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.AxisCross
+        snap.X     |> should equal 100L
+        snap.Y     |> should equal 50L
+        snap.Layer |> should equal met1
+    | None -> failwith "expected guide+wire AxisCross"
+
+[<Fact>]
+let ``guide snap: out of perpendicular radius returns None`` () =
     ViaTool.resolveSnap (Some met2) [||] [vGuide 100L] [||]
-                        200L 250L 10L
+                        200L 250L 10L false
     |> should equal (None : ViaTool.Snap option)
 
 [<Fact>]
 let ``guide snap: disabled when active layer is None`` () =
-    // No active layer → no implied bottom layer → guide skipped.
-    ViaTool.resolveSnap None [||] [vGuide 100L] [||] 100L 250L 10L
+    ViaTool.resolveSnap None [||] [vGuide 100L] [||] 100L 250L 10L false
     |> should equal (None : ViaTool.Snap option)
 
 [<Fact>]
 let ``guide snap: disabled when active layer is li1`` () =
-    // li1 active → bottom would be 66 (poly), not a routing
-    // layer → guide skipped per rule 3.2.
     ViaTool.resolveSnap (Some li1) [||] [vGuide 100L] [||]
-                        100L 250L 10L
+                        100L 250L 10L false
     |> should equal (None : ViaTool.Snap option)
 
 [<Fact>]
-let ``guide vs pin: closer pin wins over farther guide`` () =
-    // Pin at (105, 250) — 5 dbu away in X.
-    // Guide at X=90 — cursor X is 10 dbu off the guide.
-    // Both within radius 20.  Pin distance = 5, guide distance = 10
-    // → pin wins (closer).
-    let targets = [| mkTarget li1 105L 250L "VSS" |]
-    let s = ViaTool.resolveSnap (Some met2) targets [vGuide 90L] [||]
-                                100L 250L 20L
-    match s with
-    | Some snap -> snap.Kind |> should equal ViaTool.SnapKind.Pin
-    | None -> failwith "expected pin to win on smaller distance"
-
-[<Fact>]
-let ``guide vs pin: closer guide wins over farther pin`` () =
-    // Pin at (115, 250) — 15 dbu away in X.
-    // Guide at X=98 — cursor X is 2 dbu off.
-    // Guide wins (closer).
-    let targets = [| mkTarget li1 115L 250L "VSS" |]
-    let s = ViaTool.resolveSnap (Some met2) targets [vGuide 98L] [||]
-                                100L 250L 20L
-    match s with
-    | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.Guide
-        snap.X    |> should equal 98L
-    | None -> failwith "expected guide to win on smaller distance"
-
-[<Fact>]
-let ``knuckle wins over guide`` () =
-    // Cursor inside a met1 knuckle AND within range of a vertical
-    // guide.  Knuckle wins per rule 2.1.
-    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
-    let s = ViaTool.resolveSnap (Some met2) [||] [vGuide 0L] polys
-                                50L 30L 50L
-    match s with
-    | Some snap ->
-        snap.Kind  |> should equal ViaTool.SnapKind.Knuckle
-        snap.Layer |> should equal met1
-    | None -> failwith "expected knuckle to beat guide"
-
-[<Fact>]
-let ``guide snap: picks nearest of multiple guides`` () =
-    // Three vertical guides; cursor X=100.  Distances: 5 (to 95),
-    // 20 (to 120 — outside radius), 12 (to 112).  Nearest = 95.
+let ``guide AxisX: picks nearest of multiple guides`` () =
     let guides = [ vGuide 95L; vGuide 120L; vGuide 112L ]
     let s = ViaTool.resolveSnap (Some met2) [||] guides [||]
-                                100L 250L 15L
+                                100L 250L 15L false
     match s with
     | Some snap ->
-        snap.Kind |> should equal ViaTool.SnapKind.Guide
+        snap.Kind |> should equal ViaTool.SnapKind.AxisX
         snap.X    |> should equal 95L
     | None -> failwith "expected nearest guide to win"
+
+// ─────────────────────────────────────────────────────────────────
+// Point snaps win over axis snaps (rule 2.2).
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``point snap beats axis snap when both are in range`` () =
+    // Pin at (102, 252) — Euclidean distance 2.8 from cursor (100, 250).
+    // Vertical guide at X=98 — perpendicular distance 2.
+    // Even though the guide's perpendicular distance is smaller,
+    // point snaps win over axis snaps (rule 2.2).
+    let targets = [| mkTarget li1 102L 252L "NAND_OUT" |]
+    let guides = [vGuide 98L]
+    let s = ViaTool.resolveSnap (Some met2) targets guides [||]
+                                100L 250L 20L false
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.Pin
+        snap.Net  |> should equal "NAND_OUT"
+    | None -> failwith "expected point snap to beat axis snap"
+
+[<Fact>]
+let ``knuckle centre beats guide when both in range`` () =
+    // Knuckle centre at (0, 0), Euclidean distance 5 from cursor (3, 4).
+    // Guide at X=2 — perpendicular distance 1.
+    // Point (knuckle) wins.
+    let polys = [| mkKnuckle met1 -100L -100L 100L 100L |]
+    let guides = [vGuide 2L]
+    let s = ViaTool.resolveSnap (Some met2) [||] guides polys
+                                3L 4L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind |> should equal ViaTool.SnapKind.KnuckleCenter
+        snap.X    |> should equal 0L
+        snap.Y    |> should equal 0L
+    | None -> failwith "expected knuckle centre to beat guide"
+
+// ─────────────────────────────────────────────────────────────────
+// Alt suppress — drops via at raw cursor (rule 2.1 / 3.5).
+// ─────────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``alt: drops via at raw cursor regardless of nearby snap sources`` () =
+    let targets = [| mkTarget li1 100L 100L "VSS" |]
+    let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
+    let guides = [vGuide 50L]
+    let s = ViaTool.resolveSnap (Some met2) targets guides polys
+                                100L 100L 50L true
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.RawCursor
+        snap.X     |> should equal 100L
+        snap.Y     |> should equal 100L
+        snap.Layer |> should equal met1
+    | None -> failwith "expected raw-cursor snap under Alt"
+
+[<Fact>]
+let ``alt: returns None when active layer is None`` () =
+    // No active layer → no implied bottom for the via → can't
+    // drop anything, even with Alt.
+    ViaTool.resolveSnap None [||] [] [||] 100L 100L 50L true
+    |> should equal (None : ViaTool.Snap option)
+
+[<Fact>]
+let ``alt: returns None when active layer is li1`` () =
+    ViaTool.resolveSnap (Some li1) [||] [] [||] 100L 100L 50L true
+    |> should equal (None : ViaTool.Snap option)
+
+// ─────────────────────────────────────────────────────────────────
+// pickTopLayer — explicit-active vs default-to-snap+1.
+// ─────────────────────────────────────────────────────────────────
 
 [<Fact>]
 let ``pickTopLayer honours an explicit active layer`` () =

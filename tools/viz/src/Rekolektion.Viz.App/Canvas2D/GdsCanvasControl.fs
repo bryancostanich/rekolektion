@@ -1518,14 +1518,15 @@ type GdsCanvasControl() as this =
         AvaloniaProperty.Register<GdsCanvasControl, bool>("ViaMode", false)
         with get
     /// Callback fired when a via-tool click should commit.  Args:
-    /// `(worldX, worldY, snapRadiusDbu)` — the canvas computes the
-    /// radius from current pxPerDbu so a 20 px tolerance reads
-    /// the same regardless of zoom.  The Update handler resolves
-    /// the snap target + emits the via stack through
-    /// `Routing.ViaStack.emitAt`.  None when no handler is wired.
+    /// `(worldX, worldY, snapRadiusDbu, altHeld)` — canvas computes
+    /// the radius from current pxPerDbu (8 px screen-space, reads
+    /// the same regardless of zoom) and captures Alt state at
+    /// press so the Update handler can pass it to
+    /// `Routing.ViaTool.resolveSnap` (Alt suppresses snap, drops
+    /// the via at the raw cursor per via_tool.md rule 2.1).
     static member val ViaToolCommitHandlerProperty
-            : StyledProperty<Action<int64, int64, int64>> =
-        AvaloniaProperty.Register<GdsCanvasControl, Action<int64, int64, int64>>(
+            : StyledProperty<Action<int64, int64, int64, bool>> =
+        AvaloniaProperty.Register<GdsCanvasControl, Action<int64, int64, int64, bool>>(
             "ViaToolCommitHandler", null)
         with get
     /// Current in-flight draft route, or None when nothing is being
@@ -1829,9 +1830,9 @@ type GdsCanvasControl() as this =
             this.SetValue(GdsCanvasControl.ViaModeProperty, v) |> ignore
 
     member this.ViaToolCommitHandler
-        with get() : Action<int64, int64, int64> =
+        with get() : Action<int64, int64, int64, bool> =
             this.GetValue(GdsCanvasControl.ViaToolCommitHandlerProperty)
-        and set(v: Action<int64, int64, int64>) =
+        and set(v: Action<int64, int64, int64, bool>) =
             this.SetValue(GdsCanvasControl.ViaToolCommitHandlerProperty, v) |> ignore
 
     member this.DraftRoute
@@ -2608,21 +2609,18 @@ type GdsCanvasControl() as this =
             let wx, wy = this.ScreenToWorld p
             let radiusDbu =
                 int64 (8.0 / max pixelsPerDbu 0.0001)
+            let altHeld =
+                e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Alt)
             let cb = this.ViaToolCommitHandler
-            // Always log the press, even when the handler is null —
-            // that's how we tell "click reached the canvas but the
-            // dispatch wasn't wired" apart from "click never
-            // reached the canvas at all". Reported 2026-06-03:
-            // user reports no via dropped, the log has no
-            // ViaToolCommit msg.
             Rekolektion.Viz.App.Services.Logger.log "via.tool"
                 {| op = "press"
                    x = int64 wx
                    y = int64 wy
                    radiusDbu = radiusDbu
+                   altHeld = altHeld
                    handlerWired = not (isNull cb) |}
             if not (isNull cb) then
-                cb.Invoke(int64 wx, int64 wy, radiusDbu)
+                cb.Invoke(int64 wx, int64 wy, radiusDbu, altHeld)
             e.Handled <- true
 
         // Guideline grab-to-move. Hit-test BEFORE every other
@@ -3856,9 +3854,11 @@ type GdsCanvasControl() as this =
                         match this.Library with
                         | Some lib -> lib.Guides
                         | None -> []
+                    let altHeld =
+                        e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Alt)
                     Routing.ViaTool.resolveSnap
                         topLayerOpt targets guides this.FlatPolygons
-                        (int64 wx) (int64 wy) radiusDbu
+                        (int64 wx) (int64 wy) radiusDbu altHeld
                     |> Option.map (fun s ->
                         let (ln, ld) = s.Layer
                         ({ X        = s.X

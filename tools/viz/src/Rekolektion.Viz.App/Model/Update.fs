@@ -1107,7 +1107,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
             ViaMode = next
             RoutingMode = if next then false else model.RoutingMode
             DraftRoute = if next then None else model.DraftRoute }, Cmd.none
-    | Msg.ViaToolCommit (worldX, worldY, radiusDbu) ->
+    | Msg.ViaToolCommit (worldX, worldY, radiusDbu, altHeld) ->
         // Resolve a snap target under the cursor at routing layers
         // strictly below the via's top layer, then emit the via
         // stack via `Routing.ViaStack.emitAt` and append it to the
@@ -1147,7 +1147,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                     Routing.ViaTool.resolveSnap
                         activeTopOpt allTargets mc.Document.Guides
                         mc.FlatPolygons
-                        worldX worldY radiusDbu
+                        worldX worldY radiusDbu altHeld
                 match snapOpt with
                 | None ->
                     Rekolektion.Viz.App.Services.Logger.log "via.tool"

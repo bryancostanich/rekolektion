@@ -436,6 +436,93 @@ let ``WireSelectAt on untagged rect walks bbox-touching same-layer cluster`` () 
     next.Selection
     |> should equal (Set.ofList [pk "TOP" 0; pk "TOP" 1])
 
+// --- WireSelectAt: cross-mechanism clear (selection.md rule 6) -------
+//
+// Plain wire-click must clear any subcell-instance selection AND any
+// ratline selection (rule 6.1).  Shift-click extends across (rule 6.5).
+// Empty-space wire-click clears all three (rule 6.4).
+
+[<Fact>]
+let ``WireSelectAt plain click clears prior instance selection`` () =
+    let met2 = Named ("sky130", "met2")
+    let model =
+        wireFixtureModel [
+            mkRect met2 0L 0L 100L 10L [widProp 1]
+        ]
+        |> fun m -> { m with InstanceSelection = Set.ofList [3; 7] }
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, false)) model
+    next.Selection |> should equal (Set.ofList [pk "TOP" 0])
+    next.InstanceSelection |> should equal (Set.empty : Set<int>)
+
+[<Fact>]
+let ``WireSelectAt plain click clears prior ratline selection`` () =
+    let met2 = Named ("sky130", "met2")
+    let model =
+        wireFixtureModel [
+            mkRect met2 0L 0L 100L 10L [widProp 1]
+        ]
+        |> fun m -> { m with SelectedRatlines = Set.ofList ["VDD"] }
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, false)) model
+    next.Selection |> should equal (Set.ofList [pk "TOP" 0])
+    next.SelectedRatlines |> should equal (Set.empty : Set<string>)
+
+[<Fact>]
+let ``WireSelectAt shift-click preserves instance + ratline selections`` () =
+    let met2 = Named ("sky130", "met2")
+    let model =
+        wireFixtureModel [
+            mkRect met2 0L 0L 100L 10L [widProp 1]
+        ]
+        |> fun m ->
+            { m with
+                InstanceSelection = Set.ofList [3]
+                SelectedRatlines = Set.ofList ["VDD"] }
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (50L, 5L, true)) model
+    next.Selection |> should equal (Set.ofList [pk "TOP" 0])
+    next.InstanceSelection |> should equal (Set.ofList [3])
+    next.SelectedRatlines |> should equal (Set.ofList ["VDD"])
+
+[<Fact>]
+let ``WireSelectAt on empty space plain-clears all three selections`` () =
+    let met2 = Named ("sky130", "met2")
+    // Click coords (9000,9000) land on no rect — only the rect at
+    // origin exists in the fixture, so findSegmentAt returns None.
+    let model =
+        wireFixtureModel [
+            mkRect met2 0L 0L 100L 10L [widProp 1]
+        ]
+        |> fun m ->
+            { m with
+                Selection = Set.ofList [pk "TOP" 0]
+                InstanceSelection = Set.ofList [3]
+                SelectedRatlines = Set.ofList ["VDD"] }
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (9000L, 9000L, false)) model
+    next.Selection |> should equal (Set.empty : Set<Flatten.PolyKey>)
+    next.InstanceSelection |> should equal (Set.empty : Set<int>)
+    next.SelectedRatlines |> should equal (Set.empty : Set<string>)
+
+[<Fact>]
+let ``WireSelectAt on empty space shift-click preserves selections`` () =
+    let met2 = Named ("sky130", "met2")
+    let model =
+        wireFixtureModel [
+            mkRect met2 0L 0L 100L 10L [widProp 1]
+        ]
+        |> fun m ->
+            { m with
+                Selection = Set.ofList [pk "TOP" 0]
+                InstanceSelection = Set.ofList [3]
+                SelectedRatlines = Set.ofList ["VDD"] }
+    let next, _ = Update.update stubBackend
+                    (Msg.WireSelectAt (9000L, 9000L, true)) model
+    next.Selection |> should equal (Set.ofList [pk "TOP" 0])
+    next.InstanceSelection |> should equal (Set.ofList [3])
+    next.SelectedRatlines |> should equal (Set.ofList ["VDD"])
+
 [<Fact>]
 let ``MovePolygonsDbu translates every polygon in selection`` () =
     let model = fixtureModel ()

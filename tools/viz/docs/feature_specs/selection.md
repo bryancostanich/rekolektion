@@ -6,15 +6,19 @@ Click on geometry to select it.  The selection drives the
 inspector overlay, the dimension overlay, drag/move operations,
 and `DeleteSelection` / `MoveSelectionDbu` follow-ups.
 
-Two related but distinct mechanisms:
+Two related but distinct mechanisms that participate in a SINGLE
+selection lifecycle (see rule 7 for the cross-clear contract that
+binds them):
 
 - **Instance selection** — clicking an SRef bounding box selects
-  the cell-level instance.  Sketched here for context only;
-  drives Cmd+D delete-instance, rotate, mirror, drag.
+  the cell-level instance.  Drives Cmd+D delete-instance, rotate,
+  mirror, drag.  Lives in `Model.InstanceSelection`.
 - **Polygon / wire selection** — clicking a rect / poly / wire
   builds a `Set<PolyKey>` in `Model.Selection`.  This spec
   focuses on the wire-and-knuckle case because that's where the
   rules are non-obvious.
+- **Ratline selection** — clicking a ratline highlight selects a
+  named net for inspection.  Lives in `Model.SelectedRatlines`.
 
 The user gestures that produce a polygon / wire selection:
 
@@ -132,7 +136,54 @@ When the picked rect is a wire body:
 
 > Implementation: shift-modifier in `Update.fs Msg.WireSelectAt`; Esc in `App.fs KeyMap` / canvas `OnKeyDown`.
 
-### 6. Diagnostic logging
+### 6. Cross-mechanism interaction
+
+A plain click anywhere is a "fresh selection" gesture and clears
+everything the previous click left behind, regardless of which
+mechanism owned that previous selection.  Shift-click is the
+opposite — it extends across mechanisms instead of replacing.
+
+- 6.1 — **Plain click on a wire or knuckle** clears any
+  subcell-instance selection AND any ratline selection before
+  applying the rule 2 / rule 3 result.  The user ends up with
+  ONLY the new wire / knuckle selected.
+
+- 6.2 — **Plain click on a subcell (SRef)** clears any
+  wire / polygon selection AND any ratline selection before
+  setting the instance selection.  The user ends up with ONLY
+  the clicked subcell selected.
+
+- 6.3 — **Plain click on a ratline highlight** clears any
+  wire / polygon selection AND any subcell-instance selection
+  before setting the ratline selection.
+
+- 6.4 — **Plain click on empty space** clears all three
+  selections (wire / polygon, instance, ratline).
+
+- 6.5 — **Shift-click extends across mechanisms.**  If the user
+  has a subcell selected and shift-clicks a wire, both end up in
+  the selection.  Vice versa.  Shift-click never clears the
+  other mechanism's selection — that's the whole point of the
+  modifier.
+
+- 6.6 — Shift-click on empty space leaves every selection
+  untouched (don't punish a misclick — see rule 4.2).
+
+- 6.7 — `Esc` is the global hard reset: clears all three
+  selections in one keypress (see rule 5).
+
+> Implementation: cross-clears live at the click dispatch sites.
+> Canvas SRef-click clears polygon selection via
+> `ClearPolygonSelectionHandler` when shift is not held
+> (`tools/viz/src/Rekolektion.Viz.App/Canvas2D/GdsCanvasControl.fs`,
+> SRef-pick branch). Canvas polygon-click clears instance
+> selection symmetrically. Wire-pickup (which routes through
+> `Msg.WireSelectAt` rather than the polygon-pick branch)
+> clears instance + ratlines inside the model handler
+> (`Update.fs Msg.WireSelectAt` — both the seed-found and the
+> seed-not-found branches).
+
+### 7. Diagnostic logging
 
 Every `Msg.WireSelectAt` dispatch emits a `wire.select` log
 entry with:
@@ -181,3 +232,4 @@ amend the rule when the user has a clear answer.
 |---|---|---|
 | 2026-06-03 | (initial spec) | Captures rules 1–6 + OQs 1–4. |
 | 2026-06-04 | (this commit) | Rule 1.2/1.3 clarified: hit-test picks visually-topmost layer, not last-in-doc.  Code aligned (findSegmentAt now consults `Rkt.ToGds.layerToGds` to pick by GDS layer number); WireSelectAt refactored to call `Routing.Wire.connectedComponentWireBodiesOnly`. |
+| 2026-06-04 | (this commit) | Added rule 6 (cross-mechanism interaction).  Plain click on a wire / knuckle / subcell / ratline now clears the other two selections; shift-click extends across all three.  Code aligned in `Update.fs Msg.WireSelectAt` (was previously asymmetric: SRef-click cleared polygon selection via canvas handler, but wire-click did not clear instance / ratline selections).  Old rule 6 (diagnostic logging) renumbered to rule 7. |

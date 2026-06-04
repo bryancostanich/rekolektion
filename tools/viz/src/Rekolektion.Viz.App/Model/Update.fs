@@ -1383,11 +1383,16 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                 | None ->
                     // Click landed on no wire-shaped rect. With
                     // shift: leave selection alone (don't punish
-                    // a misclick). Without: clear, matching the
-                    // standard "click empty space deselects"
-                    // behaviour.
+                    // a misclick — selection.md rule 6.6). Without:
+                    // empty-space click clears ALL three selection
+                    // mechanisms — wire/polygon, instance, ratline
+                    // (selection.md rule 6.4).
                     if shift then model, Cmd.none
-                    else { model with Selection = Set.empty }, Cmd.none
+                    else
+                        { model with
+                            Selection = Set.empty
+                            InstanceSelection = Set.empty
+                            SelectedRatlines = Set.empty }, Cmd.none
                 | Some (_, cellName, seedIdx, _) ->
                     let topCellName =
                         doc.TopCell
@@ -1472,7 +1477,22 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                         Set.difference model.Selection polyKeys
                                     else
                                         Set.union model.Selection polyKeys
-                            { model with Selection = newSel }, Cmd.none
+                            // Cross-mechanism clear — selection.md
+                            // rule 6.1. Plain wire-click drops any
+                            // subcell-instance and ratline selection
+                            // so the user ends up with ONLY the new
+                            // wire highlighted. Shift-click extends
+                            // ACROSS mechanisms (rule 6.5) so we
+                            // preserve the other selections then.
+                            let model' =
+                                if shift then
+                                    { model with Selection = newSel }
+                                else
+                                    { model with
+                                        Selection = newSel
+                                        InstanceSelection = Set.empty
+                                        SelectedRatlines = Set.empty }
+                            model', Cmd.none
     | Msg.SegmentDragCommit ->
         match model.SegmentDrag, model.ActiveMacroPath with
         | None, _ | _, None ->

@@ -138,6 +138,15 @@ anchor point would.
   stack" intuition and stops a li1 wire from stealing the snap
   from a met2 wire that's drawn on top of it at the same point.
 
+- 2.7 — **OnRect fallback.**  When neither a point nor an axis
+  snap fires, the resolver checks whether the cursor sits
+  visibly INSIDE a routing rect's bbox.  If yes, the snap stays
+  at the cursor's own coords (no movement) and the layer is the
+  topmost containing rect's layer.  Matches "I clicked on a
+  pad, drop the via on that pad" without re-introducing the
+  old bbox-centroid yank.  Fires only as a last resort —
+  point and axis snaps still win when within radius.
+
 > Worked example: cursor at (2510, 2400), radius 64.  A wire
 > endpoint sits at (2530, 2405) — Euclidean distance ~21.  A
 > vertical guide at X = 2495 — perpendicular distance 15, axis
@@ -214,4 +223,5 @@ the toolbar's active layer.
 | 2026-06-04 | `ddc4905` | Initial spec — pin radius 8 px, single-winner with knuckle / pin / guide priority. |
 | 2026-06-04 | `b490165` | Full rewrite of the snap model to match Figma / Illustrator / AutoCAD convention.  Removed bbox-containment centroid pull (root cause of "super coarse" feel).  Added per-axis combination (X from one source, Y from another).  Added Alt-to-suppress.  Knuckle / wire snaps now require cursor to be near a specific candidate point (center, endpoint, centerline) within the 8 px radius — not just inside the rect's bbox. |
 | 2026-06-04 | `a144b5e` | Priority rule 2 changed: point and axis snaps now compete on actual cursor-to-snap-point Euclidean distance (closer wins) rather than point-always-beats-axis.  Was: a wire endpoint near the cursor would always steal the snap from a closer guide line.  Now: the guide AxisX wins whenever its perpendicular distance is smaller than the endpoint's Euclidean distance.  Resolves the "vias aren't snapping to guidelines" report — the resolver was finding nearby wire endpoints and short-circuiting before evaluating the guide axis. |
-| 2026-06-05 | (this commit) | Two fixes for "via plumbed two layers down and connected the wrong net": (a) wire centerlines now have a finite perpendicular extent — a horizontal wire's centerline at midY only fires when the cursor's X is within [xMin, xMax].  Pre-fix the centerline was treated as an infinite horizontal line, so a li1 wire ending at X=3420 still pulled the cursor's Y to its centerline when the cursor was at X=3450, even though the cursor was past the end of the wire.  (b) Layer tiebreak (rule 2.6) — when multiple candidates sit at equal distance (typical: stacked wires at the same midY), the higher routing layer wins so the snap lands on what's visually on top.  Together the fixes pick met2 (1-step via to met3) instead of li1 (2-step stack that shorted to a different net at the intermediate met2 landing). |
+| 2026-06-05 | `cc20971` | Two fixes for "via plumbed two layers down and connected the wrong net": (a) wire centerlines now have a finite perpendicular extent — a horizontal wire's centerline at midY only fires when the cursor's X is within [xMin, xMax].  Pre-fix the centerline was treated as an infinite horizontal line, so a li1 wire ending at X=3420 still pulled the cursor's Y to its centerline when the cursor was at X=3450, even though the cursor was past the end of the wire.  (b) Layer tiebreak (rule 2.6) — when multiple candidates sit at equal distance (typical: stacked wires at the same midY), the higher routing layer wins so the snap lands on what's visually on top.  Together the fixes pick met2 (1-step via to met3) instead of li1 (2-step stack that shorted to a different net at the intermediate met2 landing). |
+| 2026-06-05 | (this commit) | OnRect fallback (rule 2.7) — when the cursor sits inside a met2 pad's bbox but more than 8 px from any candidate point AND outside any wire centerline's perpendicular range, the resolver now snaps to (cursor, pad's layer) instead of falling through to a distant li1 endpoint on a different net.  Live-state probe confirmed the user's report: a SEL met2 pad (3270..3640, 2750..3120) bbox-contained the cursor (3562, 3113), but the centroid was 207 dbu away — outside radius 36 — so the resolver landed on a li1 VDD endpoint 12 dbu away.  OnRect is lower priority than point / axis snaps; the "super coarse" centroid-pull is not back.  The cursor stays put; only the layer comes from the rect underneath. |

@@ -126,6 +126,12 @@ type SnapKind =
     | AxisX        // X from a vertical line source; Y stayed at cursor
     | AxisY        // Y from a horizontal line source; X stayed at cursor
     | AxisCross    // X and Y from two line sources
+    | OnRect       // cursor inside a routing rect's bbox; snap stays at
+                   // cursor, layer = the rect's layer.  Lower priority
+                   // than point / axis snaps — fires only when nothing
+                   // else does so a click anywhere on a visible pad
+                   // gets a via on that pad's layer even if cursor
+                   // isn't near a candidate point.
     | RawCursor    // Alt held — snap suppressed
 
 type Snap = {
@@ -451,11 +457,46 @@ let resolveSnap
     // Ties go to point snap (stable; matches the user's "snap
     // to the labelled thing exactly when both are equally close"
     // intuition).
-    match pointResult, axisResult with
-    | Some (p, dp), Some (_, da) when dp <= da -> Some p
-    | Some (p, _),  None                       -> Some p
-    | _, Some (a, _)                           -> Some a
-    | None, None                               -> None
+    let primary =
+        match pointResult, axisResult with
+        | Some (p, dp), Some (_, da) when dp <= da -> Some p
+        | Some (p, _),  None                       -> Some p
+        | _, Some (a, _)                           -> Some a
+        | None, None                               -> None
+    match primary with
+    | Some s -> Some s
+    | None ->
+        // ── Fallback: cursor inside a routing rect's bbox ────
+        // No point or axis snap reached the cursor.  If the
+        // cursor sits visibly INSIDE a routing rect (the user
+        // clicked on a met2 pad's bbox interior but not near
+        // its centroid), snap to the cursor's own coords on
+        // that rect's layer.  Topmost layer wins so a met2 pad
+        // over a li1 patch yields a met2 snap.  Active-layer
+        // filter applies — can't snap to the active layer or
+        // above (would yield a zero-step via stack).
+        let topN =
+            match topLayerOpt with
+            | Some (n, _) -> Some n
+            | None -> None
+        let inside =
+            flatPolys
+            |> Array.filter (fun p ->
+                isRoutingLayerKey p.Layer p.DataType
+                && (match topN with
+                    | Some n -> p.Layer < n
+                    | None -> true)
+                && (let xMin, yMin, xMax, yMax = polyBbox p
+                    cursorX >= xMin && cursorX <= xMax
+                    && cursorY >= yMin && cursorY <= yMax))
+        if Array.isEmpty inside then None
+        else
+            let topmost = inside |> Array.maxBy (fun p -> p.Layer)
+            Some { X = cursorX
+                   Y = cursorY
+                   Layer = (topmost.Layer, topmost.DataType)
+                   Net = ""
+                   Kind = OnRect }
 
 /// Pick the via-stack top layer per the V-tool rule: prefer the
 /// caller's `topLayerOpt` (toolbar's ActiveLayer) when present,

@@ -312,14 +312,68 @@ let ``knuckle centre: cursor near centre wins`` () =
     | None -> failwith "expected knuckle centre snap"
 
 [<Fact>]
-let ``knuckle centre: cursor inside bbox but far from centre does NOT snap`` () =
-    // The headline bug fix.  Cursor at (180, 180) is INSIDE the
-    // bbox (-200..200) but ~250 dbu from centre (0, 0).  Radius
-    // 50 → no snap.  Old behaviour: bbox-containment yanked
-    // cursor to centre regardless of distance.
+let ``knuckle centre: cursor inside bbox but far from centre yields OnRect at cursor`` () =
+    // Cursor at (180, 180) is INSIDE the bbox (-200..200) but
+    // ~250 dbu from centre (0, 0).  Radius 50 → no point /
+    // axis snap.  Fallback: OnRect snap stays at the cursor,
+    // layer = the rect's layer.  No yank to centroid (the old
+    // "super coarse" pull is gone), but the click is recognised
+    // as being on the pad so the via lands on met1.
     let polys = [| mkKnuckle met1 -200L -200L 200L 200L |]
-    ViaTool.resolveSnap None [||] [] polys 180L 180L 50L false
-    |> should equal (None : ViaTool.Snap option)
+    let s = ViaTool.resolveSnap (Some met2) [||] [] polys 180L 180L 50L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.OnRect
+        snap.Layer |> should equal met1
+        snap.X     |> should equal 180L
+        snap.Y     |> should equal 180L
+    | None -> failwith "expected OnRect fallback snap"
+
+[<Fact>]
+let ``OnRect: topmost-layer rect wins when stacked rects all contain the cursor`` () =
+    // Met1 + met2 squares both contain cursor (50, 50) but the
+    // cursor is far from either centre.  OnRect fallback picks
+    // the topmost (met2) so a via on met3 only plumbs 1 step
+    // down instead of 2.  Exact regression for the user-reported
+    // "via plumbed two levels down" pattern.
+    let polys =
+        [| mkKnuckle met1 0L 0L 500L 500L
+           mkKnuckle met2 0L 0L 500L 500L |]
+    let s = ViaTool.resolveSnap (Some met3) [||] [] polys 50L 50L 30L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.OnRect
+        snap.Layer |> should equal met2
+    | None -> failwith "expected OnRect on the topmost containing rect"
+
+[<Fact>]
+let ``OnRect: does NOT fire when a point or axis snap is in range`` () =
+    // Cursor (5, 5) inside a knuckle's bbox AND within radius
+    // of the centre.  Point snap (KnuckleCenter) wins; OnRect
+    // is a fallback only and must not steal from a real point.
+    let polys = [| mkKnuckle met1 -100L -100L 100L 100L |]
+    let s = ViaTool.resolveSnap (Some met2) [||] [] polys 5L 5L 50L false
+    match s with
+    | Some snap -> snap.Kind |> should equal ViaTool.SnapKind.KnuckleCenter
+    | None -> failwith "expected KnuckleCenter point snap"
+
+[<Fact>]
+let ``OnRect: cursor inside a pad bbox far from anything else snaps to that pad`` () =
+    // Reproduces the user's 2026-06-05 case: cursor (3562, 3113)
+    // lands inside a met2 via-pad's bbox (3270..3640, 2750..3120)
+    // but 207 dbu from its centre.  Pre-fix, no candidate was in
+    // radius → snap fell through to a distant li1 endpoint on a
+    // different net (VDD).  Post-fix, OnRect fallback picks the
+    // pad's layer (met2) with cursor coords intact.
+    let polys = [| mkKnuckle met2 3270L 2750L 3640L 3120L |]
+    let s = ViaTool.resolveSnap (Some met3) [||] [] polys 3562L 3113L 36L false
+    match s with
+    | Some snap ->
+        snap.Kind  |> should equal ViaTool.SnapKind.OnRect
+        snap.Layer |> should equal met2
+        snap.X     |> should equal 3562L
+        snap.Y     |> should equal 3113L
+    | None -> failwith "expected OnRect snap on the met2 pad"
 
 [<Fact>]
 let ``knuckle centre: nearer centre wins over farther centre`` () =

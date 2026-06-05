@@ -1164,7 +1164,42 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                            pinCount = Array.length allTargets
                            flatPolyCount = Array.length mc.FlatPolygons |}
                     model, Cmd.none
-                | Some snap ->
+                | Some rawSnap ->
+                    // Net attribution.  Axis snaps (AxisX/Y/Cross)
+                    // and the raw-cursor escape come back with
+                    // Net = "" because the resolver doesn't know
+                    // about net derivation.  Look up the actual
+                    // wire under the snap point and inherit its
+                    // net so the emitted via lands on the right
+                    // net rather than getting flood-attributed
+                    // to whichever rail it happens to touch.
+                    let snap =
+                        if rawSnap.Net <> "" then rawSnap
+                        else
+                            let (sLayerN, sLayerDt) = rawSnap.Layer
+                            let hitPoly =
+                                mc.FlatPolygons
+                                |> Array.tryFind (fun p ->
+                                    p.Layer = sLayerN
+                                    && p.DataType = sLayerDt
+                                    && (let mutable xMin = System.Int64.MaxValue
+                                        let mutable yMin = System.Int64.MaxValue
+                                        let mutable xMax = System.Int64.MinValue
+                                        let mutable yMax = System.Int64.MinValue
+                                        for pt in p.Points do
+                                            if pt.X < xMin then xMin <- pt.X
+                                            if pt.X > xMax then xMax <- pt.X
+                                            if pt.Y < yMin then yMin <- pt.Y
+                                            if pt.Y > yMax then yMax <- pt.Y
+                                        rawSnap.X >= xMin && rawSnap.X <= xMax
+                                        && rawSnap.Y >= yMin && rawSnap.Y <= yMax))
+                            match hitPoly with
+                            | None -> rawSnap
+                            | Some fp ->
+                                let idx = Routing.Obstacles.buildNetIndex mc.Nets
+                                match Routing.Obstacles.netOf idx fp with
+                                | Some net -> { rawSnap with Net = net }
+                                | None     -> rawSnap
                     let topLayer = Routing.ViaTool.pickTopLayer activeTopOpt snap
                     let bottomLayer = snap.Layer
                     Rekolektion.Viz.App.Services.Logger.log "via.tool"
@@ -1175,6 +1210,7 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                            snapY = snap.Y
                            snapKind = sprintf "%A" snap.Kind
                            snapLayerN = fst snap.Layer
+                           snapNet = snap.Net
                            guidesCount = List.length mc.Document.Guides
                            altHeld = altHeld |}
                     // `emitStandaloneAt` wraps ViaStack.emitAt and
@@ -1230,7 +1266,9 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 Y1 = seg.CenterY - half
                                 X2 = seg.CenterX + half
                                 Y2 = seg.CenterY + half
-                                Net = Some snap.Net
+                                Net =
+                                    if snap.Net = "" then None
+                                    else Some snap.Net
                                 Props = []
                                 Comments = []
                                 SubFormComments = Map.empty

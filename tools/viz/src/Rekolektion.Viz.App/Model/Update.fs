@@ -1189,22 +1189,76 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                         if rawSnap.Net <> "" then rawSnap
                         else
                             let (sLayerN, sLayerDt) = rawSnap.Layer
-                            let hitPoly =
+                            // Polygon bbox helper.
+                            let pbb (p: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) =
+                                let mutable xMin = System.Int64.MaxValue
+                                let mutable yMin = System.Int64.MaxValue
+                                let mutable xMax = System.Int64.MinValue
+                                let mutable yMax = System.Int64.MinValue
+                                for pt in p.Points do
+                                    if pt.X < xMin then xMin <- pt.X
+                                    if pt.X > xMax then xMax <- pt.X
+                                    if pt.Y < yMin then yMin <- pt.Y
+                                    if pt.Y > yMax then yMax <- pt.Y
+                                xMin, yMin, xMax, yMax
+                            // Candidate polygons: same layer, bbox
+                            // contains the snap point.
+                            let containing =
                                 mc.FlatPolygons
-                                |> Array.tryFind (fun p ->
+                                |> Array.filter (fun p ->
                                     p.Layer = sLayerN
                                     && p.DataType = sLayerDt
-                                    && (let mutable xMin = System.Int64.MaxValue
-                                        let mutable yMin = System.Int64.MaxValue
-                                        let mutable xMax = System.Int64.MinValue
-                                        let mutable yMax = System.Int64.MinValue
-                                        for pt in p.Points do
-                                            if pt.X < xMin then xMin <- pt.X
-                                            if pt.X > xMax then xMax <- pt.X
-                                            if pt.Y < yMin then yMin <- pt.Y
-                                            if pt.Y > yMax then yMax <- pt.Y
+                                    && (let xMin, yMin, xMax, yMax = pbb p
                                         rawSnap.X >= xMin && rawSnap.X <= xMax
                                         && rawSnap.Y >= yMin && rawSnap.Y <= yMax))
+                            // Prefer the polygon whose centerline
+                            // actually contributed the snap.  For an
+                            // AxisCross / AxisX / AxisY result the
+                            // contributing wire has bbox midY = snap.Y
+                            // (horizontal wire) or bbox midX = snap.X
+                            // (vertical wire).  Otherwise multiple
+                            // overlapping rects on the same layer (a
+                            // pin pad on top of a routing wire) tied
+                            // on bbox-containment and the first-in-
+                            // array won — usually wrong (pad's net
+                            // beats the wire the user is hovering on).
+                            let snapKind = rawSnap.Kind
+                            let isAxisLike =
+                                match snapKind with
+                                | Rekolektion.Viz.Core.Routing.ViaTool.AxisCross
+                                | Rekolektion.Viz.Core.Routing.ViaTool.AxisX
+                                | Rekolektion.Viz.Core.Routing.ViaTool.AxisY -> true
+                                | _ -> false
+                            let centerlineMatch (p: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon) =
+                                let xMin, yMin, xMax, yMax = pbb p
+                                let midX = (xMin + xMax) / 2L
+                                let midY = (yMin + yMax) / 2L
+                                let w = xMax - xMin
+                                let h = yMax - yMin
+                                // Horizontal-wire contributor: midY ==
+                                // snap.Y; vertical-wire contributor:
+                                // midX == snap.X.  Aspect > 1 picks
+                                // the dominant axis.
+                                if w >= h then midY = rawSnap.Y
+                                else            midX = rawSnap.X
+                            let hitPoly =
+                                if isAxisLike then
+                                    // Prefer a centerline-matching
+                                    // polygon; fall back to any
+                                    // containing one if no match.
+                                    let matched =
+                                        containing |> Array.tryFind centerlineMatch
+                                    match matched with
+                                    | Some _ -> matched
+                                    | None   -> containing |> Array.tryHead
+                                else
+                                    // Point snap (Pin / KnuckleCenter
+                                    // / WireEndpoint) already picked
+                                    // a specific candidate inside the
+                                    // resolver; first-containing is
+                                    // fine because the snap location
+                                    // is the candidate's own coord.
+                                    containing |> Array.tryHead
                             match hitPoly with
                             | None -> rawSnap
                             | Some fp ->

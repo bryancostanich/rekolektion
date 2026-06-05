@@ -54,9 +54,13 @@ Sources:
 - **Vertical guide lines** → X axis.
 - **Horizontal guide lines** → Y axis.
 - **Vertical wire centerlines** → X axis (the wire's mid-width
-  X coordinate, for a vertical wire).
+  X coordinate, for a vertical wire).  Only fires when the
+  cursor is within the wire's Y range — the wire physically
+  ends at yMin and yMax, and the centerline shouldn't pull
+  from outside the wire's bbox.
 - **Horizontal wire centerlines** → Y axis (mid-height Y, for
-  a horizontal wire).
+  a horizontal wire).  Only fires when the cursor is within
+  the wire's X range — same finite-extent rule.
 
 ### 3. Raw cursor — Alt held
 
@@ -126,6 +130,13 @@ anchor point would.
   radius and no point fires, the resolver returns `None` — no
   via is placed.  (Alt is the escape hatch for "I really want
   the cursor position".)
+
+- 2.6 — **Layer tiebreak.**  When multiple snap candidates of
+  the same kind sit at equal distance from the cursor (typical
+  case: stacked wires at the same midY), the **higher routing
+  layer wins**.  Mirrors the "what's visually on top of the
+  stack" intuition and stops a li1 wire from stealing the snap
+  from a met2 wire that's drawn on top of it at the same point.
 
 > Worked example: cursor at (2510, 2400), radius 64.  A wire
 > endpoint sits at (2530, 2405) — Euclidean distance ~21.  A
@@ -202,4 +213,5 @@ the toolbar's active layer.
 |---|---|---|
 | 2026-06-04 | `ddc4905` | Initial spec — pin radius 8 px, single-winner with knuckle / pin / guide priority. |
 | 2026-06-04 | `b490165` | Full rewrite of the snap model to match Figma / Illustrator / AutoCAD convention.  Removed bbox-containment centroid pull (root cause of "super coarse" feel).  Added per-axis combination (X from one source, Y from another).  Added Alt-to-suppress.  Knuckle / wire snaps now require cursor to be near a specific candidate point (center, endpoint, centerline) within the 8 px radius — not just inside the rect's bbox. |
-| 2026-06-04 | (this commit) | Priority rule 2 changed: point and axis snaps now compete on actual cursor-to-snap-point Euclidean distance (closer wins) rather than point-always-beats-axis.  Was: a wire endpoint near the cursor would always steal the snap from a closer guide line.  Now: the guide AxisX wins whenever its perpendicular distance is smaller than the endpoint's Euclidean distance.  Resolves the "vias aren't snapping to guidelines" report — the resolver was finding nearby wire endpoints and short-circuiting before evaluating the guide axis. |
+| 2026-06-04 | `a144b5e` | Priority rule 2 changed: point and axis snaps now compete on actual cursor-to-snap-point Euclidean distance (closer wins) rather than point-always-beats-axis.  Was: a wire endpoint near the cursor would always steal the snap from a closer guide line.  Now: the guide AxisX wins whenever its perpendicular distance is smaller than the endpoint's Euclidean distance.  Resolves the "vias aren't snapping to guidelines" report — the resolver was finding nearby wire endpoints and short-circuiting before evaluating the guide axis. |
+| 2026-06-05 | (this commit) | Two fixes for "via plumbed two layers down and connected the wrong net": (a) wire centerlines now have a finite perpendicular extent — a horizontal wire's centerline at midY only fires when the cursor's X is within [xMin, xMax].  Pre-fix the centerline was treated as an infinite horizontal line, so a li1 wire ending at X=3420 still pulled the cursor's Y to its centerline when the cursor was at X=3450, even though the cursor was past the end of the wire.  (b) Layer tiebreak (rule 2.6) — when multiple candidates sit at equal distance (typical: stacked wires at the same midY), the higher routing layer wins so the snap lands on what's visually on top.  Together the fixes pick met2 (1-step via to met3) instead of li1 (2-step stack that shorted to a different net at the intermediate met2 landing). |

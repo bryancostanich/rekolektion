@@ -203,6 +203,12 @@ type private LineCandidate = {
     Coord   : int64             // the constrained value on that axis
     Layer   : int * int
     IsWire  : bool              // true → from a wire centerline (real metal); false → guide
+    /// Perpendicular extent for finite line sources (wires).
+    /// A horizontal wire's centerline only exists between its
+    /// xMin and xMax; outside that range the cursor is past the
+    /// end of the wire and centerline snap should NOT fire.
+    /// `None` for infinite line sources (guides).
+    Range   : (int64 * int64) option
 }
 
 /// Per-routing-rect candidates: a wire contributes two endpoint
@@ -227,22 +233,27 @@ let private rectCandidates
         let h = yMax - yMin
         if w >= h then
             // Horizontal wire — endpoints at (xMin, midY) and
-            // (xMax, midY); centerline at Y = midY.
+            // (xMax, midY); centerline at Y = midY constrained
+            // to the wire's X range so the cursor only snaps to
+            // the centerline when it's actually OVER the wire,
+            // not 1 µm past the end.
             let endpoints : PointCandidate list = [
                 { X = xMin; Y = midY; Layer = layer; Net = ""; Kind = WireEndpoint }
                 { X = xMax; Y = midY; Layer = layer; Net = ""; Kind = WireEndpoint }
             ]
             let line : LineCandidate =
-                { Axis = Horizontal; Coord = midY; Layer = layer; IsWire = true }
+                { Axis = Horizontal; Coord = midY; Layer = layer
+                  IsWire = true; Range = Some (xMin, xMax) }
             endpoints, [line]
         else
-            // Vertical wire — endpoints at top/bottom mid-width.
+            // Vertical wire.  Centerline X constrained to Y range.
             let endpoints : PointCandidate list = [
                 { X = midX; Y = yMin; Layer = layer; Net = ""; Kind = WireEndpoint }
                 { X = midX; Y = yMax; Layer = layer; Net = ""; Kind = WireEndpoint }
             ]
             let line : LineCandidate =
-                { Axis = Vertical; Coord = midX; Layer = layer; IsWire = true }
+                { Axis = Vertical; Coord = midX; Layer = layer
+                  IsWire = true; Range = Some (yMin, yMax) }
             endpoints, [line]
 
 /// Gather every snap candidate the resolver should consider.
@@ -296,7 +307,8 @@ let private gatherCandidates
             { Axis = g.Orientation
               Coord = g.CoordDbu
               Layer = (0, 0)  // sentinel; replaced when guides are usable
-              IsWire = false })
+              IsWire = false
+              Range = None })
     pinPts @ rectPts, rectLines @ guideLines
 
 // ─────────────────────────────────────────────────────────────────
@@ -349,7 +361,11 @@ let resolveSnap
         |> List.choose (fun pc ->
             let d = distSq (pc.X - cursorX) (pc.Y - cursorY)
             if d <= rSq then Some (pc, d) else None)
-        |> List.sortBy (fun (_, d) -> d)
+        // Distance ascending, then layer descending — when two
+        // points are equally close (cursor exactly on stacked
+        // wires / overlapping pad + pin), the higher metal wins
+        // because that's what the user visually sees on top.
+        |> List.sortBy (fun (pc, d) -> (d, -fst pc.Layer))
         |> List.tryHead
         |> Option.map (fun (pc, d) ->
             { X = pc.X; Y = pc.Y
@@ -374,9 +390,30 @@ let resolveSnap
                     match axis with
                     | Vertical   -> cursorX
                     | Horizontal -> cursorY
-                let dist = abs (cursorOnAxis - lc.Coord)
-                if dist <= radiusDbu then Some (lc, dist) else None)
-        |> List.sortBy (fun (_, d) -> d)
+                // For a finite line (wire centerline), the cursor
+                // must be inside the wire's PERPENDICULAR extent —
+                // the wire physically exists between those bounds.
+                // A horizontal wire (Axis = Horizontal) is constrained
+                // by cursor X; a vertical wire by cursor Y.  Guides
+                // (Range = None) ignore this gate.
+                let inRange =
+                    match lc.Range with
+                    | None -> true
+                    | Some (lo, hi) ->
+                        let cursorOnPerp =
+                            match axis with
+                            | Vertical   -> cursorY  // perpendicular to a vertical line
+                            | Horizontal -> cursorX  // perpendicular to a horizontal line
+                        cursorOnPerp >= lo && cursorOnPerp <= hi
+                if not inRange then None
+                else
+                    let dist = abs (cursorOnAxis - lc.Coord)
+                    if dist <= radiusDbu then Some (lc, dist) else None)
+        // Distance ascending, layer descending — when overlapping
+        // wires share the same centerline coord (4 stacked rects
+        // all at midY=Y0), the highest layer wins.  Matches "what
+        // the user visually sees on top of the stack."
+        |> List.sortBy (fun (lc, d) -> (d, -fst lc.Layer))
         |> List.tryHead
     let xHit = nearestLine Vertical    // contributes X
     let yHit = nearestLine Horizontal  // contributes Y

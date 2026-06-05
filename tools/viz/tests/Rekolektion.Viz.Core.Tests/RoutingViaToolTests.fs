@@ -578,6 +578,41 @@ let ``axis snap wins when closer than point snap`` () =
     | None -> failwith "expected guide+wire AxisCross to beat wire-endpoint point snap"
 
 [<Fact>]
+let ``wire centerline does NOT fire when cursor is past the wire's end`` () =
+    // Horizontal wire ends at xMax=3420.  Cursor at x=3450 — past
+    // the wire's right edge by 30 dbu.  Even though cursor's Y is
+    // exactly on the wire's midY (perpendicular distance 0),
+    // centerline should not fire — wires have finite extent and
+    // the cursor is not over the wire.  Before this fix the
+    // centerline was treated as an infinite horizontal line and
+    // pulled the cursor's Y from outside the wire's bbox.
+    let wire = [| mkKnuckle li1 3250L 2850L 3420L 3020L |]
+    let s = ViaTool.resolveSnap (Some met2) [||] [] wire
+                                3450L 2935L 50L false
+    s |> should equal (None : ViaTool.Snap option)
+
+[<Fact>]
+let ``stacked wires at same Y: highest layer wins`` () =
+    // Four routing rects all centered at Y=2935 (the user's
+    // real-world scenario at the (3450, 2938) click).  Cursor
+    // perpendicular distance 0 to every centerline; layer
+    // descending tiebreak should pick met2 (the highest below
+    // active=met3), giving a 1-step met2↔met3 via stack instead
+    // of the 2-step met1↔met2↔met3 the old code picked when
+    // li1 / met1 happened to sort first.
+    let rects =
+        [| mkKnuckle li1  3000L 2870L 3500L 3000L  // li1 wire
+           mkKnuckle met1 3000L 2870L 3500L 3000L  // met1 wire
+           mkKnuckle met2 3000L 2870L 3500L 3000L  // met2 wire
+           mkKnuckle (70, 20) 3000L 2870L 3500L 3000L |] // met3 (filtered out, = active)
+    let s = ViaTool.resolveSnap (Some (70, 20)) [||] [] rects
+                                3250L 2935L 50L false
+    match s with
+    | Some snap ->
+        snap.Layer |> should equal met2
+    | None -> failwith "expected snap on the highest non-active layer"
+
+[<Fact>]
 let ``point and axis tied: point wins (stable tie-break)`` () =
     // Pin at (105, 250) — distance 5.
     // Vertical guide at X=95 — perpendicular distance 5.

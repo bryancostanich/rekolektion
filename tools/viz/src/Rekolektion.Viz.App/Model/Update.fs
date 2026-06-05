@@ -817,6 +817,18 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         let ratlines' =
             if sel.IsEmpty then model.SelectedRatlines
             else Set.empty
+        let priorCount = Set.count model.Selection
+        let nextCount = Set.count sel
+        // Log selection-size changes so "delete just nuked a bunch
+        // of geometry" reports have data without re-instrumenting.
+        // Bryan flagged a non-repro 2026-06-05 where a delete
+        // removed more than expected; the wire.select path logs a
+        // selectionCount but the polygon-pick path didn't.
+        if priorCount <> nextCount then
+            Rekolektion.Viz.App.Services.Logger.log "selection"
+                {| op = "polygon.set"
+                   priorCount = priorCount
+                   nextCount = nextCount |}
         { model with
             Selection = sel
             SelectedRatlines = ratlines' }, Cmd.none
@@ -1952,6 +1964,11 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
         // No-op when nothing's selected.
         let polySel = polyKeyTuples model.Selection
         let instSel = model.InstanceSelection
+        Rekolektion.Viz.App.Services.Logger.log "selection"
+            {| op = "delete.attempt"
+               polyCount = Set.count polySel
+               instCount = Set.count instSel
+               ratlineCount = Set.count model.SelectedRatlines |}
         if polySel.IsEmpty && instSel.IsEmpty then model, Cmd.none
         else
             match model.ActiveMacroPath with

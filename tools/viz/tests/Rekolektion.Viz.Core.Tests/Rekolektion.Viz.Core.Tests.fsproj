@@ -24,6 +24,7 @@
     <Compile Include="PickingTests.fs" />
     <Compile Include="MarqueeTests.fs" />
     <Compile Include="LabelFloodTests.fs" />
+    <Compile Include="LabelFloodCrossNetRegressionTests.fs" />
     <Compile Include="RatlinesTests.fs" />
     <Compile Include="RatlinesProbe.fs" />
     <Compile Include="MagReaderTests.fs" />

@@ -34,17 +34,33 @@ let private classOfName (n: string) : NetClass =
     else Signal
 
 /// Stack connectivity: each contact/via layer bridges a set of
-/// routing layers. `licon` (66/44) is the diff/poly/li bridge;
-/// `mcon` and the via series are routing-to-routing.
+/// routing layers. `mcon` and the via series are routing-to-
+/// routing; `licon` is a special case (see below).
 ///
-/// Two routing polys on different layers share a net iff there's
-/// a contact-layer polygon that touches BOTH. The flood-fill
-/// below uses this map to step across the stack — without it the
-/// flood was same-layer-only and a label on li1 never propagated
-/// up to met1 / met2 / met3, so any bus segment routed on a
-/// higher metal showed up as "no net" in the inspector.
+/// Licon was originally listed as bridging diff (65/20), tap
+/// (65/44), poly (66/20), AND li1 (67/20).  That was wrong:
+/// diff and poly regions of different FETs are electrically
+/// distinct, but they touch through the cell (multi-finger
+/// FETs share a continuous diff strip, gate poly extends
+/// between adjacent transistors).  Once one label's flood
+/// reached a licon it walked into diff / poly, spread same-
+/// layer to neighbouring FETs, climbed back up other licons on
+/// OTHER nets' li1 — every label ended up claiming every
+/// routing wire in the cell.  Bryan reported this 2026-06-05:
+/// "I created a via that should have been SEL, it picked up
+/// NAND_OUT" — the wire was claimed by SEL, NAND_OUT, VDD, VSS,
+/// mid_1, mid_2, mid_3 simultaneously and `netOf` returned the
+/// alphabetically-first claimant.
+///
+/// Fix: licon bridges only li1.  Diff / tap / poly are physical
+/// (transistor) layers, not routing layers — they should not be
+/// flood media for net derivation.  A licon physically connects
+/// ONE li1 polygon to ONE diff or poly terminal; the label's
+/// claim ends at the licon (the diff / poly terminal stays
+/// unclaimed by net derivation, which is correct — those layers
+/// aren't part of the net's routed extent).
 let private contactBridges : Map<int * int, (int * int) list> =
-    [ (66, 44), [ (65, 20); (65, 44); (66, 20); (67, 20) ]  // licon  → diff/tap/poly/li1
+    [ (66, 44), [ (67, 20) ]                                 // licon  → li1 (see comment above)
       (67, 44), [ (67, 20); (68, 20) ]                       // mcon   → li1/met1
       (68, 44), [ (68, 20); (69, 20) ]                       // via    → met1/met2
       (69, 44), [ (69, 20); (70, 20) ]                       // via2   → met2/met3

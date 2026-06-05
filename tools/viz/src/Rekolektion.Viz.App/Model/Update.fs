@@ -1444,7 +1444,32 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                        attemptedRects = List.length rects
                                        netNewRects =
                                            topElementsAfter - topElementsBefore |}
-                                { model with OpenMacros = openMacros' }, Cmd.none
+                                // Re-derive nets so ratlines /
+                                // inspector see the new via stack
+                                // as part of its attributed net.
+                                // Without this, mc.Nets is stale
+                                // from load time and the
+                                // newly-stamped (net "SEL") rects
+                                // aren't visible as SEL in any
+                                // net-coloured view — user reads
+                                // it as "the via isn't on SEL"
+                                // even though the rect Net field
+                                // says it is.  Async via the
+                                // backend so the UI thread stays
+                                // free.  Reported 2026-06-05.
+                                Rekolektion.Viz.App.Services.Logger.log "nets.derive"
+                                    {| phase = "scheduled"
+                                       path = path
+                                       reason = "via-commit" |}
+                                let deriveCmd =
+                                    Cmd.OfAsync.either
+                                        backend.DeriveNets doc'
+                                        (fun nets -> Msg.NetsLoaded (path, nets))
+                                        (fun ex ->
+                                            Msg.LogLine
+                                                (sprintf "net derivation failed after via commit: %s"
+                                                         ex.Message))
+                                { model with OpenMacros = openMacros' }, deriveCmd
     | Msg.StartRoute (layer, width, startNet, x, y, startSnapLayer) ->
         match model.ActiveMacroPath with
         | None -> model, Cmd.none

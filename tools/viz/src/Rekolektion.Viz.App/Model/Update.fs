@@ -1274,10 +1274,26 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                     // is the candidate's own coord.
                                     containing |> Array.tryHead
                             match hitPoly with
-                            | None -> rawSnap
+                            | None ->
+                                Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                                    {| op = "net-lookup"
+                                       result = "no-polygon-found"
+                                       containingCount = Array.length containing |}
+                                rawSnap
                             | Some fp ->
+                                let x1, y1, x2, y2 = pbb fp
                                 let idx = Routing.Obstacles.buildNetIndex mc.Nets
-                                match Routing.Obstacles.netOf idx fp with
+                                let netOpt = Routing.Obstacles.netOf idx fp
+                                Rekolektion.Viz.App.Services.Logger.log "via.tool"
+                                    {| op = "net-lookup"
+                                       containingCount = Array.length containing
+                                       pickedX1 = x1; pickedY1 = y1
+                                       pickedX2 = x2; pickedY2 = y2
+                                       pickedSource =
+                                           sprintf "%s.%d" fp.SourceStructure fp.SourceIndex
+                                       resolvedNet =
+                                           netOpt |> Option.defaultValue "(none)" |}
+                                match netOpt with
                                 | Some net -> { rawSnap with Net = net }
                                 | None     -> rawSnap
                     let topLayer = Routing.ViaTool.pickTopLayer activeTopOpt snap

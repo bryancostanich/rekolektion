@@ -1235,11 +1235,25 @@ let update (backend: ServiceBackend) (msg: Msg.Msg) (model: Model.Model) : Model
                                 let midY = (yMin + yMax) / 2L
                                 let w = xMax - xMin
                                 let h = yMax - yMin
-                                // Horizontal-wire contributor: midY ==
-                                // snap.Y; vertical-wire contributor:
-                                // midX == snap.X.  Aspect > 1 picks
-                                // the dominant axis.
-                                if w >= h then midY = rawSnap.Y
+                                // Must be a WIRE shape (aspect > 1.5)
+                                // oriented so the matching axis is
+                                // the LONG axis.  A square pad whose
+                                // centroid happens to land at the
+                                // snap point isn't a centerline
+                                // contributor — only thin rectangles
+                                // are.  This matters because earlier
+                                // via-tool drops leave small met-layer
+                                // pads in the doc at the same midY
+                                // as the wire centerline; without the
+                                // aspect gate those pads (whose
+                                // attributed net was inherited from
+                                // the first commit) keep stealing the
+                                // net lookup for subsequent clicks.
+                                let lo = float (max 1L (min w h))
+                                let hi = float (max w h)
+                                let aspect = hi / lo
+                                if aspect <= 1.5 then false
+                                elif w >= h then midY = rawSnap.Y
                                 else            midX = rawSnap.X
                             let hitPoly =
                                 if isAxisLike then

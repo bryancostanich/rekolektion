@@ -191,21 +191,23 @@ let ``pop after fix leaves cursor None`` () =
     r.Cursor |> should equal (None : (int64 * int64) option)
 
 [<Fact>]
-let ``flipPosture rebuilds the existing fixed L-shape under the new posture`` () =
-    // A two-point fixed run from (0,0) → (1000,500) is a diagonal,
-    // so it decomposes into 2 rects. Posture flip should change
-    // which rect-pair we get.
+let ``flipPosture does NOT change committed segments (WYSIWYG commit)`` () =
+    // Pre-2026-06-10 fixedSegments used the live r.Posture when
+    // rendering committed pairs — so flipPosture after a commit
+    // visually rotated the committed L's bend direction.  Bryan
+    // reported that as "viz changed the committed route to
+    // straight up" because auto-posture-lock on a subsequent
+    // cursor move silently flipped Posture.  fix() now
+    // materialises the L-corner at commit time so committed
+    // segments are posture-independent; flipPosture only steers
+    // the tentative draft going forward.
     let baseRoute =
         Draft.start met1 width (0L, 0L)
         |> Draft.setCursor (1000L, 500L)
         |> Draft.fix
-    let h = Draft.fixedSegments baseRoute
-    let v = Draft.fixedSegments (Draft.flipPosture baseRoute)
-    h |> should haveLength 2
-    v |> should haveLength 2
-    // The first rect should differ between the two postures: under
-    // HorizontalFirst it runs along Y=0, under VerticalFirst along X=0.
-    (h.[0].X2 - h.[0].X1) |> should not' (equal (v.[0].X2 - v.[0].X1))
+    let before = Draft.fixedSegments baseRoute
+    let after  = Draft.fixedSegments (Draft.flipPosture baseRoute)
+    after |> should equal before
 
 [<Fact>]
 let ``setCursor twice without fix keeps only the latest cursor`` () =
@@ -236,6 +238,78 @@ let ``finishSegments on degenerate same-point fix produces no segments`` () =
         Draft.start met1 width (0L, 0L)
         |> Draft.setCursor (0L, 0L)
     Draft.finishSegments r |> should be Empty
+
+// --- Regression: committed L shape must not change after fix ---------
+//
+// Bryan reported 2026-06-10: ran a wire up, committed a corner, then
+// went right; the previously-committed L re-rendered as a straight-up
+// run because automatic posture flip (driven by the post-fix
+// dominant-axis cursor motion) silently rotated the committed
+// segments' L direction.  Root cause: `fixedSegments` builds rects
+// pairwise using the CURRENT `r.Posture`, which can change between
+// commit and render.  Fix: `fix` now materialises the L-corner under
+// the posture active at commit time so committed pairs are axis-
+// aligned and posture-independent thereafter.
+
+[<Fact>]
+let ``committed L-shape stays put after subsequent cursor flips posture`` () =
+    // Posture VerticalFirst (locked) at commit time; the user then
+    // moves cursor strongly in the X direction which would normally
+    // flip Posture to HorizontalFirst.  Committed segments must NOT
+    // change.
+    let r0 =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (50L, 1000L)   // dominant Y → lock VerticalFirst
+        |> Draft.fix                        // commit at (50, 1000)
+    let segsBefore = Draft.fixedSegments r0
+    // Now drag strongly right — would flip posture to HorizontalFirst.
+    let r1 =
+        r0
+        |> Draft.setCursor (500L, 1010L)   // dominant X → flip
+        |> Draft.setCursor (2000L, 1020L)  // hold the lock
+    r1.Posture |> should equal Draft.HorizontalFirst
+    let segsAfter = Draft.fixedSegments r1
+    // The committed segments must be byte-identical — the user's
+    // post-fix cursor motion does not rewrite committed history.
+    segsAfter |> should equal segsBefore
+
+[<Fact>]
+let ``fix materialises an explicit corner under VerticalFirst posture`` () =
+    // Starting from anchor (0, 0) → cursor (100, 500) under
+    // VerticalFirst.  Post-fix Points should include an explicit
+    // (0, 500) corner so the pair (0,0)-(0,500) renders as a
+    // vertical leg and (0,500)-(100,500) as horizontal — independent
+    // of `r.Posture` at render time.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.flipPosture               // VerticalFirst
+        |> Draft.setCursor (100L, 500L)
+        |> Draft.fix
+    r.Points |> should equal [(0L, 0L); (0L, 500L); (100L, 500L)]
+
+[<Fact>]
+let ``fix materialises an explicit corner under HorizontalFirst posture`` () =
+    // Start defaults to HorizontalFirst.  A dominant-Y first move
+    // would auto-lock posture to VerticalFirst, so seed with a
+    // diagonal that doesn't trigger a lock and then commit while
+    // HorizontalFirst still holds.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (50L, 50L)      // diagonal, no lock
+        |> Draft.setCursor (100L, 100L)    // still diagonal, no lock
+        |> Draft.fix
+    r.Posture |> should equal Draft.HorizontalFirst
+    r.Points |> should equal [(0L, 0L); (100L, 0L); (100L, 100L)]
+
+[<Fact>]
+let ``fix does not insert a corner when last-point→cursor is axis-aligned`` () =
+    // Same X — the (0,0)→(0,500) pair is already vertical, no corner
+    // needed; the materialiser should be a no-op for axis-aligned cases.
+    let r =
+        Draft.start met1 width (0L, 0L)
+        |> Draft.setCursor (0L, 500L)
+        |> Draft.fix
+    r.Points |> should equal [(0L, 0L); (0L, 500L)]
 
 [<Fact>]
 let ``toFlatPolygons emits closed 5-point rectangles`` () =

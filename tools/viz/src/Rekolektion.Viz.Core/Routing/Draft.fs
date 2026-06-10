@@ -215,6 +215,21 @@ let simplifyCollinear (pts: (int64 * int64) list) : (int64 * int64) list =
 /// commit — if the auto-router has worked out a detour around a
 /// foreign feature, the click locks that detour in.
 ///
+/// Materialise the implicit L-corner so committed segments are
+/// posture-independent thereafter.  If the last point on the
+/// path-so-far is neither X-aligned nor Y-aligned with the cursor,
+/// the tentative preview was rendering an L under the CURRENT
+/// `r.Posture` — we insert an explicit corner at that L's bend
+/// before appending the cursor.  Without this, `fixedSegments`
+/// would re-render the committed pair using whatever `r.Posture`
+/// happens to be at render time, and a subsequent dominant-axis
+/// motion that flips Posture would visually swing the committed
+/// corner to the wrong end.  Reported 2026-06-10: "ran a wire up,
+/// committed a corner, went right; viz changed the committed
+/// route to straight up."  The change is a no-op for axis-aligned
+/// last→cursor pairs (no L to materialise) and for the case where
+/// `r.Auto` already has the corner.
+///
 /// Visibility-graph correctness (no jogs through obstacles) is
 /// required for this to be a good user experience. Pre-fix, the
 /// search emitted Steiner corners on the wrong side of obstacles
@@ -228,8 +243,22 @@ let fix (r: DraftRoute) : DraftRoute =
     match r.Cursor with
     | None -> r
     | Some c ->
+        let pathSoFar = r.Points @ r.Auto
+        let appended =
+            match List.tryLast pathSoFar with
+            | None -> [c]
+            | Some (lx, ly) ->
+                let (cx, cy) = c
+                if lx = cx || ly = cy then
+                    [c]
+                else
+                    let cornerPt =
+                        match r.Posture with
+                        | HorizontalFirst -> (cx, ly)
+                        | VerticalFirst   -> (lx, cy)
+                    [cornerPt; c]
         { r with
-            Points = simplifyCollinear (r.Points @ r.Auto @ [c])
+            Points = simplifyCollinear (pathSoFar @ appended)
             Cursor = None
             Auto   = []
             // New segment starts: posture lock releases so the

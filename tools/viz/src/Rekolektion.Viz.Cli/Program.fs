@@ -20,7 +20,7 @@ let private printUsage () =
     printfn "  render <file.gds> <out_dir/>            Per-layer PNGs"
     printfn "  mesh   <file.gds> <out_dir/>            STL + GLB 3D models"
     printfn "  app    [<file.gds>]                     Launch GUI"
-    printfn "  viz-render --gds <f> --output <p.png>"
+    printfn "  viz-render --input <f.rkt|.gds|.mag> --output <p.png>   Headless one-shot PNG"
     printfn "             [--toggle-layer <n>=on|off]"
     printfn "             [--highlight-net <n>] [--tab 2D|3D]"
     printfn "             [--width <px>] [--height <px>] [--hold-ms <ms>]"
@@ -368,7 +368,7 @@ let cmdApp (args: string list) : int =
     let argv = args |> List.toArray
     Rekolektion.Viz.App.Program.runDesktop argv
 
-/// `viz-render --gds ... --output ...` — boot the App headlessly,
+/// `viz-render --input ... --output ...` — boot the App headlessly,
 /// dispatch a pre-render Msg sequence (OpenFile + per-layer
 /// toggles + optional highlight + tab switch), then capture a
 /// PNG of the resulting MainWindow. Used by the MCP
@@ -387,7 +387,7 @@ let cmdVizRender (args: string list) : int =
         1
     | Ok parsed ->
         let openMsg =
-            Rekolektion.Viz.App.Model.Msg.Msg.OpenFile parsed.Gds
+            Rekolektion.Viz.App.Model.Msg.Msg.OpenFile parsed.Input
         let toggleMsgs =
             parsed.Toggles
             |> List.choose (fun (name, visible) ->

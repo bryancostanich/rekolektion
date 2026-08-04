@@ -635,16 +635,29 @@ let private runProcess
         let stderr = stderrTask.Result
         proc.ExitCode, stderr
 
-/// Tool: rekolektion_viz_render { gds, output?, toggleLayers?,
+/// Tool: rekolektion_viz_render { input, output?, toggleLayers?,
 /// highlightNet?, tab?, width?, height?, holdMs? } — spawn the
 /// CLI's `viz-render` subcommand to produce a PNG without a live
-/// viz session.
+/// viz session. `input` is any layout LayoutLoader dispatches on:
+/// `.rkt` (preferred — renders live off source), `.gds`, or `.mag`.
+/// `rkt`/`gds` are accepted as aliases for `input`.
 let private toolVizRender (args: JsonElement) : ToolResult =
     try
-        let gds =
-            match tryProp args "gds" with
+        // Accept `input` (canonical), or `rkt`/`gds` as aliases. The
+        // headless renderer dispatches on file extension via
+        // LayoutLoader, so `.rkt` renders live off source — there is
+        // no GDS coupling in the render path. `.rkt` is preferred;
+        // `.gds`/`.mag` still work.
+        let input =
+            match tryProp args "input" with
             | Some v -> v.GetString()
-            | None   -> failwith "gds is required"
+            | None ->
+                match tryProp args "rkt" with
+                | Some v -> v.GetString()
+                | None ->
+                    match tryProp args "gds" with
+                    | Some v -> v.GetString()
+                    | None   -> failwith "input is required (path to a .rkt, .gds, or .mag)"
         let output =
             match tryProp args "output" with
             | Some v -> v.GetString()
@@ -654,7 +667,7 @@ let private toolVizRender (args: JsonElement) : ToolResult =
         let exe, lead = resolveVizCli ()
         let argList = ResizeArray<string>(lead)
         argList.Add "viz-render"
-        argList.Add "--gds";    argList.Add gds
+        argList.Add "--input";  argList.Add input
         argList.Add "--output"; argList.Add output
         match tryProp args "toggleLayers" with
         | Some arr when arr.ValueKind = JsonValueKind.Array ->
@@ -1081,13 +1094,20 @@ let private toolList : obj =
                           additionalProperties = false |} |}
         box {| name = "rekolektion_viz_render"
                description =
-                   "Render a GDS file to a PNG headlessly via the \
+                   "Render a layout to a PNG headlessly via the \
                     rekolektion-viz CLI's viz-render subcommand. Does NOT \
-                    require a live viz desktop session."
+                    require a live viz desktop session. `input` accepts a \
+                    .rkt (preferred — rendered live off source), .gds, or \
+                    .mag path. For in-flight .rkt work prefer the live \
+                    `rekolektion_viz_open`/`viz app` path or pass the .rkt \
+                    directly here; do NOT export to-gds first — that \
+                    snapshots geometry and later .rkt edits will not appear."
                inputSchema =
                    box {| ``type`` = "object"
                           properties =
-                              {| gds          = box {| ``type`` = "string" |}
+                              {| input        = box {| ``type`` = "string" |}
+                                 rkt          = box {| ``type`` = "string" |}
+                                 gds          = box {| ``type`` = "string" |}
                                  output       = box {| ``type`` = "string" |}
                                  toggleLayers =
                                      box {| ``type`` = "array"
@@ -1104,7 +1124,12 @@ let private toolList : obj =
                                  width        = box {| ``type`` = "integer" |}
                                  height       = box {| ``type`` = "integer" |}
                                  holdMs       = box {| ``type`` = "integer" |} |}
-                          required = [| "gds" |] |} |}
+                          // No single field is schema-required: exactly
+                          // one of input/rkt/gds must be present, which the
+                          // handler enforces at runtime with a clear error.
+                          // Marking `input` required would reject legacy
+                          // `gds`-only calls that the handler still accepts.
+                          required = [| |] |} |}
         box {| name = "rekolektion_viz_run_macro"
                description =
                    "Spawn the Python `rekolektion macro` CLI to generate \

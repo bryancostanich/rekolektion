@@ -24,7 +24,13 @@ open System
 /// rather than the App's `Model.Tab` DU so this module stays
 /// dependency-light; the CLI maps it into `Msg.SetTab` itself.
 type VizRenderArgs = {
-    Gds        : string
+    /// Path to the layout to render. Any format `LayoutLoader`
+    /// dispatches on works — `.rkt` (preferred, renders live off
+    /// source), `.gds`, or `.mag`. Named `Input` (not `Gds`)
+    /// because the headless path renders through `Msg.OpenFile` →
+    /// `LayoutLoader.load`, which is extension-dispatched; there is
+    /// no GDS coupling in the render path itself.
+    Input      : string
     Output     : string
     Toggles    : (string * bool) list
     Highlight  : string option
@@ -38,7 +44,7 @@ type VizRenderArgs = {
 /// stripped). Returns `Error` for: unknown flag, malformed
 /// `--toggle-layer` value, non-numeric `--width`/`--height`/
 /// `--hold-ms`, non-`{2D,3D}` `--tab`, missing trailing value
-/// after a flag, or missing required `--gds`/`--output`.
+/// after a flag, or missing required `--input`/`--output`.
 ///
 /// Numeric parsing deviates from the plan code by using
 /// `Int32.TryParse` instead of `int`, so a bad value surfaces as
@@ -53,11 +59,17 @@ let parseVizRenderArgs (args: string list) : Result<VizRenderArgs, string> =
     let rec loop (a: string list) (acc: VizRenderArgs) : Result<VizRenderArgs, string> =
         match a with
         | [] ->
-            if String.IsNullOrEmpty acc.Gds || String.IsNullOrEmpty acc.Output then
-                Error "missing required --gds or --output"
+            if String.IsNullOrEmpty acc.Input || String.IsNullOrEmpty acc.Output then
+                Error "missing required --input (or --rkt/--gds) or --output"
             else
                 Ok acc
-        | "--gds" :: v :: rest        -> loop rest { acc with Gds = v }
+        // `--input` is the canonical flag; `--rkt` and `--gds` are
+        // accepted aliases so existing callers (and the deprecated
+        // GDS-first workflow) keep working. All three feed the same
+        // extension-dispatched loader.
+        | "--input" :: v :: rest      -> loop rest { acc with Input = v }
+        | "--rkt" :: v :: rest        -> loop rest { acc with Input = v }
+        | "--gds" :: v :: rest        -> loop rest { acc with Input = v }
         | "--output" :: v :: rest     -> loop rest { acc with Output = v }
         | "--toggle-layer" :: v :: rest ->
             match v.Split '=' with
@@ -86,7 +98,7 @@ let parseVizRenderArgs (args: string list) : Result<VizRenderArgs, string> =
         | unknown :: _ -> Error (sprintf "unknown arg: %s" unknown)
 
     let init = {
-        Gds = ""
+        Input = ""
         Output = ""
         Toggles = []
         Highlight = None

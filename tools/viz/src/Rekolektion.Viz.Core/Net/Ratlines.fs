@@ -586,3 +586,50 @@ let compute
           Pins = reps
           Mst = mstOf reps })
     |> Array.filter (fun route -> route.Pins.Length >= 2)
+
+/// Per-caller memo for `compute`. The result depends only on the
+/// `(Document, FlatPolygon array)` pair; neither changes during a
+/// camera orbit/pan/zoom, yet `compute` is otherwise re-run every
+/// render frame (O(polys²)-per-bucket union-find + per-net MST over
+/// ~10k polys → ~150 ms/frame). This wrapper caches the last result
+/// and only recomputes when either input changes by *reference*
+/// identity — cheap to check, and both inputs are replaced wholesale
+/// (never mutated in place) when the document reloads or geometry is
+/// re-flattened, so reference equality is the correct invalidation
+/// signal.
+///
+/// The cache is deliberately NOT a hidden module-level global: each
+/// canvas owns its own `Cache` instance as private mutable state
+/// (alongside its mesh/DRC caches), so there is no cross-thread
+/// sharing between the 2D and 3D controls and no locking is needed.
+type Cache() =
+    let mutable lastDoc  : Document option = None
+    let mutable lastFlat : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array = [||]
+    let mutable lastResult : NetRoute array = [||]
+
+    /// Return the ratlines for `(doc, flat)`, recomputing only when
+    /// either differs by reference from the previous call.
+    member _.Get
+            (doc: Document)
+            (flat: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array)
+            : NetRoute array =
+        let hit =
+            match lastDoc with
+            | Some d -> System.Object.ReferenceEquals(d, doc)
+                        && System.Object.ReferenceEquals(lastFlat, flat)
+            | None -> false
+        if hit then lastResult
+        else
+            let result = compute doc flat
+            lastDoc <- Some doc
+            lastFlat <- flat
+            lastResult <- result
+            result
+
+    /// Drop the cached result. Callers generally don't need this —
+    /// reference-identity invalidation handles reloads — but it's
+    /// available for explicit teardown.
+    member _.Invalidate() =
+        lastDoc <- None
+        lastFlat <- [||]
+        lastResult <- [||]

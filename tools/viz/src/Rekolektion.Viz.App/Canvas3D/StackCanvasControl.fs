@@ -367,6 +367,10 @@ type StackCanvasControl() =
     let mutable meshDirty : bool = true
     let mutable cachedMesh : Extruder.ExtrudedMesh option = None
     let mutable hasUploadedAny : bool = false
+    // Ratline MST memo — reference-keyed on (Library doc, FlatPolygons)
+    // so a plain orbit/pan/zoom reuses the last result instead of
+    // re-running the full O(polys²) net-extraction every frame.
+    let ratlineCache = Net.Ratlines.Cache()
     // Layer-key → slot index for the uLayerVis uniform array.
     // Built once per extrusion. Capped at 32 entries (matches
     // shader array size); SKY130 has 18 drawing layers so this
@@ -436,6 +440,21 @@ type StackCanvasControl() =
     // Cached render-state signature so the diagnostic log fires only
     // when something changes between renders, not every frame.
     let mutable lastRenderSig : string = ""
+    // TEMP DIAGNOSTIC: per-frame SELF-TIME timer. Measures how long
+    // the BODY of a single OnOpenGlRender call takes (t0 at entry,
+    // elapsed at exit), NOT the interval between calls. Logs every
+    // frame whose self-time exceeds frameProbeThresholdMs so a single
+    // slow mouse-nudge shows up immediately. Also tracks the slowest
+    // sub-phase (extrude, VBO upload, draw) so we know WHERE the cost
+    // is. Remove after profiling.
+    let mutable frameProbeCount : int = 0
+    let frameProbeThresholdMs : float = 4.0
+    // Phase timings for the current frame, filled in as the body runs.
+    let mutable phaseExtrudeMs : float = 0.0
+    let mutable phaseUploadMs : float = 0.0
+    let mutable phaseFlattenMs : float = 0.0
+    let mutable phaseDidExtrude : bool = false
+    let mutable phaseDidUpload : bool = false
     // Top cell name the camera was last fitted to. Used to skip
     // refitting when the user is just editing the same file —
     // refitting on every commit yanks the viewport and resets the
@@ -3603,6 +3622,17 @@ type StackCanvasControl() =
         | None -> ()
 
     override this.OnOpenGlRender(_gli, fb) =
+        // TEMP DIAGNOSTIC: per-frame self-time timer (see decl above).
+        // t0 = entry; the finally clause at the bottom logs the total
+        // body time for THIS call plus per-phase breakdown whenever it
+        // crosses the threshold, so a single slow nudge is visible.
+        let frameT0 = System.Diagnostics.Stopwatch.GetTimestamp()
+        frameProbeCount <- frameProbeCount + 1
+        phaseExtrudeMs <- 0.0
+        phaseUploadMs <- 0.0
+        phaseFlattenMs <- 0.0
+        phaseDidExtrude <- false
+        phaseDidUpload <- false
         match gl, this.Library with
         | Some g, None ->
             // No active macro — close happened or nothing loaded.
@@ -3657,7 +3687,12 @@ type StackCanvasControl() =
                 saveCameraFor topName
             // (Re-)extrude only when geometry source changed.
             if meshDirty && flat.Length > 0 then
+                let exT0 = System.Diagnostics.Stopwatch.GetTimestamp()
                 cachedMesh <- Some (Extruder.extrude (float lib.Units.DbuNm * 1.0e-3) flat)
+                phaseExtrudeMs <-
+                    float (System.Diagnostics.Stopwatch.GetTimestamp() - exT0)
+                    / float System.Diagnostics.Stopwatch.Frequency * 1000.0
+                phaseDidExtrude <- true
                 meshDirty <- false
                 hasUploadedAny <- false
                 layerSlotMap.Clear()
@@ -3666,6 +3701,7 @@ type StackCanvasControl() =
             // see uLayerVis uniform write below.
             match cachedMesh with
             | Some mesh when not hasUploadedAny ->
+                let upT0 = System.Diagnostics.Stopwatch.GetTimestamp()
                 indexCount <- mesh.Indices.Length
                 let stride = 7
                 let arr = Array.zeroCreate<float32> (mesh.Vertices.Length * stride)
@@ -3708,6 +3744,10 @@ type StackCanvasControl() =
                 g.BindBuffer(GLEnum.ArrayBuffer, blockVbo)
                 g.BufferData(GLEnum.ArrayBuffer, ReadOnlySpan<float32>(zeros), GLEnum.DynamicDraw)
                 hasUploadedAny <- true
+                phaseUploadMs <-
+                    float (System.Diagnostics.Stopwatch.GetTimestamp() - upT0)
+                    / float System.Diagnostics.Stopwatch.Frequency * 1000.0
+                phaseDidUpload <- true
                 // Force per-vertex flag refresh on first draw.
                 lastHighlightedNets <- Set.singleton "<<force-mismatch-after-upload>>"
                 lastIsolatedBlock <- Some "<<force-mismatch-after-upload>>"
@@ -4212,7 +4252,7 @@ type StackCanvasControl() =
             if not visibleRatlines.IsEmpty && rulerProgram <> 0u then
                 match this.Library with
                 | Some lib ->
-                    let routes = Net.Ratlines.compute lib (this.FlatPolygons)
+                    let routes = ratlineCache.Get lib (this.FlatPolygons)
                     let filtered =
                         routes |> Array.filter (fun r -> visibleRatlines.Contains r.Name)
                     // World-space DBU → user µm divisor.
@@ -4722,3 +4762,16 @@ type StackCanvasControl() =
             // ruler lines just drew.
             lastMvp <- mvp
         | _ -> ()
+        // TEMP DIAGNOSTIC: self-time of this single render body.
+        let frameSelfMs =
+            float (System.Diagnostics.Stopwatch.GetTimestamp() - frameT0)
+            / float System.Diagnostics.Stopwatch.Frequency * 1000.0
+        if frameSelfMs >= frameProbeThresholdMs then
+            Rekolektion.Viz.App.Services.Logger.log "viz3d.frametime"
+                {| frame = frameProbeCount
+                   selfMs = frameSelfMs
+                   flattenMs = phaseFlattenMs
+                   extrudeMs = phaseExtrudeMs
+                   uploadMs = phaseUploadMs
+                   didExtrude = phaseDidExtrude
+                   didUpload = phaseDidUpload |}

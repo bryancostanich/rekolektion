@@ -1287,6 +1287,10 @@ type GdsCanvasControl() as this =
     /// SkiaDraw and stashed here so PointerPressed can hit-test
     /// ratline edges (selection) without re-running the flood-fill.
     let mutable lastRoutes : Net.Ratlines.NetRoute array = [||]
+    // Ratline MST memo — reference-keyed on (Library doc,
+    // FlatPolygons) so a plain pan/zoom repaint reuses the last
+    // result instead of re-running the full net-extraction.
+    let ratlineCache = Net.Ratlines.Cache()
     // Tighten-mode state. `tightenHits` is overwritten by SkiaDraw
     // each render with the per-label click targets so
     // OnPointerPressed can map a click to a candidate index. The
@@ -4493,7 +4497,7 @@ type GdsCanvasControl() as this =
             let visibleRatlines = this.VisibleRatlines
             let routes =
                 if not visibleRatlines.IsEmpty then
-                    Net.Ratlines.compute renderLib renderFlat
+                    ratlineCache.Get renderLib renderFlat
                 else [||]
             // Stash for ratline hit-test on next PointerPressed —
             // avoids re-running compute when the user just wants to

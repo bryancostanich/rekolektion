@@ -240,7 +240,8 @@ let private flatPoly (pts: (int64 * int64) list) : Flatten.FlatPolygon =
       Points = pts |> List.map (fun (x, y) -> { X = x; Y = y }) |> List.toArray
       SourceStructure = "top"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 [<Fact>]
 let ``bboxOfFlat returns None on an empty sequence`` () =

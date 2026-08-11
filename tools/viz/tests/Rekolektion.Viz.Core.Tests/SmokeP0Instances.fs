@@ -63,13 +63,16 @@ let ``layerBboxesOf groups polygons by layer + datatype`` () =
     let polys : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon array = [|
         { Layer = 67; DataType = 20; SourceStructure = "x"; SourceIndex = 0
           Points = pts [(0L,0L); (10L,0L); (10L,5L); (0L,5L); (0L,0L)]
-          TopInstanceIndex = None }
+          TopInstanceIndex = None
+          Net = None }
         { Layer = 67; DataType = 20; SourceStructure = "x"; SourceIndex = 1
           Points = pts [(20L,0L); (30L,0L); (30L,5L); (20L,5L); (20L,0L)]
-          TopInstanceIndex = None }
+          TopInstanceIndex = None
+          Net = None }
         { Layer = 68; DataType =  0; SourceStructure = "x"; SourceIndex = 2
           Points = pts [(0L,0L); (5L,0L); (5L,5L); (0L,5L); (0L,0L)]
-          TopInstanceIndex = None }
+          TopInstanceIndex = None
+          Net = None }
     |]
     let m = Layout.Instances.layerBboxesOf polys
     Map.find (67, 20) m |> should equal (0L, 0L, 30L, 5L)

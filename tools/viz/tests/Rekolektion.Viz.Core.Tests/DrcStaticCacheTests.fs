@@ -28,7 +28,8 @@ let private rect (x1, y1, x2, y2) (layer, dt) : FlatPolygon =
       |]
       SourceStructure = "test"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 let private units1nm : Units = { DbuNm = 1; UuUm = 1 }
 

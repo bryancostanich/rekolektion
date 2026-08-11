@@ -44,7 +44,8 @@ let private rect (x0 : int) (y0 : int) (x1 : int) (y1 : int) : FlatPolygon =
            { X = int64 x0; Y = int64 y0 } |]
       SourceStructure = "nfet"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 /// Compute expanded-obstacle bboxes from a flat-poly array, matching
 /// the clearance expansion VisibilityGraph.build applies. Same

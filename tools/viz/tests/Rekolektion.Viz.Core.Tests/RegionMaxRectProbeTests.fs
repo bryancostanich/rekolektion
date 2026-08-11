@@ -22,7 +22,8 @@ let private mkPoly (x1: int64) (y1: int64) (x2: int64) (y2: int64) : Rekolektion
            { X = x1; Y = y2 } |]
       SourceStructure = "probe"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 let private bboxOf (p: Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon)
         : int64 * int64 * int64 * int64 =

@@ -36,6 +36,19 @@ let private contains
     let (xMin, yMin, xMax, yMax) = bbox
     x >= xMin && x <= xMax && y >= yMin && y <= yMax
 
+/// Sky130 routing metals that a wire can be drawn on: li1 + met1..
+/// met5, all on drawing dataType 20. Kept local because this module
+/// compiles before `ViaStack` in the project order. Matches
+/// `ViaStack.routingLayers` — if that set ever changes, update both.
+let private isRoutingLayer (layer: int) (dt: int) : bool =
+    dt = 20 &&
+    (layer = 67   // li1
+     || layer = 68 // met1
+     || layer = 69 // met2
+     || layer = 70 // met3
+     || layer = 71 // met4
+     || layer = 72) // met5
+
 /// Build the snap-target set from flat labels + flat polygons.
 /// For every `NetName` label, find the same-layer polygon whose
 /// bbox contains the label origin, and emit a target at that
@@ -87,6 +100,39 @@ let buildTargets
                         }
                         found <- true
                 i <- i + 1
+    // Second pass: net-tagged routing metal that carries NO label.
+    // Router output (via pads, straps) often records the net as the
+    // rect's `(net …)` attribute rather than painting a separate
+    // NetName label. Those pads had no snap target from the label
+    // pass above, so the wire tool used to reject clicks on them
+    // ("no-snap-target"). Emit a centroid target straight from the
+    // polygon's own net, so any net-tagged routing pad is snappable
+    // and the drawn wire inherits that net. Restricted to routing
+    // layers so we don't offer net-tagged diff/poly as snap points.
+    // De-duped against the label pass by centroid+layer so a pad
+    // that has BOTH a label and a net attribute yields one target.
+    let existing =
+        result
+        |> Seq.map (fun t -> struct (t.X, t.Y, t.Layer))
+        |> Set.ofSeq
+    for p in polygons do
+        match p.Net with
+        | Some net when
+                not (System.String.IsNullOrEmpty net)
+                && isRoutingLayer p.Layer p.DataType ->
+            let (xMin, yMin, xMax, yMax) = polyBbox p
+            let cx = (xMin + xMax) / 2L
+            let cy = (yMin + yMax) / 2L
+            if not (existing.Contains (struct (cx, cy, p.Layer))) then
+                result.Add {
+                    X = cx
+                    Y = cy
+                    Net = net
+                    Layer = p.Layer
+                    DataType = p.DataType
+                    Source = p.SourceStructure, p.SourceIndex
+                }
+        | _ -> ()
     result.ToArray()
 
 /// Restrict snap targets to those whose net matches `startNet`.

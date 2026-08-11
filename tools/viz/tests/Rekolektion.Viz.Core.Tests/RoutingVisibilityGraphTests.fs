@@ -23,7 +23,8 @@ let private rect (x0 : int) (y0 : int) (x1 : int) (y1 : int) : FlatPolygon =
            { X = int64 x0; Y = int64 y0 } |]
       SourceStructure = "test"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 // ---- build ------------------------------------------------------
 

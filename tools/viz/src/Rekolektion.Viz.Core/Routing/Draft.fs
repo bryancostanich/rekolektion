@@ -390,5 +390,6 @@ let toFlatPolygons
             SourceStructure = "<draft-route>"
             SourceIndex = i
             TopInstanceIndex = None
+            Net = None
         } : Rekolektion.Viz.Core.Layout.Flatten.FlatPolygon))
     |> List.toArray

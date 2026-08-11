@@ -34,7 +34,8 @@ let private rect (x0 : int64) (y0 : int64) (x1 : int64) (y1 : int64) : FlatPolyg
            { X = x1; Y = y1 }; { X = x0; Y = y1 }
            { X = x0; Y = y0 } |]
       SourceStructure = "probe"; SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 [<Fact>]
 let ``PROBE: opamp_lowv_buffer Z route reproduces`` () =

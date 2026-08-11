@@ -239,7 +239,8 @@ let private mkKnuckle
            { X = x1; Y = y2 } |]
       SourceStructure = "top"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 // ─────────────────────────────────────────────────────────────────
 // resolveSnap — pin point snap.  See via_tool.md "Snap sources / 1".

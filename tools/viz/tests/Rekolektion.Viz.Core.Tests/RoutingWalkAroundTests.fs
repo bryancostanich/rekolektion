@@ -29,7 +29,8 @@ let private rect (cell : string) (layer : int) (dt : int) (idx : int)
            { X = int64 x0; Y = int64 y0 } |]
       SourceStructure = cell
       SourceIndex = idx
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 let private li1Layer  : Obstacles.LayerKey = { Number = 67; DataType = 20 }
 let private met1Layer : Obstacles.LayerKey = { Number = 68; DataType = 20 }

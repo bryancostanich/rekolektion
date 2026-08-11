@@ -1333,6 +1333,7 @@ let checkWithToggles
                { X = x1; Y = y2 } |]
         { Layer = layer; DataType = dt
           Points = pts
+          Net = None
           SourceStructure = "drc-cluster"
           SourceIndex = idx
           TopInstanceIndex = None }

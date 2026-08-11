@@ -24,7 +24,8 @@ let private rect (x1, y1, x2, y2) (layer, dt) : FlatPolygon =
       |]
       SourceStructure = "test"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 let private rectIdx idx (x1, y1, x2, y2) (layer, dt) : FlatPolygon =
     { rect (x1, y1, x2, y2) (layer, dt) with SourceIndex = idx }

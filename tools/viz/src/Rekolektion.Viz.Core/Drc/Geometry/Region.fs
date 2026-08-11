@@ -298,7 +298,8 @@ let toPolygons
                 Points = pts
                 SourceStructure = "drc-violation"
                 SourceIndex = seq
-                TopInstanceIndex = None }
+                TopInstanceIndex = None
+                Net = None }
             seq <- seq + 1
     result.ToArray()
 

@@ -18,7 +18,13 @@ let private rect (x1, y1, x2, y2) (layer, dt) idx : FlatPolygon =
       |]
       SourceStructure = "test"
       SourceIndex = idx
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
+
+/// Same as `rect` but tags the polygon with a `(net …)` attribute
+/// and no label — exercises the net-tagged-pad snap pass.
+let private netRect (x1, y1, x2, y2) (layer, dt) idx net : FlatPolygon =
+    { (rect (x1, y1, x2, y2) (layer, dt) idx) with Net = Some net }
 
 let private label layer textType (x, y) text kind : FlatLabel =
     { Layer = layer
@@ -58,7 +64,56 @@ let ``buildTargets returns the polygon center even when the label is at the poly
     let labels = [| label 68 5 (0L, 0L) "VPWR" NetName |]   // origin at corner
     let targets = Snap.buildTargets labels polys
     targets.[0].X |> should equal 500L
-    targets.[0].Y |> should equal 500L
+
+// --- net-tagged pads (no label) -----------------------------------------
+
+[<Fact>]
+let ``buildTargets snaps to a net-tagged routing pad that has no label`` () =
+    // A met3 (70,20) via pad carrying (net s3) but NO NetName label.
+    // Router output looks exactly like this; it must be snappable and
+    // the target must carry the pad's net.
+    let polys = [| netRect (0L, 0L, 490L, 490L) (70, 20) 0 "s3" |]
+    let targets = Snap.buildTargets [||] polys
+    targets.Length |> should equal 1
+    targets.[0].X |> should equal 245L
+    targets.[0].Y |> should equal 245L
+    targets.[0].Net |> should equal "s3"
+    targets.[0].Layer |> should equal 70
+
+[<Fact>]
+let ``buildTargets ignores a net-tagged polygon on a non-routing layer`` () =
+    // diff (65,20) is NOT a routing layer — a net-tagged diff shape
+    // must not become a wire snap target.
+    let polys = [| netRect (0L, 0L, 490L, 490L) (65, 20) 0 "s3" |]
+    Snap.buildTargets [||] polys |> Array.length |> should equal 0
+
+[<Fact>]
+let ``buildTargets ignores an untagged routing pad`` () =
+    // met3 pad with neither label nor net attribute stays a non-target.
+    let polys = [| rect (0L, 0L, 490L, 490L) (70, 20) 0 |]
+    Snap.buildTargets [||] polys |> Array.length |> should equal 0
+
+[<Fact>]
+let ``buildTargets does not double-count a pad that has both a label and a net attribute`` () =
+    // Label pass and net pass would both target the same centroid;
+    // the net pass must de-dupe against the label pass → one target.
+    let polys = [| netRect (0L, 0L, 490L, 490L) (70, 20) 0 "s3" |]
+    let labels = [| label 70 5 (245L, 245L) "s3" NetName |]
+    let targets = Snap.buildTargets labels polys
+    targets.Length |> should equal 1
+    targets.[0].Net |> should equal "s3"
+
+[<Fact>]
+let ``buildTargets emits both a labeled pad and a separate net-tagged pad`` () =
+    let polys = [|
+        rect    (0L, 0L, 490L, 490L)    (70, 20) 0          // labeled below
+        netRect (1000L, 0L, 1490L, 490L) (70, 20) 1 "s3_b"  // net attr only
+    |]
+    let labels = [| label 70 5 (245L, 245L) "s3" NetName |]
+    let targets = Snap.buildTargets labels polys
+    targets.Length |> should equal 2
+    (targets |> Array.map (fun t -> t.Net) |> Array.sort)
+    |> should equal [| "s3"; "s3_b" |]
 
 [<Fact>]
 let ``buildTargets ignores DeviceTerminal labels (not user nets)`` () =

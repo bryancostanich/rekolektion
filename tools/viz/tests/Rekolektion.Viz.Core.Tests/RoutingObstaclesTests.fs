@@ -20,7 +20,8 @@ let private flat (cell : string) (layer : int) (dt : int) (idx : int)
       Points = pts |> List.map (fun (x, y) -> p x y) |> List.toArray
       SourceStructure = cell
       SourceIndex = idx
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 /// Wrap a (cell, layer, dt, idx) tuple as the PolygonRef Sidecar uses.
 let private pref cell layer dt idx : PolygonRef =

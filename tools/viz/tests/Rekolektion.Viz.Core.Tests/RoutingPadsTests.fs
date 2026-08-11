@@ -187,6 +187,7 @@ let private foreignPoly (layer : int * int) (x1 : int64) (y1 : int64) (x2 : int6
         SourceStructure = "test"
         SourceIndex = 0
         TopInstanceIndex = None
+        Net = None
     }
 
 let private padSeg (layer : int * int) (x1 : int64) (y1 : int64) (x2 : int64) (y2 : int64)

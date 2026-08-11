@@ -18,7 +18,8 @@ let private rect (x1, y1, x2, y2) (layer, dt) : FlatPolygon =
       |]
       SourceStructure = "test"
       SourceIndex = 0
-      TopInstanceIndex = None }
+      TopInstanceIndex = None
+      Net = None }
 
 // 1 nm/DBU so DBU = nm and the SKY130 0.14 µm met1 spacing = 140
 // DBU. Synthetic cells use these scales to hit the spacing

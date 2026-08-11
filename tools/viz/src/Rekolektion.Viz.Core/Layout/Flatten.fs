@@ -26,6 +26,13 @@ type FlatPolygon = {
     /// selection halo and any per-instance operation can't tell two
     /// instances apart.
     TopInstanceIndex: int option
+    /// Net name carried on the source rect/poly's `(net …)`
+    /// attribute, if any. Preserved through flattening so the wire
+    /// tool can offer net-tagged metal (e.g. via pads) as snap
+    /// targets even when no separate NetName label was painted.
+    /// `None` for geometry with no net attribute, and for synthetic
+    /// polygons built outside the flattener (DRC regions, obstacles).
+    Net: string option
 }
 
 /// Unique identifier for a selected polygon. Mirrors `FlatPolygon`'s
@@ -182,7 +189,8 @@ let flatten (doc: Document) : FlatPolygon array =
                         Points = pts
                         SourceStructure = cell.Name
                         SourceIndex = idx
-                        TopInstanceIndex = topInst }
+                        TopInstanceIndex = topInst
+                        Net = p.Net }
                 | RectEl r ->
                     let pts =
                         rectPoints r.X1 r.Y1 r.X2 r.Y2
@@ -195,7 +203,8 @@ let flatten (doc: Document) : FlatPolygon array =
                         Points = pts
                         SourceStructure = cell.Name
                         SourceIndex = idx
-                        TopInstanceIndex = topInst }
+                        TopInstanceIndex = topInst
+                        Net = r.Net }
                 | SRefEl sr ->
                     match Map.tryFind sr.Cell byName with
                     | None -> ()
@@ -406,7 +415,8 @@ let flattenInstance (doc: Document) (topInstanceIdx: int) : FlatPolygon array =
                                 Points = pts
                                 SourceStructure = cell.Name
                                 SourceIndex = idx
-                                TopInstanceIndex = Some topInstanceIdx }
+                                TopInstanceIndex = Some topInstanceIdx
+                                Net = p.Net }
                         | RectEl r ->
                             let pts =
                                 rectPoints r.X1 r.Y1 r.X2 r.Y2
@@ -419,7 +429,8 @@ let flattenInstance (doc: Document) (topInstanceIdx: int) : FlatPolygon array =
                                 Points = pts
                                 SourceStructure = cell.Name
                                 SourceIndex = idx
-                                TopInstanceIndex = Some topInstanceIdx }
+                                TopInstanceIndex = Some topInstanceIdx
+                                Net = r.Net }
                         | SRefEl sr2 ->
                             match Map.tryFind sr2.Cell byName with
                             | None -> ()
@@ -468,7 +479,8 @@ let flattenTopCellDirect (doc: Document) : FlatPolygon array =
                     Points = p.Points |> List.toArray
                     SourceStructure = top.Name
                     SourceIndex = idx
-                    TopInstanceIndex = None }
+                    TopInstanceIndex = None
+                    Net = p.Net }
             | RectEl r ->
                 let n, d = layerPair r.Layer
                 let pts = rectPoints r.X1 r.Y1 r.X2 r.Y2 |> List.toArray
@@ -478,7 +490,8 @@ let flattenTopCellDirect (doc: Document) : FlatPolygon array =
                     Points = pts
                     SourceStructure = top.Name
                     SourceIndex = idx
-                    TopInstanceIndex = None }
+                    TopInstanceIndex = None
+                    Net = r.Net }
             | PathEl p ->
                 let n, d = layerPair p.Layer
                 result.Add {
@@ -487,6 +500,7 @@ let flattenTopCellDirect (doc: Document) : FlatPolygon array =
                     Points = p.Points |> List.toArray
                     SourceStructure = top.Name
                     SourceIndex = idx
-                    TopInstanceIndex = None }
+                    TopInstanceIndex = None
+                    Net = None }
             | _ -> ())
         result.ToArray()

@@ -56,7 +56,8 @@ let grow (n: int64) (r: Region) : Region =
                     Points = pts
                     SourceStructure = "grow"
                     SourceIndex = seq
-                    TopInstanceIndex = None }
+                    TopInstanceIndex = None
+                    Net = None }
                 seq <- seq + 1
         ofPolygons (rects.ToArray())
 

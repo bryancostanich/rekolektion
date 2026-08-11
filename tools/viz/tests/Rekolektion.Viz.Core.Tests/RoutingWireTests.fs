@@ -583,3 +583,58 @@ let ``chain stops at WireId boundary`` () =
     let result =
         Wire.connectedComponentWireBodiesOnly "top" 0 pred doc
     result |> should equal [ 0 ]
+
+// ---------------------------------------------------------------
+// locatePadAt: the new-wire tool's pad hit-test. A routing-layer
+// SQUARE (which locateRoute rejects as a pad) must be found here,
+// with its center + half-width; a wire-shaped rect must NOT be
+// returned as a pad. met3 = GDS (70, 20).
+// ---------------------------------------------------------------
+
+[<Fact>]
+let ``locatePadAt finds a square met3 pad and reports center + half-width`` () =
+    // 490x490 pad at origin: center (245,245), min side 490 -> half 245.
+    let pad = mkRectOn met3 (0L, 0L, 490L, 490L)
+    let doc = mkDoc [ mkCell "top" [ pad ] ]
+    match Detect.locatePadAt doc "top" 70 20 { X = 245L; Y = 245L } with
+    | None -> failwith "expected a pad hit at the pad center"
+    | Some hit ->
+        hit.Center |> should equal { X = 245L; Y = 245L }
+        hit.HalfWidth |> should equal 245L
+
+[<Fact>]
+let ``locatePadAt returns None when the click misses every pad`` () =
+    let pad = mkRectOn met3 (0L, 0L, 490L, 490L)
+    let doc = mkDoc [ mkCell "top" [ pad ] ]
+    Detect.locatePadAt doc "top" 70 20 { X = 5000L; Y = 5000L }
+    |> should equal (None : Detect.PadHit option)
+
+[<Fact>]
+let ``locatePadAt ignores a wire-shaped rect (aspect above threshold)`` () =
+    // 6000x490 strap: aspect ~12 -> a WIRE, not a pad. Even a click
+    // squarely inside it must not register as a pad.
+    let wire = mkRectOn met3 (0L, 0L, 6000L, 490L)
+    let doc = mkDoc [ mkCell "top" [ wire ] ]
+    Detect.locatePadAt doc "top" 70 20 { X = 3000L; Y = 245L }
+    |> should equal (None : Detect.PadHit option)
+
+[<Fact>]
+let ``locatePadAt only matches the requested layer`` () =
+    // A met2 (69,20) pad must not answer a met3 (70,20) query.
+    let padM2 = mkRectOn met2 (0L, 0L, 490L, 490L)
+    let doc = mkDoc [ mkCell "top" [ padM2 ] ]
+    Detect.locatePadAt doc "top" 70 20 { X = 245L; Y = 245L }
+    |> should equal (None : Detect.PadHit option)
+
+[<Fact>]
+let ``locatePadAt prefers the smallest containing pad when pads nest`` () =
+    // A big enclosure pad and a small tap pad both contain the click.
+    // The small one (the actual via square) should win.
+    let big = mkRectOn met3 (0L, 0L, 1000L, 1000L)
+    let small = mkRectOn met3 (400L, 400L, 600L, 600L)
+    let doc = mkDoc [ mkCell "top" [ big; small ] ]
+    match Detect.locatePadAt doc "top" 70 20 { X = 500L; Y = 500L } with
+    | None -> failwith "expected a pad hit"
+    | Some hit ->
+        hit.Center |> should equal { X = 500L; Y = 500L }
+        hit.HalfWidth |> should equal 100L

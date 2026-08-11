@@ -299,3 +299,65 @@ let locateRoute
                     Posts = posts
                     Cell = cellName
                 }
+
+/// A pad hit: a routing-layer square (the shape `classifyAsWire`
+/// rejects) whose bbox contains a click. Carries what the new-wire
+/// tool needs to anchor a fresh wire — the pad center and its
+/// minor-axis half-extent (the min-width thickness to draw with).
+type PadHit = {
+    /// Center of the pad in DBU — the new wire's anchored end.
+    Center    : Point
+    /// Half the pad's SMALLER side in DBU — the new wire's half
+    /// perpendicular width so the strap matches the pad width.
+    HalfWidth : int64
+    /// Source element index in the cell (for potential future
+    /// reap/dedup; not required to commit).
+    SourceIndex : int
+}
+
+/// Find a PAD (square-ish routing rect that `locateRoute` skips) on
+/// (layer, datatype) whose bbox contains `hit`. Returns None when
+/// the click lands on a wire, empty space, or nothing pad-shaped.
+/// Prefers the SMALLEST containing pad so stacked pads pick the tap
+/// square rather than a larger enclosure. Mirrors the detector's
+/// layer resolution so the pad tool and slide tool agree on layers.
+let locatePadAt
+        (doc: Document)
+        (cellName: string)
+        (layer: int)
+        (datatype: int)
+        (hit: Point)
+        : PadHit option =
+    match doc.Cells |> List.tryFind (fun c -> c.Name = cellName) with
+    | None -> None
+    | Some cell ->
+        cell.Elements
+        |> List.indexed
+        |> List.choose (fun (i, el) ->
+            match el with
+            | RectEl r ->
+                let n, d = Rekolektion.Viz.Core.Rkt.ToGds.layerToGds r.Layer
+                if n <> layer || d <> datatype then None
+                else
+                    let bbox = rectBboxFromRect r
+                    // Pad = NOT wire-shaped (aspect below threshold),
+                    // and the click lands inside it.
+                    match classifyAsWire bbox with
+                    | Some _ -> None
+                    | None ->
+                        if pointInBbox hit bbox then
+                            let (xMin, yMin, xMax, yMax) = bbox
+                            let w = xMax - xMin
+                            let h = yMax - yMin
+                            let half = (max 1L (min w h)) / 2L
+                            let area = w * h
+                            Some (area,
+                                  { Center = { X = (xMin + xMax) / 2L
+                                               Y = (yMin + yMax) / 2L }
+                                    HalfWidth = half
+                                    SourceIndex = i })
+                        else None
+            | _ -> None)
+        |> function
+           | [] -> None
+           | xs -> xs |> List.minBy fst |> snd |> Some

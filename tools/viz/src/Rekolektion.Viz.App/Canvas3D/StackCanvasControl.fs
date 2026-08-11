@@ -104,6 +104,13 @@ type private DragMode =
     /// can be interpreted as segment slide rather than camera
     /// rotation.
     | RouteTrackDrag
+    /// Pressing on a routing-layer PAD (a via-enclosure square that
+    /// the slide tool ignores) in Edit Routing mode. Rubber-bands a
+    /// brand-new wire from the pad center to the release point; the
+    /// release commits one new rect on the pad's layer. This is the
+    /// "pull a wire off a pad" gesture — the only drag path that
+    /// CREATES geometry rather than sliding existing geometry.
+    | RouteNewWireDrag
 
 /// Per-rect shift recipe used by a route-slide gesture. Each
 /// pair (MxxX, MxxY) is the gesture-delta multiplier for that
@@ -259,6 +266,33 @@ type private RouteSlide = {
     mutable LastDyDbu : int64
 }
 
+/// In-flight "pull a new wire off a pad" gesture. Anchored at the
+/// pad center at press; the release commits ONE new rect on the
+/// pad's layer spanning anchor → snapped end. Unlike RouteSlide
+/// this creates geometry instead of mutating existing rects.
+type private NewWire = {
+    Cell        : string
+    /// Canonical GDS layer/datatype the new wire is drawn on — the
+    /// pad's own layer, so the wire lands coplanar with the pad it
+    /// was pulled from.
+    Layer       : int
+    DataType    : int
+    /// World Z (µm) of that layer's slab — for unproject + preview.
+    LayerZ      : float32
+    /// Pad center in DBU — the fixed end of the rubber band.
+    AnchorDbu   : Rekolektion.Viz.Core.Rkt.Types.Point
+    /// Half the wire's perpendicular thickness in DBU. The new rect
+    /// is 2× this wide; seeded from the source pad's smaller side so
+    /// the wire matches the pad width (a min-width strap).
+    HalfWidth   : int64
+    /// Live snapped far end in DBU, updated every move. Axis-locked
+    /// to the dominant drag axis so wires stay orthogonal.
+    mutable EndDbu : Rekolektion.Viz.Core.Rkt.Types.Point
+    /// Whether the current end has any extent (drag moved). Gates
+    /// the commit — a zero-length pull is a no-op click.
+    mutable HasExtent : bool
+}
+
 /// Z exaggeration multiplier applied to vertex Z on upload.
 /// 1.0 = physical SKY130 stack heights (matches the legacy GLB
 /// tool). For a typical bitcell with xy ≈ 2.4×3.7 µm and Z stack
@@ -402,6 +436,7 @@ type StackCanvasControl() =
     // without round-tripping through the Elmish loop. Cleared on
     // release once the commit Msg has updated the model.
     let mutable routeSlide : RouteSlide option = None
+    let mutable newWire : NewWire option = None
     let mutable dragLiveDoc : Rekolektion.Viz.Core.Rkt.Types.Document option = None
     let mutable dragLiveFlat : Layout.Flatten.FlatPolygon array = [||]
     // Back-right isometric: camera in the (-X, -Y, +Z) octant
@@ -2335,19 +2370,61 @@ type StackCanvasControl() =
                 Rekolektion.Viz.Core.Routing.Detect.Axis.X adjusts "post"
                 None (Some postIdx) [] []
         | _ ->
-            // No track hit (or surrounding state missing) — fall
-            // through to the normal orbit / pan dispatch so the
-            // canvas stays usable.
-            dragMode <-
-                if props.IsRightButtonPressed || props.IsMiddleButtonPressed then PanDrag
-                elif props.IsLeftButtonPressed then OrbitDrag
-                else NoDrag
-            pressedButton <- dragMode
-            if dragMode <> NoDrag then
-                lastPos <- e.GetPosition this
-                pressStart <- lastPos
-                e.Pointer.Capture this
-                this.Focus () |> ignore
+            // No wire handle hit. In Edit Routing mode a left press
+            // on a PAD starts a new-wire pull; otherwise fall through
+            // to orbit / pan so the canvas stays usable.
+            let padStart =
+                if editing && props.IsLeftButtonPressed then
+                    match this.RaycastRoutingPadAt (e.GetPosition this) with
+                    | Some (pad, layerNum, layerDt, zTop) ->
+                        newWire <- Some {
+                            Cell =
+                                match this.Library with
+                                | Some l ->
+                                    match l.TopCell with
+                                    | Some n -> n
+                                    | None ->
+                                        match l.Cells with
+                                        | c :: _ -> c.Name
+                                        | _ -> ""
+                                | None -> ""
+                            Layer = layerNum
+                            DataType = layerDt
+                            LayerZ = zTop
+                            AnchorDbu = pad.Center
+                            HalfWidth = pad.HalfWidth
+                            EndDbu = pad.Center
+                            HasExtent = false
+                        }
+                        dragMode <- RouteNewWireDrag
+                        pressedButton <- RouteNewWireDrag
+                        lastPos <- e.GetPosition this
+                        pressStart <- lastPos
+                        e.Pointer.Capture this
+                        this.Focus () |> ignore
+                        Rekolektion.Viz.App.Services.Logger.log "route.tool"
+                            {| op = "press"
+                               handle = "new-wire"
+                               cell =
+                                   match newWire with
+                                   | Some nw -> nw.Cell | None -> ""
+                               layer = layerNum
+                               anchorDbu =
+                                   sprintf "%d,%d" pad.Center.X pad.Center.Y |}
+                        true
+                    | None -> false
+                else false
+            if not padStart then
+                dragMode <-
+                    if props.IsRightButtonPressed || props.IsMiddleButtonPressed then PanDrag
+                    elif props.IsLeftButtonPressed then OrbitDrag
+                    else NoDrag
+                pressedButton <- dragMode
+                if dragMode <> NoDrag then
+                    lastPos <- e.GetPosition this
+                    pressStart <- lastPos
+                    e.Pointer.Capture this
+                    this.Focus () |> ignore
 
     /// Routing-relevant drawing layers, ordered TOP-DOWN so the
     /// raycast prefers the upper layer when a click would hit
@@ -2542,6 +2619,92 @@ type StackCanvasControl() =
                                    | None -> ""
                                layerZ = float foundZ |}
                     changed
+
+    /// Raycast the cursor against each routing layer's slab (same
+    /// walk as `UpdateRoutingHover`) but look for a PAD rather than
+    /// a wire. Returns the pad hit plus the layer it was found on
+    /// and that layer's slab-top Z, so the new-wire tool can anchor
+    /// a fresh wire coplanar with the pad. Top-down layer order, so
+    /// a pad on the upper layer wins when routing stacks.
+    member private this.RaycastRoutingPadAt (screen: Avalonia.Point)
+            : (Rekolektion.Viz.Core.Routing.Detect.PadHit
+               * int * int * float32) option =
+        match this.Library with
+        | None -> None
+        | Some lib ->
+            let w = this.Bounds.Width
+            let h = this.Bounds.Height
+            if w < 1.0 || h < 1.0 then None
+            else
+                let ndcX = float32 (2.0 * screen.X / w - 1.0)
+                let ndcY = float32 (1.0 - 2.0 * screen.Y / h)
+                let mvp =
+                    Matrix4x4Helpers.buildOrbitMvp
+                        yawDeg pitchDeg zoom target extent bboxCenter bboxHalf worldOffset (w, h)
+                match Matrix4x4.Invert(mvp) with
+                | false, _ -> None
+                | true, inv ->
+                    let unproj (z: float32) =
+                        let v = Vector4(ndcX, ndcY, z, 1.0f)
+                        let r = Vector4.Transform(v, inv)
+                        Vector3(r.X / r.W, r.Y / r.W, r.Z / r.W)
+                    let nearW = unproj -1.0f
+                    let farW = unproj 1.0f
+                    let rayO = nearW
+                    let rayD = Vector3.Normalize(farW - nearW)
+                    let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                    let dbuPerUm = 1.0 / umPerDbu
+                    let topCellName =
+                        match lib.TopCell with
+                        | Some n -> n
+                        | None ->
+                            match lib.Cells with
+                            | c :: _ -> c.Name
+                            | _ -> ""
+                    let mutable result = None
+                    if topCellName <> "" then
+                        let toggle = this.Toggle
+                        let layerKeys = StackCanvasControl.RoutingLayerKeys
+                        let mutable i = 0
+                        while result.IsNone && i < layerKeys.Length do
+                            let (layerNum, layerDt) = layerKeys.[i]
+                            let key = (layerNum, layerDt)
+                            if Visibility.isLayerVisible toggle key then
+                                match Layout.Layer.bySky130Number layerNum layerDt with
+                                | None -> ()
+                                | Some layer ->
+                                    let zBot =
+                                        float32 (layer.StackZ * Z_EXAGGERATION)
+                                    let zTop =
+                                        float32 ((layer.StackZ + layer.Thickness)
+                                                 * Z_EXAGGERATION)
+                                    let stepUm = 0.05f
+                                    let nSamples =
+                                        max 3 (int (MathF.Ceiling((zTop - zBot) / stepUm)) + 1)
+                                    if MathF.Abs(rayD.Z) > 1.0e-6f then
+                                        let mutable k = 0
+                                        while result.IsNone && k < nSamples do
+                                            let frac =
+                                                if nSamples = 1 then 0.0f
+                                                else float32 k / float32 (nSamples - 1)
+                                            let zPlane =
+                                                zTop + (zBot - zTop) * frac
+                                            let t = (zPlane - rayO.Z) / rayD.Z
+                                            if t >= 0.0f then
+                                                let px = rayO.X + rayD.X * t
+                                                let py = rayO.Y + rayD.Y * t
+                                                let hit =
+                                                    ({ X = int64 (float px * dbuPerUm)
+                                                       Y = int64 (float py * dbuPerUm) }
+                                                     : Rekolektion.Viz.Core.Rkt.Types.Point)
+                                                match Rekolektion.Viz.Core.Routing.Detect.locatePadAt
+                                                          lib topCellName layerNum layerDt hit with
+                                                | Some pad ->
+                                                    result <- Some (pad, layerNum, layerDt, zTop)
+                                                | None -> ()
+                                            k <- k + 1
+                            i <- i + 1
+                    result
 
     /// Diagnostic version of the hover hit-test: same raycast +
     /// per-layer detection as `UpdateRoutingHover`, but builds a
@@ -2822,6 +2985,36 @@ type StackCanvasControl() =
                 this.RequestNextFrameRendering()
         match dragMode with
         | NoDrag -> ()
+        | RouteNewWireDrag ->
+            match newWire with
+            | Some nw ->
+                let p = e.GetPosition this
+                lastPos <- p
+                match this.UnprojectAtZ p nw.LayerZ with
+                | None -> ()
+                | Some hitDbu ->
+                    let rawDx = hitDbu.X - nw.AnchorDbu.X
+                    let rawDy = hitDbu.Y - nw.AnchorDbu.Y
+                    // Orthogonal by default: lock to whichever axis
+                    // the cursor moved farther on, so the new wire is
+                    // a clean horizontal or vertical strap (matching
+                    // how routing wants Manhattan geometry). Holding
+                    // Shift is reserved for a future 45° mode; for now
+                    // the dominant-axis lock is unconditional.
+                    let ax, ay =
+                        if abs rawDx >= abs rawDy then rawDx, 0L else 0L, rawDy
+                    let snapX = StackCanvasControl.SnapDbu ax
+                    let snapY = StackCanvasControl.SnapDbu ay
+                    let endX = nw.AnchorDbu.X + snapX
+                    let endY = nw.AnchorDbu.Y + snapY
+                    let newEnd =
+                        ({ X = endX; Y = endY }
+                         : Rekolektion.Viz.Core.Rkt.Types.Point)
+                    if newEnd.X <> nw.EndDbu.X || newEnd.Y <> nw.EndDbu.Y then
+                        nw.EndDbu <- newEnd
+                        nw.HasExtent <- (snapX <> 0L || snapY <> 0L)
+                        this.RequestNextFrameRendering()
+            | None -> ()
         | RouteTrackDrag ->
             match routeSlide, this.Library with
             | Some slide, Some lib ->
@@ -3041,6 +3234,7 @@ type StackCanvasControl() =
         let travel = sqrt (dx * dx + dy * dy)
         let wasOrbitClick = pressedButton = OrbitDrag && travel < 4.0
         let wasRouteDrag  = pressedButton = RouteTrackDrag
+        let wasNewWire    = pressedButton = RouteNewWireDrag
         dragMode <- NoDrag
         pressedButton <- NoDrag
         e.Pointer.Capture null
@@ -3105,6 +3299,70 @@ type StackCanvasControl() =
             // change above, the bound FlatPolygons updates and the
             // renderer flips back to it.
             routeSlide <- None
+            dragLiveDoc <- None
+            dragLiveFlat <- [||]
+            meshDirty <- true
+            this.RequestNextFrameRendering()
+        elif wasNewWire then
+            match newWire with
+            | Some nw when nw.HasExtent ->
+                // Build ONE new rect on the pad's layer spanning
+                // anchor -> snapped end, thickened to the pad width
+                // (±HalfWidth about the wire centerline). The wire is
+                // axis-locked, so exactly one of X/Y has extent.
+                let ax = nw.AnchorDbu
+                let en = nw.EndDbu
+                let half = max 1L nw.HalfWidth
+                let x1, y1, x2, y2 =
+                    if ax.Y = en.Y then
+                        // Horizontal wire: extent on X, thickness on Y.
+                        (min ax.X en.X), ax.Y - half,
+                        (max ax.X en.X), ax.Y + half
+                    else
+                        // Vertical wire: extent on Y, thickness on X.
+                        ax.X - half, (min ax.Y en.Y),
+                        ax.X + half, (max ax.Y en.Y)
+                match this.Library with
+                | Some _ ->
+                    match Layout.Layer.bySky130Number nw.Layer nw.DataType with
+                    | Some layer ->
+                        let rect =
+                            ({ Layer =
+                                 Rekolektion.Viz.Core.Rkt.Types.Layer.Named
+                                     ("sky130", layer.Name)
+                               X1 = x1; Y1 = y1; X2 = x2; Y2 = y2
+                               Net = None
+                               Props = []
+                               Comments = []
+                               SubFormComments = Map.empty }
+                             : Rekolektion.Viz.Core.Rkt.Types.Rectangle)
+                        // Commit through the slide-commit path. The
+                        // guard rejects dx=0 && dy=0, so pass the
+                        // real drag delta (nonzero along the wire's
+                        // axis); adjusts stay empty — the extension
+                        // IS the new wire.
+                        let dxDbu = en.X - ax.X
+                        let dyDbu = en.Y - ax.Y
+                        Rekolektion.Viz.App.Services.AppDispatch.send
+                            (Rekolektion.Viz.App.Model.Msg.RouteSlideCommit
+                                (nw.Cell, dxDbu, dyDbu, [], [ rect ]))
+                        Rekolektion.Viz.App.Services.Logger.log "route.tool"
+                            {| op = "release"
+                               handle = "new-wire"
+                               cell = nw.Cell
+                               layer = nw.Layer
+                               fromDbu = sprintf "%d,%d" ax.X ax.Y
+                               toDbu = sprintf "%d,%d" en.X en.Y
+                               committed = true |}
+                    | None -> ()
+                | None -> ()
+            | _ ->
+                Rekolektion.Viz.App.Services.Logger.log "route.tool"
+                    {| op = "release"
+                       handle = "new-wire"
+                       travelPx = travel
+                       committed = false |}
+            newWire <- None
             dragLiveDoc <- None
             dragLiveFlat <- [||]
             meshDirty <- true
@@ -4390,6 +4648,64 @@ type StackCanvasControl() =
                     g.DrawArrays(GLEnum.Lines, 0, uint32 (arr.Length / 6))
                     g.Enable GLEnum.DepthTest
                 | _ -> ()
+            // New-wire rubber band: while pulling a fresh wire off a
+            // pad, draw the pending rect as a bright outline at the
+            // pad's layer Z so the user sees exactly what will commit.
+            let drawNewWirePreview () =
+                match newWire, this.Library with
+                | Some nw, Some lib when rulerProgram <> 0u && nw.HasExtent ->
+                    let umPerDbu = float lib.Units.DbuNm * 1.0e-3
+                    let ax = nw.AnchorDbu
+                    let en = nw.EndDbu
+                    let half = max 1L nw.HalfWidth
+                    let x1d, y1d, x2d, y2d =
+                        if ax.Y = en.Y then
+                            (min ax.X en.X), ax.Y - half,
+                            (max ax.X en.X), ax.Y + half
+                        else
+                            ax.X - half, (min ax.Y en.Y),
+                            ax.X + half, (max ax.Y en.Y)
+                    let x1 = float32 (float x1d * umPerDbu)
+                    let y1 = float32 (float y1d * umPerDbu)
+                    let x2 = float32 (float x2d * umPerDbu)
+                    let y2 = float32 (float y2d * umPerDbu)
+                    let z = nw.LayerZ
+                    // Bright green = "creating new geometry", distinct
+                    // from orange track / yellow post slide glyphs.
+                    let r, gC, bC = 0.30f, 1.00f, 0.45f
+                    let verts = ResizeArray<float32>()
+                    let pushSeg
+                            (xa: float32) (ya: float32)
+                            (xb: float32) (yb: float32) =
+                        verts.Add xa; verts.Add ya; verts.Add z
+                        verts.Add r;  verts.Add gC; verts.Add bC
+                        verts.Add xb; verts.Add yb; verts.Add z
+                        verts.Add r;  verts.Add gC; verts.Add bC
+                    pushSeg x1 y1 x2 y1
+                    pushSeg x2 y1 x2 y2
+                    pushSeg x2 y2 x1 y2
+                    pushSeg x1 y2 x1 y1
+                    let arr = verts.ToArray()
+                    g.BindVertexArray hoverVao
+                    g.BindBuffer(GLEnum.ArrayBuffer, hoverVbo)
+                    g.BufferData(
+                        GLEnum.ArrayBuffer,
+                        ReadOnlySpan<float32>(arr),
+                        GLEnum.DynamicDraw)
+                    g.UseProgram rulerProgram
+                    let stride = uint32 (6 * sizeof<float32>)
+                    g.EnableVertexAttribArray 0u
+                    g.VertexAttribPointer(0u, 3, GLEnum.Float, false, stride, nativeint 0)
+                    g.EnableVertexAttribArray 1u
+                    g.VertexAttribPointer(1u, 3, GLEnum.Float, false, stride, nativeint (3 * sizeof<float32>))
+                    let loc = g.GetUniformLocation(rulerProgram, "uMVP")
+                    let mvpArr = Matrix4x4Helpers.toFloatArray mvp
+                    g.UniformMatrix4(loc, 1u, false, ReadOnlySpan<float32>(mvpArr))
+                    g.LineWidth 2.0f
+                    g.Disable GLEnum.DepthTest
+                    g.DrawArrays(GLEnum.Lines, 0, uint32 (arr.Length / 6))
+                    g.Enable GLEnum.DepthTest
+                | _ -> ()
             // Selection halo: bright outline around every polygon in
             // SelectedPolygons, drawn at the top of its layer's slab.
             // Mirrors the 2D selection halo so the selection state
@@ -4574,6 +4890,7 @@ type StackCanvasControl() =
                             g.Disable GLEnum.Blend
                             g.Enable  GLEnum.DepthTest
             drawSelectionHalo ()
+            drawNewWirePreview ()
             match hoveredRoute with
             | None -> drawDragIndicator ()
             | Some _ when suppressOverlay -> drawDragIndicator ()

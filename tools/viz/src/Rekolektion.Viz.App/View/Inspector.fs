@@ -375,6 +375,28 @@ let view (model: Model.Model) (_dispatch: Msg.Msg -> unit) : IView =
                 TextBlock.text "Inspector"
                 TextBlock.fontWeight FontWeight.Bold
             ] :> IView
+            // Active-routing banner: while a wire draft is in flight,
+            // show the net being routed so the user can confirm which
+            // net they're on BEFORE committing — critical when pads of
+            // interleaved nets (e.g. s3 / s3_b) sit side by side and
+            // look identical. Driven purely from model.DraftRoute
+            // (its StartNet is stamped from the start pad's net), so
+            // no extra plumbing.
+            match model.DraftRoute with
+            | Some d ->
+                let netTxt =
+                    if System.String.IsNullOrEmpty d.StartNet then "(unnamed)"
+                    else d.StartNet
+                yield TextBlock.create [
+                    TextBlock.text "Routing"
+                    TextBlock.fontWeight FontWeight.Bold
+                    TextBlock.foreground "#4CFFA0"
+                    TextBlock.margin (Avalonia.Thickness(0.0, 6.0, 0.0, 2.0))
+                ] :> IView
+                yield line (sprintf "net: %s" netTxt) [
+                    SelectableTextBlock.foreground "#4CFFA0"
+                ]
+            | None -> ()
             // DRC violation details, when selected. Rendered ahead
             // of polygon / instance / ratline details because the
             // user explicitly clicked the overlay to ask about THIS

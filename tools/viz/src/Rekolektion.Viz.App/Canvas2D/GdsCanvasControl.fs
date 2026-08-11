@@ -127,6 +127,12 @@ type private SkiaDraw(bounds: Rect,
                       routeLiveViolations: Drc.Check.Violation array,
                       drcProvenance: Map<string, string>,
                       hoveredSnapTarget: Routing.Snap.SnapTarget option,
+                      // Every snap target compatible with the in-flight
+                      // draft's net (same-net pads / wire ends). Drawn
+                      // as dim hint circles so the user can see EVERY
+                      // legal landing spot at once, not just the one
+                      // under the cursor. Empty when no draft is active.
+                      sameNetTargets: Routing.Snap.SnapTarget array,
                       segmentDrag: Routing.SegmentDrag.DragState option,
                       // Doc reference, so the segment-drag overlay can
                       // project the new geometry without reaching into
@@ -857,6 +863,32 @@ type private SkiaDraw(bounds: Rect,
                         match v.BboxB with
                         | Some b -> paintBbox b
                         | None -> ()
+
+                // Same-net landing hints — dim circles at EVERY snap
+                // target compatible with the in-flight draft's net.
+                // Lets the user see all legal endpoints at once (e.g.
+                // which of several identical-looking pads share the
+                // net being routed). The hovered target is drawn
+                // brighter just below, on top of its dim twin.
+                if not (Array.isEmpty sameNetTargets) then
+                    let dxWorld = float (vb.MaxX - vb.MinX) |> max 1.0
+                    let dyWorld = float (vb.MaxY - vb.MinY) |> max 1.0
+                    let pxPerDbuX = float vb.PixelW / dxWorld
+                    let pxPerDbuY = float vb.PixelH / dyWorld
+                    use dimStroke =
+                        new SKPaint(
+                            Style = SKPaintStyle.Stroke,
+                            IsAntialias = true,
+                            StrokeWidth = 1.5f,
+                            Color = SKColor(0x4Cuy, 0xFFuy, 0xA0uy, 0x99uy))
+                    for t in sameNetTargets do
+                        let sx =
+                            (float (t.X - vb.MinX)) * pxPerDbuX |> float32
+                        let sy =
+                            float vb.PixelH
+                            - (float (t.Y - vb.MinY)) * pxPerDbuY
+                            |> float32
+                        canvas.DrawCircle(sx, sy, 6.0f, dimStroke)
 
                 // Wire-mode snap-target hint — small circle at the
                 // pin centroid the cursor is hovering over. Tells
@@ -4619,7 +4651,14 @@ type GdsCanvasControl() as this =
                 if this.ShowDrc || (this.DraftRoute).IsSome
                 then cachedRouteLiveViolations
                 else [||]
-            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, drcHits, drcVisibleViolations, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons, this.ShowDrcLabels))
+            // While a draft is in flight, gather every snap target
+            // that shares the draft's net so the overlay can hint
+            // ALL legal endpoints (see SkiaDraw.sameNetTargets).
+            let sameNetTargets' =
+                match this.DraftRoute with
+                | Some d -> Routing.Snap.forStartNet d.StartNet (this.SnapTargets ())
+                | None -> [||]
+            context.Custom(new SkiaDraw(bounds, renderLib, renderFlat, vb, this.Toggle, overlay, tightenHits, drcHits, drcVisibleViolations, resizeHandleHits, this.DraftRoute, routeLiveViolations', this.DrcView.Provenance, hoveredSnapTarget, sameNetTargets', this.SegmentDrag, this.Library, this.DebugOverlay, this.NetMap, this.FlatPolygons, this.ShowDrcLabels))
             // Guideline overlay rides on top of geometry. Pulls
             // the live guides + in-flight drag from the shared
             // service so the canvas doesn't carry the state.

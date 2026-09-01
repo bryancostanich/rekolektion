@@ -33,29 +33,36 @@ let mainWindow () : Window option =
             | w -> Some w
         | _ -> None
 
+let openLayoutFileTypes () : List<FilePickerFileType> =
+    let layoutFilter = FilePickerFileType("Layout files")
+    layoutFilter.Patterns <- List<string>([ "*.rkt"; "*.gds"; "*.gds2"; "*.mag" ])
+    layoutFilter.AppleUniformTypeIdentifiers <-
+        List<string>([ "public.data"; "public.item"; "public.plain-text" ])
+    layoutFilter.MimeTypes <-
+        List<string>([ "application/octet-stream"; "text/plain" ])
+    let rktFilter = FilePickerFileType("Rekolektion files")
+    rktFilter.Patterns <- List<string>([ "*.rkt" ])
+    rktFilter.AppleUniformTypeIdentifiers <-
+        List<string>([ "public.plain-text"; "public.data" ])
+    rktFilter.MimeTypes <- List<string>([ "text/plain" ])
+    let gdsFilter = FilePickerFileType("GDS files")
+    gdsFilter.Patterns <- List<string>([ "*.gds"; "*.gds2" ])
+    gdsFilter.AppleUniformTypeIdentifiers <-
+        List<string>([ "public.data"; "public.item" ])
+    gdsFilter.MimeTypes <- List<string>([ "application/octet-stream" ])
+    let magFilter = FilePickerFileType("Magic files")
+    magFilter.Patterns <- List<string>([ "*.mag" ])
+    magFilter.AppleUniformTypeIdentifiers <-
+        List<string>([ "public.plain-text"; "public.data" ])
+    magFilter.MimeTypes <- List<string>([ "text/plain" ])
+    List<FilePickerFileType>([ layoutFilter; rktFilter; gdsFilter; magFilter ])
+
 let pickGds (win: Window) : System.Threading.Tasks.Task<string option> =
     task {
         let opts = FilePickerOpenOptions()
         opts.Title <- "Open layout"
         opts.AllowMultiple <- false
-        let layoutFilter = FilePickerFileType("Layout files")
-        layoutFilter.Patterns <- List<string>([ "*.gds"; "*.gds2"; "*.mag" ])
-        layoutFilter.AppleUniformTypeIdentifiers <-
-            List<string>([ "public.data"; "public.item" ])
-        layoutFilter.MimeTypes <-
-            List<string>([ "application/octet-stream"; "text/plain" ])
-        let gdsFilter = FilePickerFileType("GDS files")
-        gdsFilter.Patterns <- List<string>([ "*.gds"; "*.gds2" ])
-        gdsFilter.AppleUniformTypeIdentifiers <-
-            List<string>([ "public.data"; "public.item" ])
-        gdsFilter.MimeTypes <- List<string>([ "application/octet-stream" ])
-        let magFilter = FilePickerFileType("Magic files")
-        magFilter.Patterns <- List<string>([ "*.mag" ])
-        magFilter.AppleUniformTypeIdentifiers <-
-            List<string>([ "public.plain-text"; "public.data" ])
-        magFilter.MimeTypes <- List<string>([ "text/plain" ])
-        opts.FileTypeFilter <-
-            List<FilePickerFileType>([ layoutFilter; gdsFilter; magFilter ])
+        opts.FileTypeFilter <- openLayoutFileTypes ()
         let! files = win.StorageProvider.OpenFilePickerAsync(opts)
         if files.Count = 0 then return None
         else

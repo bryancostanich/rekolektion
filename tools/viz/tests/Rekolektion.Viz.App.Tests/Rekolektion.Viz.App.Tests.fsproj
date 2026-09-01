@@ -27,6 +27,7 @@
     <Compile Include="RecentsTests.fs" />
     <Compile Include="RekolektionCliTests.fs" />
     <Compile Include="GdsLoadingTests.fs" />
+    <Compile Include="FilePickerTests.fs" />
     <Compile Include="TestSession.fs" />
     <Compile Include="HeadlessRenderTests.fs" />
     <Compile Include="CanvasWiringTests.fs" />
